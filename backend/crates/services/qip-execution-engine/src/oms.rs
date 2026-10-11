@@ -51,6 +51,7 @@
 
 use crate::broker::Broker;
 use crate::feasibility::{self, VenueFeasibility};
+use crate::market_creation::{LadderAdmission, PricingRule};
 use crate::order::{Fill, Order, OrderState, OrderType};
 use crate::session::{RecordedInstruction, RecordedSession, SealOutcome, SessionRecorder};
 use qip_core::Decimal;
@@ -401,6 +402,14 @@ pub struct OrderManager {
     /// these, and before they existed nothing in any binary could construct
     /// the evidence that rung asks for.
     sessions: SessionRecorder,
+    /// Every accepted order still open, keyed by id, with the exposure axes
+    /// it was checked on, so its unfilled remainder is charged to the same
+    /// buckets when a later order is checked. Only the caller knows an
+    /// instrument's axes, and it states them for the order it submits and no
+    /// other. Pruned at every submit, so it is bounded by the open orders and
+    /// is the index the pre-trade check walks instead of every order ever
+    /// sent.
+    working_axes: BTreeMap<String, BTreeMap<String, String>>,
     sequence: u64,
 }
 
@@ -415,6 +424,7 @@ impl OrderManager {
             instrument_feasibility: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
             sessions: SessionRecorder::default(),
+            working_axes: BTreeMap::new(),
             sequence: 0,
         }
     }
@@ -732,7 +742,17 @@ impl OrderManager {
             axes,
             scope: order.scope.clone(),
         };
-        let check = match self.checker.check(&proposed, risk_state, at) {
+        // `risk_state` is the book the caller built from fills. The orders
+        // this manager has sent and the venue has not yet filled are in no
+        // fill, so without them two orders each inside the gross headroom
+        // were each approved against the same headroom and could fill past
+        // the ceiling together. Their remainders are charged here, where the
+        // only record of them lives, rather than trusted to every caller.
+        let working = self.working_exposure();
+        let check = match self
+            .checker
+            .check_with_working(&proposed, risk_state, &working, at)
+        {
             Ok(check) => check,
             Err(error) => {
                 let result = refuse(
@@ -863,6 +883,10 @@ impl OrderManager {
                     reduced_to,
                     reconciliation_breaks: breaks,
                 };
+                if order.state.is_open() {
+                    self.working_axes
+                        .insert(order.order_id.as_str().to_string(), proposed.axes);
+                }
                 self.orders
                     .insert(order.order_id.as_str().to_string(), order);
                 result
@@ -959,6 +983,120 @@ impl OrderManager {
             }
         }
         (cancelled, failed)
+    }
+
+    /// Measure resting `rule`'s ladder for `product` at `venue` against the
+    /// desk's limits, and mint the only verdict
+    /// [`crate::market_creation::MarketFactory::seed`] will rest it on.
+    ///
+    /// A seeded ladder is orders at a venue: every bid can buy and every ask
+    /// can sell. Each side is checked as one order of its whole size, the bid
+    /// side as a buy at the best bid and the ask side as a sale at the
+    /// deepest ask — the highest price either side rests at, so neither is
+    /// measured below the notional it can trade — on the book plus every
+    /// order already working, exactly as [`Self::submit`] checks an order.
+    /// The kill switch and the autonomy level are asked first, as `submit`
+    /// asks them: a halted desk or one at observation rests nothing.
+    ///
+    /// Refused whole, never reduced: a ladder sized down by a limit is a
+    /// pricing rule nobody published.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_ladder(
+        &mut self,
+        product: &str,
+        venue: &str,
+        rule: &PricingRule,
+        scope: &str,
+        autonomy: &AutonomyController,
+        risk_state: &RiskState,
+        at: Timestamp,
+    ) -> Result<LadderAdmission> {
+        if autonomy.kill_switch().is_halted(scope) {
+            return Err(Error::denied(format!(
+                "the kill switch is tripped for {scope}; no ladder is rested for {product}"
+            )));
+        }
+        if !autonomy.level().executes() {
+            return Err(Error::denied(format!(
+                "the desk is at {} and rests nothing; no ladder is rested for {product}",
+                autonomy.level().as_str()
+            )));
+        }
+        let size = rule.ask_quantity()?;
+        let sides = [
+            (size, rule.top_bid(), "bid"),
+            (-size, rule.deepest_ask()?, "ask"),
+        ];
+        let working = self.working_exposure();
+        let axes = BTreeMap::from([(
+            qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+            venue.to_string(),
+        )]);
+        for (quantity, price, side) in sides {
+            let proposed = ProposedOrder {
+                object_id: qip_core::ObjectId::from_string(product),
+                quantity,
+                reference_price: price,
+                axes: axes.clone(),
+                scope: scope.to_string(),
+            };
+            let check = self
+                .checker
+                .check_with_working(&proposed, risk_state, &working, at)?;
+            if !check.decision.is_approved() {
+                return Err(Error::denied(format!(
+                    "the {side} side of the ladder for {product} at {venue} — {} at up to {price} \
+                     — is {}; nothing was rested",
+                    quantity.abs(),
+                    check.decision.describe()
+                )));
+            }
+        }
+        Ok(LadderAdmission {
+            product: product.to_string(),
+            venue: venue.to_string(),
+            rule: rule.clone(),
+        })
+    }
+
+    /// The unfilled remainder of every open order, as the pre-trade check
+    /// charges it.
+    ///
+    /// Priced at the larger of a limit order's limit and its arrival price —
+    /// a sale may fill above its limit, so the limit alone can understate it
+    /// — and at the arrival price otherwise, the price the order itself was
+    /// checked at.
+    /// Also forgets every order that is no longer open, which is what keeps
+    /// the index bounded by the open orders.
+    fn working_exposure(&mut self) -> Vec<ProposedOrder> {
+        // Walks the accepted-and-open index, never `self.orders`: that map
+        // holds every order ever sent, and a scan of it per submit made each
+        // submission cost more the longer the desk had run — the acceptance
+        // suite's scaling probe caught it at 5x per order for 5x the history.
+        let orders = &self.orders;
+        self.working_axes
+            .retain(|id, _| orders.get(id).is_some_and(|order| order.state.is_open()));
+        self.working_axes
+            .iter()
+            .filter_map(|(id, axes)| {
+                let order = orders.get(id)?;
+                let remaining = order.remaining_quantity();
+                if !remaining.is_positive() {
+                    return None;
+                }
+                let price = match order.order_type {
+                    OrderType::Limit { price } => price.max(order.arrival_price),
+                    _ => order.arrival_price,
+                };
+                Some(ProposedOrder {
+                    object_id: order.object_id.clone(),
+                    quantity: remaining * Decimal::from_int(i64::from(order.side.sign())),
+                    reference_price: price,
+                    axes: axes.clone(),
+                    scope: order.scope.clone(),
+                })
+            })
+            .collect()
     }
 
     /// A fresh order id, deterministic across a replay.

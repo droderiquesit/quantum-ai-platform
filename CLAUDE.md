@@ -31,12 +31,18 @@ being able to say precisely why it did what it did is.
 - **Rust 2024**, resolver 3, one workspace, 60 crates. `unsafe_code = "forbid"`;
   `todo!`/`unimplemented!`/`panic_in_result_fn` denied; no `unwrap()` outside
   tests.
-- **Two dependencies only** — `serde`, `serde_json` (ADR 0002, ADR 0009).
-  No async runtime: blocking I/O with explicit timeouts, deliberately.
+- **Dependencies by allow-list** (ADR 0109, accepted 2026-10-11). Crates come
+  from `scripts/dependency-allowlist.txt`, pinned, each line naming the ADR that
+  admitted it; until a lane adds one the lockfile still holds only `serde`,
+  `serde_json` and their closure. `tokio` is the one async runtime, kept off the
+  decision core and the cell's pass unless a committed measurement justifies it;
+  explicit timeouts on every call that leaves the process.
 - **Next.js + TypeScript** in `frontend/portal/` and `frontend/landing/`
   (their own toolchains — see `frontend/CLAUDE.md`).
-- **Google Cloud**: Cloud Run for every warm binary and one Compute Engine
-  execution node per region (ADR 0024, never yet applied), secrets mounted
+- **Google Cloud**: workloads run on Cloud Run (every warm binary) and
+  Compute Engine (one execution node per region, ADR 0024, never yet
+  applied). The only GKE cluster is ADR 0036's GitOps control plane, which
+  runs Argo CD, Kargo and Config Connector and no trading binary. Secrets mounted
   as files from Secret Manager, KMS, Binary Authorization, Workload Identity
   Federation. Terraform 1.9.8, `hashicorp/google ~> 6.12`.
 - **GitHub Actions**: `ci.yml` (gate), `deploy.yml` (build/sign/attest/deploy),
@@ -62,7 +68,7 @@ Four top-level domains, plus the repo-wide concerns (ADR 0016):
 | `frontend/mobile/` | The mobile channel — see its README: the phone app is the portal PWA |
 | `frontend/packages/` | Shared browser packages (brand, design tokens, …) |
 | `data/` | Data domain: local run state, datasets and catalogues when they exist |
-| `infrastructure/` | Terraform root and modules, per-environment tfvars, the egress bootstrap, Dockerfile — no Kubernetes |
+| `infrastructure/` | Terraform root and modules, per-environment tfvars, the egress bootstrap, Dockerfile, the GitOps manifests — no workload on Kubernetes; the one GKE cluster is ADR 0036's Argo CD/Kargo control plane |
 | `vendor/templates/` | Licensed template packages — reference assets (ADR 0015) |
 | `docs/adr/` | Architecture decisions. Read before proposing a change one covers |
 | `docs/ops/` | Threat model, policies, observability notes |

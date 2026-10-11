@@ -57,7 +57,7 @@ entry on `optimisation` admitted — is
 
 What a plan still cannot prove is an apply. Nothing in this module has been
 created in any project; the dev environment was torn down on 2026-09-13 and
-`docs/DELIVERY-STATUS.md` is the register of what remains. A mocked plan says
+`infrastructure/CLAUDE.md` records what remains. A mocked plan says
 the configuration is coherent and the refusals fire. It does not say Google
 accepted a single one of these resources.
 

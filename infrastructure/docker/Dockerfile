@@ -33,6 +33,7 @@ FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bda
 
 ARG BINARY
 ARG SOURCE_DATE_EPOCH
+ARG QIP_SOURCE_COMMIT
 
 # No package is installed here. musl-dev and gcc, the only build dependencies
 # (alpine's Rust images target musl, which is what makes the output static),
@@ -60,11 +61,31 @@ COPY backend/ .
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.
 #
-# SOURCE_DATE_EPOCH is passed through for tools that honour it. It is not yet
-# shown to make the image byte-reproducible; CICD-048 stays PARTIAL until a
-# rebuild of one commit is compared digest for digest.
+# SOURCE_DATE_EPOCH is required and is the commit's own timestamp —
+# `deploy.yml` passes `git log -1 --format=%ct` (R12 CICD-9097). It used to
+# fall back to `$(date +%s)` when absent, and `deploy.yml` passed exactly
+# that, so two builds of one commit embedded two times and could never share
+# a digest. A build without it is refused rather than stamped with the
+# clock: an image whose timestamp is the build's is an image nobody can
+# rebuild. The pipeline also builds every image twice and compares, so
+# whether this is enough is checked on every build rather than asserted here.
+#
+# QIP_SOURCE_COMMIT is required too, and is the full sha being built: the
+# kernel reads it at compile time into every decision record's
+# `code_version` (R12-GOV-6121), and a deployed central binary built without
+# it refuses to start. Nothing set it until 2026-10-11, so every deployed
+# decision named the crate version and no commit. It is a function of the
+# commit like the epoch, so both builds of one commit still agree.
+#
+# The hex check is a `case` glob rather than `printf | tr -d` in a command
+# substitution: a pipe in a RUN line runs under /bin/sh without pipefail
+# (hadolint DL4006), so a failing left-hand side would be masked, and a glob
+# needs no pipe at all. Any character outside lowercase hex refuses the build.
 RUN test -n "$BINARY" \
-  && export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}" \
+  && test -n "$SOURCE_DATE_EPOCH" \
+  && test "${#QIP_SOURCE_COMMIT}" -eq 40 \
+  && case "$QIP_SOURCE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac \
+  && export SOURCE_DATE_EPOCH QIP_SOURCE_COMMIT \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 
@@ -78,5 +99,17 @@ FROM scratch
 USER 10001:10001
 
 COPY --from=build /out/qip /qip
+
+# The committed trust files (ADR 0110 decision 2, ADR 0112): the trust bundle
+# of public keys every process verifies the centre's artefacts against, and
+# the pinned Google roots a process authenticates a Google API with. Baked
+# into the image Binary Authorization admits rather than fetched at run time,
+# because a bundle fetched from a server moves trust from the attested image
+# to whatever answers the fetch. The whole directory, so an environment's file
+# is in the image the moment it is committed and the build needs no argument
+# naming it; `infrastructure/trust/README.md` says what may live there.
+# `image.yml` carries the same directory out of this image into the
+# execution node's boot image.
+COPY infrastructure/trust/ /etc/qip/trust/
 
 ENTRYPOINT ["/qip"]

@@ -420,6 +420,17 @@ jobs:
           terraform init -backend=false -input=false
           terraform validate
           terraform test
+      # The tenant foundation (ADR 0118) is a third root, with its own state in
+      # the seed project, applied once by the owner and never by a workflow.
+      # The harness loop above already runs its `terraform test`; this adds the
+      # format and validate gates no other step opens it for.
+      - name: foundation root
+        run: |
+          set -euo pipefail
+          cd infrastructure/foundation
+          terraform fmt -check -recursive .
+          terraform init -backend=false -input=false
+          terraform validate
       # `validate` accepts a module using a provider it never declared; only
       # `plan` refuses it, and a plan of the whole root against real providers
       # needs credentials CI does not have. The mocked plans above declare the
@@ -455,8 +466,9 @@ jobs:
       - run: ./scripts/check-secrets.sh
       - run: ./scripts/check-secrets.sh --history
 
-  # The development tooling's own tests: the model gateway and the fleet's
-  # dispatcher and worker. They are the programs that send repository source
+  # The development tooling's own tests: the model gateway, the fleet's
+  # dispatcher and worker, the CodeQL blocking gate, the agent boundary, the
+  # lane planner and the sandbox's egress proxy, and the game-day harness. They are the programs that send repository source
   # to a provider and decide what a day may cost, and until this job their
   # tests ran only when somebody remembered to run them. Node built-ins only,
   # so there is nothing to install. The files are named one by one rather
@@ -471,7 +483,42 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs
+      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/rule-citation.test.mjs
+      # The agent sandbox holds no secret, no credential and no write, every
+      # job in it is time-limited (R12 SEC-9068, SEC-9084), and the lane's
+      # network is the egress proxy and nothing else (SEC-9077). Judged by
+      # the same function the tests above exercise, on the committed file.
+      - run: node scripts/agent-guard.mjs sandbox .github/workflows/agent-sandbox.yml
+      # The round's lane plan, the one agent-guard.mjs holds `Agent-Lane:`
+      # commits to, is valid under the policy the merge enforces (CICD-9082,
+      # CICD-9083): every lane has a branch, gates and a bounded budget, owns
+      # only what its role may edit, and shares no path with an unordered lane.
+      - run: node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-3.json
+
+  # A pull request that changes a rule names it (R12 GOV-9080). The body is
+  # read from the event file rather than an expression, because a pull
+  # request's body is text a stranger wrote; the changed paths are the diff
+  # against the base commit this run was opened on. `scripts/rule-citation.mjs`
+  # says what counts as a rule and why each refusal fails closed.
+  rule-citation:
+    name: a changed rule is cited
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: every changed rule file is named in the pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/changed.txt"
+          node scripts/rule-citation.mjs --event "$GITHUB_EVENT_PATH" --changed "$RUNNER_TEMP/changed.txt"
 
   # The repository's change-management hooks ensure every change goes through
   # git commits and pull requests. The guard refuses destructive bypass
@@ -484,3 +531,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 .claude/hooks/test_hooks.py
+
+  # Static analysis, as a gate of ci rather than a workflow beside it (R12
+  # CICD-9105). CodeQL used to run as its own workflow on push and pull
+  # request, and `deploy.yml` waited only on ci, so a CodeQL finding stopped
+  # nothing: the commit was built, signed and attested regardless. Called
+  # here, a failed analysis fails ci, and ci's success is what deploy.yml
+  # requires; deploy.yml also reads this job's results by name in the run
+  # it is about to trust, so a ci run from before this job existed is not
+  # mistaken for one that ran it. Since R2.8 a *finding* at or above the
+  # severity committed in `scripts/sast-policy.json` fails the job as well,
+  # not only an analysis that could not finish; see the last step of
+  # codeql-analysis.yml. `security-events: write` is the one
+  # permission the analysis needs beyond reading, granted to this job alone.
+  sast:
+    name: sast
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/codeql-analysis.yml

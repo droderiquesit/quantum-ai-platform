@@ -111,11 +111,21 @@ impl OpportunityEngine {
             .filter_map(|(subject, group)| self.build(&subject, group, detection.as_of, context))
             .collect();
 
+        // Equal value is broken on the subject, and only then on the id.
+        // The id is a ULID whose low bits are a draw from the context's
+        // generator, so ordering on it made which of two equally valuable
+        // opportunities REASON works first depend on how many ids every
+        // earlier stage had drawn that cycle. That happened: journaling the
+        // world model federation's review in UNDERSTAND drew more ids, and
+        // two instruments ranked identically swapped places with nothing
+        // about either having changed — a choice the log could only explain
+        // as a coin toss. The subject is a fact about the opportunity.
         candidates.sort_by(|a, b| {
             b.rank
                 .value_per_cost()
                 .partial_cmp(&a.rank.value_per_cost())
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.affected_entities.cmp(&b.affected_entities))
                 .then_with(|| a.opportunity_id.cmp(&b.opportunity_id))
         });
 

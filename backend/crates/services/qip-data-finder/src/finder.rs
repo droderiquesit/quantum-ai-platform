@@ -256,6 +256,11 @@ impl MonitorOutcome {
 pub struct DataFinder {
     config: FinderConfig,
     registry: BTreeMap<String, RegisteredSource>,
+    /// Every health observation the finder has been given per source,
+    /// newest last, bounded by [`Self::OBSERVATIONS_PER_SOURCE`] — what
+    /// reliability is scored from, through [`SourceHealth::over`], rather
+    /// than one HEAD probe (R12-DATA-2024).
+    observations: BTreeMap<String, std::collections::VecDeque<HealthObservation>>,
 }
 
 impl DataFinder {
@@ -290,7 +295,90 @@ impl DataFinder {
         Self {
             config,
             registry: BTreeMap::new(),
+            observations: BTreeMap::new(),
         }
+    }
+
+    /// Health observations kept per source for reliability scoring.
+    pub const OBSERVATIONS_PER_SOURCE: usize = 256;
+    /// Sources whose observations are kept; beyond it the source with the
+    /// oldest newest observation is forgotten.
+    pub const OBSERVED_SOURCES: usize = 4_096;
+    /// The window reliability is measured over.
+    pub const RELIABILITY_WINDOW: Duration = Duration::from_days(30);
+    /// Mean latency up to which a source loses no reliability for speed;
+    /// above it, reliability scales by `budget / mean`.
+    pub const LATENCY_BUDGET: Duration = Duration::from_secs(1);
+
+    /// Record health observations of `id`. Observations not newer than the
+    /// newest already held are skipped, so a monitor handing over an
+    /// overlapping window does not count one attempt twice.
+    ///
+    /// The batch is put in time order first, by the instant each
+    /// observation states. It used to be taken in the order given, and the
+    /// skip above then read a newest-first batch as nine stale repeats of
+    /// its first entry: of nine failures handed over newest first, one was
+    /// kept, and a source failing most of its window scored 0.5 instead of
+    /// 0.18. Every observation carries its own time, so ordering them is
+    /// arithmetic on stated facts, not a guess about the caller.
+    pub fn observe_health(&mut self, id: &str, observations: &[HealthObservation]) {
+        let mut observations = observations.to_vec();
+        observations.sort_by_key(|observation| observation.at);
+        let held = self.observations.entry(id.to_string()).or_default();
+        for observation in &observations {
+            if held
+                .back()
+                .is_some_and(|newest| observation.at <= newest.at)
+            {
+                continue;
+            }
+            held.push_back(*observation);
+            if held.len() > Self::OBSERVATIONS_PER_SOURCE {
+                held.pop_front();
+            }
+        }
+        while self.observations.len() > Self::OBSERVED_SOURCES {
+            let Some(stalest) = self
+                .observations
+                .iter()
+                .min_by(|a, b| {
+                    a.1.back()
+                        .map(|o| o.at)
+                        .cmp(&b.1.back().map(|o| o.at))
+                        .then(a.0.cmp(b.0))
+                })
+                .map(|(name, _)| name.clone())
+            else {
+                break;
+            };
+            self.observations.remove(&stalest);
+        }
+    }
+
+    /// The health observations held for `id`.
+    pub fn health_observations(&self, id: &str) -> Vec<HealthObservation> {
+        self.observations
+            .get(id)
+            .map(|held| held.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Reliability in `[0.1, 0.9]` from a source's measured health:
+    /// availability (one minus the error rate) scaled by latency against
+    /// [`Self::LATENCY_BUDGET`], mapped so that a source answering every
+    /// attempt in budget scores 0.9 and one answering none scores 0.1 —
+    /// the two figures the single-probe scorer this replaced gave a success
+    /// and a failure, so a source with only its probe to go on scores as
+    /// before, and history moves it from there.
+    pub fn reliability_from(health: &SourceHealth) -> f64 {
+        let mean = health.mean_latency().as_nanos();
+        let budget = Self::LATENCY_BUDGET.as_nanos();
+        let speed = if mean <= budget {
+            1.0
+        } else {
+            budget as f64 / mean as f64
+        };
+        0.1 + 0.8 * health.availability() * speed
     }
 
     pub fn config(&self) -> &FinderConfig {
@@ -1107,8 +1195,27 @@ impl DataFinder {
     /// rather than drawn in sequence, so a candidate's score does not depend
     /// on how many candidates preceded it.
     fn score(&self, source: &Source, now: Timestamp) -> Result<SourceScores> {
+        // Reliability from observed availability, errors and latency over a
+        // window (R12-DATA-2024): the source's recorded observations plus
+        // this assessment's own HEAD probe as one more. It was 0.9 or 0.1
+        // from that single probe alone, so a source that failed nine
+        // monitor windows in ten and happened to answer one HEAD scored as
+        // reliable as one that never failed.
         let head = source.evidence().head();
-        let mut reliability: f64 = if head.is_success() { 0.9 } else { 0.1 };
+        let probe = if head.is_success() {
+            HealthObservation::served(
+                now,
+                head.latency,
+                source.evidence().sample().payload_at().unwrap_or(now),
+            )
+        } else {
+            HealthObservation::failed(now, head.status)
+        };
+        let mut observed = self.health_observations(source.id());
+        observed.retain(|observation| observation.at < now);
+        observed.push(probe);
+        let health = SourceHealth::over(&observed, now, Self::RELIABILITY_WINDOW)?;
+        let mut reliability: f64 = Self::reliability_from(&health);
         if !source.endpoint().scheme().is_encrypted() {
             // A feed the network can rewrite is a feed that can be made to
             // say anything, and the platform would not know.
@@ -1229,6 +1336,8 @@ impl DataFinder {
         }
 
         let health = SourceHealth::over(observations, now, window)?;
+        // What monitoring saw is what the next assessment scores from.
+        self.observe_health(id, observations);
         let expected_freshness = self
             .registry
             .get(id)

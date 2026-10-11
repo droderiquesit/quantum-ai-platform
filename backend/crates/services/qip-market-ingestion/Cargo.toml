@@ -32,17 +32,15 @@ qip-transport.workspace = true
 qip-contracts.workspace = true
 qip-orderbook.workspace = true
 qip-sequencing.workspace = true
-
-[dev-dependencies]
-# `StreamJournal` persists through `qip_core::kv::KeyValueStore` — the port,
-# declared in a library this crate already depends on — so nothing here reaches
-# for a filesystem and a deployment chooses the adapter. The tests need *an*
-# adapter, and `MemoryKeyValueStore` is the one the workspace already ships;
-# a store hand-rolled inside the test file would be a second implementation of
-# the port whose disagreements with the real one nothing would catch.
-# A dev-dependency and not a dependency: this is a service and `qip-storage` is
-# a library, so the edge is legal in either position, but the crate needs the
-# port and not the adapter, and the manifest should say which.
+# The evidence-check stage (R12-DATA-2012): every admitted event becomes a
+# `qip_evidence::EvidenceRecord` and is checked by its `EvidenceFabric` before
+# it is released. `qip-evidence` is an I/O-free library, so this Lane 2
+# service no longer links the slow-lane world model to get it.
+qip-evidence.workspace = true
+# The Tick Lake writer (R12-DATA-2004): a connector feed given one seals the
+# ticks, quotes and trades it releases into `qip_storage::lake`. A service
+# depending on a library, the legal edge; it was a dev-dependency for the
+# journal's key-value port, and the tests that used it still do.
 qip-storage.workspace = true
 
 [lints]

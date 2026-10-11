@@ -128,14 +128,14 @@ fn catalogue_json(grants: &[(&str, &str, &str, &str)], journal_ack: &str) -> Str
             "p0_control",
             "irreplaceable",
             "refuse_producer",
-            "quorum",
+            "archived",
         ),
         stream_json(
             OUTCOMES,
             "p1_outcomes",
             "irreplaceable",
             "refuse_producer",
-            "quorum",
+            "archived",
         ),
         stream_json(
             JOURNAL,
@@ -254,6 +254,11 @@ impl Fabric {
     }
 
     fn start_with(label: &str, catalogue: &str) -> Result<Self> {
+        Self::start_configured(label, catalogue, &[])
+    }
+
+    /// [`Self::start_with`], with further configuration variables on top.
+    fn start_configured(label: &str, catalogue: &str, extra: &[(&str, &str)]) -> Result<Self> {
         let unique = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "qip-fabricd-{label}-{}-{unique}",
@@ -293,9 +298,18 @@ impl Fabric {
                 // batches seals one.
                 (qip_fabricd::config::SEGMENT_BYTES, "4096"),
                 (qip_fabricd::config::HOUSEKEEPING_MS, "20"),
+                // ADR 0112: an in-process broker that owns both ends of its
+                // socket, so plaintext, which only `local` admits.
+                (qip_fabricd::config::DEPLOYMENT, "local"),
+                (qip_transport::tls::TLS_MODE_VARIABLE, "plaintext"),
             ]
             .into_iter()
             .map(|(name, value)| (name.to_string(), value.to_string())),
+        )
+        .chain(
+            extra
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string())),
         )
         .collect();
         let archive = Arc::new(GatedStore::new());
@@ -673,7 +687,7 @@ fn a_restarted_broker_replays_every_durable_class_byte_for_byte_and_a_restarted_
             let ack = producer
                 .send(batch_of(class, &format!("{stream}-{index}"), &records))
                 .unwrap_or_else(|error| panic!("{stream} batch {index}: {error}"));
-            if class.ack_floor() == qip_events::event_fabric::policy::AckProfile::Quorum {
+            if class.ack_floor() == qip_events::event_fabric::policy::AckProfile::Archived {
                 assert!(
                     ack.archived_through() > ack.base_offset(),
                     "{stream}: a quorum acknowledgement covers the batch it acknowledges"
@@ -1655,5 +1669,168 @@ fn the_schema_registry_is_a_production_caller_in_qip_fabricd() {
         registry_guard.len(),
         0,
         "schema registry is initialized as empty in composition root"
+    );
+}
+
+/// Send `head` and then `body` on a fresh connection to `address`, and
+/// return the status line's code. Raw, because the SDK never builds a
+/// request past its own limits and the point is what the broker does with
+/// one that is.
+fn raw_post_status(address: &str, declared: usize, body: &[u8]) -> u16 {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(StdDuration::from_secs(30)))
+        .unwrap();
+    let head = format!(
+        "POST /v1/event-fabric/produce HTTP/1.1\r\nHost: {address}\r\n\
+         Content-Type: application/json\r\nContent-Length: {declared}\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    // A peer that refuses on the declared length closes before the body
+    // arrives; a write that fails then is the refusal working.
+    let _ = stream.write_all(body);
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+    let answer = String::from_utf8_lossy(&answer);
+    answer
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("no status line in {answer:?}"))
+}
+
+/// FABRIC-8074: the protocol listener reads at most
+/// `MAXIMUM_REQUEST_BYTES` of body. A request declaring one byte more is
+/// refused with 413 before any of it is buffered — sixty-four live
+/// connections each allowed an unbounded body is unbounded memory — while a
+/// request inside the ceiling but over the transport's 1 MiB default is
+/// read and answered by the broker itself, so the ceiling in force is the
+/// broker's own and not the library default. The broker keeps serving
+/// after both.
+///
+/// Mutation: drop `max_body: MAXIMUM_REQUEST_BYTES` from the data plane's
+/// limits (the default 1 MiB applies) — the in-ceiling request is refused
+/// 413 and the in-ceiling assertion fails. Mutation: raise the constant to
+/// 64 MiB — the sixteen-mebibyte declaration is no longer refused on its
+/// length (the broker waits for a body that never comes and answers 400),
+/// and the absolute-bound assertion fails.
+#[test]
+fn a_request_over_the_brokers_ceiling_is_refused_on_its_declared_length_and_the_broker_keeps_serving()
+ {
+    let fabric = Fabric::start("ceiling");
+    let address = fabric.running().address().to_string();
+    let ceiling = qip_fabricd::MAXIMUM_REQUEST_BYTES;
+    let default = qip_transport::server::ServerLimits::default().max_body;
+    assert!(
+        ceiling > 2 * default,
+        "premise: the broker's ceiling is above the transport default"
+    );
+
+    assert_eq!(
+        raw_post_status(&address, ceiling + 1, b""),
+        413,
+        "one byte over the ceiling is refused on the declaration"
+    );
+    // The bound is absolute, not whatever the constant says: sixty-four
+    // connections at sixteen mebibytes each is already a gibibyte.
+    assert_eq!(
+        raw_post_status(&address, 16 * 1024 * 1024, b""),
+        413,
+        "a sixteen-mebibyte declaration is refused whatever the constant was raised to"
+    );
+
+    let inside = vec![b'x'; 2 * default];
+    let status = raw_post_status(&address, inside.len(), &inside);
+    assert_ne!(
+        status, 413,
+        "a body inside the ceiling reaches the broker, which judges it"
+    );
+    assert!(
+        (400..500).contains(&status),
+        "the broker refuses an unauthenticated garbage body itself: {status}"
+    );
+
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of(
+            QosClass::P2MarketJournal,
+            "after",
+            &[b"still-serving".to_vec()],
+        ))
+        .unwrap();
+}
+
+/// FABRIC-7034 through the composition root: with a hot window configured
+/// (`QIP_EVENT_FABRIC_HOT_BATCHES`), the housekeeping thread `start` spawns
+/// removes each stream's segments past the window — a replaceable stream
+/// (telemetry, `derived_state`) and an archive-required one (the journal,
+/// `event_anchored`) alike — and the archive-required stream's removed
+/// history is still served afterwards, byte for byte, from the archive it
+/// was copied to first.
+///
+/// Mutation: make `archiver::retain` return `Ok(0)` without calling
+/// `retain_hot` (the window configured and never applied) — no stream's
+/// oldest segment leaves the disk and the telemetry wait times out.
+/// Mutation: in `Broker::retain_hot`, `continue` past every
+/// archive-required stream — the journal is never trimmed and its wait
+/// times out. The hydration assertion is what a trim before archival would
+/// break: a batch deleted with no archived copy is not served.
+#[test]
+fn a_configured_hot_window_removes_segments_past_it_and_archived_history_is_still_served() {
+    let fabric = Fabric::start_configured(
+        "retention",
+        &catalogue_json(&base_grants(), "leader_only"),
+        &[(qip_fabricd::config::HOT_BATCHES, "2")],
+    )
+    .expect("a broker with a hot window starts");
+    let broker = fabric.running().service().broker().clone();
+    let partition = own_partition(CELL_A);
+
+    // ~1.5 kB a batch into 4 kB segments: a sealed segment every few
+    // appends, so forty batches is many segments past a two-batch window.
+    let mut journal = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    journal.init().unwrap();
+    let mut telemetry = fabric.producer(AGENT, TELEMETRY, 0, QosClass::P4Telemetry);
+    telemetry.init().unwrap();
+    let mut sent = Vec::new();
+    for index in 0..40u8 {
+        let records = vec![vec![index; 1500]];
+        journal
+            .send(batch_of(
+                QosClass::P2MarketJournal,
+                &format!("j{index}"),
+                &records,
+            ))
+            .unwrap();
+        telemetry
+            .send(batch_of(
+                QosClass::P4Telemetry,
+                &format!("t{index}"),
+                &records,
+            ))
+            .unwrap();
+        sent.push(records);
+    }
+    let oldest = |stream: &str, partition: u32| {
+        broker
+            .sealed_segment_starts(stream, partition)
+            .unwrap()
+            .first()
+            .copied()
+    };
+    wait_until("the replaceable telemetry stream is trimmed", || {
+        oldest(TELEMETRY, 0).is_some_and(|start| start > 0)
+    });
+    wait_until("the archive-required journal is trimmed", || {
+        oldest(JOURNAL, partition).is_some_and(|start| start > 0)
+    });
+    let served = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        served.iter().map(payloads_of).collect::<Vec<_>>(),
+        sent,
+        "every trimmed journal batch is still served, from the archive"
     );
 }

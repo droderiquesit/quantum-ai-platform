@@ -883,11 +883,12 @@ impl DownlinkBatch {
 #[derive(Debug)]
 pub struct CapitalDownlink {
     cell: String,
-    /// The shared secret the cell verifies grants against. An empty key is
-    /// refused at construction: a cell that cannot verify capital must not
-    /// trade, and one that accepted an empty key would verify nothing while
-    /// looking like it verified everything.
-    key: Vec<u8>,
+    /// What the cell verifies grants against: the trust bundle's `envelope`
+    /// key under ADR 0110, or the shared key for the release that keeps it.
+    /// An empty shared key is refused at construction: a cell that cannot
+    /// verify capital must not trade, and one that accepted an empty key
+    /// would verify nothing while looking like it verified everything.
+    trust: crate::trust::TrustRoot,
     /// Where [`Self::poll`] takes frames from — the mesh, when built by
     /// [`Self::connect`].
     source: Box<dyn FrameSource>,
@@ -909,6 +910,24 @@ impl CapitalDownlink {
         // peer is refused for the key: the fault that would make it deliver
         // unchecked grants outranks the one that would make it deliver none.
         Self::refuse_unverifiable(key, config.grant_memory)?;
+        Self::connect_trusted(
+            config,
+            crate::trust::TrustRoot::shared_key(key)?,
+            clock,
+            sleeper,
+        )
+    }
+
+    /// A downlink that polls the mesh and verifies every grant against
+    /// `trust` — a trust bundle under ADR 0110, in which case only an
+    /// `ecdsa-p256-sha256` signature under the `envelope` key is accepted.
+    pub fn connect_trusted(
+        config: DownlinkConfig,
+        trust: crate::trust::TrustRoot,
+        clock: Arc<dyn Clock>,
+        sleeper: Arc<dyn Sleeper>,
+    ) -> Result<Self> {
+        Self::refuse_forgetful(config.grant_memory)?;
         let mesh = MeshFrames::connect(
             config.mesh,
             config.breaker,
@@ -916,7 +935,7 @@ impl CapitalDownlink {
             clock,
             sleeper,
         )?;
-        Self::from_source(config.cell, key, config.grant_memory, Box::new(mesh))
+        Self::from_source_trusted(config.cell, trust, config.grant_memory, Box::new(mesh))
     }
 
     /// A downlink that polls any [`FrameSource`] — the event fabric's
@@ -933,9 +952,25 @@ impl CapitalDownlink {
         source: Box<dyn FrameSource>,
     ) -> Result<Self> {
         Self::refuse_unverifiable(key, grant_memory)?;
+        Self::from_source_trusted(
+            cell,
+            crate::trust::TrustRoot::shared_key(key)?,
+            grant_memory,
+            source,
+        )
+    }
+
+    /// [`Self::from_source`] with the root chosen by the caller.
+    pub fn from_source_trusted(
+        cell: impl Into<String>,
+        trust: crate::trust::TrustRoot,
+        grant_memory: usize,
+        source: Box<dyn FrameSource>,
+    ) -> Result<Self> {
+        Self::refuse_forgetful(grant_memory)?;
         Ok(Self {
             cell: cell.into(),
-            key: key.to_vec(),
+            trust,
             source,
             applied: BTreeSet::new(),
             applied_order: VecDeque::new(),
@@ -951,6 +986,10 @@ impl CapitalDownlink {
                  delivered would be one nobody checked",
             ));
         }
+        Self::refuse_forgetful(grant_memory)
+    }
+
+    fn refuse_forgetful(grant_memory: usize) -> Result<()> {
         if grant_memory == 0 {
             return Err(Error::invalid(
                 "a downlink that remembers no applied grant treats every redelivery as new, \
@@ -1112,7 +1151,7 @@ impl CapitalDownlink {
         // The whole point of the module. Arriving over the mesh, or over any
         // other source, has bought this envelope nothing; it is verified here
         // exactly as one handed over by any other route would be.
-        match VerifiedEnvelope::verify(envelope, &self.key, &self.cell, now) {
+        match VerifiedEnvelope::verify_with(envelope, &self.trust, &self.cell, now) {
             Ok(verified) => {
                 self.remember(key);
                 self.stats.verified += 1;
@@ -1261,7 +1300,9 @@ pub struct PolicyDownlinkStats {
 #[derive(Debug)]
 pub struct PolicyDownlink {
     cell: String,
-    key: Vec<u8>,
+    /// The `policy` and `halt` keys of a trust bundle (ADR 0110), or the
+    /// shared key for the release that keeps it.
+    trust: crate::trust::TrustRoot,
     /// Where [`Self::poll`] takes frames from — the mesh, when built by
     /// [`Self::connect`].
     source: Box<dyn FrameSource>,
@@ -1280,6 +1321,22 @@ impl PolicyDownlink {
         // gives: the fault that would deliver unchecked payloads outranks the
         // one that would deliver none.
         Self::refuse_unverifiable(key)?;
+        Self::connect_trusted(
+            config,
+            crate::trust::TrustRoot::shared_key(key)?,
+            clock,
+            sleeper,
+        )
+    }
+
+    /// A downlink that polls the mesh and verifies every payload and halt
+    /// against `trust`.
+    pub fn connect_trusted(
+        config: DownlinkConfig,
+        trust: crate::trust::TrustRoot,
+        clock: Arc<dyn Clock>,
+        sleeper: Arc<dyn Sleeper>,
+    ) -> Result<Self> {
         let mesh = MeshFrames::connect(
             config.mesh,
             config.breaker,
@@ -1287,7 +1344,11 @@ impl PolicyDownlink {
             clock,
             sleeper,
         )?;
-        Self::from_source(config.cell, key, Box::new(mesh))
+        Ok(Self::from_source_trusted(
+            config.cell,
+            trust,
+            Box::new(mesh),
+        ))
     }
 
     /// A downlink that polls any [`FrameSource`] through the same checks and
@@ -1300,12 +1361,27 @@ impl PolicyDownlink {
         source: Box<dyn FrameSource>,
     ) -> Result<Self> {
         Self::refuse_unverifiable(key)?;
-        Ok(Self {
+        Ok(Self::from_source_trusted(
+            cell,
+            crate::trust::TrustRoot::shared_key(key)?,
+            source,
+        ))
+    }
+
+    /// [`Self::from_source`] with the root chosen by the caller. Cannot be
+    /// handed an unverifiable root: [`crate::trust::TrustRoot`] refuses an
+    /// empty shared key when it is built.
+    pub fn from_source_trusted(
+        cell: impl Into<String>,
+        trust: crate::trust::TrustRoot,
+        source: Box<dyn FrameSource>,
+    ) -> Self {
+        Self {
             cell: cell.into(),
-            key: key.to_vec(),
+            trust,
             source,
             stats: PolicyDownlinkStats::default(),
-        })
+        }
     }
 
     fn refuse_unverifiable(key: &[u8]) -> Result<()> {
@@ -1446,7 +1522,7 @@ impl PolicyDownlink {
         // Arriving over the mesh, or over any other source, has bought this
         // payload nothing; it is verified here exactly as one handed over by
         // any other route would be.
-        match VerifiedPolicy::verify(payload, &self.key, &self.cell, now) {
+        match VerifiedPolicy::verify_with(payload, &self.trust, &self.cell, now) {
             Ok(verified) => {
                 self.stats.verified += 1;
                 batch.verified.push(verified);
@@ -1491,7 +1567,7 @@ impl PolicyDownlink {
                 return;
             }
         };
-        match VerifiedHalt::verify(command, &self.key, &self.cell, now) {
+        match VerifiedHalt::verify_with(command, &self.trust, &self.cell, now) {
             Ok(verified) => {
                 self.stats.verified += 1;
                 batch.halts.push(verified);

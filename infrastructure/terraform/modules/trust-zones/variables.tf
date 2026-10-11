@@ -443,17 +443,3 @@ variable "ledger_database" {
 
   default = null
 }
-
-variable "control_fabric_topic" {
-  description = <<-EOT
-    The Pub/Sub topic the control fabric ships payloads on, if it exists.
-
-    Null by default, for the same reason as the ledger: no topic, no bindings.
-    When set, a zone with a declared `publish` path to the control fabric gets
-    `roles/pubsub.publisher` and nothing else, and the zone the fabric
-    publishes to gets the attach-side grant only.
-  EOT
-
-  type    = string
-  default = null
-}

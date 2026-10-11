@@ -41,16 +41,30 @@
 //!
 //! Naming these here rather than in an issue tracker is deliberate: the gap
 //! travels with the code that has it.
+//!
+//! # Since ADR 0110
+//!
+//! [`EnvelopeIssuer::asymmetric`] closes the first two items: it signs with
+//! an [`ArtefactSigner`] under the `envelope` key — Cloud KMS in a
+//! deployment, its private key never in this process — and verifies with an
+//! [`ArtefactVerifier`] over the public keys a cell also holds, so a cell can
+//! check a grant and cannot mint one. Key identity is the KMS key-version
+//! name carried in every signature, and rotation is a new version shipped in
+//! the trust bundle before it signs. Revocation of an individual envelope
+//! and replay scoping are still not provided; expiry remains the backstop.
+//! The shared-key issuer stays for the release ADR 0110 keeps HMAC for.
 
 use crate::allocation::Allocation;
-use qip_contracts::CapitalEnvelope;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
+use qip_contracts::trust::{ArtefactClass, ArtefactSigner, ArtefactVerifier, sign_artefact};
 use qip_contracts::venue::VenueId;
+use qip_contracts::{CapitalEnvelope, ExposureBounds};
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, from_hex, to_hex};
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// The longest an envelope may live.
 ///
@@ -65,6 +79,41 @@ const DEFAULT_ORDER_FRACTION: Decimal = Decimal::from_raw(100_000_000);
 
 /// What fraction of an envelope may be lost before the cell stops itself.
 const DEFAULT_LOSS_FRACTION: Decimal = Decimal::from_raw(200_000_000);
+
+/// The largest share of the visible depth on the side an order takes that a
+/// grant lets one order ask for, by default: a quarter (R12-CAPITAL-4088).
+///
+/// Not calibrated to any venue, and said so; it is the restrictive standing
+/// figure a desk starts from, in the register of the order and loss
+/// fractions above. What it prevents is the position a disconnected cell
+/// could otherwise build inside its money limits: the whole of a thin book,
+/// taken in one order, with nobody left on the other side to exit to.
+pub const DEFAULT_MAX_PARTICIPATION_BP: u32 = 2_500;
+
+/// The gross a grant may carry over its remaining equity, by default: one,
+/// unlevered. With the capital equal to the gross limit this binds the moment
+/// the cell has realised a loss — the same gross on less equity is leverage,
+/// and the money limits alone would let the cell keep carrying it.
+pub const DEFAULT_MAX_LEVERAGE: Decimal = Decimal::ONE;
+
+/// The liquidity and leverage bounds a grant is issued under
+/// (R12-CAPITAL-4088). Not optional on [`EnvelopeTerms`]: every envelope the
+/// issuer signs carries them, so the centre cannot sign a grant the cell has
+/// to read as unbounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExposureTerms {
+    pub max_participation_bp: u32,
+    pub max_leverage: Decimal,
+}
+
+impl Default for ExposureTerms {
+    fn default() -> Self {
+        Self {
+            max_participation_bp: DEFAULT_MAX_PARTICIPATION_BP,
+            max_leverage: DEFAULT_MAX_LEVERAGE,
+        }
+    }
+}
 
 /// The terms of one grant, separate from the signing of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,6 +130,10 @@ pub struct EnvelopeTerms {
     /// [`CapitalEnvelope::permits_venue`].
     pub venues: Vec<VenueId>,
     pub validity: Duration,
+    /// The liquidity and leverage bounds the grant carries, measured against
+    /// a capital equal to the gross limit as signed — after any narrowing,
+    /// so a narrowed grant is backed by the narrowed figure.
+    pub exposure: ExposureTerms,
 }
 
 impl EnvelopeTerms {
@@ -94,7 +147,13 @@ impl EnvelopeTerms {
             loss_fraction: DEFAULT_LOSS_FRACTION,
             venues: vec![allocation.venue.clone()],
             validity,
+            exposure: ExposureTerms::default(),
         }
+    }
+
+    pub fn with_exposure(mut self, exposure: ExposureTerms) -> Self {
+        self.exposure = exposure;
+        self
     }
 
     pub fn with_order_fraction(mut self, fraction: Decimal) -> Self {
@@ -120,8 +179,21 @@ impl EnvelopeTerms {
 /// this scheme does not provide.
 #[derive(Clone)]
 pub struct EnvelopeIssuer {
-    signing_key: Vec<u8>,
+    key: IssuerKey,
     key_id: String,
+}
+
+/// What an issuer signs with.
+#[derive(Clone)]
+enum IssuerKey {
+    /// The pre-ADR-0110 shared HMAC key.
+    Shared(Vec<u8>),
+    /// ADR 0110: a signer under the `envelope` key and a verifier over the
+    /// public keys the cells hold.
+    Asymmetric {
+        signer: Arc<dyn ArtefactSigner>,
+        verifier: Arc<dyn ArtefactVerifier>,
+    },
 }
 
 // The key is deliberately not in the `Debug` output: a struct that prints its
@@ -129,8 +201,13 @@ pub struct EnvelopeIssuer {
 // type that contains it.
 impl std::fmt::Debug for EnvelopeIssuer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scheme = match &self.key {
+            IssuerKey::Shared(_) => "hmac-sha256",
+            IssuerKey::Asymmetric { .. } => qip_contracts::trust::SIGNATURE_SCHEME,
+        };
         f.debug_struct("EnvelopeIssuer")
             .field("key_id", &self.key_id)
+            .field("scheme", &scheme)
             .field("signing_key", &"<redacted>")
             .finish()
     }
@@ -154,7 +231,32 @@ impl EnvelopeIssuer {
             return Err(Error::invalid("a signing key must be identifiable"));
         }
         Ok(Self {
-            signing_key,
+            key: IssuerKey::Shared(signing_key),
+            key_id,
+        })
+    }
+
+    /// An issuer that signs under the `envelope` key of ADR 0110 and
+    /// verifies with the public keys a cell holds.
+    ///
+    /// Refuses a signer published for any other class: an envelope signed
+    /// under the `policy` key would be refused by every cell, and refusing
+    /// it here names the misconfiguration instead of a fleet that will not
+    /// trade. The key id is the signer's key version, so the records that
+    /// cite a grant's key name the KMS version that made it.
+    pub fn asymmetric(
+        signer: Arc<dyn ArtefactSigner>,
+        verifier: Arc<dyn ArtefactVerifier>,
+    ) -> Result<Self> {
+        if signer.class() != ArtefactClass::Envelope {
+            return Err(Error::denied(format!(
+                "capital envelopes are signed under the envelope key, and the signer offered is                  published for {}",
+                signer.class()
+            )));
+        }
+        let key_id = signer.key_version().to_string();
+        Ok(Self {
+            key: IssuerKey::Asymmetric { signer, verifier },
             key_id,
         })
     }
@@ -163,9 +265,19 @@ impl EnvelopeIssuer {
         &self.key_id
     }
 
+    /// Whether grants from this issuer carry an asymmetric signature.
+    pub const fn is_asymmetric(&self) -> bool {
+        matches!(self.key, IssuerKey::Asymmetric { .. })
+    }
+
     /// The signature this issuer would produce over a payload.
-    fn sign(&self, payload: &str) -> String {
-        to_hex(&hmac_sha256(&self.signing_key, payload.as_bytes()))
+    fn sign(&self, payload: &str) -> Result<String> {
+        match &self.key {
+            IssuerKey::Shared(key) => Ok(to_hex(&hmac_sha256(key, payload.as_bytes()))),
+            IssuerKey::Asymmetric { signer, .. } => {
+                sign_artefact(signer.as_ref(), ArtefactClass::Envelope, payload.as_bytes())
+            }
+        }
     }
 
     /// Issue a signed, expiring envelope.
@@ -219,9 +331,18 @@ impl EnvelopeIssuer {
             .ok_or_else(|| Error::numeric("the loss limit overflowed"))?;
         let expires_at = now.saturating_add(terms.validity);
 
-        // Built once unsigned to obtain the payload, then rebuilt with the
-        // signature over it. The payload is a function of the fields, so the
-        // two constructions agree by construction.
+        // The bounds are validated before anything is signed: a participation
+        // of zero or a leverage below one is refused here, by name, rather
+        // than signed into a grant every cell would then refuse.
+        let exposure = ExposureBounds::bounded(
+            terms.exposure.max_participation_bp,
+            terms.exposure.max_leverage,
+            terms.gross_limit,
+        )?;
+
+        // Built unsigned to obtain the payload, then signed over it. The
+        // payload is a function of the fields, the exposure bounds included,
+        // so the signature covers every bound the cell will enforce.
         let unsigned = CapitalEnvelope::new(
             terms.strategy.clone(),
             terms.cell.clone(),
@@ -233,21 +354,10 @@ impl EnvelopeIssuer {
             expires_at,
             approval.approver.clone(),
             String::new(),
-        )?;
-        let signature = self.sign(&unsigned.signing_payload());
-
-        CapitalEnvelope::new(
-            terms.strategy.clone(),
-            terms.cell.clone(),
-            terms.gross_limit,
-            order_limit,
-            loss_limit,
-            terms.venues.clone(),
-            now,
-            expires_at,
-            approval.approver.clone(),
-            signature,
-        )
+        )?
+        .with_exposure(exposure)?;
+        let signature = self.sign(&unsigned.signing_payload())?;
+        Ok(unsigned.signed(signature))
     }
 
     /// Verify a grant, refusing an unsigned, tampered or expired one.
@@ -257,19 +367,40 @@ impl EnvelopeIssuer {
     /// forged signature is correct, which turns forging one from infeasible
     /// into a few thousand attempts per byte.
     pub fn verify(&self, envelope: &CapitalEnvelope, now: Timestamp) -> Result<()> {
-        let presented = from_hex(envelope.signature()).ok_or_else(|| {
-            Error::denied("the envelope carries no readable signature and is refused")
-        })?;
-        let expected = from_hex(&self.sign(&envelope.signing_payload()))
-            .ok_or_else(|| Error::numeric("the expected signature was not representable"))?;
-        if !constant_time_eq(&presented, &expected) {
-            return Err(Error::denied(format!(
+        let refusal = || {
+            Error::denied(format!(
                 "the envelope for {} at {} does not verify under key {}; its terms have been \
                  altered since it was signed, or it was not signed here",
                 envelope.strategy(),
                 envelope.cell(),
                 self.key_id
-            )));
+            ))
+        };
+        match &self.key {
+            IssuerKey::Shared(_) => {
+                let presented = from_hex(envelope.signature()).ok_or_else(|| {
+                    Error::denied("the envelope carries no readable signature and is refused")
+                })?;
+                let expected =
+                    from_hex(&self.sign(&envelope.signing_payload())?).ok_or_else(|| {
+                        Error::numeric("the expected signature was not representable")
+                    })?;
+                if !constant_time_eq(&presented, &expected) {
+                    return Err(refusal());
+                }
+            }
+            IssuerKey::Asymmetric { verifier, .. } => {
+                verifier
+                    .verify(
+                        ArtefactClass::Envelope,
+                        envelope.signing_payload().as_bytes(),
+                        envelope.signature(),
+                        now,
+                    )
+                    .map_err(|error| {
+                        Error::denied(format!("{}: {}", refusal().message(), error.message()))
+                    })?;
+            }
         }
         if !envelope.is_live(now) {
             return Err(Error::denied(format!(

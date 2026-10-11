@@ -14,6 +14,7 @@
 pub mod canonical;
 pub mod config;
 pub mod decimal;
+pub mod deployment;
 pub mod error;
 pub mod hash;
 pub mod ids;

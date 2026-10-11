@@ -8,8 +8,10 @@ use std::collections::BTreeMap;
 
 fn basic_gate() -> ConductGate {
     let mut channel_policies = BTreeMap::new();
-    channel_policies.insert("press".to_string(), vec![]);
-    channel_policies.insert("social".to_string(), vec![]);
+    // Each channel names the audiences it may address. These were empty lists
+    // when the check never read them; an empty list now permits nobody.
+    channel_policies.insert("press".to_string(), vec!["investors".to_string()]);
+    channel_policies.insert("social".to_string(), vec!["investors".to_string()]);
 
     #[allow(clippy::unwrap_used)]
     {
@@ -25,7 +27,12 @@ fn basic_gate() -> ConductGate {
             ],
             channel_policies,
             vec!["US".to_string(), "EU".to_string()],
-            vec!["no_false_claims".to_string(), "no_manipulation".to_string()],
+            vec![
+                "no_false_claims".to_string(),
+                "no_manipulation".to_string(),
+                "no_fake_consensus".to_string(),
+                "no_rumour_engineering".to_string(),
+            ],
         )
         .unwrap()
     }

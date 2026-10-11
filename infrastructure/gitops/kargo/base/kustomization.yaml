@@ -4,5 +4,6 @@ resources:
   - project.yaml
   - projectconfig.yaml
   - promotiontask.yaml
+  - gatetask.yaml
   - warehouse.yaml
   - stages.yaml

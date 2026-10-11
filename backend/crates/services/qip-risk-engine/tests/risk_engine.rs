@@ -1105,3 +1105,128 @@ fn an_order_is_refused_while_a_shared_cause_level_cannot_be_read() -> Result<()>
     );
     Ok(())
 }
+
+/// R12-RISK-7205: the capital survival kernel's ceiling is a limit the
+/// pre-trade gate evaluates, not a second enforcement path beside it. An
+/// order that would carry gross past what survival released is refused by the
+/// same `check` every other limit goes through; a sale that brings an
+/// over-ceiling book back down is admitted, because a ceiling that trapped
+/// the book in its exposure would stop de-risking exactly when it matters.
+#[test]
+fn the_survival_ceiling_refuses_added_gross_and_admits_a_sale_through_the_gate() -> Result<()> {
+    let checker = PreTradeChecker::new(LimitSet::new("survival").with(Limit::new(
+        "survival-gross",
+        LimitKind::MaxSurvivalGross { limit: 1.0 },
+    )));
+    let book = |ceiling: i64| RiskState {
+        equity: Decimal::from_int(1_000_000),
+        gross_exposure: Decimal::from_int(400_000),
+        net_exposure: Decimal::from_int(400_000),
+        position_notionals: BTreeMap::from([("obj-AAA".to_string(), Decimal::from_int(400_000))]),
+        survival_gross_ceiling: Some(Decimal::from_int(ceiling)),
+        ..RiskState::default()
+    };
+
+    // Premise: with room under the ceiling the same purchase passes, so the
+    // refusal below is the ceiling and not the order.
+    let buy = order("AAA", "1000", "100"); // 100k more gross
+    assert!(checker.check(&buy, &book(600_000), now())?.is_approved());
+
+    let refused = checker.check(&buy, &book(450_000), now())?;
+    assert!(
+        matches!(refused.decision, PreTradeDecision::Rejected { .. }),
+        "500k of gross against a 450k survival ceiling must be refused: {}",
+        refused.decision.describe()
+    );
+
+    // The book already stands above a ceiling survival has since lowered;
+    // selling half of the position lowers gross and must pass.
+    let sell = order("AAA", "-2000", "100");
+    let shed = checker.check(&sell, &book(100_000), now())?;
+    assert!(
+        shed.is_approved(),
+        "a sale that lowers gross must pass the survival ceiling: {}",
+        shed.decision.describe()
+    );
+    Ok(())
+}
+
+// --- working orders ----------------------------------------------------------
+
+fn proposed(symbol: &str, quantity: &str) -> ProposedOrder {
+    ProposedOrder {
+        object_id: ObjectId::from_string(format!("obj-{symbol}")),
+        quantity: Decimal::parse(quantity).unwrap(),
+        reference_price: dec!("100"),
+        axes: BTreeMap::new(),
+        scope: "momentum".to_string(),
+    }
+}
+
+fn survival_checker() -> (PreTradeChecker, RiskState) {
+    let limits = LimitSet::new("survival-test").with(
+        Limit::new("survival-gross", LimitKind::MaxSurvivalGross { limit: 1.0 })
+            .with_rationale("gross is capped at what the survival kernel released"),
+    );
+    let state = RiskState {
+        equity: dec!("10000000"),
+        cash: dec!("10000000"),
+        survival_gross_ceiling: Some(dec!("1000000")),
+        ..RiskState::default()
+    };
+    (PreTradeChecker::new(limits), state)
+}
+
+#[test]
+fn two_orders_each_inside_the_headroom_cannot_both_be_admitted_while_the_first_works() -> Result<()>
+{
+    let (checker, state) = survival_checker();
+    let first = proposed("AAA", "6000");
+    let second = proposed("BBB", "6000");
+    // Premise: each alone is inside the 1M ceiling.
+    assert!(
+        checker
+            .check_with_working(&first, &state, &[], now())?
+            .is_approved()
+    );
+    assert!(
+        checker
+            .check_with_working(&second, &state, &[], now())?
+            .is_approved()
+    );
+
+    let checked = checker.check_with_working(&second, &state, &[first], now())?;
+    assert!(
+        matches!(checked.decision, PreTradeDecision::Rejected { .. }),
+        "the second order was admitted against headroom the first still holds: {:?}",
+        checked.decision
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resting_buy_and_a_resting_sale_of_one_instrument_are_not_netted_to_nothing() -> Result<()> {
+    // A buy and a sale of the same instrument resting at two venues sum to
+    // zero, and either can fill without the other. A gate that summed them
+    // would see an empty book and admit a 600k order beside 500k of exposure
+    // it has already committed to, under a 1M ceiling.
+    let (checker, state) = survival_checker();
+    let working = [proposed("AAA", "5000"), proposed("AAA", "-5000")];
+    let order = proposed("BBB", "6000");
+    // Premise: netted, the two would be nothing — the same order against the
+    // pair's sum as one working order is admitted.
+    assert!(
+        checker
+            .check_with_working(&order, &state, &[proposed("AAA", "0.0001")], now())?
+            .is_approved(),
+        "the premise failed: the order is refused even beside a negligible working order"
+    );
+
+    let checked = checker.check_with_working(&order, &state, &working, now())?;
+    assert!(
+        matches!(checked.decision, PreTradeDecision::Rejected { .. }),
+        "opposite working orders were netted and the order admitted: {:?}",
+        checked.decision
+    );
+    Ok(())
+}

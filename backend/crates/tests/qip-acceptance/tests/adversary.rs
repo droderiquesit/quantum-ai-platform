@@ -148,12 +148,19 @@ fn flat_bars_after(symbol: &str, from: Timestamp, days: i64, level: f64) -> Vec<
 }
 
 /// One accepted, filled order at the desk's venue.
+///
+/// 700 rather than 1000, for the reason `qip-kernel`'s `learning.rs` gives
+/// at its own `fill_one`: the default simulated venue leaves 40% of each
+/// order working, the pre-trade gate now charges that remainder, and ten
+/// 1000-lot buys of AAA at 100 carried the book just past the platform's
+/// 10% weight limit. Thirteen of these — the most any test here sends —
+/// stay inside it.
 fn fill_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<()> {
     let fills_before = platform.orders().fills().len();
     let order = platform.order_from(
         object("AAA"),
         Side::Buy,
-        dec!("1000"),
+        dec!("700"),
         dec!("100"),
         proposal,
         vec![format!("hyp-{proposal}")],

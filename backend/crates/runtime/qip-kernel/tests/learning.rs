@@ -618,12 +618,21 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
 
 /// Offer a traceable buy the controls accept and the simulated venue fills,
 /// and hand back its id. The fill is the premise of every test below.
+///
+/// 700 rather than the 1000 this was until round 3. The default simulated
+/// venue fills 60% on acceptance and leaves the rest working, and the
+/// pre-trade gate now charges a working remainder as exposure the book has
+/// committed to. Ten 1000-lot buys of AAA at 100 commit just over the 10%
+/// weight `limits()` sets, so the tenth was refused — the gate seeing what
+/// the fixture had always built and never meant to. The tests below are
+/// about how fills are learned from, not about sizing; thirteen of these
+/// stay inside the limit, which is the most any of them sends.
 fn fill_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<OrderId> {
     let fills_before = platform.orders().fills().len();
     let order = platform.order_from(
         object("AAA"),
         Side::Buy,
-        dec!("1000"),
+        dec!("700"),
         dec!("100"),
         proposal,
         vec![format!("hyp-{proposal}")],
@@ -927,6 +936,61 @@ fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -
         (histogram.sum - error).abs() < 1e-9,
         "the histogram holds {} where the score says {error}",
         histogram.sum
+    );
+    Ok(())
+}
+
+/// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
+/// the calibration is what its next pricing on that venue uses.
+///
+/// Mutation: delete the `fill_calibration.observe` call in `score_filled` —
+/// the venue holds no calibration. Mutation: price with
+/// `CostModel::liquid_equity()` again instead of the calibrated model — the
+/// spread assertion still passes here, so the observation count and bias
+/// are the guard on the first half and `qip-twin`'s
+/// `after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills`
+/// on the second.
+#[test]
+fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill() -> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-filled", start())?;
+    assert!(
+        platform
+            .fill_calibration()
+            .venue("simulated-venue")
+            .is_none(),
+        "the premise failed: the venue was calibrated before any fill was priced"
+    );
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let error = platform.fill_scores()[0]
+        .trade_error_bps
+        .expect("the fill was priced");
+    let calibration = platform
+        .fill_calibration()
+        .venue("simulated-venue")
+        .expect("the priced fill calibrated its venue");
+    assert_eq!(calibration.observations, 1);
+    assert!(
+        (calibration.bias_bps - 0.2 * error).abs() < 1e-9,
+        "one fifth of the way to the observed error {error}: {}",
+        calibration.bias_bps
+    );
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let calibrated = platform
+        .fill_calibration()
+        .cost_model(&base, "simulated-venue");
+    assert!(
+        calibrated.half_spread_bps > base.half_spread_bps,
+        "a twin that filled better than the venue now pays a wider spread there"
     );
     Ok(())
 }
@@ -1801,9 +1865,23 @@ fn per_horizon_brier_scores_are_recorded_with_horizon_label() -> Result<()> {
     // Verify per-horizon metrics are recorded with the horizon label.
     let snapshot = recorded(&platform);
 
-    // Format horizon as duration string (e.g., "3600s" for 1 hour).
-    let horizon_secs = horizon.as_secs_f64() as i64;
-    let horizon_label = format!("{}s", horizon_secs);
+    // The label is the horizon's fixed bucket, never the duration itself: a
+    // label built from a runtime value minted one series per distinct
+    // horizon (W0.8). The old form, `format!("{}s", secs)`, must no longer
+    // be recorded at all.
+    let horizon_label = qip_kernel::confidence::HorizonBucket::of(horizon)
+        .as_str()
+        .to_string();
+    let unbounded = format!("{}s", horizon.as_secs_f64() as i64);
+    assert!(
+        snapshot
+            .gauge(
+                names::BELIEF_BRIER_SCORE_BY_HORIZON,
+                &labels([("horizon", &unbounded)]),
+            )
+            .is_none(),
+        "the per-horizon series is still labelled by a runtime duration ({unbounded})"
+    );
 
     // Check that per-horizon Brier score is recorded.
     let brier = snapshot.gauge(

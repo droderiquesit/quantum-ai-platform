@@ -276,9 +276,10 @@ fn policy_payload_sample() -> PolicyPayload {
     payload.valid_for = Duration::from_secs(300);
     payload.halted = false;
     payload.trained_models = Slot::produced(
-        ModelManifest {
-            models: BTreeMap::from([("model-a".to_string(), "digest-a".to_string())]),
-        },
+        ModelManifest::unreleased(BTreeMap::from([(
+            "model-a".to_string(),
+            "digest-a".to_string(),
+        )])),
         t(0),
     );
     payload.compiled_plan = Slot::produced(
@@ -331,6 +332,7 @@ fn policy_payload_sample() -> PolicyPayload {
                 to: "AAPL".to_string(),
                 side: BookSide::Ask,
                 cost_fraction: dec!("0.001"),
+                costs: None,
             }],
             start_sizes: BTreeMap::from([("USD".to_string(), dec!("1000"))]),
         },

@@ -1,0 +1,1972 @@
+//! The deep brain's research loop: the expansion engine, the ambient mesh and
+//! value-of-information sensing, run between cycles over what the platform
+//! recorded (EXPAND-011/025/046..051/063..069, REASON-3061/3062,
+//! WORLD-3075, AMBIENT-3104/7200).
+//!
+//! # Why this exists
+//!
+//! Each piece was built and tested as a library and none had a caller. The
+//! curriculum ranked candidates nobody produced; `anomaly_to_observation`
+//! mapped anomalies nobody detected here; the `AttentionRouter` routed
+//! signals nothing emitted; `InfoRequest` priced acquisitions nothing
+//! launched. A control with no caller reads as a capability and is not one,
+//! which is the failure this file closes for all four at once, because they
+//! are one loop: a detection is an ambient signal, the router decides what
+//! wakes, what wakes becomes research, and research that needs evidence asks
+//! what the cheapest discriminating observation is worth.
+//!
+//! # What it may not do
+//!
+//! Nothing here acts on a book. It reads `&Platform` — never `&mut` — so it
+//! cannot place, size, or cancel anything, and every output the mesh
+//! produces is an [`Advisory`]: there is no `PromotionCase` constructed in
+//! this file, so nothing here can reach [`qip_contracts::ambient::promote`].
+//! A queued research item is a record; a "launched" information request is a
+//! record that the next sweep re-reads, or a record that an acquisition is
+//! owed.
+//!
+//! # What runs here since 2026-10-11 (lane R2-DEEP)
+//!
+//! * **Evidence.** The world fabric the connectors now feed
+//!   (`Platform::absorb_evidence`) is scanned for poisoning every sweep; a
+//!   finding is raised as a data gap naming the sources, so a poisoned feed
+//!   becomes research into replacing it (R12-EVID-2039).
+//! * **Curiosity.** Information requests are no longer launched one by one
+//!   as their gaps wake: every candidate a sweep produces is ordered by
+//!   `rank_acquisitions` — §9.10's product — and launched in that order
+//!   within the sweep's acquisition budget; the rest are halted as
+//!   outranked (R12-AMBIENT-3106).
+//! * **The compute market.** Every open research item bids for the next
+//!   unit of CPU, GPU, TPU or QPU; the Meta-Intelligence market grants by
+//!   marginal value, the desk starts only what was granted, what each
+//!   granted unit realised is measured the next sweep, and work that stops
+//!   yielding is retired (R12-AMBIENT-7202, 3110..3114).
+//! * **Research carried out.** A granted, started item's acquisition is
+//!   carried out research-only, and a fill-bias campaign is run across the
+//!   four environments, evaluated on nine criteria and concluded through
+//!   the desk — promoted or its null recorded (R12-EXPAND-6025, 6049..6051).
+//! * **The Cognitive Compiler.** A promoted fill-bias capability is
+//!   formalised as a `SymbolicDerivation` and distilled into a bounded
+//!   `ReflexPackage` (R12-REASON-7203, 3115). It is signed and published
+//!   only through an installed `PackageSigner` (ADR 0110); without one it is
+//!   held unsigned and nothing is written.
+
+use qip_contracts::ambient::{
+    AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
+    AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
+    Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
+};
+use qip_contracts::expansion::{CapabilityEntry, GapClass};
+use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Duration, Timestamp};
+use qip_expansion::campaigns::{TickCampaignDetector, TickCampaignTrigger};
+use qip_expansion::curriculum::{Budget, State, TaskKind};
+use qip_expansion::desk::{
+    Admission, DeskConfig, ExpansionDesk, SweepReport, declared_cost, task_kind,
+};
+use qip_expansion::detectors::{
+    Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
+    coverage, incompetent_specialists, low_confidence, refusal_clusters, repeated_vetoes,
+    split_by_wanting, unexplained_residuals,
+};
+use qip_expansion::executor::{
+    AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
+    fill_venue, run_fill_bias_campaign,
+};
+use qip_expansion::gap::{GapTrigger, Observation, RaisedGap, Wanting, raise};
+use qip_expansion::meta::{
+    DomainResidual, MarginalValue, MetaIntelligence, MetaPolicy, ReputationKey, WorkBid, WorkKind,
+    resource_str,
+};
+use qip_kernel::Platform;
+use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThresholds};
+use qip_observability::metrics::{Metrics, labels, names};
+use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
+use qip_reasoning_engine::compiler::{
+    CognitiveCompiler, Compiled, CompilerBounds, Condition, Discovery, Finding as Established,
+    PackageSigner, ReflexRule, SignedReflexPackage, Verification,
+};
+use qip_storage::BlobStore;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
+
+use crate::now::NowEstimator;
+
+/// Prices per subject the anomaly sweep reads. The detectors look at recent
+/// windows; handing them a whole session's history costs a copy per cycle
+/// and buys nothing.
+pub const SWEEP_PRICES: usize = 256;
+/// Resolved predictions before a hit rate is read as a finding.
+pub const MIN_EVALUATED: usize = 20;
+/// The hit rate below which a class or agent is a gap: worse than a coin.
+pub const HIT_RATE_FLOOR: f64 = 0.5;
+/// Regretted declines at one gate before it is a learning objective.
+pub const MIN_REGRETS: usize = 3;
+/// Refusals of one constraint at one venue before it is an execution gap.
+pub const MIN_REFUSALS: usize = 3;
+/// Mean fill miss, in basis points, past which a venue's twin is a gap and
+/// past which one fill opens a tick-replay campaign.
+pub const RESIDUAL_BPS: f64 = 25.0;
+/// Subjects sharing a symptom before it is surfaced as an unknown-unknown.
+pub const CLUSTER_SUBJECTS: usize = 3;
+/// Consecutive sweeps a subject's discrepancy must persist.
+pub const PERSIST_SWEEPS: u32 = 3;
+/// Share of an asset class's instruments that must have history.
+pub const COVERAGE_FLOOR: f64 = 0.5;
+/// Lowest net value, in basis points, an information request may launch at.
+pub const MIN_VIABLE_BP: u32 = 1_000;
+/// The urgency a gap's information request is ranked at, which this loop
+/// does not measure: no detector here knows a decision's deadline.
+///
+/// The rank is §9.10's product (R12-AMBIENT-3106, `net_value_bp`), so an
+/// unmeasured factor must enter as the product's identity, the full scale,
+/// and not as zero. Zero annihilates: this loop stated urgency as `0` when
+/// the rank was an additive 40/40/20 sum, in which zero is the neutral
+/// contribution, and once the rank became the product that same `0` scored
+/// every request at nothing, so no gap — however significant — could launch
+/// one, and the value-of-information path this file exists to give a caller
+/// had none again. Full scale claims no urgency: it removes time from the
+/// ranking, leaving significance, uncertainty and cost to decide, and the
+/// request's deadline is what still stops an acquisition that runs too long.
+/// A stated zero elsewhere — a detector's economic value — stays zero and
+/// ranks nothing, which is the product working.
+pub const UNMEASURED_URGENCY_BP: u32 = qip_contracts::ambient::MAX_SEVERITY_BP;
+/// The cost of the cheapest discriminating observation the loop has: reading
+/// the next sweep's prices again. Basis points of the decision's value.
+pub const RESWEEP_COST_BP: u32 = 500;
+/// Advisories and information requests kept for the cycle line.
+pub const RETAINED: usize = 64;
+/// What one sweep may spend on information acquisitions, in basis points of
+/// decision value, unless `QIP_DEEPBRAIN_RESEARCH_ACQUISITION_BP` says
+/// otherwise: two acquisitions at the full decision's value.
+pub const ACQUISITION_BUDGET_BP: u32 = 20_000;
+/// The blob namespace signed reflex packages are published under.
+pub const REFLEX_PACKAGES_NAMESPACE: &str = "reflex-packages";
+
+/// Research acquisitions carried out, by `action` (the nine
+/// `AcquisitionAction` names) and `outcome` (`gathered`, `not_executable`).
+pub const RESEARCH_ACQUISITIONS: &str = "qip_research_acquisitions_total";
+/// Research campaigns judged, by `outcome` (`promoted`, `null_recorded`,
+/// `refused`, `waiting`).
+pub const EXPANSION_CAMPAIGNS: &str = "qip_expansion_campaigns_total";
+/// Compute units the market granted, by `resource`.
+pub const META_UNITS_GRANTED: &str = "qip_meta_units_granted_total";
+/// Bids the market declined, by `reason` (`Decline::as_str`).
+pub const META_BIDS_DECLINED: &str = "qip_meta_bids_declined_total";
+/// Work the market retired as persistently unproductive.
+pub const META_WORK_RETIRED: &str = "qip_meta_work_retired_total";
+/// The latest realised marginal value per unit, in basis points, by `kind`.
+pub const META_MARGINAL_VALUE: &str = "qip_meta_marginal_value_bp";
+/// Specialist populations proposed for an economically meaningful residual.
+pub const META_SPECIALISTS_PROPOSED: &str = "qip_meta_specialists_proposed_total";
+/// Reflex packages, by `outcome` (`held_unsigned`, `signed`, `published`,
+/// `refused`).
+pub const REFLEX_PACKAGES: &str = "qip_reflex_packages_total";
+
+/// The severity a poisoning finding is raised at, by class: stated, since
+/// the detector reports a pattern and not a magnitude. Spoofing — a source
+/// whose own signals contradict its identity — is the least ambiguous.
+pub const fn poisoning_severity(class: PoisoningClass) -> f64 {
+    match class {
+        PoisoningClass::Spoofing => 1.0,
+        PoisoningClass::SourcePoisoning => 0.9,
+        PoisoningClass::CoordinatedManipulation => 0.8,
+        PoisoningClass::SyntheticContent => 0.7,
+        PoisoningClass::Spam => 0.5,
+    }
+}
+
+/// One fill the twin scored, as the research loop reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FillObservation {
+    pub venue: String,
+    pub object_id: String,
+    pub filled_at: qip_core::Timestamp,
+    pub trade_error_bps: Option<f64>,
+}
+
+/// One paper fill's slippage against its arrival price.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlippageObservation {
+    pub venue: String,
+    pub object_id: String,
+    pub slippage_bps: f64,
+}
+
+/// A compiled reflex package and, if a signer was installed, its signed form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledReflex {
+    pub question: String,
+    pub compiled: Compiled,
+    pub signed: Option<SignedReflexPackage>,
+}
+
+/// What the market granted a work item last sweep, awaiting its outcome.
+#[derive(Clone, Debug, PartialEq)]
+struct Granted {
+    kind: WorkKind,
+    units: u32,
+    expected_bp: f64,
+    domain: String,
+}
+
+/// How the loop is configured. Read in `main.rs`; nothing here reads the
+/// environment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResearchConfig {
+    /// Sweep every this many cycles. Zero disables the loop.
+    pub every_cycles: u64,
+    /// The jurisdiction research is filed under; admission refuses it unless
+    /// the discovery desk's eligible set contains it.
+    pub jurisdiction: String,
+    /// Compute units one sweep may start research within.
+    pub compute_per_sweep: Decimal,
+    /// How long an ambient signal and an information request stay live.
+    pub signal_ttl: Duration,
+    /// What one sweep may spend on information acquisitions, in basis points.
+    pub acquisition_budget_bp: u32,
+    /// QPU units one sweep's market may grant. Zero by default: quantum
+    /// research is off until somebody budgets it, and every grant it does
+    /// make charges its classical baseline to the CPU budget (ADR 0006).
+    pub qpu_per_sweep: Decimal,
+}
+
+impl Default for ResearchConfig {
+    fn default() -> Self {
+        Self {
+            every_cycles: 1,
+            jurisdiction: "US".to_string(),
+            compute_per_sweep: Decimal::from_int(10),
+            signal_ttl: Duration::from_hours(1),
+            acquisition_budget_bp: ACQUISITION_BUDGET_BP,
+            qpu_per_sweep: Decimal::ZERO,
+        }
+    }
+}
+
+impl ResearchConfig {
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self> {
+        let mut config = Self::default();
+        if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_EVERY") {
+            config.every_cycles = raw.trim().parse().map_err(|_| {
+                Error::invalid(format!(
+                    "QIP_DEEPBRAIN_RESEARCH_EVERY is {raw:?}, not a cycle count; 0 disables the research loop"
+                ))
+            })?;
+        }
+        if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_JURISDICTION") {
+            if raw.trim().is_empty() {
+                return Err(Error::invalid(
+                    "QIP_DEEPBRAIN_RESEARCH_JURISDICTION is set but blank; unset it for the default or name one",
+                ));
+            }
+            config.jurisdiction = raw.trim().to_string();
+        }
+        if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_COMPUTE") {
+            let units = Decimal::parse(raw.trim()).filter(|d| !d.is_negative()).ok_or_else(|| {
+                Error::invalid(format!(
+                    "QIP_DEEPBRAIN_RESEARCH_COMPUTE is {raw:?}, not a non-negative number of compute units"
+                ))
+            })?;
+            config.compute_per_sweep = units;
+        }
+        if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_ACQUISITION_BP") {
+            config.acquisition_budget_bp = raw.trim().parse().map_err(|_| {
+                Error::invalid(format!(
+                    "QIP_DEEPBRAIN_RESEARCH_ACQUISITION_BP is {raw:?}, not a whole number of basis \
+                     points; 0 launches no acquisition"
+                ))
+            })?;
+        }
+        if let Some(raw) = lookup("QIP_DEEPBRAIN_RESEARCH_QPU") {
+            config.qpu_per_sweep = Decimal::parse(raw.trim())
+                .filter(|d| !d.is_negative())
+                .ok_or_else(|| {
+                    Error::invalid(format!(
+                        "QIP_DEEPBRAIN_RESEARCH_QPU is {raw:?}, not a non-negative number of QPU \
+                         units; 0 grants no quantum research"
+                    ))
+                })?;
+        }
+        Ok(config)
+    }
+}
+
+/// Instruments per asset class, for the coverage detector. Built in `main`
+/// from the universe before it moves into the platform, which does not
+/// expose it afterwards.
+pub fn coverage_map(
+    universe: &qip_financial::universe::Universe,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for object in universe.iter() {
+        map.entry(format!("{:?}", object.asset_class))
+            .or_default()
+            .insert(object.object_id.to_string());
+    }
+    map
+}
+
+/// The ambient class a gap's trigger is.
+pub const fn signal_class(trigger: GapTrigger) -> SignalClass {
+    match trigger {
+        GapTrigger::Surprise => SignalClass::Surprise,
+        GapTrigger::MissedOpportunity => SignalClass::Opportunity,
+        GapTrigger::UnexplainedPnl | GapTrigger::Contradiction => SignalClass::Risk,
+        GapTrigger::LowConfidence | GapTrigger::ModelDrift | GapTrigger::UnsupportedRequest => {
+            SignalClass::Assumption
+        }
+    }
+}
+
+const fn pathway_str(pathway: Pathway) -> &'static str {
+    match pathway {
+        Pathway::ResearchTask => "research_task",
+        Pathway::SpecialistActivation => "specialist_activation",
+        Pathway::RiskReview => "risk_review",
+        Pathway::CapitalPreparation => "capital_preparation",
+        Pathway::ReflexModelUpdate => "reflex_model_update",
+    }
+}
+
+const fn disposition_str(disposition: Disposition) -> &'static str {
+    match disposition {
+        Disposition::Activated => "activated",
+        Disposition::Deferred => "deferred",
+        Disposition::Shed => "shed",
+        Disposition::Expired => "expired",
+    }
+}
+
+const fn trigger_str(trigger: GapTrigger) -> &'static str {
+    match trigger {
+        GapTrigger::Surprise => "surprise",
+        GapTrigger::LowConfidence => "low_confidence",
+        GapTrigger::Contradiction => "contradiction",
+        GapTrigger::MissedOpportunity => "missed_opportunity",
+        GapTrigger::UnexplainedPnl => "unexplained_pnl",
+        GapTrigger::ModelDrift => "model_drift",
+        GapTrigger::UnsupportedRequest => "unsupported_request",
+    }
+}
+
+const fn campaign_str(trigger: TickCampaignTrigger) -> &'static str {
+    match trigger {
+        TickCampaignTrigger::UnexplainedSlippage => "unexplained_slippage",
+        TickCampaignTrigger::FillPredictionError => "fill_prediction_error",
+        TickCampaignTrigger::QueuePredictionError => "queue_prediction_error",
+        TickCampaignTrigger::AbnormalLeadLag => "abnormal_lead_lag",
+        TickCampaignTrigger::WorldEventReaction => "world_event_reaction",
+        TickCampaignTrigger::PaperReplayDivergence => "paper_replay_divergence",
+        TickCampaignTrigger::NewVenue => "new_venue",
+    }
+}
+
+/// A fraction in `[0, 1]` as basis points. The input is validated upstream
+/// (`GapSignal::validate` refuses a severity outside it); a value outside is
+/// refused here too rather than clamped.
+/// The cheapest observation worth launching for a gap, and the criteria it
+/// is ranked on: re-reading the next sweep when an anomaly raised the gap,
+/// then the class's declared acquisition, each kept only if its §9.10 rank
+/// clears [`MIN_VIABLE_BP`]. `None` is a gap no observation is worth paying
+/// for — including every gap whose economic significance is a stated zero.
+fn cheapest_viable(
+    economic_bp: u32,
+    uncertainty_bp: u32,
+    anomaly_origin: bool,
+    acquisition_bp: u32,
+) -> Option<(&'static str, AcquisitionCriteria)> {
+    let mut options = vec![("acquisition", acquisition_bp)];
+    if anomaly_origin {
+        options.insert(0, ("resweep", RESWEEP_COST_BP));
+    }
+    options.into_iter().find_map(|(source, cost)| {
+        AcquisitionCriteria::new(economic_bp, uncertainty_bp, UNMEASURED_URGENCY_BP, cost)
+            .ok()
+            .filter(|c| c.net_value_bp() >= MIN_VIABLE_BP)
+            .map(|c| (source, c))
+    })
+}
+
+fn basis_points(fraction: f64) -> Result<u32> {
+    if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
+        return Err(Error::invalid(format!(
+            "{fraction} is not a fraction in [0, 1]; a severity outside it is a detector bug"
+        )));
+    }
+    // Statistic to integer: rounding a fraction to the nearest basis point.
+    Ok((fraction * 10_000.0).round() as u32)
+}
+
+/// What one sweep did, for the cycle line.
+#[derive(Debug, Clone, Default)]
+pub struct ResearchRound {
+    pub anomalies: usize,
+    pub raised: usize,
+    pub unclassified: usize,
+    pub admissions: BTreeMap<&'static str, usize>,
+    pub attention: BTreeMap<(&'static str, &'static str), usize>,
+    pub info_launched: usize,
+    pub info_halted: usize,
+    pub campaigns_opened: usize,
+    pub desk: SweepReport,
+    pub now: BTreeMap<&'static str, (f64, f64)>,
+    /// NOW Brain surprises read this sweep, and how many the kernel's queue
+    /// had already dropped because this loop fell behind.
+    pub now_surprises: usize,
+    pub now_surprises_lost: u64,
+    /// Specialists a NOW surprise woke, by specialist (AMBIENT-3079).
+    pub now_wakes: BTreeMap<&'static str, usize>,
+    /// Claims the world fabric held when the sweep scanned it.
+    pub evidence_held: usize,
+    /// Poisoning findings over the world fabric, by class.
+    pub poisoning: BTreeMap<&'static str, usize>,
+    /// Information requests a better-ranked request left no budget for.
+    pub info_outranked: usize,
+    /// Units granted and bids declined by the compute market, by reason.
+    pub units_granted: u32,
+    pub declined: BTreeMap<&'static str, usize>,
+    /// Windows measured, and work retired as unproductive.
+    pub measured: usize,
+    pub retired: usize,
+    pub specialists_proposed: usize,
+    /// Acquisitions carried out, by outcome.
+    pub acquisitions: BTreeMap<&'static str, usize>,
+    /// Campaigns judged, by outcome.
+    pub campaigns: BTreeMap<&'static str, usize>,
+    /// Reflex packages, by outcome.
+    pub packages: BTreeMap<&'static str, usize>,
+    /// Every ambient signal this sweep routed, in routing order, for the
+    /// ambient journal (`ambient_journal.rs`): a count on a cycle line is
+    /// not a record anybody can replay.
+    pub signals: Vec<AmbientSignal>,
+    /// Every attention event the router returned this sweep, in order.
+    pub attention_events: Vec<AttentionEvent>,
+    /// The specialist each activated NOW-surprise signal woke, by signal id.
+    pub woken: BTreeMap<String, &'static str>,
+}
+
+impl ResearchRound {
+    pub fn describe(&self) -> String {
+        format!(
+            "research: {} anomaly(ies), {} gap(s) raised ({} unclassifiable), admissions {:?}; \
+             {} started, {} closed, {} withdrawn, {} in queue; {} info request(s) launched, {} \
+             halted, {} outranked; {} tick campaign(s) opened; {} NOW surprise(s) woke {:?}; \
+             evidence: {} claim(s) held, poisoning {:?}; market: {} unit(s) granted, declined \
+             {:?}, {} window(s) measured, {} retired, {} specialist population(s) proposed; \
+             acquisitions {:?}; campaigns {:?}; reflex packages {:?}; outputs advisory, none \
+             promoted; capabilities are paper and shadow only",
+            self.anomalies,
+            self.raised,
+            self.unclassified,
+            self.admissions,
+            self.desk.started.len(),
+            self.desk.closed.len(),
+            self.desk.withdrawn.len(),
+            self.desk.queued,
+            self.info_launched,
+            self.info_halted,
+            self.info_outranked,
+            self.campaigns_opened,
+            self.now_surprises,
+            self.now_wakes,
+            self.evidence_held,
+            self.poisoning,
+            self.units_granted,
+            self.declined,
+            self.measured,
+            self.retired,
+            self.specialists_proposed,
+            self.acquisitions,
+            self.campaigns,
+            self.packages,
+        )
+    }
+}
+
+/// The loop's state across sweeps.
+pub struct ResearchLoop {
+    config: ResearchConfig,
+    desk: ExpansionDesk,
+    router: AttentionRouter,
+    detectors: DetectorRegistry,
+    persistence: PersistenceTracker,
+    ticks: TickCampaignDetector,
+    now_estimate: NowEstimator,
+    coverage: BTreeMap<String, BTreeSet<String>>,
+    /// Signals routed but not yet activated, by signal id. Bounded by the
+    /// router's hold queue: an entry leaves when its signal is activated,
+    /// shed, expired or found below materiality.
+    pending: BTreeMap<String, RaisedGap>,
+    /// NOW surprise signals routed but not yet activated, by signal id, with
+    /// the specialist each would wake. Bounded like `pending`.
+    pending_wakes: BTreeMap<String, qip_kernel::now_stage::Specialist>,
+    /// The kernel NOW queue's sequence number this loop has read through.
+    surprises_seen: u64,
+    issued: u64,
+    fills_read: usize,
+    slippage_read: usize,
+    advisories: VecDeque<Advisory<String>>,
+    info_requests: VecDeque<InfoRequest>,
+    /// This sweep's information-request candidates and the observation
+    /// each would launch with, ranked together before any launches.
+    candidates: Vec<(InfoRequest, &'static str)>,
+    meta: MetaIntelligence,
+    compiler: CognitiveCompiler,
+    signer: Option<Box<dyn PackageSigner + Send>>,
+    package_store: Option<Arc<dyn BlobStore>>,
+    campaign_policy: CampaignPolicy,
+    /// When each started item started, by question. Bounded by the queue.
+    started_at: BTreeMap<String, Timestamp>,
+    /// Post-start residuals each started fill campaign had at its last
+    /// window, for the market's realised-value measure.
+    evaluated: BTreeMap<String, usize>,
+    /// Compute the market charged each started item across its windows.
+    charged: BTreeMap<String, Decimal>,
+    /// Last sweep's grants, awaiting this sweep's measurement.
+    granted: BTreeMap<String, Granted>,
+    /// Realised and expected basis points per research domain, the record
+    /// the reputation book is filled from.
+    domain_record: BTreeMap<String, (f64, f64)>,
+    acquisitions: VecDeque<AcquisitionRecord>,
+    capabilities: VecDeque<CapabilityEntry>,
+    packages: VecDeque<CompiledReflex>,
+    /// The Brain Registry entry of every specialist a NOW surprise can wake,
+    /// by specialist (R12-CONTRACT-7086). Checked complete at construction.
+    brains: BTreeMap<&'static str, qip_contracts::BrainSpec>,
+}
+
+impl std::fmt::Debug for ResearchLoop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResearchLoop")
+            .field("every_cycles", &self.config.every_cycles)
+            .field("queued", &self.desk.queue().len())
+            .field("pending", &self.pending.len())
+            .field(
+                "signer",
+                &self.signer.as_ref().map(|s| s.key_id().to_string()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// Tools this node actually has, by the names `plan::AcquisitionAction`
+/// resolves them by. Each is a desk in this binary: the discovery desk, the
+/// learning desk's fit, the platform's stress tester. Anything else a gap
+/// asks for is a tool to build, and is queued as one.
+pub fn registered_tools() -> Result<qip_agents::tools::ToolRegistry> {
+    use qip_agents::tools::ToolKind;
+    let mut tools = qip_agents::tools::ToolRegistry::new();
+    tools.register("source-discovery", ToolKind::Connector)?;
+    tools.register("model-fit", ToolKind::ModelEndpoint)?;
+    tools.register("stress-simulator", ToolKind::Simulator)?;
+    Ok(tools)
+}
+
+impl ResearchLoop {
+    pub fn new(
+        config: ResearchConfig,
+        coverage: BTreeMap<String, BTreeSet<String>>,
+    ) -> Result<Self> {
+        let desk = ExpansionDesk::new(
+            DeskConfig {
+                quiet_sweeps: 3,
+                max_started_sweeps: DESK_MAX_STARTED_SWEEPS as u64,
+                jurisdiction: config.jurisdiction.clone(),
+                owner: "qip-deepbrain/research".to_string(),
+            },
+            registered_tools()?,
+        )?;
+        // Materiality 10%: a detection weaker than that is below the bar and
+        // wakes nothing. 256 activations an hour, 256 held: far above what a
+        // sweep raises today, so the budget binds only in a storm, which is
+        // when it is meant to.
+        let policy = RoutingPolicy::standard(1_000, 256, Duration::from_hours(1), 256)?;
+        // Every specialist a surprise can wake is a registered brain whose
+        // tools this node actually has. Refused at start-up rather than at
+        // the first wake: a spec naming a tool nobody registered is a brain
+        // that would be woken to do work it cannot do.
+        let brains = crate::now::specialist_registry()?;
+        let tools = registered_tools()?;
+        for specialist in qip_kernel::now_stage::Specialist::ALL {
+            let spec = brains.get(specialist.as_str()).ok_or_else(|| {
+                Error::invalid(format!(
+                    "the {} specialist has no BrainSpec; register it before it can be woken",
+                    specialist.as_str()
+                ))
+            })?;
+            if let Some(missing) = spec.tools.iter().find(|t| tools.get(t).is_none()) {
+                return Err(Error::invalid(format!(
+                    "BrainSpec {} names tool `{missing}`, which this node does not register; \
+                     register the tool or correct the spec",
+                    spec.id
+                )));
+            }
+        }
+        Ok(Self {
+            desk,
+            router: AttentionRouter::new(policy),
+            detectors: DetectorRegistry::standard(),
+            persistence: PersistenceTracker::new(PERSIST_SWEEPS)?,
+            ticks: TickCampaignDetector::new()?,
+            now_estimate: NowEstimator::new(0.001, 0.01)?,
+            coverage,
+            pending: BTreeMap::new(),
+            pending_wakes: BTreeMap::new(),
+            surprises_seen: 0,
+            issued: 0,
+            fills_read: 0,
+            slippage_read: 0,
+            advisories: VecDeque::new(),
+            info_requests: VecDeque::new(),
+            candidates: Vec::new(),
+            meta: MetaIntelligence::new(MetaPolicy::default())?,
+            compiler: CognitiveCompiler::new(CompilerBounds::default())?,
+            signer: None,
+            package_store: None,
+            campaign_policy: CampaignPolicy::default(),
+            started_at: BTreeMap::new(),
+            evaluated: BTreeMap::new(),
+            charged: BTreeMap::new(),
+            granted: BTreeMap::new(),
+            domain_record: BTreeMap::new(),
+            acquisitions: VecDeque::new(),
+            capabilities: VecDeque::new(),
+            packages: VecDeque::new(),
+            brains,
+            config,
+        })
+    }
+
+    /// Sign every reflex package the compiler emits with `signer`, and only
+    /// then may one be published. ADR 0110's KMS signer is installed here
+    /// when it exists; until then packages are held unsigned.
+    pub fn with_package_signer(mut self, signer: Box<dyn PackageSigner + Send>) -> Self {
+        self.signer = Some(signer);
+        self
+    }
+
+    /// Publish signed packages to `store`. Without a signer nothing is
+    /// written whatever the store: an unsigned package cannot be loaded.
+    pub fn with_package_store(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.package_store = Some(store);
+        self
+    }
+
+    pub const fn meta(&self) -> &MetaIntelligence {
+        &self.meta
+    }
+
+    pub fn acquisitions(&self) -> impl Iterator<Item = &AcquisitionRecord> {
+        self.acquisitions.iter()
+    }
+
+    pub fn capabilities(&self) -> impl Iterator<Item = &CapabilityEntry> {
+        self.capabilities.iter()
+    }
+
+    pub fn packages(&self) -> impl Iterator<Item = &CompiledReflex> {
+        self.packages.iter()
+    }
+
+    /// The Brain Registry entries of the specialists this loop can wake.
+    pub const fn brains(&self) -> &BTreeMap<&'static str, qip_contracts::BrainSpec> {
+        &self.brains
+    }
+
+    pub const fn desk(&self) -> &ExpansionDesk {
+        &self.desk
+    }
+
+    pub fn advisories(&self) -> impl Iterator<Item = &Advisory<String>> {
+        self.advisories.iter()
+    }
+
+    pub fn info_requests(&self) -> impl Iterator<Item = &InfoRequest> {
+        self.info_requests.iter()
+    }
+
+    pub fn now(&self) -> &NowEstimator {
+        &self.now_estimate
+    }
+
+    /// Run a sweep if this cycle is on the cadence.
+    pub fn maybe_sweep(
+        &mut self,
+        platform: &Platform,
+        cycle: u64,
+        now: Timestamp,
+        licensed_sources: &BTreeSet<String>,
+        eligible_jurisdictions: &BTreeSet<String>,
+    ) -> Result<Option<ResearchRound>> {
+        if self.config.every_cycles == 0 || !cycle.is_multiple_of(self.config.every_cycles) {
+            return Ok(None);
+        }
+        self.sweep(platform, now, licensed_sources, eligible_jurisdictions)
+            .map(Some)
+    }
+
+    /// One sweep over the platform's recorded state.
+    pub fn sweep(
+        &mut self,
+        platform: &Platform,
+        now: Timestamp,
+        licensed_sources: &BTreeSet<String>,
+        eligible_jurisdictions: &BTreeSet<String>,
+    ) -> Result<ResearchRound> {
+        let fills: Vec<FillObservation> = platform
+            .fill_scores()
+            .iter()
+            .map(|f| FillObservation {
+                venue: f.venue.clone(),
+                object_id: f.object_id.to_string(),
+                filled_at: f.filled_at,
+                trade_error_bps: f.trade_error_bps,
+            })
+            .collect();
+        let slippage = slippage_of(platform);
+        self.sweep_over(
+            platform,
+            &fills,
+            &slippage,
+            now,
+            licensed_sources,
+            eligible_jurisdictions,
+        )
+    }
+
+    /// The sweep, over fills and slippage the caller read. `sweep` reads them
+    /// from the platform; a test hands a campaign the fills a paper venue
+    /// would have produced without running a book to produce them, through
+    /// the identical path.
+    pub fn sweep_over(
+        &mut self,
+        platform: &Platform,
+        fills: &[FillObservation],
+        slippage: &[SlippageObservation],
+        now: Timestamp,
+        licensed_sources: &BTreeSet<String>,
+        eligible_jurisdictions: &BTreeSet<String>,
+    ) -> Result<ResearchRound> {
+        let metrics = platform.telemetry().metrics.clone();
+        let mut round = ResearchRound::default();
+        let mut observations: Vec<Observation> = Vec::new();
+
+        // --- the anomaly path: the deep brain's own sweep over prices -----
+        let mut context = DetectionContext::new(now);
+        for (subject, prices) in platform.price_history() {
+            let from = prices.len().saturating_sub(SWEEP_PRICES);
+            context = context.with_prices(subject.clone(), prices[from..].to_vec());
+        }
+        let anomalies = self.detectors.detect_all(&context);
+        round.anomalies = anomalies.len();
+        let mut members: Vec<(String, Observation)> = Vec::new();
+        let mut readings: Vec<Reading> = Vec::new();
+        let mut flagged: BTreeSet<String> = BTreeSet::new();
+        let mut by_detector: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for anomaly in &anomalies {
+            flagged.insert(anomaly.subject.clone());
+            by_detector
+                .entry(anomaly.detector.as_str())
+                .or_default()
+                .insert(anomaly.subject.as_str());
+            readings.push(Reading {
+                subject: anomaly.subject.clone(),
+                source: anomaly.detector.clone(),
+                up: anomaly.observed > anomaly.expected,
+            });
+            for observation in
+                split_by_wanting(crate::signal_mapper::anomaly_to_observation(anomaly))
+            {
+                members.push((anomaly.subject.clone(), observation));
+            }
+        }
+        observations.extend(anomaly_clusters(&members, CLUSTER_SUBJECTS)?);
+        observations.extend(members.into_iter().map(|(_, o)| o));
+        observations.extend(contradictions(&readings));
+        observations.extend(self.persistence.observe(&flagged));
+
+        // --- calibration, declines, refusals, fills, coverage -------------
+        if let Some(calibration) = platform.calibration() {
+            observations.extend(low_confidence(
+                &calibration.hit_rate_by_class,
+                calibration.evaluated,
+                MIN_EVALUATED,
+                HIT_RATE_FLOOR,
+            )?);
+            observations.extend(incompetent_specialists(
+                &calibration.hit_rate_by_agent,
+                calibration.evaluated,
+                MIN_EVALUATED,
+                HIT_RATE_FLOOR,
+            )?);
+        }
+        let declines: Vec<Decline> = platform
+            .declined_scores()
+            .iter()
+            .map(|d| Decline {
+                gate: d.gate.clone(),
+                regret: d.regret,
+            })
+            .collect();
+        observations.extend(repeated_vetoes(&declines, MIN_REGRETS)?);
+        let refusals: Vec<Refusal> = platform
+            .feasibility_refusals()
+            .iter()
+            .map(|r| Refusal {
+                venue: r.venue.clone(),
+                constraint: r.constraint.clone(),
+            })
+            .collect();
+        observations.extend(refusal_clusters(&refusals, MIN_REFUSALS)?);
+        let residuals: Vec<Residual> = fills
+            .iter()
+            .filter_map(|f| {
+                f.trade_error_bps.map(|bps| Residual {
+                    subject: f.venue.clone(),
+                    error_bps: bps,
+                })
+            })
+            .collect();
+        observations.extend(unexplained_residuals(&residuals, RESIDUAL_BPS)?);
+        // A shrunken list means the platform retained fewer scores than were
+        // read; read them all again rather than index past the end.
+        if fills.len() < self.fills_read {
+            self.fills_read = 0;
+        }
+        let threshold = Decimal::from_f64(RESIDUAL_BPS)
+            .ok_or_else(|| Error::numeric("the residual threshold has no decimal form"))?;
+        for fill in &fills[self.fills_read..] {
+            let instruments = BTreeSet::from([fill.object_id.clone()]);
+            let mut opened: Vec<TickCampaignTrigger> = Vec::new();
+            if let Some(c) = self.ticks.observe_venue(&fill.venue, instruments.clone()) {
+                opened.push(c.trigger);
+            }
+            if let Some(bps) = fill.trade_error_bps
+                && let Some(residual) = Decimal::from_f64(bps)
+                && let Some(c) = self.ticks.observe_residual(
+                    TickCampaignTrigger::FillPredictionError,
+                    residual,
+                    threshold,
+                    Some(&fill.venue),
+                    instruments,
+                )?
+            {
+                opened.push(c.trigger);
+            }
+            for trigger in opened {
+                round.campaigns_opened += 1;
+                metrics.count(
+                    names::TICK_CAMPAIGNS_OPENED,
+                    labels([("trigger", campaign_str(trigger))]),
+                );
+            }
+        }
+        self.fills_read = fills.len();
+        // Slippage against arrival, a trigger production never fed until
+        // 2026-10-11 (R12-EXPAND-6069): each paper fill once, by venue.
+        if slippage.len() < self.slippage_read {
+            self.slippage_read = 0;
+        }
+        for fill in &slippage[self.slippage_read..] {
+            // Basis points to the detector's fraction of price.
+            let Some(fraction) = Decimal::from_f64(fill.slippage_bps / 10_000.0) else {
+                continue;
+            };
+            if let Some(c) = self.ticks.observe_slippage(
+                fraction,
+                Some(&fill.venue),
+                BTreeSet::from([fill.object_id.clone()]),
+            ) {
+                round.campaigns_opened += 1;
+                metrics.count(
+                    names::TICK_CAMPAIGNS_OPENED,
+                    labels([("trigger", campaign_str(c.trigger))]),
+                );
+            }
+        }
+        self.slippage_read = slippage.len();
+        let covered: BTreeSet<String> = platform.price_history().keys().cloned().collect();
+        observations.extend(coverage(&self.coverage, &covered, COVERAGE_FLOOR)?);
+
+        // --- evidence: the world fabric the connectors feed ---------------
+        round.evidence_held = platform.evidence_held();
+        for finding in platform.evidence_poisoning(now, &PoisoningThresholds::default()) {
+            *round.poisoning.entry(finding.class.as_str()).or_default() += 1;
+            observations.push(poisoning_observation(&finding));
+        }
+
+        // --- the market's specialist proposals -----------------------------
+        if let Some(calibration) = platform.calibration()
+            && calibration.evaluated >= MIN_EVALUATED
+        {
+            let exposure = platform.equity().abs();
+            let residuals: Vec<DomainResidual> = calibration
+                .hit_rate_by_class
+                .iter()
+                .filter(|(_, rate)| rate.is_finite() && **rate < HIT_RATE_FLOOR)
+                .map(|(class, rate)| DomainResidual {
+                    domain: class.clone(),
+                    residual: (HIT_RATE_FLOOR - rate) / HIT_RATE_FLOOR,
+                    exposure,
+                })
+                .collect();
+            for proposal in self.meta.propose_specialists(&residuals)? {
+                round.specialists_proposed += 1;
+                metrics.count(META_SPECIALISTS_PROPOSED, labels([]));
+                observations.push(Observation {
+                    trigger: GapTrigger::LowConfidence,
+                    wanting: vec![Wanting::Specialist],
+                    observation: format!(
+                        "belief class `{}` needs a specialist population: its residual error is \
+                         economically meaningful",
+                        proposal.domain
+                    ),
+                    affected_domains: vec![proposal.domain.clone()],
+                    evidence: vec![
+                        "meta:specialist_proposal".to_string(),
+                        format!("economic_weight:{}", proposal.economic_weight),
+                    ],
+                    severity: proposal.residual,
+                    // The residual as a share of the book it is applied to,
+                    // on the anomaly mapper's [0, 100] scale.
+                    economic_value: Decimal::from_f64(proposal.residual * 100.0)
+                        .unwrap_or(Decimal::ZERO),
+                });
+            }
+        }
+
+        // --- NOW: three domains from the readings already taken -----------
+        let subjects = platform.price_history().len().max(1) as f64;
+        let market: Vec<f64> = by_detector
+            .values()
+            .map(|s| s.len() as f64 / subjects)
+            .collect();
+        let mut execution: BTreeMap<&str, (f64, usize)> = BTreeMap::new();
+        for r in &residuals {
+            let slot = execution.entry(r.subject.as_str()).or_default();
+            slot.0 += r.error_bps.abs();
+            slot.1 += 1;
+        }
+        let execution: Vec<f64> = execution.values().map(|(s, n)| s / *n as f64).collect();
+        let beliefs: Vec<f64> = platform
+            .calibration()
+            .map(|c| c.hit_rate_by_class.values().copied().collect())
+            .unwrap_or_default();
+        for (domain, values) in crate::now::DOMAINS
+            .into_iter()
+            .zip([market, execution, beliefs])
+        {
+            if values.is_empty() && self.now_estimate.estimate(domain).is_none() {
+                continue;
+            }
+            let estimate = self.now_estimate.observe(domain, &values)?;
+            metrics.gauge(
+                names::NOW_STATE,
+                labels([("domain", domain)]),
+                estimate.mean,
+            );
+            metrics.gauge(
+                names::NOW_UNCERTAINTY,
+                labels([("domain", domain)]),
+                estimate.std_dev(),
+            );
+            round
+                .now
+                .insert(domain, (estimate.mean, estimate.std_dev()));
+        }
+
+        // --- raise, emit, route, admit ------------------------------------
+        let mut raised_now: Vec<RaisedGap> = Vec::new();
+        for observation in observations {
+            let trigger = observation.trigger;
+            match raise(observation) {
+                Ok(raised) => raised_now.push(raised),
+                Err(_) => {
+                    round.unclassified += 1;
+                    metrics.count(
+                        names::RESEARCH_UNCLASSIFIED,
+                        labels([("trigger", trigger_str(trigger))]),
+                    );
+                }
+            }
+        }
+        round.raised = raised_now.len();
+        // The NOW Brain's surprises since the last sweep (AMBIENT-3079): each
+        // becomes one signal per specialist it should wake, routed through
+        // the same router and the same budget as every gap, so a storm of
+        // surprises is deferred or shed on the record rather than waking
+        // everything at once.
+        let (surprises, newest, lost) = platform.now_brain().surprises_since(self.surprises_seen);
+        round.now_surprises = surprises.len();
+        round.now_surprises_lost = lost;
+        let mut routable: Vec<(Option<RaisedGap>, AmbientSignal)> = Vec::new();
+        for surprise in surprises {
+            for (specialist, signal) in
+                crate::now::surprise_signals(surprise, now, self.config.signal_ttl)?
+            {
+                self.pending_wakes
+                    .insert(signal.id().to_string(), specialist);
+                routable.push((None, signal));
+            }
+        }
+        self.surprises_seen = newest;
+        // What each question's gap measured this sweep: the market's
+        // information value for a bid, read before the gaps move into the
+        // desk.
+        let mut severity_now: BTreeMap<String, u32> = BTreeMap::new();
+        for raised in &raised_now {
+            severity_now.insert(
+                qip_expansion::desk::question_for(raised),
+                basis_points(raised.signal.severity)?,
+            );
+        }
+        for raised in raised_now {
+            let signal = self.emit(&raised, now)?;
+            routable.push((Some(raised), signal));
+        }
+        for (raised, signal) in routable {
+            if let Some(raised) = raised {
+                self.pending.insert(signal.id().to_string(), raised);
+            }
+            let events = self.router.route(&signal, now)?;
+            round.signals.push(signal.clone());
+            round.attention_events.extend(events.iter().cloned());
+            if !events.iter().any(|e| e.signal_id == signal.id()) {
+                // Below materiality: not an activation and not a loss.
+                self.pending.remove(signal.id());
+                self.pending_wakes.remove(signal.id());
+            }
+            for event in events {
+                let pathway = pathway_str(event.pathway);
+                let disposition = disposition_str(event.disposition);
+                *round.attention.entry((pathway, disposition)).or_default() += 1;
+                metrics.count(
+                    names::AMBIENT_ATTENTION,
+                    labels([("pathway", pathway), ("disposition", disposition)]),
+                );
+                match event.disposition {
+                    Disposition::Deferred => {}
+                    Disposition::Shed | Disposition::Expired => {
+                        self.pending.remove(&event.signal_id);
+                        self.pending_wakes.remove(&event.signal_id);
+                    }
+                    Disposition::Activated => {
+                        if let Some(specialist) = self.pending_wakes.remove(&event.signal_id) {
+                            // Only a registered brain is woken. Construction
+                            // proved every specialist has a spec, so this
+                            // refusal is the record of a registry that lost
+                            // one, not a path that runs.
+                            if !self.brains.contains_key(specialist.as_str()) {
+                                return Err(Error::invalid(format!(
+                                    "the {} specialist was woken with no BrainSpec registered",
+                                    specialist.as_str()
+                                )));
+                            }
+                            round
+                                .woken
+                                .insert(event.signal_id.clone(), specialist.as_str());
+                            *round.now_wakes.entry(specialist.as_str()).or_default() += 1;
+                            metrics.count(
+                                crate::now::NOW_WAKES,
+                                labels([("specialist", specialist.as_str())]),
+                            );
+                            continue;
+                        }
+                        let Some(gap) = self.pending.remove(&event.signal_id) else {
+                            continue;
+                        };
+                        // Irrefutable while attention has one authority: a
+                        // second variant would be the first activation that
+                        // could act, and it stops compiling here first.
+                        let AuthorityBoundary::AdvisoryOnly = event.authority;
+                        // The advisory is filed under the event's feedback
+                        // link, so its outcome joins back to the decision
+                        // that woke it (R12-CONTRACT-7079).
+                        self.admit(
+                            gap,
+                            event.pathway,
+                            &event.feedback_link,
+                            now,
+                            &metrics,
+                            &mut round,
+                            licensed_sources,
+                            eligible_jurisdictions,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        // --- curiosity: rank every candidate, then launch ------------------
+        self.launch_ranked(&metrics, &mut round)?;
+
+        // --- the compute market ---------------------------------------------
+        let residuals = fill_residuals(fills);
+        self.measure_last_round(&residuals, now, &metrics, &mut round)?;
+        let granted = self.run_market(&severity_now, now, &metrics, &mut round)?;
+
+        // --- end the sweep -------------------------------------------------
+        let starting: Decimal = granted
+            .iter()
+            .filter(|(q, _)| {
+                self.desk
+                    .queue()
+                    .entry(q)
+                    .is_some_and(|e| *e.state() != State::Started)
+            })
+            .try_fold(Decimal::ZERO, |sum, (_, cost)| sum.checked_add(*cost))
+            .ok_or_else(|| Error::numeric("the round's granted compute overflowed"))?;
+        let allowed: BTreeSet<String> = granted.keys().cloned().collect();
+        let report = self.desk.finish_sweep_within(
+            Budget {
+                compute: starting,
+                capital: self.config.compute_per_sweep,
+            },
+            Some(&allowed),
+        )?;
+        for question in &report.started {
+            self.started_at.insert(question.clone(), now);
+            self.evaluated.insert(question.clone(), 0);
+        }
+        // A grant is charged to an item only once the item runs on it: a
+        // grant the desk could not start (capital, or a close this sweep)
+        // bought nothing, and charging it would fail a campaign's cost
+        // criterion on compute it never spent.
+        for (question, cost) in &granted {
+            if self
+                .desk
+                .queue()
+                .entry(question)
+                .is_some_and(|e| *e.state() == State::Started)
+            {
+                let charged = self
+                    .charged
+                    .entry(question.clone())
+                    .or_insert(Decimal::ZERO);
+                *charged = charged
+                    .checked_add(*cost)
+                    .ok_or_else(|| Error::numeric("an item's charge overflowed"))?;
+            }
+        }
+        for question in report
+            .withdrawn
+            .iter()
+            .chain(report.closed.iter().map(|c| &c.question))
+        {
+            self.forget(question);
+            self.meta.forget(question);
+        }
+
+        // --- research carried out: acquisitions, campaigns, compilation ----
+        self.carry_out(
+            &allowed,
+            &residuals,
+            now,
+            eligible_jurisdictions,
+            &metrics,
+            &mut round,
+        )?;
+        metrics.gauge(
+            names::RESEARCH_QUEUE_ITEMS,
+            labels([]),
+            report.queued as f64,
+        );
+        metrics.increment(
+            names::RESEARCH_ITEMS_STARTED,
+            labels([]),
+            report.started.len() as u64,
+        );
+        metrics.increment(
+            names::RESEARCH_ITEMS_WITHDRAWN,
+            labels([]),
+            report.withdrawn.len() as u64,
+        );
+        for closed in &report.closed {
+            let reason = match closed.reason {
+                qip_expansion::desk::CloseReason::GapQuiet => "gap_quiet",
+                qip_expansion::desk::CloseReason::OutOfTime => "out_of_time",
+                qip_expansion::desk::CloseReason::Promoted => "promoted",
+                qip_expansion::desk::CloseReason::NullRecorded => "null_recorded",
+                qip_expansion::desk::CloseReason::Unproductive => "unproductive",
+            };
+            metrics.count(names::RESEARCH_ITEMS_CLOSED, labels([("reason", reason)]));
+        }
+        // A request launched as a re-sweep was answered by this sweep's
+        // reading; one past its deadline halts.
+        for request in &mut self.info_requests {
+            if request.status() == qip_contracts::ambient::AcquisitionStatus::InProgress {
+                request.complete()?;
+            } else if request.should_halt(now, MIN_VIABLE_BP) && request.halt() {
+                round.info_halted += 1;
+            }
+        }
+        round.desk = report;
+        Ok(round)
+    }
+
+    /// The ambient signal a raised gap is.
+    fn emit(&mut self, raised: &RaisedGap, now: Timestamp) -> Result<AmbientSignal> {
+        self.issued += 1;
+        let class = signal_class(raised.trigger);
+        let severity = basis_points(raised.signal.severity)?;
+        let pathway = match class {
+            SignalClass::Surprise => Pathway::SpecialistActivation,
+            SignalClass::Opportunity => Pathway::ResearchTask,
+            SignalClass::Risk => Pathway::RiskReview,
+            SignalClass::Assumption => Pathway::ReflexModelUpdate,
+        };
+        AmbientSignal::new(
+            format!("ambient-{}", self.issued),
+            class,
+            qip_expansion::desk::question_for(raised),
+            severity,
+            Trigger::Event(trigger_str(raised.trigger).to_string()),
+            now,
+            Detection {
+                observed_deviation: Decimal::from_f64(raised.signal.severity)
+                    .ok_or_else(|| Error::numeric("a severity has no decimal form"))?,
+                expected_baseline: Decimal::ZERO,
+                horizon: Duration::ZERO,
+                novelty_bp: severity,
+                affected_entities: raised.signal.affected_domains.clone(),
+                urgency_bp: 0,
+                wake_targets: vec![pathway],
+                evidence_ids: raised.signal.evidence.clone(),
+                expiry: now.saturating_add(self.config.signal_ttl),
+            },
+        )
+    }
+
+    /// An activated signal becomes research, an advisory, and — where the
+    /// gap asks for evidence — a priced information request.
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &mut self,
+        gap: RaisedGap,
+        pathway: Pathway,
+        feedback_link: &str,
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+        licensed_sources: &BTreeSet<String>,
+        eligible_jurisdictions: &BTreeSet<String>,
+    ) -> Result<()> {
+        let class = gap.signal.gap_class;
+        let question = qip_expansion::desk::question_for(&gap);
+        let anomaly_origin = !gap
+            .signal
+            .evidence
+            .first()
+            .is_some_and(|e| e.starts_with("detector:"));
+        let severity = basis_points(gap.signal.severity)?;
+        let economic = gap.signal.economic_value;
+        let admission = self
+            .desk
+            .offer(gap, licensed_sources, eligible_jurisdictions);
+        let outcome = admission.as_str();
+        *round.admissions.entry(outcome).or_default() += 1;
+        metrics.count(
+            names::RESEARCH_GAPS,
+            labels([("class", class_str(class)), ("outcome", outcome)]),
+        );
+        if !matches!(admission, Admission::Queued | Admission::Blocked { .. }) {
+            return Ok(());
+        }
+        if self.advisories.len() == RETAINED {
+            self.advisories.pop_front();
+        }
+        self.advisories.push_back(Advisory::new(
+            format!("{pathway:?}: {question}"),
+            feedback_link,
+        ));
+
+        // Value of information (AMBIENT-3104): what reducing this gap's
+        // uncertainty is worth, against the cheapest observation that could
+        // discriminate. Economic significance is the gap's economic value in
+        // basis points — the anomaly mapper states it on [0, 100], so ×100
+        // is its basis-point form, and a detector's stated zero stays zero.
+        let economic_bp = basis_points(economic.to_f64() / 100.0)?;
+        // Options in cost order: re-reading the next sweep is possible only
+        // for a gap the price sweep raised; the acquisition the class asks
+        // for is always an option, at its declared cost in thousands of
+        // basis points.
+        let acquisition_bp =
+            u32::try_from(declared_cost(task_kind(class)).raw() / Decimal::ONE.raw())
+                .unwrap_or(u32::MAX)
+                .saturating_mul(1_000)
+                .min(qip_contracts::ambient::MAX_SEVERITY_BP);
+        let chosen = cheapest_viable(economic_bp, severity, anomaly_origin, acquisition_bp);
+        let Some((source, criteria)) = chosen else {
+            return Ok(());
+        };
+        let mut request = InfoRequest::new(
+            format!("info-{feedback_link}"),
+            question,
+            criteria,
+            now.saturating_add(self.config.signal_ttl),
+            now,
+        )?;
+        if request.should_halt(now, MIN_VIABLE_BP) {
+            request.halt();
+            round.info_halted += 1;
+            metrics.count(names::INFO_REQUESTS, labels([("outcome", "halted")]));
+            self.retain_request(request);
+        } else {
+            // Not launched here: every candidate this sweep raises is ranked
+            // against the others first (`launch_ranked`).
+            self.candidates.push((request, source));
+        }
+        Ok(())
+    }
+
+    fn retain_request(&mut self, request: InfoRequest) {
+        if self.info_requests.len() == RETAINED {
+            self.info_requests.pop_front();
+        }
+        self.info_requests.push_back(request);
+    }
+
+    /// The Curiosity Engine's production caller (R12-AMBIENT-3106): this
+    /// sweep's candidates ordered by `rank_acquisitions` — §9.10's product,
+    /// highest first, ties by id — and launched in that order while the
+    /// sweep's acquisition budget covers each one's cost. A candidate the
+    /// budget no longer covers is halted as `outranked`: a better-ranked
+    /// request took what it would have spent. Until this call each gap's
+    /// request launched the moment its gap woke, so the order gaps happened
+    /// to be raised in decided what the budget bought.
+    fn launch_ranked(&mut self, metrics: &Metrics, round: &mut ResearchRound) -> Result<()> {
+        let candidates = std::mem::take(&mut self.candidates);
+        let sources: BTreeMap<String, &'static str> = candidates
+            .iter()
+            .map(|(r, source)| (r.id().to_string(), *source))
+            .collect();
+        let requests: Vec<InfoRequest> = candidates.into_iter().map(|(r, _)| r).collect();
+        let order: Vec<String> = rank_acquisitions(&requests)
+            .into_iter()
+            .map(|r| r.id().to_string())
+            .collect();
+        let mut by_id: BTreeMap<String, InfoRequest> = requests
+            .into_iter()
+            .map(|r| (r.id().to_string(), r))
+            .collect();
+        let mut remaining = self.config.acquisition_budget_bp;
+        for id in &order {
+            let Some(mut request) = by_id.remove(id) else {
+                continue;
+            };
+            let cost = request.criteria().acquisition_cost_bp;
+            if cost <= remaining {
+                remaining -= cost;
+                request.record_acquisition(cost)?;
+                round.info_launched += 1;
+                let source = sources.get(id).copied().unwrap_or("acquisition");
+                metrics.count(
+                    names::INFO_REQUESTS,
+                    labels([("outcome", "launched"), ("source", source)]),
+                );
+            } else {
+                request.halt();
+                round.info_outranked += 1;
+                metrics.count(names::INFO_REQUESTS, labels([("outcome", "outranked")]));
+            }
+            self.retain_request(request);
+        }
+        // Anything the ranker left out has a zero rank, which the viability
+        // floor already refused; halted rather than dropped if one appears.
+        for (_, mut request) in by_id {
+            request.halt();
+            round.info_halted += 1;
+            metrics.count(names::INFO_REQUESTS, labels([("outcome", "halted")]));
+            self.retain_request(request);
+        }
+        Ok(())
+    }
+
+    fn forget(&mut self, question: &str) {
+        self.started_at.remove(question);
+        self.evaluated.remove(question);
+        self.charged.remove(question);
+        self.granted.remove(question);
+    }
+
+    /// Measure what each of last sweep's grants realised (R12-AMBIENT-3112)
+    /// and retire what the market says has stopped yielding (3114).
+    ///
+    /// Realised value is the share of the evidence the item needs that it
+    /// gathered in the window, times what the grant expected: a fill
+    /// campaign's new post-start residuals over the paper and shadow stages'
+    /// need. An item whose acquisition has no executor gathers nothing and
+    /// realises zero — honestly — and is retired after the policy's window
+    /// rather than holding a slot until it times out.
+    fn measure_last_round(
+        &mut self,
+        residuals: &[FillResidual],
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let needed = (2 * self.campaign_policy.min_eval).max(1);
+        let last = std::mem::take(&mut self.granted);
+        for (question, grant) in last {
+            let Some(lineage) = self.desk.lineage(&question).cloned() else {
+                continue;
+            };
+            let started = self
+                .desk
+                .queue()
+                .entry(&question)
+                .is_some_and(|e| *e.state() == State::Started);
+            if !started {
+                continue;
+            }
+            let progress = match (fill_venue(&lineage), self.started_at.get(&question)) {
+                (Some(venue), Some(started_at)) => {
+                    let post = residuals
+                        .iter()
+                        .filter(|r| r.venue == venue && r.at >= *started_at)
+                        .count();
+                    let before = self.evaluated.insert(question.clone(), post).unwrap_or(0);
+                    (post.saturating_sub(before) as f64 / needed as f64).min(1.0)
+                }
+                _ => 0.0,
+            };
+            let realised = grant.expected_bp * progress;
+            let measured = self.meta.record_outcome(
+                &question,
+                grant.kind,
+                grant.units,
+                grant.expected_bp,
+                realised,
+                now,
+            )?;
+            round.measured += 1;
+            metrics.gauge(
+                META_MARGINAL_VALUE,
+                labels([("kind", grant.kind.as_str())]),
+                measured.per_unit_bp,
+            );
+            self.record_domain(&grant.domain, &measured);
+            if self.meta.is_retired(&question) {
+                self.desk.retire(&question)?;
+                self.forget(&question);
+                round.retired += 1;
+                metrics.count(META_WORK_RETIRED, labels([]));
+            }
+        }
+        Ok(())
+    }
+
+    /// Fold one window into its domain's record and the reputation book:
+    /// a research domain whose work delivers what it promised earns a
+    /// reputation, and one that never has is uninformed rather than
+    /// averaged in (R12-AMBIENT-3111). A full book is left as it is; the
+    /// cell is not recorded rather than an old one silently replaced.
+    fn record_domain(&mut self, domain: &str, measured: &MarginalValue) {
+        let slot = self.domain_record.entry(domain.to_string()).or_default();
+        slot.0 += measured.realised_bp;
+        slot.1 += measured.expected_bp;
+        let (realised, expected) = *slot;
+        // The market's own prior on both sides, so one empty window lowers a
+        // domain's standing without zeroing it — a zero here would decline
+        // every bid in the domain before the retirement rule could measure
+        // the work that earned it (`meta::REALISATION_PRIOR_BP`).
+        let prior = qip_expansion::meta::REALISATION_PRIOR_BP;
+        let ratio = ((realised + prior) / (expected + prior)).clamp(0.0, 1.0);
+        // Statistic to integer basis points, inside [0, 10000] by the line
+        // above: a delivery ratio above one is full delivery, not more.
+        let bp = (ratio * f64::from(qip_contracts::ambient::MAX_SEVERITY_BP)).round() as u32;
+        // A blank domain or a full book refuses the cell; the domain then
+        // stays uninformed, which is the honest reading of a record that
+        // could not be kept.
+        if let Ok(reputation) = ModelReputation::new(domain, "research", "all", bp, bp, bp)
+            && self.meta.reputation_mut().record(reputation).is_err()
+        {
+            self.domain_record.remove(domain);
+        }
+    }
+
+    /// One market round over every open research item, and what it granted:
+    /// question to compute charged. Bids are the desk's queued, deferred and
+    /// started items; a blocked item has nothing to spend compute on.
+    fn run_market(
+        &mut self,
+        severity_now: &BTreeMap<String, u32>,
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) -> Result<BTreeMap<String, Decimal>> {
+        let mut bids: Vec<WorkBid> = Vec::new();
+        let mut domains: BTreeMap<String, String> = BTreeMap::new();
+        for entry in self.desk.queue().ranked() {
+            if matches!(entry.state(), State::Blocked { .. }) || entry.kind() == TaskKind::ToolBuild
+            {
+                continue;
+            }
+            let question = entry.item().research_question.clone();
+            let Some(lineage) = self.desk.lineage(&question) else {
+                continue;
+            };
+            let resource = match lineage.class {
+                GapClass::ComputeQuantumResearch => ComputeResourceType::Qpu,
+                GapClass::Model => ComputeResourceType::Gpu,
+                _ => ComputeResourceType::Cpu,
+            };
+            let unit_cost = entry.score().compute_data_cost;
+            // A value outside its scale is refused for this bid alone and
+            // counted: every open item bids every sweep, so one item with a
+            // malformed figure would otherwise fail every sweep after it.
+            let information_value_bp = match severity_now.get(&question) {
+                Some(bp) => Ok(*bp),
+                None => basis_points(entry.item().expected_information_value),
+            };
+            let economic_value_bp =
+                basis_points(entry.item().expected_economic_value.to_f64() / 100.0);
+            let (Ok(information_value_bp), Ok(economic_value_bp)) =
+                (information_value_bp, economic_value_bp)
+            else {
+                *round.declined.entry("invalid_value").or_default() += 1;
+                metrics.count(META_BIDS_DECLINED, labels([("reason", "invalid_value")]));
+                continue;
+            };
+            let domain = entry
+                .origin()
+                .and_then(|o| o.signal.affected_domains.first().cloned())
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| class_str(lineage.class).to_string());
+            domains.insert(question.clone(), domain.clone());
+            bids.push(WorkBid {
+                work_id: question.clone(),
+                kind: work_kind(entry.kind()),
+                subject: question,
+                resource,
+                information_value_bp,
+                economic_value_bp,
+                unit_cost,
+                max_units: 1,
+                reputation: ReputationKey::new(&domain, "research", "all")?,
+                classical_baseline_cost: (resource == ComputeResourceType::Qpu)
+                    .then_some(unit_cost),
+            });
+        }
+        let budget = BTreeMap::from([
+            (ComputeResourceType::Cpu, self.config.compute_per_sweep),
+            (ComputeResourceType::Gpu, self.config.compute_per_sweep),
+            (ComputeResourceType::Tpu, Decimal::ZERO),
+            (ComputeResourceType::Qpu, self.config.qpu_per_sweep),
+        ]);
+        let allocation = self.meta.allocate(&bids, &budget, now)?;
+        let mut granted: BTreeMap<String, Decimal> = BTreeMap::new();
+        for grant in &allocation.grants {
+            let question = grant.allocation.work_id().to_string();
+            let total = grant
+                .charged
+                .values()
+                .try_fold(Decimal::ZERO, |sum, v| sum.checked_add(*v))
+                .ok_or_else(|| Error::numeric("a grant's charge overflowed"))?;
+            round.units_granted += grant.allocation.units();
+            metrics.increment(
+                META_UNITS_GRANTED,
+                labels([("resource", resource_str(grant.allocation.resource_type()))]),
+                u64::from(grant.allocation.units()),
+            );
+            self.granted.insert(
+                question.clone(),
+                Granted {
+                    kind: grant.kind,
+                    units: grant.allocation.units(),
+                    expected_bp: grant.expected_bp,
+                    domain: domains.get(&question).cloned().unwrap_or_default(),
+                },
+            );
+            granted.insert(question, total);
+        }
+        for (_, decline) in &allocation.declined {
+            *round.declined.entry(decline.as_str()).or_default() += 1;
+            metrics.count(META_BIDS_DECLINED, labels([("reason", decline.as_str())]));
+        }
+        Ok(granted)
+    }
+
+    /// Carry out what the market granted to items that have started: the
+    /// acquisition, research only, and for a fill-bias item the campaign,
+    /// its evaluation and the desk's conclusion. A promoted capability is
+    /// handed to the Cognitive Compiler.
+    fn carry_out(
+        &mut self,
+        granted: &BTreeSet<String>,
+        residuals: &[FillResidual],
+        now: Timestamp,
+        eligible_jurisdictions: &BTreeSet<String>,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let started: Vec<(String, qip_expansion::desk::Lineage)> = self
+            .desk
+            .started()
+            .into_iter()
+            .filter(|(q, _)| granted.contains(q))
+            .map(|(q, l)| (q, l.clone()))
+            .collect();
+        let jurisdiction_eligible = eligible_jurisdictions.contains(&self.config.jurisdiction);
+        for (question, lineage) in started {
+            let record = acquire(&question, &lineage, residuals, now)?;
+            let action = record.action.as_str();
+            let outcome = record.outcome.as_str();
+            *round.acquisitions.entry(outcome).or_default() += 1;
+            metrics.count(
+                RESEARCH_ACQUISITIONS,
+                labels([("action", action), ("outcome", outcome)]),
+            );
+            let gathered = matches!(record.outcome, AcquisitionOutcome::Gathered { .. });
+            if self.acquisitions.len() == RETAINED {
+                self.acquisitions.pop_front();
+            }
+            self.acquisitions.push_back(record);
+            if !gathered || fill_venue(&lineage).is_none() {
+                continue;
+            }
+            let Some(started_at) = self.started_at.get(&question).copied() else {
+                continue;
+            };
+            let charged = self
+                .charged
+                .get(&question)
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            // The most the curriculum ever authorised this item: its budget
+            // for every sweep it may run.
+            let item_budget = self
+                .desk
+                .queue()
+                .entry(&question)
+                .map_or(Decimal::ZERO, |e| e.item().budget);
+            let authorised = item_budget
+                .checked_mul(Decimal::from_int(DESK_MAX_STARTED_SWEEPS))
+                .ok_or_else(|| Error::numeric("an item's authorised budget overflowed"))?;
+            let Some(result) = run_fill_bias_campaign(
+                &question,
+                &lineage,
+                residuals,
+                started_at,
+                &self.campaign_policy,
+                jurisdiction_eligible,
+                charged,
+                authorised,
+            )?
+            else {
+                *round.campaigns.entry("waiting").or_default() += 1;
+                metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", "waiting")]));
+                continue;
+            };
+            let outcome = match self.desk.conclude(&result.campaign, &result.evaluation) {
+                Ok(capability) => {
+                    if self.capabilities.len() == RETAINED {
+                        self.capabilities.pop_front();
+                    }
+                    self.capabilities.push_back(capability);
+                    self.distil(&question, &result, now, metrics, round)?;
+                    "promoted"
+                }
+                // `conclude` closes a complete campaign that failed a
+                // criterion and records its null; anything else it refuses
+                // leaves the item running.
+                Err(_) if self.desk.queue().entry(&question).is_none() => "null_recorded",
+                Err(_) => "refused",
+            };
+            *round.campaigns.entry(outcome).or_default() += 1;
+            metrics.count(EXPANSION_CAMPAIGNS, labels([("outcome", outcome)]));
+            if self.desk.queue().entry(&question).is_none() {
+                self.forget(&question);
+                self.meta.forget(&question);
+            }
+        }
+        Ok(())
+    }
+
+    /// The Cognitive Compiler's production caller: a promoted fill-bias
+    /// correction formalised and distilled into a bounded reflex package,
+    /// signed and published only through an installed signer.
+    fn distil(
+        &mut self,
+        question: &str,
+        result: &CampaignResult,
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let correction = &result.correction;
+        let (low, high) = result.bias_band_bps;
+        // Residual uncertainty: the bootstrap band's half-width against the
+        // estimate. An interval as wide as the estimate is total uncertainty,
+        // and the basis-point form saturates there rather than overflowing.
+        let fraction = if correction.bias_bps.abs() > 0.0 {
+            ((high - low) / 2.0 / correction.bias_bps.abs()).min(1.0)
+        } else {
+            1.0
+        };
+        let uncertainty_bp = (fraction.max(0.0) * 10_000.0).round() as u32;
+        // Statistic to an integer adjustment: the twin's entry is moved by
+        // minus the bias, rounded to a whole basis point.
+        let add_bps = -(correction.bias_bps.round() as i32);
+        let digests: Vec<String> = result
+            .campaign
+            .stages()
+            .iter()
+            .map(|(_, provenance)| provenance.dataset_digest.clone())
+            .collect();
+        let established = result
+            .campaign
+            .stages()
+            .iter()
+            .zip(digests.iter())
+            .map(|((environment, _), digest)| Established {
+                statement: format!("the {environment:?} stage ran on dataset {digest}"),
+                evidence: vec![digest.clone()],
+            })
+            .collect();
+        let venue_id: String = correction
+            .venue
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let discovery = Discovery {
+            discovery_id: format!("fill-bias-{venue_id}"),
+            question: question.to_string(),
+            conclusion: format!(
+                "the twin's entry at `{}` is corrected by {add_bps} bp",
+                correction.venue
+            ),
+            findings: established,
+            verification: Verification {
+                evaluation: format!("evaluation:{question}"),
+                criteria_passed: result
+                    .evaluation
+                    .findings()
+                    .values()
+                    .filter(|f| f.passed)
+                    .count() as u32,
+            },
+            uncertainty_bp,
+            rules: vec![ReflexRule {
+                id: format!("fill-bias@{venue_id}"),
+                when: vec![Condition::Equals {
+                    input: "venue".to_string(),
+                    value: correction.venue.clone(),
+                }],
+                output: "twin_entry_bps".to_string(),
+                add_bps,
+            }],
+        };
+        let compiled = match self.compiler.compile(&discovery, now) {
+            Ok(compiled) => compiled,
+            Err(_) => {
+                *round.packages.entry("refused").or_default() += 1;
+                metrics.count(REFLEX_PACKAGES, labels([("outcome", "refused")]));
+                return Ok(());
+            }
+        };
+        let signed = match &self.signer {
+            Some(signer) => Some(
+                self.compiler
+                    .sign(compiled.package.clone(), signer.as_ref())?,
+            ),
+            None => None,
+        };
+        let outcome = match (&signed, &self.package_store) {
+            (Some(signed), Some(store)) => {
+                store.put(
+                    &format!("{}.json", signed.package.package_id),
+                    signed.encode()?,
+                )?;
+                "published"
+            }
+            (Some(_), None) => "signed",
+            (None, _) => "held_unsigned",
+        };
+        *round.packages.entry(outcome).or_default() += 1;
+        metrics.count(REFLEX_PACKAGES, labels([("outcome", outcome)]));
+        if self.packages.len() == RETAINED {
+            self.packages.pop_front();
+        }
+        self.packages.push_back(CompiledReflex {
+            question: question.to_string(),
+            compiled,
+            signed,
+        });
+        Ok(())
+    }
+}
+
+/// The desk's `max_started_sweeps`, as `ResearchLoop::new` configures it.
+const DESK_MAX_STARTED_SWEEPS: i64 = 24;
+
+/// What a research item's compute is spent on.
+const fn work_kind(kind: TaskKind) -> WorkKind {
+    match kind {
+        TaskKind::Simulation | TaskKind::Campaign => WorkKind::Simulation,
+        TaskKind::DataAcquisition => WorkKind::DataSource,
+        TaskKind::Experiment => WorkKind::Model,
+        TaskKind::Label | TaskKind::ToolBuild => WorkKind::Question,
+    }
+}
+
+/// Fill scores with a residual, as the executor reads them.
+fn fill_residuals(fills: &[FillObservation]) -> Vec<FillResidual> {
+    fills
+        .iter()
+        .filter_map(|f| {
+            f.trade_error_bps.map(|error_bps| FillResidual {
+                venue: f.venue.clone(),
+                at: f.filled_at,
+                error_bps,
+            })
+        })
+        .collect()
+}
+
+/// Every paper fill's slippage against its arrival, from the outcome record.
+pub fn slippage_of(platform: &Platform) -> Vec<SlippageObservation> {
+    platform
+        .outcomes()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision.action {
+            qip_twin::capture::Action::Filled { venue, .. }
+                if entry.outcome.slippage_bps_f64().is_finite() =>
+            {
+                Some(SlippageObservation {
+                    venue: venue.to_string(),
+                    object_id: entry.decision.object_id.to_string(),
+                    slippage_bps: entry.outcome.slippage_bps_f64(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A poisoning finding as a gap: the platform needs a source it can trust
+/// for what the implicated sources were saying — a data gap — raised as a
+/// contradiction, since every class is evidence disagreeing with itself or
+/// with the world. The text names the class and the sources, so one
+/// campaign re-found every sweep is one research item and not many.
+fn poisoning_observation(finding: &PoisoningFinding) -> Observation {
+    let sources: Vec<&str> = finding.sources.iter().map(String::as_str).collect();
+    let mut evidence = vec![
+        format!("poisoning:{}", finding.class.as_str()),
+        format!("measured:{}", finding.evidence),
+    ];
+    evidence.extend(finding.sources.iter().map(|s| format!("source:{s}")));
+    evidence.extend(finding.claims.iter().take(8).map(|c| format!("claim:{c}")));
+    Observation {
+        trigger: GapTrigger::Contradiction,
+        wanting: vec![Wanting::Source],
+        observation: format!("{} from {}", finding.class.as_str(), sources.join(", ")),
+        affected_domains: vec!["evidence".to_string()],
+        evidence,
+        severity: poisoning_severity(finding.class),
+        // The detector measures a pattern, not money; stated zero.
+        economic_value: Decimal::ZERO,
+    }
+}
+
+const fn class_str(class: qip_contracts::expansion::GapClass) -> &'static str {
+    use qip_contracts::expansion::GapClass;
+    match class {
+        GapClass::Data => "data",
+        GapClass::Ontology => "ontology",
+        GapClass::Causal => "causal",
+        GapClass::Memory => "memory",
+        GapClass::Model => "model",
+        GapClass::Tool => "tool",
+        GapClass::Specialist => "specialist",
+        GapClass::Execution => "execution",
+        GapClass::ComputeQuantumResearch => "compute_quantum_research",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_contracts::ambient::AcquisitionStatus;
+
+    /// The failure this prevents has happened: the loop stated urgency as
+    /// zero, which was harmless under the additive rank and, once the rank
+    /// became §9.10's product, scored every request at zero — the
+    /// value-of-information path had a caller and could launch nothing. A
+    /// gap with half the decision's value at stake and 80% uncertainty is
+    /// worth the 500 bp re-sweep: 0.5 × 0.8 × 1 × 0.95 = 3800 bp.
+    #[test]
+    fn a_gap_with_economic_value_launches_on_the_product_rank() {
+        let chosen = cheapest_viable(5_000, 8_000, true, 2_000);
+        let (source, criteria) = chosen.expect("a significant, uncertain gap is worth a re-sweep");
+        assert_eq!(
+            source, "resweep",
+            "the cheapest viable observation is the re-sweep"
+        );
+        assert_eq!(criteria.net_value_bp(), 3_800);
+        assert!(criteria.net_value_bp() >= MIN_VIABLE_BP);
+    }
+
+    /// The other half, so the test above is not passing on a rank that
+    /// launches everything: the same gap with no economic significance — what
+    /// every detector that measures no money states — is worth no
+    /// observation at any cost, and neither is one the loop is certain of.
+    /// The Curiosity Engine decides what the sweep's acquisition budget
+    /// buys (R12-AMBIENT-3106): the better-ranked request launches even
+    /// though it arrived second, and the one the budget no longer covers is
+    /// halted as outranked. Mutation: launch candidates in arrival order
+    /// (iterate `requests` instead of `rank_acquisitions(&requests)`) —
+    /// `info-a` launches, `info-b` is outranked, and both status assertions
+    /// fail.
+    #[test]
+    fn the_sweep_budget_buys_the_best_ranked_request_not_the_first_raised() {
+        let config = ResearchConfig {
+            acquisition_budget_bp: 2_000,
+            ..ResearchConfig::default()
+        };
+        let mut research = ResearchLoop::new(config, BTreeMap::new()).expect("assembles");
+        let at = Timestamp::from_secs(1_800_000_000);
+        let request = |id: &str, significance: u32| {
+            InfoRequest::new(
+                id,
+                format!("question {id}"),
+                AcquisitionCriteria::new(significance, significance, 10_000, 1_500)
+                    .expect("criteria"),
+                at.saturating_add(Duration::from_hours(1)),
+                at,
+            )
+            .expect("request")
+        };
+        let low = request("info-a", 5_000);
+        let high = request("info-b", 9_000);
+        assert!(
+            high.criteria().net_value_bp() > low.criteria().net_value_bp(),
+            "premise: the second request ranks higher"
+        );
+        research.candidates.push((low, "acquisition"));
+        research.candidates.push((high, "acquisition"));
+        let mut round = ResearchRound::default();
+
+        research
+            .launch_ranked(&Metrics::new("test"), &mut round)
+            .expect("launches");
+
+        let status = |id: &str| {
+            research
+                .info_requests()
+                .find(|r| r.id() == id)
+                .map(InfoRequest::status)
+        };
+        assert_eq!(status("info-b"), Some(AcquisitionStatus::InProgress));
+        assert_eq!(status("info-a"), Some(AcquisitionStatus::Halted));
+        assert_eq!((round.info_launched, round.info_outranked), (1, 1));
+    }
+
+    #[test]
+    fn a_gap_with_a_zero_factor_launches_nothing_at_any_cost() {
+        assert!(cheapest_viable(0, qip_contracts::ambient::MAX_SEVERITY_BP, true, 0).is_none());
+        assert!(cheapest_viable(qip_contracts::ambient::MAX_SEVERITY_BP, 0, true, 0).is_none());
+    }
+}

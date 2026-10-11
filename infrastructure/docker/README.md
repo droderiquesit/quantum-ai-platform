@@ -9,8 +9,16 @@ Three image definitions.
 | `landing.Dockerfile` | The public landing application | `scripts/deploy-frontends.sh` |
 
 ```sh
-docker build -f infrastructure/docker/Dockerfile --build-arg BINARY=qip-api -t qip-api:dev .
+docker build -f infrastructure/docker/Dockerfile --build-arg BINARY=qip-api \
+  --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+  --build-arg QIP_SOURCE_COMMIT="$(git rev-parse HEAD)" -t qip-api:dev .
 ```
+
+Both build arguments are required and the build stops without them: the
+epoch makes two builds of one commit the same bytes, and the commit is what
+every decision the binary journals names as its code (R12-GOV-6121) — a
+central binary built without it refuses to start anywhere but
+`QIP_DEPLOYMENT=local`.
 
 The platform build's context is the repository root, not this directory. The two
 front-end builds take `frontend/` and `frontend/landing/` respectively, and the
@@ -53,8 +61,7 @@ base image already carries musl-dev and gcc in its own digest-pinned layers, so
 the line was removed rather than pinned (CICD-048); `Dockerfile` says why a
 version pin was the wrong fix. The acceptance suite's
 `the_build_stage_installs_nothing_the_digest_does_not_pin` refuses it returning.
-This does not make the image byte-reproducible on its own — see
-`docs/blueprint/assessment/CICD-b2.json`, CICD-048.
+This does not make the image byte-reproducible on its own.
 
 ## What is not here
 

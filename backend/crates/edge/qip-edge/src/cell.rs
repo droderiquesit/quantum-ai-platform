@@ -32,7 +32,7 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
-use qip_contracts::capital::{CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
@@ -381,6 +381,23 @@ pub const GATE_VENUE_QUARANTINE: &str = "venue_quarantine";
 /// with no `WorkReport`.
 pub const GATE_VENUE_WITHDRAWAL: &str = "venue_withdrawal";
 
+/// The gate an order is refused under when it asks for more of the visible
+/// depth on the side it takes than its envelope's participation bound allows,
+/// or when there is no visible depth to measure it against
+/// (R12-CAPITAL-4088). A constant so the `gate` label stays bounded by source.
+pub const GATE_ENVELOPE_LIQUIDITY: &str = "envelope_liquidity";
+
+/// The gate an order is refused under when it would carry its envelope past
+/// the leverage the grant allows on the equity it has left after realised
+/// loss (R12-CAPITAL-4088).
+pub const GATE_ENVELOPE_LEVERAGE: &str = "envelope_leverage";
+
+/// The gate an order is refused under when the cell requires exposure bounds
+/// ([`CellConfig::with_exposure_bounds_required`]) and the envelope it would
+/// spend carries none — an envelope issued before the bounds existed, or one
+/// minted without them (R12-CAPITAL-4088).
+pub const GATE_ENVELOPE_UNBOUNDED: &str = "envelope_unbounded";
+
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
 /// scope rather than a bound anything waits on: the instruction is re-read
@@ -501,6 +518,21 @@ pub struct CellConfig {
     /// pass in suites written before it existed. The composition root arms
     /// it with [`Self::with_venue_health`]; `qip-edge-node`'s `assemble` does.
     pub venue_health: Option<HealthPolicy>,
+    /// Whether an envelope without liquidity and leverage bounds is refused
+    /// (R12-CAPITAL-4088).
+    ///
+    /// Bounds an envelope *does* carry are enforced whatever this says; this
+    /// decides only what an envelope without them means. Off by default for
+    /// the reason [`Self::journal_wire`] is: every envelope a suite or the
+    /// demo minted before the bounds existed carries none, and arming the
+    /// refusal on every cell would stop them on a grant nobody re-signed.
+    /// That is a weaker library default than the deployment's, and it is
+    /// stated rather than hidden: the composition root arms it with
+    /// [`Self::with_exposure_bounds_required`] — `qip-edge-node`'s
+    /// `assemble` does — and the centre's issuer signs the bounds into every
+    /// envelope it issues, so on the binary path an unbounded envelope is
+    /// one the centre did not issue.
+    pub exposure_bounds_required: bool,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -547,7 +579,18 @@ impl CellConfig {
             journal_wire: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
+            exposure_bounds_required: false,
         }
+    }
+
+    /// Refuse every order against an envelope that carries no liquidity and
+    /// leverage bounds (R12-CAPITAL-4088), under [`GATE_ENVELOPE_UNBOUNDED`].
+    /// The fail-closed reading of an absent bound: a grant signed over no
+    /// participation and no leverage authorises neither.
+    #[must_use]
+    pub fn with_exposure_bounds_required(mut self) -> Self {
+        self.exposure_bounds_required = true;
+        self
     }
 
     /// Quarantine a venue whose reject rate crosses `policy`'s line, for
@@ -1361,6 +1404,16 @@ pub struct Cell {
     /// without one, which behaves as it always did; once installed, every
     /// order must be admitted in its mode before a sequence number is spent.
     mode_gate: Option<qip_execution_engine::modes::ModeGate>,
+    /// The deterministic pre-trade Risk Gate `Cell::send` evaluates every
+    /// order against before a `Placer` is called (W1.9; see
+    /// [`crate::risk_gate`]). `None` is a cell built without one, which sends
+    /// as it always did — a composition root asserts it installed one through
+    /// [`Cell::risk_gate`] rather than this field promising it.
+    risk_gate: Option<crate::risk_gate::CellRiskGate>,
+    /// The fencing epoch this cell places under, when it runs beside a
+    /// standby (R12-REFLEX-8069; see [`crate::fencing`]). `None` is a cell
+    /// with no standby, which places as it always did.
+    fence: Option<crate::fencing::Fence>,
     /// The §31.1 cross-region mirrors this cell takes part in, if an
     /// operator installed any.
     ///
@@ -1552,6 +1605,8 @@ impl Cell {
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
             mode_gate: None,
+            risk_gate: None,
+            fence: None,
             mirror: None,
             region_allocation: None,
             budget,
@@ -1635,6 +1690,41 @@ impl Cell {
     /// asserted rather than trusted.
     pub fn mode_gate(&self) -> Option<&qip_execution_engine::modes::ModeGate> {
         self.mode_gate.as_ref()
+    }
+
+    /// Require every order this cell sends to pass `gate` — the same
+    /// `PreTradeChecker` the desk runs, over the cell's own book — at the one
+    /// seam a `Placer` is called. Contraction only: the gate can refuse an
+    /// order the cell would otherwise have sent, and can admit nothing the
+    /// cell's other gates refused, because it runs after them.
+    pub fn with_risk_gate(mut self, gate: crate::risk_gate::CellRiskGate) -> Self {
+        self.risk_gate = Some(gate);
+        self
+    }
+
+    /// The installed Risk Gate, if any, so a composition root's wiring can be
+    /// asserted rather than trusted.
+    pub fn risk_gate(&self) -> Option<&crate::risk_gate::CellRiskGate> {
+        self.risk_gate.as_ref()
+    }
+
+    /// Place only under the fencing epoch `fence` admits. Contraction only:
+    /// the fence can refuse an order the cell would otherwise have sent and
+    /// admits nothing another gate refused. See [`crate::fencing`] for why
+    /// the check sits here rather than in whatever keeps the lease.
+    pub fn with_fence(mut self, fence: crate::fencing::Fence) -> Self {
+        self.fence = Some(fence);
+        self
+    }
+
+    /// [`Self::with_fence`] on a cell already assembled.
+    pub fn install_fence(&mut self, fence: crate::fencing::Fence) {
+        self.fence = Some(fence);
+    }
+
+    /// The installed fence, if any.
+    pub fn fence(&self) -> Option<&crate::fencing::Fence> {
+        self.fence.as_ref()
     }
 
     /// Bound everything this cell commits by one amount.
@@ -4726,6 +4816,35 @@ impl Cell {
         Some((venue, price))
     }
 
+    /// The price an order for `strategy` taking `side` of `object_id` at
+    /// `venue` would be sent at by [`Self::resolve_pricing`], read from the
+    /// same book: the touch for a marketable strategy, the mid for one that
+    /// rests there.
+    ///
+    /// A marketable strategy with nothing resting at the touch is charged at
+    /// `mid`. That order cannot be sent — `resolve_pricing` refuses it under
+    /// the depth gate and the hold is given back — and refusing it here
+    /// instead would refuse a contributor whose side a net may yet cancel.
+    fn sending_price(
+        &self,
+        strategy: &str,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        mid: Decimal,
+    ) -> Decimal {
+        let Some(PricingPolicy::Marketable) = self.pricing_of(strategy) else {
+            return mid;
+        };
+        self.liquidity
+            .get(venue, object_id)
+            .and_then(|state| match side {
+                BookSide::Ask => state.best_ask(),
+                BookSide::Bid => state.best_bid(),
+            })
+            .map_or(mid, |touch| touch.price)
+    }
+
     /// Take one signal through every per-strategy gate to an intent, or
     /// refuse it.
     ///
@@ -4783,7 +4902,22 @@ impl Cell {
             );
             return Ok(None);
         }
-        let notional = desired * price;
+        // Admission and the region hold are priced where the order will be
+        // *sent*, not where the intent is reasoned. They were both charged at
+        // the mid while a marketable net goes out at the touch, and the Risk
+        // Gate measures the touch — so a buy committed half a spread more than
+        // the region held for it, and an allocation sized to its holds was
+        // spent past its bound by the sum of those half-spreads. One price for
+        // all three is what makes "the hold" and "what the gate sees" the
+        // same number.
+        let charged_at = self.sending_price(
+            signal.strategy.as_str(),
+            &venue,
+            &signal.object_id,
+            side,
+            price,
+        );
+        let notional = desired * charged_at;
         let key = signal.strategy.as_str().to_string();
         let Some(deployed) = self.deployed.get(&key) else {
             self.refuse(
@@ -4828,9 +4962,9 @@ impl Cell {
             .envelope
             .admit(&venue, notional, &deployed.utilisation, now)
         {
-            CapitalGrant::Full => desired,
-            CapitalGrant::Reduced(cap) => {
-                let reduced = cap.checked_div(price).unwrap_or(Decimal::ZERO);
+            CapitalAdmission::Full => desired,
+            CapitalAdmission::Reduced(cap) => {
+                let reduced = cap.checked_div(charged_at).unwrap_or(Decimal::ZERO);
                 self.refuse(
                     report,
                     "capital_reduced",
@@ -4839,7 +4973,7 @@ impl Cell {
                 );
                 reduced
             }
-            CapitalGrant::Refused(reason) => {
+            CapitalAdmission::Refused(reason) => {
                 let reason = drawdown_refusal(
                     &key,
                     &deployed.envelope,
@@ -4863,6 +4997,29 @@ impl Cell {
             return Ok(None);
         }
 
+        // The envelope's liquidity and leverage bounds (R12-CAPITAL-4088),
+        // after the money limits and before the region hold or any intent
+        // exists. The money limits bound how much; these bound whether the
+        // position can be exited and whether it is carried on equity the
+        // grant still has.
+        let verdict = self.deployed.get(&key).and_then(|deployed| {
+            exposure_verdict(
+                &self.liquidity,
+                self.config.exposure_bounds_required,
+                &deployed.envelope,
+                &venue,
+                &signal.object_id,
+                side,
+                quantity,
+                quantity.checked_mul(price),
+                &deployed.utilisation,
+            )
+        });
+        if let Some((gate, reason)) = verdict {
+            self.refuse(report, gate, &reason, now);
+            return Ok(None);
+        }
+
         if self.autonomy.level() == AutonomyLevel::Observation {
             self.refuse(
                 report,
@@ -4882,7 +5039,7 @@ impl Cell {
         // below if any gate between here and the venue refuses, and committed
         // when the order goes out.
         let pass = self.pass;
-        let Some(notional_held) = quantity.checked_mul(price) else {
+        let Some(notional_held) = quantity.checked_mul(charged_at) else {
             self.refuse(
                 report,
                 "region_reservation",
@@ -5255,6 +5412,14 @@ impl Cell {
             );
             return Err(error);
         }
+        // The fence, before the risk gate: a process that does not own the
+        // venue session has no business asking whether an order is within
+        // limits, and the refusal should say which it was.
+        self.fence_admit(now)?;
+        // The deterministic Risk Gate, last of the checks and before the
+        // sequence advances, so a refused order burns no order number. Its
+        // state is the cell's own; see `Cell::risk_admit`.
+        self.risk_admit(None, object_id, venue, side, quantity, price, now)?;
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
         let placed = gateway.try_place(
@@ -5275,6 +5440,158 @@ impl Cell {
                 "broker queue is at capacity; order will be retried on the next pass",
             )),
         }
+    }
+
+    /// Ask the installed Risk Gate whether a replacement for the open order
+    /// `order_id` may be sent: `quantity` of `object_id` at `price`, at
+    /// `venue`, on `side`.
+    ///
+    /// The node's repricer withdraws a resting order and re-sends its
+    /// acknowledged remainder at the touch beneath the cell's placer seam, so
+    /// the replacement never passed through [`Cell::send`] — a new price is a
+    /// new notional, and the gate never saw it (R12-RISK-4093; the route
+    /// table in `qip-acceptance` carried it as the one ungated row). This is
+    /// the same gate over the same book, with one difference that is the
+    /// point of a separate entry: the order being replaced is left out of the
+    /// working set, because the venue has acknowledged withdrawing it, and
+    /// the replacement is the order under check. Counting both would charge
+    /// the intention twice and refuse a requote that adds nothing.
+    ///
+    /// A refusal is journaled and counted under [`crate::risk_gate::GATE_RISK`]
+    /// here, as at [`Cell::send`], because a requote happens outside
+    /// [`Cell::work`] and has no report to push onto. A cell with no gate
+    /// installed admits, as `send` does; `qip-edge-node` cannot assemble a
+    /// cell without one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_replacement(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.fence_admit(now)?;
+        self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`crate::fencing::GATE_FENCED`] when an installed fence
+    /// does not admit an order at `now`. Journaled and counted here, as the
+    /// live-venue refusal is, because both callers sit outside any report.
+    fn fence_admit(&mut self, now: Timestamp) -> Result<()> {
+        let Some(fence) = &self.fence else {
+            return Ok(());
+        };
+        let Err(status) = fence.admits(now) else {
+            return Ok(());
+        };
+        let reason = format!("the cell places nothing: {}", status.describe());
+        self.metrics.refusal(crate::fencing::GATE_FENCED);
+        self.journal.record(
+            Decision::Refused {
+                gate: crate::fencing::GATE_FENCED.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
+    }
+
+    /// The deterministic Risk Gate over the cell's own book: confirmed
+    /// positions, every working order at its remaining size except
+    /// `replacing`, and the gross its live verified grants sum to. Nothing
+    /// here is a model or reaches the centre.
+    #[allow(clippy::too_many_arguments)]
+    fn risk_admit(
+        &mut self,
+        replacing: Option<&str>,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(gate) = self.risk_gate.as_mut() else {
+            return Ok(());
+        };
+        let granted = self
+            .deployed
+            .values()
+            .filter(|deployed| deployed.envelope.is_live(now))
+            .try_fold(Decimal::ZERO, |sum, deployed| {
+                sum.checked_add(deployed.envelope.gross_limit())
+            })
+            .ok_or_else(|| Error::numeric("the cell's granted gross overflows"))?;
+        let held = self.positions.iter().map(|(key, quantity)| {
+            // `Cell::position_key` writes `venue/object`; a key that does
+            // not split that way is priced as nothing the gate has seen,
+            // and refuses, rather than being dropped.
+            let (venue_key, object) = key.split_once('/').unwrap_or(("", key.as_str()));
+            crate::risk_gate::Holding {
+                venue: venue_key,
+                object,
+                signed_quantity: *quantity,
+                price: None,
+            }
+        });
+        let resting = self
+            .working
+            .iter()
+            .filter(|(id, _)| replacing != Some(id.as_str()))
+            .map(|(_, working)| {
+                let order = &working.order;
+                let remaining = (order.quantity - order.filled).max(Decimal::ZERO);
+                crate::risk_gate::Holding {
+                    venue: order.venue.as_str(),
+                    object: order.object_id.as_str(),
+                    signed_quantity: match order.side {
+                        BookSide::Ask => remaining,
+                        BookSide::Bid => -remaining,
+                    },
+                    price: Some(order.price),
+                }
+            });
+        let checked = gate.check(
+            &self.config.cell_id,
+            held.chain(resting),
+            granted,
+            object_id,
+            venue,
+            side,
+            quantity,
+            price,
+            now,
+        )?;
+        if checked.is_approved() {
+            return Ok(());
+        }
+        let reason = format!(
+            "the cell's risk gate refused {}{} {} of {} at {}: {}",
+            match replacing {
+                Some(_) => "the replacement for ",
+                None => "",
+            },
+            match side {
+                BookSide::Ask => "a buy of",
+                BookSide::Bid => "a sale of",
+            },
+            quantity,
+            object_id.as_str(),
+            venue.as_str(),
+            checked.decision.describe()
+        );
+        self.metrics.refusal(crate::risk_gate::GATE_RISK);
+        self.journal.record(
+            Decision::Refused {
+                gate: crate::risk_gate::GATE_RISK.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Record an order the venue accepted: the open order its fills will be
@@ -7569,15 +7886,17 @@ impl Cell {
             used.gross_committed += pending;
             Some(
                 match desk.envelope().admit(&intent.venue, notional, &used, now) {
-                    CapitalGrant::Refused(reason) => CapitalGrant::Refused(drawdown_refusal(
-                        desk.strategy().as_str(),
-                        desk.envelope(),
-                        &used,
-                        &intent.venue,
-                        notional,
-                        reason,
-                        now,
-                    )),
+                    CapitalAdmission::Refused(reason) => {
+                        CapitalAdmission::Refused(drawdown_refusal(
+                            desk.strategy().as_str(),
+                            desk.envelope(),
+                            &used,
+                            &intent.venue,
+                            notional,
+                            reason,
+                            now,
+                        ))
+                    }
                     other => other,
                 },
             )
@@ -7596,8 +7915,41 @@ impl Cell {
                 );
                 None
             }
-            Some(Some(CapitalGrant::Full)) => Some(notional),
-            Some(Some(CapitalGrant::Reduced(cap))) => {
+            Some(Some(CapitalAdmission::Full)) => {
+                // The desk's envelope meets the same liquidity and leverage
+                // bounds a strategy's does (R12-CAPITAL-4088): a cycle leg
+                // that takes a thin book whole is the unexitable position
+                // the bound exists for, whoever sends it.
+                let verdict = self.desk.as_ref().and_then(|installed| {
+                    let desk = &installed.desk;
+                    let mut used = desk.utilisation().clone();
+                    used.gross_committed += pending;
+                    let side = if intent.signed_size.is_positive() {
+                        BookSide::Ask
+                    } else {
+                        BookSide::Bid
+                    };
+                    exposure_verdict(
+                        &self.liquidity,
+                        self.config.exposure_bounds_required,
+                        desk.envelope(),
+                        &intent.venue,
+                        &intent.object_id,
+                        side,
+                        intent.signed_size.abs(),
+                        Some(notional),
+                        &used,
+                    )
+                });
+                match verdict {
+                    Some((gate, reason)) => {
+                        self.refuse(report, gate, &reason, now);
+                        None
+                    }
+                    None => Some(notional),
+                }
+            }
+            Some(Some(CapitalAdmission::Reduced(cap))) => {
                 self.refuse(
                     report,
                     "arbitrage_capital",
@@ -7609,7 +7961,7 @@ impl Cell {
                 );
                 None
             }
-            Some(Some(CapitalGrant::Refused(reason))) => {
+            Some(Some(CapitalAdmission::Refused(reason))) => {
                 self.refuse(report, "capital", &reason, now);
                 None
             }
@@ -9143,7 +9495,7 @@ impl Cell {
     /// envelope check is here — a strategy that has exhausted the region's
     /// budget must not contribute to a net at all.
     ///
-    /// Refused whole, never reduced. `CapitalGrant::Reduced` narrows an order
+    /// Refused whole, never reduced. `CapitalAdmission::Reduced` narrows an order
     /// to what one strategy's envelope has left; a region allocation short of
     /// what a strategy asked for is a different fact — the capital is
     /// somewhere else — and trimming would spend a remainder the centre may
@@ -10003,6 +10355,57 @@ fn region_hold_id(pass: u64, strategy: &str) -> String {
     format!("{pass}:strategy:{strategy}")
 }
 
+/// The envelope's liquidity and leverage verdict on one order
+/// (R12-CAPITAL-4088): `None` to admit, or the gate and reason to refuse.
+///
+/// A free function over the pieces it reads so the caller can journal the
+/// refusal through `&mut self` without holding a borrow of the envelope.
+/// `notional` is `None` when it could not be represented, which refuses
+/// under the leverage gate: a gross the cell cannot compute is not one it
+/// may assume fits. An envelope with no bounds is admitted here only when
+/// the cell does not require them; the money limits have already run.
+#[allow(clippy::too_many_arguments)]
+fn exposure_verdict(
+    liquidity: &CellLiquidity,
+    required: bool,
+    envelope: &VerifiedEnvelope,
+    venue: &VenueId,
+    object: &ObjectId,
+    side: BookSide,
+    quantity: Decimal,
+    notional: Option<Decimal>,
+    used: &Utilisation,
+) -> Option<(&'static str, String)> {
+    if envelope.exposure().is_none() && !required {
+        return None;
+    }
+    let Some(notional) = notional else {
+        return Some((
+            GATE_ENVELOPE_LEVERAGE,
+            "the order's notional cannot be represented, so its leverage cannot be checked"
+                .to_string(),
+        ));
+    };
+    // The whole visible side the order takes: what is resting there for it
+    // to trade against, and so what an exit on the other side of the same
+    // book would have to find again.
+    let depth = liquidity
+        .get(venue, object)
+        .map_or(Decimal::ZERO, |state| state.book().total_size(side));
+    match envelope.check_exposure(quantity, depth, notional, used) {
+        Ok(()) => None,
+        Err(qip_contracts::ExposureBreach::Unbounded(reason)) => {
+            Some((GATE_ENVELOPE_UNBOUNDED, reason))
+        }
+        Err(qip_contracts::ExposureBreach::Liquidity(reason)) => {
+            Some((GATE_ENVELOPE_LIQUIDITY, reason))
+        }
+        Err(qip_contracts::ExposureBreach::Leverage(reason)) => {
+            Some((GATE_ENVELOPE_LEVERAGE, reason))
+        }
+    }
+}
+
 /// The `capital` refusal of a commitment by an owner latched on a leg the
 /// cell could not price: whose, under which grant, which leg and why, and
 /// what clears it.
@@ -10055,7 +10458,8 @@ fn drawdown_refusal(
         realised_loss: Decimal::ZERO,
         ..used.clone()
     };
-    if envelope.admit(venue, notional, &without_loss, now) == CapitalGrant::Refused(reason.clone())
+    if envelope.admit(venue, notional, &without_loss, now)
+        == CapitalAdmission::Refused(reason.clone())
     {
         return reason;
     }

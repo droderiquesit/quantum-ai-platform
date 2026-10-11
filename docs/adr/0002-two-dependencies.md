@@ -18,8 +18,15 @@ Three reasons, in order of how much they mattered.
 **A supply chain small enough to audit.** A typical Rust service of this size
 pulls in several hundred transitive crates. Nobody reads them. For a system
 that moves money, "nobody has read the code that computes our risk numbers" is
-not a defensible position, and the 11 packages in this lockfile can
-actually be read.
+not a defensible position, and the 11 packages this lockfile held when this
+was decided could actually be read.
+
+*Since ADR 0109 (accepted 2026-10-11), which supersedes this record's
+decision sentence for crates outside the decision core:* the lockfile now
+holds 43 packages — 42 names, `getrandom` resolved at two versions — and every
+one is a line in `scripts/dependency-allowlist.txt` naming the ADR that
+admitted it. The decision core is still held to `serde` and `serde_json`. The
+figure is a numeral on purpose; `documentation.rs` fails when it drifts.
 
 **A build that works offline and reproducibly.** The platform builds with no
 network access beyond the two dependencies. A numeric result computed today

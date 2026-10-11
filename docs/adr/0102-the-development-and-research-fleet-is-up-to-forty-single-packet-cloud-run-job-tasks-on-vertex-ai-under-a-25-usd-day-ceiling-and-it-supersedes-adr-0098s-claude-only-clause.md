@@ -606,3 +606,25 @@ instruction to raise autonomy. The `enable_vertex_ai` flag in the platform's
 tfvars is **not** flipped by this record: the platform's training port has no
 client, as that variable's own description says, and the fleet's use of the
 same API is the fleet's Terraform root's business, not the platform's.
+
+## Amendment — 2026-10-11, the sandbox's project, egress and telemetry (R12-SEC-9077)
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The decisions above are
+unchanged.
+
+1. **The fleet stays in the `dev` project for now** and moves to the
+   *engineering* project at ADR 0113 §4's trigger. A project per sandbox is
+   refused: a Cloud Run Job task is already ephemeral and single-packet, and
+   a project per task multiplies IAM surface for no isolation the job's own
+   identity does not already give.
+2. **Egress is restricted, not open.** The job routes all egress through the
+   VPC, to a subnet whose firewall admits only Google APIs over Private Google
+   Access; nothing else is reachable. A plan shows it and a test pins it.
+3. **Read-only telemetry by default.** The fleet identity gains
+   `roles/monitoring.viewer` and nothing broader; its bucket write grant is
+   narrowed to its own output prefix where the storage conditions allow it,
+   and the remaining width is stated in the module if they do not.
+4. **Synthetic data is enforced**: a packet naming a dataset outside the
+   committed synthetic and licensed-research list is refused by the worker
+   before any model call.

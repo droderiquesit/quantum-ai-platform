@@ -12,6 +12,15 @@ serde.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
 qip-contracts.workspace = true
+# The capture path (`capture.rs`) serialises the canonical payload with
+# `serde_json`. It builds `qip_contracts::captured_event` types, not
+# `qip-storage` ones: a Lane 0 crate must not link the storage clients.
+serde_json.workspace = true
+
+[dev-dependencies]
+# The capture test seals what the capture path builds into a real lake, which
+# is the property it exists for. Test-only: the shipped crate never links it.
+qip-storage.workspace = true
 
 [lints]
 workspace = true

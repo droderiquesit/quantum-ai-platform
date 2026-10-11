@@ -728,16 +728,34 @@ fn the_execution_node_has_no_external_address_and_no_container_runtime() {
     );
 
     // And the machine shape is the blueprint's, refused rather than defaulted.
+    // R12-REFLEX-8002 (GCP v3.0 §1): C4D/C4 only, "a C3 or N2 shape must be
+    // refused at plan". This asserted the four C3/C3D shapes were present
+    // until 2026-10-11 — the older §41.4 range — which is the assessment's
+    // INCORRECT grade written as a test; it now asserts the opposite, on the
+    // validation's code rather than its prose.
     let variables = read("infrastructure/terraform/modules/execution-node/variables.tf");
+    let permitted = without_comments(&variables);
+    let permitted = permitted
+        .split("variable \"machine_type\"")
+        .nth(1)
+        .and_then(|rest| rest.split("error_message").next())
+        .expect("modules/execution-node declares machine_type with a validation");
     for shape in [
-        "c3-highcpu-8",
-        "c3-highcpu-22",
-        "c3d-highcpu-8",
-        "c3d-highcpu-16",
+        "\"c4-highcpu-8\"",
+        "\"c4-highcpu-16\"",
+        "\"c4d-highcpu-8\"",
+        "\"c4d-highcpu-16\"",
     ] {
         assert!(
-            variables.contains(shape),
+            permitted.contains(shape),
             "the permitted machine types no longer include {shape}"
+        );
+    }
+    for family in ["\"c3-", "\"c3d-", "\"n2-", "\"n2d-"] {
+        assert!(
+            !permitted.contains(family),
+            "the execution node admits a {family}… shape; R12-REFLEX-8002 refuses every \
+             family but C4 and C4D at plan"
         );
     }
     assert!(
@@ -2261,6 +2279,30 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         // use to prove they hold no authority over capital envelopes or custodial
         // resources (GOV-026). It has no roles on capital or custody resources.
         ("terraform".to_string(), "agent_identity".to_string()),
+        // The event-fabric broker, `qip-fabricd` (ADR 0100 §2): the broker
+        // template runs as it, passed into `modules/event-fabric-broker` as
+        // `service_account_email` by the root's `fabric.tf`. Logs and metrics
+        // only. Added with the broker's Terraform (`d7675f60`); bound below.
+        ("terraform".to_string(), "fabricd".to_string()),
+        // The ledger writer, `qip-ledgerd` (ADR 0100 §2): its one machine runs
+        // as it. Logs and metrics only. Added in `d7675f60`; bound below.
+        ("ledgerd".to_string(), "ledgerd".to_string()),
+        // The Cloud Build private pool's build identity (R12 CICD-9097,
+        // `modules/build-pool`): every build `deploy.yml` submits to the pool
+        // runs as it — `gcloud builds submit --service-account
+        // "${POOL_ACCOUNT}"`, where the workflow derives `POOL_ACCOUNT` as
+        // `qip-build-<env>@…`, the module's `account_id`. Log writes and one
+        // prefix of its staging bucket; no registry write, no secret, signs
+        // nothing. Created only where `cloud_build_private_pool_enabled`.
+        ("build-pool".to_string(), "build".to_string()),
+        // The model-pack publisher (ADR 0110 decision 4, `artefact-signing.tf`):
+        // `.github/workflows/model-pack-publish.yml` impersonates it through
+        // its own Workload Identity pool, limited to this repository, that
+        // workflow and its protected environment, after two distinct people
+        // approved. It holds `cloudkms.signer` on the `model-pack` key and
+        // nothing else — never on a key the API signs with. No key file.
+        // Created only where `artefact_signing` is set.
+        ("terraform".to_string(), "model_pack_publisher".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -2347,6 +2389,53 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         "{CONTROL_PLANE_MODULE}'s cluster does not run its nodes as \
          google_service_account.nodes, so that account is an identity with nothing attached \
          and the nodes run as the project's default compute identity"
+    );
+
+    // The two fabric identities lane C added (`d7675f60`) are held the same
+    // way, end to end, because each is attached by one line whose loss leaves
+    // the account existing, granted, and listed above while the machine runs
+    // as the default compute identity. `terraform.fabricd`: the root passes
+    // its email into the broker module, and the module's template runs as
+    // what it is passed.
+    let fabric = without_comments(&read("infrastructure/terraform/fabric.tf"));
+    let broker_call = fabric
+        .split("module \"event_fabric_broker\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .unwrap_or_else(|| panic!("fabric.tf no longer instantiates modules/event-fabric-broker"));
+    assert!(
+        broker_call.lines().any(|line| collapsed(line)
+            == "service_account_email = google_service_account.fabricd[0].email"),
+        "fabric.tf does not hand google_service_account.fabricd to the broker module, so the \
+         fabricd account is an identity with nothing attached"
+    );
+    let broker = without_comments(&read(
+        "infrastructure/terraform/modules/event-fabric-broker/main.tf",
+    ));
+    let template = terraform_resources(&broker, "google_compute_instance_template")
+        .into_iter()
+        .find(|(name, _)| name == "event_fabric_broker")
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| panic!("the broker module declares no instance template"));
+    assert!(
+        template
+            .lines()
+            .any(|line| collapsed(line) == "email = var.service_account_email"),
+        "the broker template does not run as the service_account_email it is given"
+    );
+    // `ledgerd.ledgerd`: the module's own machine runs as it.
+    let ledgerd = without_comments(&read("infrastructure/terraform/modules/ledgerd/main.tf"));
+    let machine = terraform_resources(&ledgerd, "google_compute_instance")
+        .into_iter()
+        .find(|(name, _)| name == "ledgerd")
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| panic!("modules/ledgerd declares no ledgerd machine"));
+    assert!(
+        machine
+            .lines()
+            .any(|line| collapsed(line) == "email = google_service_account.ledgerd.email"),
+        "the ledger machine does not run as google_service_account.ledgerd, so that account \
+         is an identity with nothing attached"
     );
 }
 
@@ -4391,14 +4480,116 @@ fn the_pipeline_starts_with_the_least_permission_it_can() {
     );
 }
 
+/// The dependency policy is enforced by a script that refuses, not by prose.
+///
+/// **What changed (`ebe92f0e`, ADR 0109, accepted 2026-10-11).** The script
+/// held its permitted set in-line as `readonly PERMITTED=(serde serde_json)`,
+/// and this test asserted that array existed. ADR 0109 moved the set to a
+/// committed allow-list, `scripts/dependency-allowlist.txt`, one package per
+/// line with the record that admitted it, so the array is gone by design. The
+/// old test only asserted spellings in the script; this one keeps those
+/// structural checks against the new mechanism and adds what the old one never
+/// had — it **runs** the script, against a copy of the real allow-list and a
+/// fabricated lockfile, and proves it refuses an unlisted package (direct or
+/// transitive: the lockfile holds both), refuses an allow-list line with no
+/// reason, refuses a missing allow-list, and admits a lockfile it should.
+///
+/// Mutation: make the violations branch `exit 0` — the refusal assertion
+/// fires. Drop the unexplained-line check — the reason assertion fires.
 #[test]
 fn the_dependency_policy_is_enforced_rather_than_documented() {
     let script = read("scripts/check-dependencies.sh");
     assert!(script.contains("set -euo pipefail"));
-    assert!(script.contains("readonly PERMITTED"));
-    // And it actually reads the lockfile rather than the manifests, so a
-    // transitive dependency cannot slip past.
-    assert!(script.contains("Cargo.lock"));
+    // It reads the lockfile rather than the manifests, so a transitive
+    // dependency cannot slip past, and the committed allow-list rather than a
+    // list nobody reviews.
+    assert!(script.contains("backend/Cargo.lock"));
+    assert!(script.contains("scripts/dependency-allowlist.txt"));
+    let allowlist = read("scripts/dependency-allowlist.txt");
+    // The decision core is still listed by name, each with its reason.
+    for core in ["serde", "serde_json"] {
+        assert!(
+            allowlist.lines().any(|line| {
+                let mut words = line.split_whitespace();
+                words.next() == Some(core) && line.contains("# ADR")
+            }),
+            "the allow-list does not admit `{core}` with the record that admitted it"
+        );
+    }
+
+    // Behaviour, not spelling: run the real script from a scratch tree whose
+    // only difference is the lockfile (and, for two cases, the allow-list).
+    let tree = std::env::temp_dir().join(format!(
+        "qip-dependency-policy-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&tree);
+    std::fs::create_dir_all(tree.join("scripts")).expect("scratch scripts directory");
+    std::fs::create_dir_all(tree.join("backend")).expect("scratch backend directory");
+    std::fs::write(tree.join("scripts/check-dependencies.sh"), &script).expect("copy the script");
+    let run = |allowlist: Option<&str>, lock: &str| {
+        let list = tree.join("scripts/dependency-allowlist.txt");
+        match allowlist {
+            Some(text) => std::fs::write(&list, text).expect("write the allow-list"),
+            None => {
+                let _ = std::fs::remove_file(&list);
+            }
+        }
+        std::fs::write(tree.join("backend/Cargo.lock"), lock).expect("write the lockfile");
+        let output = std::process::Command::new("bash")
+            .arg(tree.join("scripts/check-dependencies.sh"))
+            .output()
+            .expect("bash runs");
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let lock = |packages: &[&str]| {
+        packages
+            .iter()
+            .map(|name| format!("[[package]]\nname = \"{name}\"\nversion = \"1.0.0\"\n\n"))
+            .collect::<String>()
+    };
+
+    let (ok, said) = run(
+        Some(&allowlist),
+        &lock(&["qip-core", "serde", "serde_json"]),
+    );
+    assert!(
+        ok,
+        "premise: a lockfile of listed packages is admitted: {said}"
+    );
+    assert!(said.contains("all permitted"), "{said}");
+
+    let (ok, said) = run(
+        Some(&allowlist),
+        &lock(&["qip-core", "serde", "an-unlisted-transitive-crate"]),
+    );
+    assert!(
+        !ok,
+        "an unlisted package in the lockfile was admitted: {said}"
+    );
+    assert!(said.contains("an-unlisted-transitive-crate"), "{said}");
+
+    let (ok, said) = run(
+        Some(&format!("{allowlist}\nunexplained-crate\n")),
+        &lock(&["serde"]),
+    );
+    assert!(
+        !ok,
+        "an allow-list line with no reason was admitted: {said}"
+    );
+
+    let (ok, said) = run(None, &lock(&["serde"]));
+    assert!(!ok, "a missing allow-list permitted everything: {said}");
+
+    let _ = std::fs::remove_dir_all(&tree);
 }
 
 // --- the evidence store -----------------------------------------------------
@@ -4487,8 +4678,34 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     // An append-only store whose writer holds a delete permission is not
     // append-only; it is a store nobody has deleted from yet. Each of the roles
     // below carries `storage.objects.delete`.
-    for path in files_with_extension("infrastructure/terraform", "tf") {
-        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+    //
+    // What a `validation` block says is not a grant, and since `3ab4245b` the
+    // root's `pam_entitlements` refuses the basic roles by naming them —
+    // `setintersection(e.roles, ["roles/owner", ...]) == 0` — which a bare
+    // substring search read as the root granting `roles/owner`. So validation
+    // blocks are set aside before the search (they can only refuse; nothing in
+    // one reaches IAM), and in exchange the refusal is asserted to exist, and
+    // the per-environment tfvars — where an entitlement's roles would actually
+    // be written — are now searched too, which this test never did.
+    let mut refusals = 0usize;
+    let mut sources = files_with_extension("infrastructure/terraform", "tf");
+    sources.extend(files_with_extension(
+        "infrastructure/environments",
+        "tfvars",
+    ));
+    assert!(
+        sources
+            .iter()
+            .any(|path| path.extension().is_some_and(|ext| ext == "tfvars")),
+        "premise: no environment tfvars was found, so the tfvars half searches nothing"
+    );
+    for path in sources {
+        let (content, validations) = without_validation_blocks(&without_comments(
+            &std::fs::read_to_string(&path).expect("readable"),
+        ));
+        if validations.contains("\"roles/owner\"") && validations.contains("== 0") {
+            refusals += 1;
+        }
         for role in [
             "roles/storage.objectAdmin",
             "roles/storage.objectUser",
@@ -4506,12 +4723,45 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
         }
     }
 
+    // The refusal that made the validation carve-out necessary is still there:
+    // if it goes, the carve-out has nothing left to justify it.
+    assert!(
+        refusals >= 1,
+        "no validation refuses a basic role any more; `pam_entitlements` in \
+         infrastructure/terraform/variables.tf should refuse roles/owner, roles/editor \
+         and roles/viewer"
+    );
+
     // And what is granted is the narrow one.
     let evidence = read("infrastructure/terraform/modules/evidence/main.tf");
     assert!(
         evidence.contains("roles/storage.objectCreator"),
         "the evidence writers hold something other than object creation"
     );
+}
+
+/// A Terraform file split into everything outside its `validation { ... }`
+/// blocks, and the text of those blocks. A validation can only refuse a
+/// value; nothing written inside one reaches IAM, so a search for a granted
+/// role reads the first half and a search for a refusal the second.
+fn without_validation_blocks(content: &str) -> (String, String) {
+    let mut kept = Vec::new();
+    let mut validations = Vec::new();
+    let mut depth = 0i64;
+    for line in content.lines() {
+        if depth == 0 && collapsed(line) == "validation {" {
+            depth = 1;
+            validations.push(line);
+            continue;
+        }
+        if depth > 0 {
+            depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+            validations.push(line);
+            continue;
+        }
+        kept.push(line);
+    }
+    (kept.join("\n"), validations.join("\n"))
 }
 
 #[test]
@@ -4587,44 +4837,69 @@ fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
 
 #[test]
 fn cost_anomalies_are_not_yet_journaled_to_fabric_tasks() {
-    // FINOPS-018: budget alerts and cost-anomaly jobs must raise Fabric tasks.
-    // This test documents the current gap: no infrastructure exists to turn a
-    // cost anomaly into a journaled Fabric task or incident.
+    // GAP PIN (FINOPS-018): budget alerts and cost-anomaly jobs must raise
+    // Fabric tasks, journaling project, labels, amount and threshold, with
+    // dedup. None of that exists. The previous version of this test said it
+    // "fails if any of these exist" and then asserted only that a billing
+    // budget did — it could not fail on any of the three things it named.
+    // It now asserts each absence, so the first piece to land fails it and
+    // it is replaced with the integration test the requirement asks for
+    // (a billing-export fixture in, one task out, a duplicate refused).
     //
-    // The infrastructure needed:
-    // 1. A Cloud Monitoring or BigQuery cost-anomaly job that detects anomalies
-    //    (requires FINOPS-009: billing export to BigQuery, which is MISSING)
-    // 2. An adapter that catches budget alerts (via Pub/Sub) or anomaly results
-    //    and creates Fabric tasks, journaling project, labels, amount and threshold.
-    // 3. Dedup logic ensuring the same anomaly does not create two tasks.
-    //
-    // Current state:
-    // - google_billing_budget exists and is guarded to have no programmatic
-    //   actions (a_billing_budget_notifies_and_never_carries_a_programmatic_action).
-    // - BigQuery billing export is not yet enabled (FINOPS-009 MISSING).
-    // - No Cloud Monitoring or BQ anomaly job exists.
-    // - No Fabric task/incident creation path exists in the Rust workspace.
-    //
-    // This test fails if any of these exist, but they do not, so the test
-    // passes as a gate against accidental early implementation. Once the
-    // infrastructure lands, this test should be replaced with an integration
-    // test that feeds a billing-export fixture and verifies task creation.
+    // Mutation: add `pub struct CostAnomalyTask;` to any crate's `src/` — the
+    // Rust assertion fires. Add a `google_bigquery_data_transfer_config` (a
+    // scheduled anomaly query) to any module — the Terraform assertion fires.
+    // Route the budget to a `pubsub_topic` — the notification assertion fires.
     let mut budget_count = 0usize;
-
+    let mut tf_files = 0usize;
     for path in files_with_extension("infrastructure/terraform", "tf") {
+        tf_files += 1;
         let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
         if content.contains("resource \"google_billing_budget\"") {
             budget_count += 1;
+            assert!(
+                !content.contains("pubsub_topic"),
+                "{}: a budget now notifies a topic — the anomaly path may be landing",
+                path.display()
+            );
+        }
+        for line in content.lines() {
+            let line = line.trim_start();
+            assert!(
+                !line.starts_with("resource \"google_bigquery_data_transfer_config\""),
+                "{}: a scheduled BigQuery job exists — the anomaly path may be landing",
+                path.display()
+            );
         }
     }
-
-    // Budgets must exist (guarded by a_billing_budget_notifies_and_never_carries_a_programmatic_action)
-    // They form the source for cost anomalies, though the bridge to Fabric tasks
-    // is not yet built (FINOPS-009 billing export MISSING).
+    assert!(tf_files > 10, "premise: the Terraform tree was walked");
     assert!(
         budget_count >= 1,
-        "expected at least one billing budget (required for FINOPS-018 anomaly detection)"
+        "premise: the budget that would feed the path exists"
     );
+
+    // No Rust identifier in production code names a cost anomaly or a budget
+    // alert. Compared on identifiers with `_` removed and lowercased, so
+    // `CostAnomaly`, `cost_anomaly_task` and `BudgetAlertRaised` all match and
+    // prose in comments (dropped by `production_text`) does not.
+    let mut rust_files = 0usize;
+    for path in files_with_extension("backend/crates", "rs") {
+        if !path.display().to_string().contains("/src/") {
+            continue;
+        }
+        rust_files += 1;
+        let text =
+            qip_acceptance::production_text(&std::fs::read_to_string(&path).expect("readable"));
+        for identifier in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            let folded = identifier.replace('_', "").to_lowercase();
+            assert!(
+                !folded.contains("costanomaly") && !folded.contains("budgetalert"),
+                "{} declares `{identifier}` — FINOPS-018's path may be landing",
+                path.display()
+            );
+        }
+    }
+    assert!(rust_files > 100, "premise: the Rust sources were walked");
 }
 
 // --- retention (FINOPS-014) --------------------------------------------------
@@ -4970,6 +5245,10 @@ fn no_workflow_depends_on_a_repository_variable() {
         // Authenticates by workload identity as infra.yml does, so the same
         // failure mode is available to it; it was outside the list when added.
         ".github/workflows/fleet.yml",
+        // ADR 0110's two-person publish: federates to the one identity that
+        // may sign under the model-pack key, so its provider and account are
+        // derived from the tfvars like every other workflow's.
+        ".github/workflows/model-pack-publish.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -5892,13 +6171,14 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 6] = [
+    const WORKFLOWS: [&str; 7] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
         ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
         ".github/workflows/fleet.yml",
+        ".github/workflows/model-pack-publish.yml",
     ];
 
     /// The outputs each `id`-bearing step of one job writes.
@@ -7293,13 +7573,22 @@ fn every_workload_pulls_from_the_repository_the_pipeline_pushes_to() {
     // Terraform creates `qip-<env>`, and the catalogue reads the prefix from
     // the registry module. If any drifts, every pull in every environment
     // fails with a 404 that names neither of the two that disagree.
+    // Since R12 CICD-9112 the workflow builds into one registry — the build
+    // environment's `qip-<env>` — and every environment pulls the digest
+    // built there. The path is constructed once per job from the build
+    // environment's tfvars, and the per-environment form must not return.
     let deploy = read(".github/workflows/deploy.yml");
     assert!(
         deploy.contains(
-            "docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+            "registry=${build_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}"
         ),
-        "the pipeline no longer pushes to qip-<environment> in the project's \
+        "the pipeline no longer builds into qip-<build environment> in the build project's \
          Artifact Registry"
+    );
+    assert!(
+        !deploy.contains("/qip-${TARGET_ENVIRONMENT}"),
+        "the pipeline names a per-environment registry again; each environment would then run \
+         bytes it built for itself"
     );
     let registry = read("infrastructure/terraform/modules/registry/main.tf");
     assert!(
@@ -9537,20 +9826,65 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
 
     // 2. A provisioned environment is admitted. Without this half, a step that
     //    refused everything would pass.
-    let (code, printed, written) = run("provisioned", "dev", &root);
+    //
+    //    Driven against a fixture rather than dev's committed tfvars since
+    //    ADR 0118: dev now names a project whose number is not recorded until
+    //    the owner's bootstrap runs, so the committed file is case 4's input,
+    //    and a provisioned environment has to be written out here to prove the
+    //    step still admits one.
+    let provisioned_tree = workspace.join("provisioned");
+    let provisioned_dev = provisioned_tree.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&provisioned_dev).expect("the fixture tree is creatable");
+    std::fs::write(
+        provisioned_dev.join("terraform.tfvars"),
+        "project_id     = \"algorik-qip-dev\"\nproject_number = 123456789012\n",
+    )
+    .expect("the fixture tfvars are writable");
+    let (code, printed, written) = run("provisioned", "dev", &provisioned_tree);
     assert_eq!(
         code, 0,
-        "the identity step exited {code} for `dev`, the one provisioned environment. A guard \
-         that refuses everything is not a guard, and this workflow is the tool for recovering a \
-         broken bootstrap. It printed: {printed}"
+        "the identity step exited {code} for a provisioned `dev`. A guard that refuses \
+         everything is not a guard, and this workflow is the tool for recovering a broken \
+         bootstrap. It printed: {printed}"
     );
     assert!(
-        written
-            .lines()
-            .any(|line| line == "project=algorik-platform-dev"),
-        "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
-         it exited 0 without reaching its end, which is the failure the four steps that read \
-         `steps.identity.outputs.project` cannot see"
+        written.lines().any(|line| line == "project=algorik-qip-dev")
+            && written.lines().any(|line| line
+                == "provider=projects/123456789012/locations/global/workloadIdentityPools/qip-github-dev/providers/github"),
+        "the identity step admitted `dev` and did not write the project and the provider built \
+         from its number; it exited 0 without reaching its end, which is the failure the steps \
+         that read `steps.identity.outputs` cannot see. It wrote: {written}"
+    );
+
+    // 4. A real project id whose number is still the `0` marker (ADR 0118) is
+    //    refused, naming the bootstrap that records it. dev's committed tfvars
+    //    are in exactly this state until the owner runs it, but the case is a
+    //    fixture so that it keeps testing the refusal after the number is
+    //    recorded. Before the refusal the step emitted `provider=projects/0/…`
+    //    and the run died at the OIDC exchange talking about an audience.
+    let unrecorded_tree = workspace.join("unrecorded");
+    let unrecorded_dev = unrecorded_tree.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&unrecorded_dev).expect("the fixture tree is creatable");
+    std::fs::write(
+        unrecorded_dev.join("terraform.tfvars"),
+        "project_id     = \"algorik-qip-dev\"\nproject_number = 0\n",
+    )
+    .expect("the fixture tfvars are writable");
+    let (code, printed, written) = run("number-unrecorded", "dev", &unrecorded_tree);
+    assert_ne!(
+        code, 0,
+        "the identity step exited 0 for a project whose tfvars record project_number = 0. It \
+         would authenticate against `projects/0/…`. It wrote: {written}"
+    );
+    assert!(
+        printed.contains("project_number = 0")
+            && printed.contains("scripts/bootstrap-foundation.sh"),
+        "the identity step refused the unrecorded number without naming it and the script that \
+         records it: {printed}"
+    );
+    assert!(
+        written.is_empty(),
+        "the identity step refused the unrecorded number and still wrote outputs: {written}"
     );
 
     // 3. The near miss. A real project id containing the marker as a substring
@@ -9677,7 +10011,7 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
     //    stops. The project id it echoes is printed only after both guards.
     let (code, printed) = run(&real, "dev");
     assert!(
-        printed.contains("project:") && printed.contains("algorik-platform-dev"),
+        printed.contains("project:") && printed.contains("algorik-qip-dev"),
         "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
          provisioned environment: it never echoed the project it would act on. A guard that \
          refuses everything is not a guard. It exited {code} and printed: {printed}"
@@ -11068,5 +11402,156 @@ fn the_deployment_pipeline_passes_source_date_epoch_to_docker_build() {
         docker_build_section.contains("--build-arg")
             && docker_build_section.contains("SOURCE_DATE_EPOCH"),
         "deploy.yml must pass SOURCE_DATE_EPOCH as a --build-arg to docker build"
+    );
+}
+
+/// The non-comment lines of a workflow or Dockerfile, so a sentence
+/// explaining what used to be there cannot satisfy or trip a check.
+fn code_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect()
+}
+
+#[test]
+fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
+    // R12 CICD-9097. `deploy.yml` passed `SOURCE_DATE_EPOCH=$(date +%s)` and
+    // the Dockerfile fell back to the same, so two builds of one commit
+    // embedded two times and could never share a digest: the pipeline's
+    // own input made the build unreproducible. The epoch is now the
+    // commit's timestamp, and the Dockerfile refuses a build without one.
+    let deploy = read(".github/workflows/deploy.yml");
+    let dockerfile = read("infrastructure/docker/Dockerfile");
+    // Premise: both files still build with an epoch at all.
+    assert!(
+        code_lines(&deploy)
+            .iter()
+            .any(|line| line.contains("SOURCE_DATE_EPOCH=${epoch}")),
+        "deploy.yml no longer passes the epoch it computes; this test's premise needs rewriting"
+    );
+    assert!(
+        code_lines(&dockerfile)
+            .iter()
+            .any(|line| line.trim() == "ARG SOURCE_DATE_EPOCH"),
+        "the Dockerfile no longer declares SOURCE_DATE_EPOCH"
+    );
+    assert!(
+        code_lines(&deploy)
+            .iter()
+            .any(|line| line.contains("epoch=\"$(git log -1 --format=%ct \"${DEPLOY_SHA}\")\"")),
+        "deploy.yml does not take the epoch from the commit being deployed"
+    );
+    for (file, text) in [
+        (".github/workflows/deploy.yml", &deploy),
+        ("infrastructure/docker/Dockerfile", &dockerfile),
+    ] {
+        assert!(
+            !code_lines(text)
+                .iter()
+                .any(|line| line.contains("date +%s")),
+            "{file} stamps a build with the clock again; two builds of one commit then differ"
+        );
+    }
+    assert!(
+        code_lines(&dockerfile)
+            .iter()
+            .any(|line| line.contains("test -n \"$SOURCE_DATE_EPOCH\"")),
+        "the Dockerfile builds without an epoch instead of refusing"
+    );
+    // The layers' file times are clamped to it too, or the commit's epoch
+    // fixes the config and leaves every file's mtime to the build.
+    assert!(
+        deploy.contains("--output \"type=docker,rewrite-timestamp=true\""),
+        "deploy.yml does not clamp layer timestamps to the epoch"
+    );
+    // And the check is made: a second, uncached build compared by image id.
+    assert!(
+        deploy.contains("name: a second build of the commit is the same image")
+            && deploy.contains("--no-cache")
+            && deploy.contains("if [ \"$first\" != \"$second\" ]; then"),
+        "deploy.yml no longer builds twice and compares; reproducibility is then asserted, not \
+         measured"
+    );
+}
+
+#[test]
+fn a_promotion_to_a_later_environment_never_builds() {
+    // R12 CICD-9112: rebuilding per environment is prohibited. Only the
+    // build environment's run may build or push; any other environment's
+    // dispatch attests the digest already in the build registry or stops.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        code_lines(&deploy)
+            .iter()
+            .any(|line| line.trim() == "BUILD_ENVIRONMENT: dev"),
+        "deploy.yml names no build environment"
+    );
+    let build_condition = "if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT == env.BUILD_ENVIRONMENT";
+    let refusal_condition = "if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT != env.BUILD_ENVIRONMENT";
+    assert!(
+        deploy.lines().any(|line| line.trim() == build_condition),
+        "the build step can run for an environment other than the build environment"
+    );
+    assert!(
+        deploy.lines().any(|line| line.trim() == refusal_condition),
+        "nothing refuses a promotion whose digest the build environment never pushed"
+    );
+    // Push hangs off the build having happened, so it cannot run where the
+    // build was refused.
+    let push = deploy
+        .split("      - name: push\n")
+        .nth(1)
+        .expect("deploy.yml has a push step");
+    let push_condition = push.lines().next().unwrap_or_default().trim();
+    assert_eq!(
+        push_condition, "if: steps.build.outcome == 'success'",
+        "the push step runs on a condition other than the build having run"
+    );
+}
+
+#[test]
+fn static_analysis_gates_ci_and_deploy_reads_it_by_name() {
+    // R12 CICD-9105. CodeQL ran as a separate workflow and deploy.yml waited
+    // only on ci, so a CodeQL finding stopped nothing. ci now calls it as a
+    // job, and deploy's gate refuses a ci run with no successful `sast / …`
+    // job in it — which is what a commit from before the job existed has.
+    let ci = read(".github/workflows/ci.yml");
+    let codeql = read(".github/workflows/codeql-analysis.yml");
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        codeql.contains("github/codeql-action/analyze"),
+        "codeql-analysis.yml no longer analyses; this test's premise needs rewriting"
+    );
+    assert!(
+        code_lines(&codeql)
+            .iter()
+            .any(|line| line.trim() == "workflow_call:"),
+        "codeql-analysis.yml cannot be called by ci"
+    );
+    let sast = ci
+        .split("\n  sast:\n")
+        .nth(1)
+        .expect("ci.yml declares a `sast` job");
+    assert!(
+        sast.lines()
+            .any(|line| line.trim() == "uses: ./.github/workflows/codeql-analysis.yml"),
+        "ci's sast job does not call the CodeQL workflow"
+    );
+    assert!(
+        deploy.contains("select(.name | startswith(\"sast / \"))")
+            && deploy.contains("ran no static analysis"),
+        "deploy.yml does not read the sast jobs of the ci run it trusts, or does not refuse a run \
+         with none"
+    );
+    // And the separate push/pull_request triggers are gone, so there is one
+    // CodeQL result per commit and it is the one ci gates on.
+    let triggers = codeql
+        .split("\non:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\npermissions:").next())
+        .unwrap_or_default();
+    assert!(
+        !triggers.contains("push:") && !triggers.contains("pull_request:"),
+        "codeql-analysis.yml triggers itself on push or pull request again: {triggers}"
     );
 }

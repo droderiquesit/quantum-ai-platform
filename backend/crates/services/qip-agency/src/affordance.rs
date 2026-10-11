@@ -14,55 +14,18 @@
 
 use crate::{required, text};
 use qip_core::{Decimal, Error};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// How a tool moves its variable. The first six are the action domains §1
-/// names; every other variant is a method AGENCY-010 and AGENCY-011 prohibit.
+/// How a tool moves its variable: `qip_contracts::action::Method`, so an
+/// attribution and a graph edge name an action class in the same vocabulary.
+/// The first six are the action domains §1 names; every other variant is a
+/// method AGENCY-010 and AGENCY-011 prohibit.
 ///
 /// The graph may *record* a prohibited lever, because pretending a lever does
 /// not exist is how it gets used unreviewed. What it may never do is reach a
 /// plan: [`crate::plan::InterventionPlan::plan`] refuses it (AGENCY-047).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Method {
-    Communication,
-    Capital,
-    Product,
-    Operational,
-    Research,
-    Market,
-    FabricatedIdentity,
-    Sockpuppet,
-    FakeConsensus,
-    MisleadingClaim,
-    UndisclosedPromotion,
-    RumourManufacture,
-    WashTrading,
-    Spoofing,
-    PumpAndDump,
-}
-
-impl Method {
-    /// Deceptive or manipulative. Written as "not one of the lawful six" so a
-    /// variant added later is prohibited until somebody argues it is not.
-    pub fn is_deceptive(self) -> bool {
-        !matches!(
-            self,
-            Self::Communication
-                | Self::Capital
-                | Self::Product
-                | Self::Operational
-                | Self::Research
-                | Self::Market
-        )
-    }
-
-    /// Changes a system or product, so its target must be one Algorik owns.
-    fn needs_ownership(self) -> bool {
-        matches!(self, Self::Operational | Self::Product)
-    }
-}
+pub use qip_contracts::action::Method;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Variable {

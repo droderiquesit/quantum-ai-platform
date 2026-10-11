@@ -9,7 +9,11 @@
 # stale reason in place would tell the next reader the node is unauthorised
 # when what it actually is, is unbuildable.
 #
-# What blocks it is named beside the commented entry below: no boot image
+# Since 2026-10-11 (W4.3) the node is *declared* below and not provisioned:
+# `execution_nodes_enabled = false` keeps `module.execution_node` empty, and
+# the root refuses to plan the flag true while either missing value is null.
+#
+# What blocks it is named beside the entry below: no boot image
 # exists yet, and nobody has chosen the node's capital allocation. The first
 # of those changed shape rather than going away. `.github/workflows/image.yml`
 # and `infrastructure/images/execution-node/` are now the bake — built from
@@ -22,8 +26,8 @@
 # only then dispatch `image.yml`. A bake dispatched first refuses, naming this
 # file. The allocation is not like that at all: it is a number a person
 # chooses and no workflow may pick, and ADR 0045 proposes one without setting
-# it. So `execution_nodes = {}` stays — a working configuration, not an
-# incomplete one. `docs/operations/deploying-an-edge-cell.md` carries the whole
+# it. So the flag stays false — a working configuration, not an incomplete
+# one. `docs/operations/deploying-an-edge-cell.md` carries the whole
 # sequence, both values included, under "The exact sequence".
 
 # The project this environment lives in. An identifier, not a secret: it
@@ -33,7 +37,16 @@
 # Each environment names a project of its own, or says it has none. Two
 # environments in one project share one IAM boundary, one KMS key ring and one
 # Binary Authorization attestor, whatever their name prefixes say.
-project_id = "algorik-platform-dev"
+#
+# Since 2026-10-11 (ADR 0118) dev is a new project, `<prefix>-dev`, created by
+# `infrastructure/foundation` inside the platform folder and applied once by
+# the owner with `scripts/bootstrap-foundation.sh`. `algorik-platform-dev`,
+# the project dev lived in until then, is retired by the owner once this one
+# is healthy (docs/ops/runbooks/new-project-from-scratch.md). If the prefix
+# the owner chooses is not `algorik-qip`, the bootstrap rewrites this id —
+# here and in every manifest under infrastructure/gitops that names it — and
+# prints the diff to commit.
+project_id = "algorik-qip-dev"
 
 # The project's numeric id, recorded so nothing has to ask for it. It is an
 # identifier like the id above, Google's service agents are named by it, and
@@ -41,7 +54,17 @@ project_id = "algorik-platform-dev"
 # file can construct its own authentication with no repository variable
 # involved, which matters because a variable set from a broken shell once
 # carried an install advisory where this number should have been.
-project_number = 523718313246
+#
+# 0 until the project exists: a project's number is assigned by Google at
+# creation and cannot be known before it, so this is the same "nothing to
+# authenticate with" value the unprovisioned environments carry. Every
+# workflow that derives an identity from this file refuses 0 by name, and the
+# platform root refuses it at plan time, so no run can reach Google with a
+# guessed audience. `scripts/bootstrap-foundation.sh` writes the real number
+# here and into the two manifests that embed it (gitops/envs/dev/invokers.yaml,
+# the IAP service agent; gitops/envs/dev/portal.yaml, the API's URL) after the
+# foundation apply, and the owner commits that diff.
+project_number = 0
 
 environment      = "dev"
 region           = "us-east4"
@@ -145,12 +168,16 @@ public_ingress  = {}
 gitops_enabled                = true
 gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 
-# --- The one node ADR 0035 authorises, and the two values it still lacks -----
+# --- The one node ADR 0035 authorises, declared and not provisioned ----------
 #
 # ADR 0035 decides: one execution node, `us-east4`, shadow mode, `dev`. Every
-# field below is determined and reviewable; the two written as `<...>` are the
-# ones nobody in this repository can honestly supply, and they are why the map
-# below this comment is still empty rather than why the decision is open.
+# field below is determined and reviewable. Two are `null`, because they are
+# the ones nobody in this repository can honestly supply — and they are why
+# `execution_nodes_enabled` below is false rather than why the decision is
+# open. Declared is not provisioned: with the flag false `main.tf` hands the
+# node module an empty map, so this entry plans nothing, and the root refuses
+# to plan the flag true while either value is still null
+# (`terraform/tests/execution-node-enable.tftest.hcl` proves both halves).
 #
 #   * `newyork-1` is the ladder's third block (environments/README.md) and
 #     `modules/connectivity/NOT-ORDERED.md` records it as the `us-east4` cell:
@@ -160,8 +187,9 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #   * `10.67.0.0/20` is that block. It overlaps neither the trust zones
 #     (10.0.32-35.0/24), nor the console (10.0.16.0/26), nor the control
 #     plane's endpoint (10.0.36.0/28).
-#   * `c3-highcpu-8` is the smallest shape §41.4 permits, which is the right
-#     one for a node configured for a single venue. Note what it costs: the
+#   * `c4-highcpu-8` is the smallest C4 shape R12-REFLEX-8002 permits (C3,
+#     which §41.4 once allowed, is refused at plan), the right one for a node
+#     configured for a single venue. Note what it costs: the
 #     module derives `isolcpus=2-7`, and §41.3's thread assignment wants
 #     2-15. modules/execution-node/README.md says so and the module exports
 #     `isolated_cpus` so a deployment can see which of the two it got.
@@ -179,59 +207,64 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     through private Google access and the central plane over the VPC, and a
 #     NAT would give it an IP-layer route to the internet that nothing asked
 #     for.
-#   * `boot_image` has no value anyone can write **yet**. There is now a bake
-#     — `.github/workflows/image.yml`, with `infrastructure/images/
-#     execution-node/` — which turns the container image `deploy.yml` attested,
+#   * `boot_image = null`: no value anyone can write **yet**. The bake —
+#     `.github/workflows/image.yml`, with `infrastructure/images/
+#     execution-node/` — turns the container image `deploy.yml` attested,
 #     the vendored Envoy and a pinned Ops Agent into a Compute Engine image
 #     meeting the startup script's checks (isolcpus, huge pages, no swap, no
 #     container runtime, /usr/local/bin/{qip-edge-node,envoy,qip-fetch-secret},
 #     the Ops Agent). It has never been dispatched, so there is no self-link.
-#     The image is built for one machine shape — the isolated-core range is in
-#     its kernel command line — so the image named here and `machine_type`
-#     above have to be the same shape or the node boots and declines to trade.
-#     Writing a plausible self-link here would still produce a plan that reads
-#     as ready and an apply that fails after the subnet, the identity and four
-#     IAM bindings exist.
-#   * `region_allocation` is the ceiling on the capital this cell may hold in
-#     reservation. It has no default anywhere on purpose: a default is a number
-#     nobody chose, and this is the one number in a cell's envelope a reviewer
-#     has to have read. An agent picking it would be exactly that failure.
-#     A number is now *proposed* — ADR 0045, `"1000000"`, one tenth of
+#     The path it will be is fixed by the bake:
+#     `projects/algorik-qip-dev/global/images/qip-execution-node-c4-highcpu-8-<commit12>-r<run>`,
+#     printed by the run as `self_link`. The image is built for one machine
+#     shape — the isolated-core range is in its kernel command line — and the
+#     root's validation on `execution_nodes` refuses an image whose name
+#     carries another shape than `machine_type` above.
+#   * `region_allocation = null` is the ceiling on the capital this cell may
+#     hold in reservation. It has no default anywhere on purpose: a default is
+#     a number nobody chose, and this is the one number in a cell's envelope a
+#     reviewer has to have read. An agent picking it would be exactly that
+#     failure. A number is *proposed* — ADR 0045, `"1000000"`, one tenth of
 #     `PlatformConfig::initial_equity`, with its derivation, the alternatives
 #     it rejects and the concentration failure it is the last defence against.
-#     Proposed is not chosen: that record says so in its own first paragraph
-#     and states that this map stays `{}` until somebody edits this file in a
-#     reviewed diff. Reading the ADR is the act; writing the number here is a
-#     second one, and it is a person's.
-#
-# execution_nodes = {
-#   "newyork-1" = {
-#     region       = "us-east4"
-#     zone         = "us-east4-a"
-#     subnet_cidr  = "10.67.0.0/20"
-#     machine_type = "c3-highcpu-8"
-#     boot_image   = "projects/algorik-platform-dev/global/images/<the baked image>"
-#     venues = {
-#       "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
-#     }
-#     create_egress_nat = false
-#     region_allocation = "<the ceiling a person chose>"
-#     default_pricing    = ""
-#     strategy_plan_path = ""
-#     # §31.1. Empty is every venue in the node's own region, which is the only
-#     # state any node has run in. A path here declares which venues are abroad
-#     # and the band this region mirrors each instrument under; it cannot widen
-#     # what the node trades, and the binary refuses at start-up a declaration
-#     # naming a venue outside `venues` above.
-#     cross_region_mirror_path = ""
-#   }
-# }
+#     Proposed is not chosen. Reading the ADR is the act; writing the number
+#     here is a second one, and it is a person's.
 #
 # Shadow mode is not here and must not be added: `main.tf` passes
 # `shadow_mode = true` as a literal, so no tfvars value can let a node out of
 # it, and `an_execution_node_may_reach_its_venues_and_the_central_plane_and_
 # nothing_else` in the acceptance suite refuses the change.
-execution_nodes = {}
+execution_nodes = {
+  "newyork-1" = {
+    region       = "us-east4"
+    zone         = "us-east4-a"
+    subnet_cidr  = "10.67.0.0/20"
+    machine_type = "c4-highcpu-8"
+    boot_image   = null
+    venues = {
+      "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
+    }
+    create_egress_nat  = false
+    region_allocation  = null
+    default_pricing    = ""
+    strategy_plan_path = ""
+    # §31.1. Empty is every venue in the node's own region, which is the only
+    # state any node has run in. A path here declares which venues are abroad
+    # and the band this region mirrors each instrument under; it cannot widen
+    # what the node trades, and the binary refuses at start-up a declaration
+    # naming a venue outside `venues` above.
+    cross_region_mirror_path = ""
+  }
+}
+
+# The owner's switch, and nobody else's. Flipping it is three acts in order:
+# write the baked image's self-link into `boot_image` above, write the
+# allocation a person chose into `region_allocation`, then set this true in
+# the same reviewed diff and read the plan `infra.yml`'s `plan` action prints
+# before anybody dispatches `up`. The plan refuses the flip with either
+# value null, naming the one that is missing.
+execution_nodes_enabled = false
+
 
 # --- Where the node's boot image is baked ------------------------------------
 #
@@ -253,6 +286,19 @@ execution_nodes = {}
 # `region_allocation` — is a number a person chooses and nothing may default.
 #
 # image_bake_subnet_cidr = "10.0.37.0/28"
+
+# --- Where the platform's images are built (R12 CICD-9097) --------------------
+#
+# False: `deploy.yml` builds on the GitHub runner, as it always has. True
+# makes `module.build_pool` create a Cloud Build private pool peered into the
+# Engineering VPC, an identity that may write the build registry and nothing
+# else, and a staging bucket — and `deploy.yml`, which reads *this line* from
+# this file (never a repository variable), then submits every build and its
+# reproducibility rebuild to the pool instead. The owner flips it, reads the
+# plan, applies, and only then does the next deploy run build in the pool;
+# a deploy run before the apply would submit to a pool that does not exist
+# and stop, naming it. Dev only: it is the one environment that builds.
+cloud_build_private_pool_enabled = false
 
 # --- Partner interconnects for connectivity (GCP-031) --------------------------
 #
@@ -475,11 +521,16 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 # existed to authorize. The domains are the Cloud Run URLs a deploy actually
 # printed (never invented, per the variable's contract) plus localhost for
 # development against the real project.
+#
+# The two `algorik-{portal,landing}-rgxpsss2lq-uk.a.run.app` hostnames that
+# were here belonged to `algorik-platform-dev`: a Cloud Run URL carries a
+# per-project hash, so in the new project they name nothing. They return when
+# scripts/deploy-frontends.sh prints the new project's URLs, and not before —
+# an authorised domain nobody serves is a redirect target somebody else could
+# come to own.
 enable_identity_platform = true
 identity_authorized_domains = [
   "localhost",
-  "algorik-portal-rgxpsss2lq-uk.a.run.app",
-  "algorik-landing-rgxpsss2lq-uk.a.run.app",
 ]
 
 # --- The console's route to the platform (ADR 0018) --------------------------
@@ -565,7 +616,7 @@ gitops_kargo_hostname  = ""
 # gateway, then a port-forward:
 #
 #   gcloud container fleet memberships get-credentials qip-dev-gitops \
-#     --project algorik-platform-dev
+#     --project algorik-qip-dev
 #   kubectl -n argocd port-forward svc/argocd-server 8080:443
 #   kubectl -n kargo  port-forward svc/kargo-api     8081:443
 #
@@ -656,7 +707,7 @@ gitops_portal_hostname = ""
 # portal names the portal:
 #
 #   gcloud iap web add-iam-policy-binding \
-#     --project=algorik-platform-dev --resource-type=cloud-run \
+#     --project=algorik-qip-dev --resource-type=cloud-run \
 #     --region=us-east4 --service=qip-dev-portal \
 #     --role=roles/iap.httpsResourceAccessor \
 #     --member='user:YOU@example.com'
@@ -712,3 +763,13 @@ dns_zone_domain = ""
 # type, which is not a reason. Raise it when the addresses have been stable for
 # a while.
 dns_record_ttl_seconds = 300
+
+# The deep brain's compute router (qip_kernel::compute_routing): the in-tree
+# simulator behind the asynchronous quantum gateway, and the quantum-inspired
+# rung through the solver registry, so the dispatch gate, the gateway and the
+# classical verification of a returned candidate run in a deployed process
+# rather than only in tests. A classical baseline is solved first on every
+# problem (ADR 0006) and a simulated answer is never evidence of advantage.
+# Stage and prod leave both null, which is the binary's own default of off.
+deepbrain_quantum_provider = "simulated"
+deepbrain_quantum_inspired = "on"

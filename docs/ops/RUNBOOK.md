@@ -184,7 +184,7 @@ QIP_UNIVERSE_PATH=... QIP_DEEPBRAIN_HEALTH_ADDRESS=127.0.0.1:8082 QIP_DEEPBRAIN_
 
 The full gate is `make check` (**repo**, `Makefile`): `fmt-check lint test
 deps secrets`. It was **not run** here; the last full measurement on the
-integrated tree is in `STATUS.md`: `cargo test --workspace --no-fail-fast`
+integrated tree was recorded in `STATUS.md` (removed 2026-10-11): `cargo test --workspace --no-fail-fast`
 exit 0, 493 `test result:` lines, 6502 passed, 0 failed, 0 ignored.
 
 **Frontend** (**repo**, `frontend/portal/package.json`; **not run**):
@@ -598,7 +598,7 @@ is a forecast.
 | Backup | No restore has ever been performed; the snapshot schedule attaches to nothing | disaster-recovery.md |
 | Node count | CLAUDE.md and ADR 0008 say seven cells; `qip-edge/src/mesh.rs` says nine; the blueprint says three regions | SYSTEM_MAP U14 |
 | Local tooling | Playwright not installed; local Terraform v1.15.8 vs CI 1.9.8 pin | baseline s4 |
-| Tests (last full run) | 6502 passed, 0 failed, 0 ignored; I did not rerun the workspace suite | `STATUS.md` |
+| Tests (last full run) | 6502 passed, 0 failed, 0 ignored; I did not rerun the workspace suite | `STATUS.md` (removed 2026-10-11) |
 | Stale doc | `reconciliation-break.md` shows a JSON body for the halt reason; the route reads the query string | section 4.2 |
 | Stale doc | `SYSTEM_MAP.md` section 3 says no `google_billing_budget` exists; `modules/observability/budget.tf` now declares one behind a flag | `budget.tf` |
 

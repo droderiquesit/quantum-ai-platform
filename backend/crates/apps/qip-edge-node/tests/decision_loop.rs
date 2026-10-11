@@ -1,0 +1,1150 @@
+//! The decision loop with the outbox wired as `main.rs` wires it: the cell
+//! flushes through `FabricMirror`, the relay forwards to the spool writer and
+//! ships to the journal store, and the drain delivers the spool to the tick
+//! lake (ADR 0100 §1, §6; W0.9, W1.2, W1.3, W1.13).
+//!
+//! Every test drives `DecisionLoop::turn` — the call the binary's timer
+//! makes — against a real `SegmentLog` spool and a real `StoreMirror`, so
+//! what is asserted is what the deployed composition does, not what one of
+//! its parts does on its own.
+
+#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
+use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
+use qip_contracts::signal::{SignalKind, StrategyId};
+use qip_contracts::venue::VenueId;
+use qip_core::error::Result;
+use qip_core::ids::ObjectId;
+use qip_core::time::{Duration, Timestamp};
+use qip_core::{Clock, Decimal, SystemClock, dec};
+use qip_core::{CorrelationId, Id, Lineage};
+use qip_edge::cell::{CellConfig, PricingPolicy};
+use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::mesh::PolicyPayloadTopic;
+use qip_edge::policy::VerifiedPolicy;
+use qip_edge::pressure::{Exhaustion, JournalPressure};
+use qip_edge_node::allocation::RegionCapital;
+use qip_edge_node::assemble;
+use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeSink, Sink};
+use qip_edge_node::event_fabric::inputs::RecordedInputs;
+use qip_edge_node::event_fabric::mirror::FabricMirror;
+use qip_edge_node::event_fabric::pressure::{DrainPublisher, PressureGauge, Thresholds};
+use qip_edge_node::event_fabric::relay::{JournalRelay, RelayConfig};
+use qip_edge_node::event_fabric::telemetry::OutboxTelemetry;
+use qip_edge_node::event_fabric::writer::{self, SpoolWriter, WriterConfig};
+use qip_edge_node::feed::{FEED_NAME, SimulatedFeed};
+use qip_edge_node::gateway::{NodeGateway, SimulatedGateway};
+use qip_edge_node::mesh::{MeshLink, MeshSettings, MeshWorker};
+use qip_edge_node::mirror::{StoreMirror, batches};
+use qip_edge_node::scheduler::{DecisionLoop, InstantClock, JournalBound, MarkerFacts, Outbox};
+use qip_events::event_fabric::bindings::REFLEX_PASS_MARKED;
+use qip_events::{AnyEvent, Envelope, EventBody, Topic};
+use qip_execution_engine::order::Side;
+use qip_feature_dag::engine::FeatureEngine;
+use qip_feature_dag::state::MarketState;
+use qip_peer_link::boundary::ReflexPort;
+use qip_storage::BlobStore;
+use qip_storage::blob::MemoryBlobStore;
+use qip_storage::kv::{KeyValueStore, MemoryKeyValueStore};
+use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
+use qip_strategy::ir::{Expr, Rule, StrategySpec};
+use qip_strategy::program::Program;
+use qip_transport::{Admission, MeshEndpoint, MeshInbox, MeshMessage, Method, RecordingSleeper};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+
+const CELL: &str = "london-1";
+const REGION: &str = "europe-west2";
+const VENUE: &str = "XLON";
+const STRATEGY: &str = "always-enter";
+const ENVELOPE_KEY: &[u8] = b"decision-loop-envelope-key";
+
+/// How long a test waits for something another thread does before calling
+/// it a failure. Far longer than any healthy step; short enough that a
+/// regression fails rather than hangs.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn t(secs: i64) -> Timestamp {
+    Timestamp::from_secs(1_760_000_000 + secs)
+}
+
+fn venue() -> VenueId {
+    VenueId::new(VENUE)
+}
+
+fn object() -> ObjectId {
+    ObjectId::from_string("obj-ACME")
+}
+
+static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temp_dir(label: &str) -> PathBuf {
+    let unique = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "qip-decision-loop-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temporary directory can be created");
+    dir
+}
+
+/// A strategy whose one rule always holds, so every pass decides something
+/// and the journal has entries to ship on every turn.
+fn firing_strategy() -> Result<(CompiledStrategy, Program)> {
+    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+    let spec = StrategySpec::new(StrategyId::new(STRATEGY), object(), Duration::from_secs(30))
+        .with_rule(Rule::new(
+            "always",
+            SignalKind::Enter,
+            Expr::Flag(true),
+            Expr::Exact(dec!("1")),
+            Expr::Statistic(0.5),
+            10,
+        ));
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+fn grant() -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(STRATEGY),
+            CELL,
+            dec!("1000000"),
+            dec!("100000"),
+            dec!("50000"),
+            vec![venue()],
+            t(0),
+            t(36_000),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
+    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(1))
+}
+
+fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
+    let mut payload = PolicyPayload::unproduced(1, CELL, t(5));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: grants,
+        },
+        t(5),
+    );
+    VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(5))
+}
+
+/// A key-value store whose writes wait while it is stalled — the journal
+/// store on a hung disk or an unreachable managed endpoint.
+#[derive(Debug, Default)]
+struct StallingStore {
+    inner: MemoryKeyValueStore,
+    stalled: AtomicBool,
+    attempts: AtomicU64,
+}
+
+impl StallingStore {
+    fn stalled() -> Arc<Self> {
+        let store = Arc::new(Self::default());
+        store.stalled.store(true, Ordering::Release);
+        store
+    }
+
+    fn release(&self) {
+        self.stalled.store(false, Ordering::Release);
+    }
+
+    fn attempts(&self) -> u64 {
+        self.attempts.load(Ordering::Acquire)
+    }
+}
+
+impl KeyValueStore for StallingStore {
+    fn get(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        self.inner.get(key)
+    }
+
+    fn put(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        self.attempts.fetch_add(1, Ordering::AcqRel);
+        while self.stalled.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        self.inner.put(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<bool> {
+        self.inner.delete(key)
+    }
+
+    fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.inner.keys_with_prefix(prefix)
+    }
+
+    fn len(&self) -> Result<usize> {
+        self.inner.len()
+    }
+}
+
+/// Everything the tests reach after the loop has taken the cell.
+struct Rig {
+    decisions: DecisionLoop,
+    spool: Arc<SegmentLog>,
+    drain_publisher: Option<DrainPublisher>,
+    telemetry: Arc<OutboxTelemetry>,
+}
+
+/// The node as `main.rs` composes it: an assembled cell with the journal
+/// wire and trimming armed, a firing strategy under a funded share, the
+/// simulated venue with a two-sided touch, and the outbox — spool, writer
+/// thread, relay thread into a `StoreMirror` over `store` — under `bound`.
+fn rig(store: Arc<dyn KeyValueStore>, bound: usize, handoff_capacity: usize) -> Result<Rig> {
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_journal_trimmed_on_ship()
+        .with_journal_wire();
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
+    let mut gateway = SimulatedGateway::new(venue(), 7, t(0))?;
+    let feed = SimulatedFeed::new(venue());
+    feed.attach(&mut node.cell)?;
+    let (compiled, program) = firing_strategy()?;
+    node.cell.deploy_with_pricing(
+        compiled,
+        program,
+        grant()?,
+        PricingPolicy::rest_at_mid(Duration::from_secs(5))?,
+    )?;
+    let named = grant()?.signature().to_string();
+    node.cell.apply_policy(share_policy(vec![named])?, t(5))?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+
+    let metrics = Arc::clone(node.scrape_registry());
+    let telemetry = Arc::new(OutboxTelemetry::new(metrics));
+    let clock: Arc<dyn Clock> = Arc::new(InstantClock::anchored_at(t(0)));
+    let thresholds = Thresholds::new(
+        1 << 30,
+        Decimal::parse("0.5").expect("a literal fraction parses"),
+        Decimal::parse("0.9").expect("a literal fraction parses"),
+    )?;
+    let (gauge, spool_publisher, drain_publisher) =
+        PressureGauge::new(thresholds, Arc::clone(&clock), Duration::from_secs(5))?;
+    let spool = Arc::new(SegmentLog::open(
+        temp_dir("spool"),
+        SegmentLogConfig::new(Arc::clone(&clock)),
+    )?);
+    let (to_relay, from_mirror) = writer::channel(handoff_capacity)?;
+    let (to_writer, writer_inbox) = writer::channel(handoff_capacity)?;
+    let spool_writer = SpoolWriter::open(
+        Arc::clone(&spool),
+        writer_inbox,
+        spool_publisher,
+        Arc::clone(&telemetry),
+        WriterConfig::new(CELL, t(0), std::time::Duration::from_millis(5), 64)?,
+    )?;
+    let session = spool_writer.session();
+    std::thread::spawn(move || {
+        let _ = spool_writer.run();
+    });
+    let relay = JournalRelay::spawn(
+        from_mirror,
+        to_writer,
+        StoreMirror::open(store, CELL, t(0))?,
+        RelayConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(20),
+        )?,
+    )?;
+    let waited = std::time::Instant::now();
+    while gauge.read().generation == 0 {
+        assert!(waited.elapsed() < PATIENCE, "the spool writer never beat");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let outbox = Outbox {
+        mirror: FabricMirror::new(CELL, to_relay.clone())?,
+        inputs: RecordedInputs::new(to_relay, thresholds, Arc::clone(&telemetry)),
+        gauge,
+        session,
+    };
+    let decisions = DecisionLoop::new(
+        node.cell,
+        NodeGateway::Simulated(gateway),
+        outbox,
+        JournalBound::new(bound)?,
+        Arc::clone(&telemetry),
+        MarkerFacts {
+            cell: CELL.to_string(),
+            config_digest: "test".to_string(),
+            gateway_seed: 7,
+            binary_version: "test".to_string(),
+        },
+    )?
+    .with_feed(feed, None)
+    .with_threads(Some(relay), None);
+    Ok(Rig {
+        decisions,
+        spool,
+        drain_publisher: Some(drain_publisher),
+        telemetry,
+    })
+}
+
+/// A deadline on the calling thread. The cell is not `Send` — its decoders
+/// and feature definitions are trait objects that do not promise it — so
+/// the turns run here and the deadline runs beside them: a turn that blocks
+/// never returns, and a test that never returns reports nothing, so past
+/// the deadline the watchdog says why and aborts the test binary.
+struct Watchdog {
+    done: mpsc::Sender<()>,
+}
+
+impl Watchdog {
+    fn arm(what: &'static str) -> Self {
+        let (done, finished) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(PATIENCE) {
+                eprintln!("watchdog: {what} did not finish within {PATIENCE:?}");
+                std::process::abort();
+            }
+        });
+        Self { done }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        let _ = self.done.send(());
+    }
+}
+
+/// Run `turns` turns starting at `from`, under a watchdog, and return the
+/// longest single turn and each turn's retained count and pressure.
+fn drive(
+    decisions: &mut DecisionLoop,
+    from: i64,
+    turns: i64,
+) -> (std::time::Duration, Vec<usize>, Vec<JournalPressure>) {
+    let _watchdog = Watchdog::arm(
+        "the decision thread's turns — a turn blocked, which is the stall the outbox exists to \
+         keep off this thread",
+    );
+    let mut longest = std::time::Duration::ZERO;
+    let mut retained = Vec::new();
+    let mut pressures = Vec::new();
+    for i in 0..turns {
+        let began = std::time::Instant::now();
+        let turn = decisions.turn(t(from + i)).expect("a turn completes");
+        longest = longest.max(began.elapsed());
+        retained.push(turn.retained);
+        pressures.push(turn.pressure);
+    }
+    (longest, retained, pressures)
+}
+
+#[test]
+fn a_stalled_journal_store_never_holds_the_decision_thread() -> Result<()> {
+    // The failure this prevents: `main.rs` called `Cell::flush` into the
+    // store on the thread that runs `Cell::work`, so a store write that hung
+    // stopped the cell deciding for as long as it hung (REFLEX-5033,
+    // ARCH-8021). Here the store never answers until released.
+    let store = StallingStore::stalled();
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 4)?;
+    let decisions = &mut rig.decisions;
+
+    let (longest, retained, _) = drive(decisions, 10, 30);
+
+    // The premise: the relay really is parked inside a store write, so the
+    // turns above ran beside a stalled store and not merely a slow one.
+    let waited = std::time::Instant::now();
+    while store.attempts() == 0 {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the relay never reached the store"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        decisions.stats().passes > 0,
+        "the premise is a loop that ran passes, and none ran"
+    );
+    assert!(
+        !decisions.cell().journal().is_empty(),
+        "the premise is a journal with entries to ship"
+    );
+    // Thirty turns against a store that never answered all returned, and
+    // none took long: the decision thread offered and moved on.
+    assert!(
+        longest < std::time::Duration::from_millis(500),
+        "a turn took {longest:?} beside a stalled store"
+    );
+    // The stall is visible where it belongs: the handoff filled behind the
+    // parked relay, the mirror refused, and the entries wait in memory.
+    assert!(
+        decisions.refused_flushes() > 0,
+        "the mirror never refused, so the stall was never felt and the test proves nothing"
+    );
+    assert!(
+        retained.last().copied().unwrap_or(0) > 0,
+        "nothing waited unshipped while the store was stalled"
+    );
+
+    // Released, the record arrives — chained, in order, nothing lost.
+    store.release();
+    let _watchdog = Watchdog::arm("the released store taking the journal");
+    let waited = std::time::Instant::now();
+    let mut second: i64 = 40;
+    loop {
+        // Turning, because only a flush hands the waiting entries across
+        // again; the relay drains what it already holds meanwhile.
+        decisions.turn(t(second))?;
+        second += 1;
+        let shipped: usize = batches(&*store)?.iter().map(|b| b.entries.len()).sum();
+        if shipped > 0 && decisions.cell().journal().retained() == 0 {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the journal did not reach the store once it was released"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let shipped = batches(&*store)?;
+    for pair in shipped.windows(2) {
+        pair[1].verify_against(&pair[0].tail_digest())?;
+    }
+    Ok(())
+}
+
+#[test]
+fn the_journal_in_memory_stays_under_its_bound_when_healthy_and_halts_new_exposure_at_it_when_stalled()
+-> Result<()> {
+    const BOUND: usize = 16;
+
+    // Healthy: the store answers, so every flush ships and trims. The
+    // journal records far more than the bound over the run while what it
+    // holds in memory never reaches it — the unbounded growth W0.9 names
+    // ("red-team m6: the default grows without bound on a cell that runs
+    // for days") is what a journal that does not trim on ship does here.
+    let mut healthy = rig(Arc::new(MemoryKeyValueStore::new()), BOUND, 1_024)?;
+    let decisions = &mut healthy.decisions;
+    let (_, retained, pressures) = drive(decisions, 10, 40);
+    let recorded = decisions.cell().journal().len();
+    assert!(
+        recorded > 2 * BOUND,
+        "the premise is a run that recorded well past the bound, and it recorded {recorded}"
+    );
+    assert!(
+        retained.iter().all(|held| *held < BOUND),
+        "the journal held {retained:?} in memory against a bound of {BOUND} while every flush \
+         shipped"
+    );
+    assert!(
+        pressures.iter().all(|p| *p == JournalPressure::Normal),
+        "a healthy outbox read as {pressures:?}"
+    );
+
+    // Stalled: nothing ships, so what the journal holds grows — and the
+    // bound narrows and then halts new exposure before it is far exceeded.
+    let store = StallingStore::stalled();
+    let mut stalled = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, BOUND, 2)?;
+    let decisions = &mut stalled.decisions;
+    let (_, retained, pressures) = drive(decisions, 10, 60);
+    assert!(
+        pressures
+            .iter()
+            .any(|p| matches!(p, JournalPressure::Narrow(_))),
+        "the bound halted without narrowing first: {pressures:?}"
+    );
+    assert!(
+        pressures.contains(&JournalPressure::Exhausted(Exhaustion::OverBudget)),
+        "the bound never halted new exposure: {pressures:?}"
+    );
+    assert!(
+        decisions.cell().is_halted(),
+        "the cell trades on at the bound"
+    );
+    // Once halted the cell sends nothing, so what it still journals is
+    // bounded by what one turn's halt bookkeeping adds, not by uptime.
+    let at_halt = retained
+        .iter()
+        .zip(&pressures)
+        .find(|(_, p)| p.halts())
+        .map(|(held, _)| *held)
+        .expect("a halting turn exists");
+    let last = retained.last().copied().unwrap_or(0);
+    assert!(
+        last <= at_halt + BOUND,
+        "the journal kept growing after the halt: {at_halt} at the halt, {last} at the end"
+    );
+    store.release();
+    Ok(())
+}
+
+#[test]
+fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture_time_and_sequence()
+-> Result<()> {
+    // W1.13's edge half: until this the node's ticks reached no
+    // `qip_storage::lake` writer at all, and had they, the sequence number
+    // the venue's publisher wrote was nowhere in the record.
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    let turn = rig.decisions.turn(t(10))?;
+    assert_eq!(
+        turn.captured, 2,
+        "the premise is a pass that published the two seeded levels"
+    );
+
+    // The pass that applied them reaches the spool beside them, so a replay
+    // has the marker the ticks belong to. Read before the drain runs: the
+    // drain retires what every sink has taken, which is the point of it.
+    let waited = std::time::Instant::now();
+    loop {
+        let markers = writer::records(&rig.spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_PASS_MARKED.topic)
+            .count();
+        if markers >= 1 {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "no pass marker reached the spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let waited = std::time::Instant::now();
+    let keys = loop {
+        drain.step()?;
+        let keys = lake.list("lake/class=market/")?;
+        if !keys.is_empty() {
+            break keys;
+        }
+        assert!(waited.elapsed() < PATIENCE, "no tick reached the lake");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(
+        keys.iter().all(|key| key.contains("/venue=XLON/")
+            && key.contains("/instrument=obj-ACME/")
+            && key.contains("/entitlement=qip-simulated-depth/")),
+        "a tick was partitioned somewhere other than its venue, instrument and licence: {keys:?}"
+    );
+    let mut sequences = Vec::new();
+    for key in &keys {
+        let body = lake.get(key)?.expect("a listed segment is readable");
+        for line in String::from_utf8(body).expect("canonical JSON").lines() {
+            let tick: serde_json::Value = serde_json::from_str(line)?;
+            assert_eq!(tick["feed"], FEED_NAME);
+            assert!(
+                tick["exchange_time_ns"].as_i64().is_some()
+                    && tick["capture_time_ns"].as_i64() == Some(t(10).as_nanos()),
+                "a tick lost its exchange or capture instant: {tick}"
+            );
+            sequences.push(tick["sequence"].as_u64().expect("a sequence number"));
+        }
+    }
+    sequences.sort_unstable();
+    assert_eq!(
+        sequences,
+        vec![1, 2],
+        "the lake does not carry the feed's own sequence for each tick"
+    );
+    Ok(())
+}
+
+/// A pass with a peer configured publishes through the port, and a peer mesh
+/// whose every peer is unreachable holds neither the decision thread nor the
+/// journal (R12-MESH-5050, ADR 0116): the turns stay short, passes run, the
+/// port takes the cell's offers, the journal reaches its store, and a policy
+/// the centre ships still applies — while the link counts the peer it could
+/// not reach.
+///
+/// The policy travels the way production's does: the centre puts a signed
+/// payload on its mesh inbox, the node's `MeshWorker` polls it on its own
+/// thread, and `DecisionLoop::turn` applies it in `apply_mesh` — with the
+/// peer link down the whole time. Until 2026-10-11 this test called
+/// `cell_mut().apply_policy` itself, which bypassed the loop, so a loop that
+/// gated control distribution on peer health would still have passed it.
+///
+/// Mutation: make `ReflexPort::try_publish` a blocking `send` and stop the
+/// session thread from draining the queue — the fifth turn blocks and the
+/// drive's watchdog aborts the test. Mutation: drop the `try_publish` call
+/// from `DecisionLoop::turn` — the session never turns on an offer and the
+/// wire never tries the peer, so the `send_failures` premise times out.
+/// Mutation (run): make `DecisionLoop::apply_mesh` return early while the
+/// peer port reports no frame sent — the policy never applies and the wait
+/// for sequence 2 times out.
+#[test]
+fn an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal() -> Result<()> {
+    use qip_peer_link::{DEFAULT_CLOCK_BOUND, PeerSettings};
+    use qip_transport::tls::LinkSecurity;
+    use std::collections::BTreeMap;
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|probe| probe.local_addr())
+            .expect("a loopback port")
+    };
+    let (port, _) = qip_peer_link::spawn(
+        &PeerSettings {
+            node: CELL.to_string(),
+            listen: free(),
+            // Nothing listens here: every connect is refused.
+            peers: BTreeMap::from([("tokyo-1".to_string(), free())]),
+            security: LinkSecurity::plaintext_for_tests(),
+            clock_bound: DEFAULT_CLOCK_BOUND,
+        },
+        Arc::new(qip_core::SystemClock),
+    )?;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    // The centre, on a real socket, with nothing on its inbox yet.
+    let inbox = MeshInbox::new("london-1-inbox", 64, 256)?;
+    let centre = CentreServer::spawn(MeshEndpoint::new(inbox.clone()))?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: centre.url(),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    let mut decisions = rig.decisions.with_peers(port).with_mesh(worker);
+
+    let (longest, _, _) = drive(&mut decisions, 10, 20);
+    assert!(
+        decisions.stats().passes > 0,
+        "the premise is a loop that ran passes"
+    );
+    // The wire's thread connects asynchronously; give it the time to find
+    // the peer unreachable before reading the premise.
+    let waited = std::time::Instant::now();
+    while decisions
+        .peers()
+        .expect("the loop holds the port")
+        .status()
+        .send_failures
+        == 0
+    {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the wire never tried the unreachable peer"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let wire = decisions.peers().expect("the loop holds the port").status();
+    assert_eq!(wire.sent, 0, "premise: nothing reached a peer: {wire:?}");
+    assert!(
+        longest < std::time::Duration::from_millis(500),
+        "a turn took {longest:?} beside an unreachable peer"
+    );
+
+    let watchdog = Watchdog::arm("the journal reaching its store beside an unreachable peer");
+    let waited = std::time::Instant::now();
+    let mut second: i64 = 40;
+    loop {
+        decisions.turn(t(second))?;
+        second += 1;
+        let shipped: usize = batches(&*store)?.iter().map(|b| b.entries.len()).sum();
+        if shipped > 0 {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the journal did not ship while the peer mesh was down"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    // Control distribution does not ride the peer mesh either: a fresh
+    // policy the centre publishes reaches the cell through the loop while
+    // every peer is still down.
+    drop(watchdog);
+    let _watchdog =
+        Watchdog::arm("the centre's policy reaching the cell beside an unreachable peer");
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "premise: the rig applied sequence 1 and nothing newer"
+    );
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(second));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(second),
+    );
+    let frame = policy_frame(payload.signed(ENVELOPE_KEY)?, t(second))?;
+    let admission = inbox.accept(&MeshMessage {
+        key: frame.event_id.as_str().to_string(),
+        attempt: 1,
+        frame,
+    });
+    assert!(
+        matches!(admission, Admission::Accepted(_)),
+        "premise: the centre's inbox took the policy: {admission:?}"
+    );
+    let waited = std::time::Instant::now();
+    while decisions.cell().policy_sequence() != Some(2) {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE / 2,
+            "the centre's policy did not reach the cell through the loop while the peer mesh \
+             was down: {:?}",
+            decisions.peers().map(ReflexPort::status)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let wire = decisions.peers().expect("the loop holds the port").status();
+    assert_eq!(
+        wire.sent, 0,
+        "premise: still nothing reached a peer: {wire:?}"
+    );
+    assert!(centre.served() > 0, "premise: the worker polled the centre");
+    Ok(())
+}
+
+/// The centre's policy frame, written from the vocabulary alone, as the
+/// node's own mesh tests write it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+struct PolicyBody(qip_contracts::policy::PolicyPayload);
+
+impl EventBody for PolicyBody {
+    const TOPIC: Topic = PolicyPayloadTopic::TOPIC;
+    const SCHEMA_VERSION: u32 = PolicyPayloadTopic::SCHEMA_VERSION;
+}
+
+fn policy_frame(payload: qip_contracts::policy::PolicyPayload, at: Timestamp) -> Result<AnyEvent> {
+    let id = format!("EVT-POLICY-{}", payload.sequence);
+    Envelope::new(
+        Id::from_string(id.clone()),
+        at,
+        at,
+        Lineage::root(
+            CorrelationId::from_string(format!("COR{id}")),
+            "decision-loop-tests",
+        ),
+        PolicyBody(payload),
+    )
+    .erase()
+}
+
+/// A mesh endpoint on a real loopback port, served on its own thread: the
+/// centre as the node's `MeshWorker` reaches it.
+struct CentreServer {
+    address: String,
+    stop: Arc<AtomicBool>,
+    served: Arc<AtomicU64>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CentreServer {
+    fn spawn(endpoint: MeshEndpoint) -> Result<Self> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| qip_core::error::Error::io(error.to_string()))?
+            .to_string();
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let served = Arc::new(AtomicU64::new(0));
+        let (thread_stop, thread_served) = (Arc::clone(&stop), Arc::clone(&served));
+        let handle = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        thread_served.fetch_add(1, Ordering::SeqCst);
+                        serve_one(stream, &endpoint);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(Self {
+            address,
+            stop,
+            served,
+            handle: Some(handle),
+        })
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.address)
+    }
+
+    fn served(&self) -> u64 {
+        self.served.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for CentreServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn serve_one(mut stream: std::net::TcpStream, endpoint: &MeshEndpoint) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(clone);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return;
+    }
+    let mut parts = line.split_whitespace();
+    let Some(method) = parts.next().and_then(Method::parse) else {
+        return;
+    };
+    let Some(target) = parts.next().map(str::to_string) else {
+        return;
+    };
+    let mut length = 0usize;
+    loop {
+        let mut header = String::new();
+        match reader.read_line(&mut header) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return,
+        }
+        let header = header.trim_end();
+        if header.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.trim().eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0u8; length];
+    if length > 0 && reader.read_exact(&mut body).is_err() {
+        return;
+    }
+    let response = endpoint.handle(method, &target, &body);
+    let mut out = format!(
+        "HTTP/1.1 {} OK\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        response.status,
+        qip_transport::EndpointResponse::CONTENT_TYPE,
+        response.body.len()
+    )
+    .into_bytes();
+    out.extend_from_slice(&response.body);
+    let _ = stream.write_all(&out);
+    let _ = stream.flush();
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// The cell's acknowledgement of a policy it applied reaches the fabric's
+/// spool after the turn that flushed it, on the journal stream the drain
+/// delivers to `reflex-journal.local` (the policy-ack half of
+/// R12-REFLEX-5034; telemetry is not yet a fabric record).
+///
+/// Mutation: drop `Decision::PolicyApplied` entries in `SpoolWriter`'s
+/// journal handling (or stop flushing in `DecisionLoop::turn`) and the
+/// acknowledgement never reaches the spool.
+/// A CA certificate `openssl req -x509` made for this test; its key was
+/// deleted unread. Public material, enough for an identity that holds roots
+/// and no certificate.
+const FIXTURE_ROOT: &str = "-----BEGIN CERTIFICATE-----
+MIIBqzCCAVOgAwIBAgIUYT43nsbEcR277bc6CUkHAo5ZbjowCgYIKoZIzj0EAwIw
+IzEhMB8GA1UEAwwYcWlwIHJlYWRpbmVzcyBmaXh0dXJlIENBMCAXDTI2MTAxMTEx
+MDEwOFoYDzIxMjYwOTE3MTEwMTA4WjAjMSEwHwYDVQQDDBhxaXAgcmVhZGluZXNz
+IGZpeHR1cmUgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATQZpXAff4IZ68a
+48wN/d71sb6foGUd8b+/60TuL8tLKMU3W8WOGutofeSFvdbum2VcgSIKSG5iAW4B
+oZz5lLOuo2MwYTAdBgNVHQ4EFgQUW/eoZJFiL/VbokTiODWFqzpfZx8wHwYDVR0j
+BBgwFoAUW/eoZJFiL/VbokTiODWFqzpfZx8wDwYDVR0TAQH/BAUwAwEB/zAOBgNV
+HQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDRgAwQwIfAxe48XHniN3HVZAeq+yZXgUP
+y+tWW22AN6xQlVPo3gIgJH4TQbQ5DbBEaFi8NBD1YPhsi93qd8LFwl7M9NuVuYo=
+-----END CERTIFICATE-----
+";
+
+/// ADR 0112's fail-closed rule, seen from outside the node: a fabric link
+/// on CA Service with no current certificate is refused at every handshake,
+/// and the health body a probe reads says so. Mutation: drop the
+/// `workload_certificate` field from `health_body` (or never apply
+/// `with_certificate`) and the parsed body has no such object; this fails.
+#[test]
+fn a_node_whose_fabric_certificate_is_not_current_says_so_in_its_health_body() -> Result<()> {
+    use qip_edge_node::health::HealthSnapshot;
+    use qip_edge_node::scheduler::HealthFacts;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let rig = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let identity = qip_transport::tls::WorkloadIdentity::awaiting_issuance(
+        FIXTURE_ROOT.as_bytes(),
+        Arc::new(SystemClock),
+    )?;
+    let snapshot = HealthSnapshot::new(r#"{"turns":0}"#);
+    let mut decisions = rig
+        .decisions
+        .with_health(
+            snapshot.clone(),
+            HealthFacts {
+                cell: CELL.to_string(),
+                region: REGION.to_string(),
+                venues: 1,
+                halt_flag_path: None,
+                storage_target: "memory".to_string(),
+                durable: false,
+                started_secs: 0,
+            },
+        )
+        .with_certificate(Arc::new(qip_transport::cas::RenewalStatus::new(Arc::new(
+            identity,
+        ))));
+    decisions.turn(t(10))?;
+    let body: serde_json::Value = serde_json::from_str(&snapshot.read())
+        .map_err(|error| qip_core::error::Error::invalid(error.to_string()))?;
+    // Premise: the body is the decision thread's, not the placeholder.
+    assert!(body.get("cell").is_some(), "{body}");
+    assert_eq!(body["workload_certificate"]["current"], false, "{body}");
+    assert_eq!(
+        body["workload_certificate"]["source"],
+        "certificate_authority_service"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    use qip_events::event_fabric::policy::QosClass;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let acknowledged = |spool: &SegmentLog| -> Result<Option<QosClass>> {
+        Ok(writer::records(spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .find(|record| {
+                writer::journal_entry(&record.event).is_ok_and(|entry| {
+                    matches!(entry.decision, Recorded::PolicyApplied { sequence: 7, .. })
+                })
+            })
+            .map(|record| record.stream))
+    };
+    // Premise: nothing has acknowledged sequence 7 before it is applied.
+    drive(&mut rig.decisions, 10, 2);
+    assert_eq!(acknowledged(&rig.spool)?, None);
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(7, CELL, t(20));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(20),
+    );
+    let policy = VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(20))?;
+    rig.decisions.cell_mut().apply_policy(policy, t(20))?;
+
+    let _watchdog = Watchdog::arm("the policy acknowledgement reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 21;
+    let stream = loop {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        if let Some(stream) = acknowledged(&rig.spool)? {
+            break stream;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the policy acknowledgement never reached the fabric spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(stream, QosClass::P2MarketJournal);
+    Ok(())
+}
+
+/// The decision loop's offer from a running, funded cell authorises, at each
+/// book it prices, a buy at the ask and a sell at the bid, sized so that all
+/// of them together fit inside what the region has free; once the cell is
+/// halted the same loop authorises nothing (MESH-5046, MESH-5062). These are
+/// the only legs the peer link's session may reserve or send.
+///
+/// Mutation: drop the `is_halted` check from `leg_authorities` and the halted
+/// offer still authorises; size each authority to the whole free balance
+/// and the notional sum exceeds it.
+#[test]
+fn a_running_funded_cell_authorises_legs_within_its_free_capital_and_a_halted_one_none()
+-> Result<()> {
+    use qip_edge::cell::PolledHalt;
+    use qip_edge_node::edge_quotes::cell_offer;
+    use qip_peer_link::boundary::Side as LegSide;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    rig.decisions.turn(t(10))?;
+    let cell = rig.decisions.cell();
+    let free = cell
+        .region_allocation_free()
+        .expect("the rig's cell holds an allocation");
+    assert!(
+        free.is_positive(),
+        "premise: the rig's share left capital free"
+    );
+    let offer = cell_offer(cell, t(11));
+    assert_eq!(offer.quotes.len(), 1, "premise: the rig prices one book");
+    assert_eq!(offer.legs.len(), 2, "a buy and a sell: {:?}", offer.legs);
+    let quote = &offer.quotes[0];
+    let mut notional = Decimal::ZERO;
+    for leg in &offer.legs {
+        match leg.side {
+            LegSide::Buy => {
+                assert_eq!(leg.limit_price, quote.ask);
+                assert_eq!(leg.touch_size, quote.ask_size);
+            }
+            LegSide::Sell => {
+                assert_eq!(leg.limit_price, quote.bid);
+                assert_eq!(leg.touch_size, quote.bid_size);
+            }
+        }
+        assert_eq!(leg.unwind_per_unit, quote.ask - quote.bid, "the spread");
+        assert!(leg.valid_until_ns > t(11).as_nanos());
+        notional += leg.max_size * leg.limit_price;
+    }
+    assert!(
+        notional <= free,
+        "the authorities together could commit {notional} of {free} free"
+    );
+
+    rig.decisions
+        .cell_mut()
+        .apply_polled_halt(PolledHalt::Engaged("drill".to_string()), t(12));
+    assert!(
+        rig.decisions.cell().is_halted(),
+        "premise: the cell is halted"
+    );
+    let halted = cell_offer(rig.decisions.cell(), t(13));
+    assert_eq!(
+        halted.quotes.len(),
+        1,
+        "a halted cell still shows its touch"
+    );
+    assert!(
+        halted.legs.is_empty(),
+        "a halted cell authorised {:?}",
+        halted.legs
+    );
+    Ok(())
+}
+
+/// REFLEX-8071: the previous payload is resident in the cell, and the node's
+/// rollback request is what reaches it. Driven through `DecisionLoop::turn`,
+/// the call the binary's timer makes, with the wire `main.rs` builds from
+/// `QIP_POLICY_ROLLBACK_PATH` reading a real file on its own thread.
+///
+/// Mutation: drop the `apply_rollback` call from `DecisionLoop::turn` and the
+/// cell is still serving sequence 2 after the turn.
+#[test]
+fn an_operator_rollback_request_returns_the_cell_to_its_previous_payload_on_the_next_turn()
+-> Result<()> {
+    use qip_edge_node::rollback::{RollbackReading, RollbackRequest, RollbackWire};
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let Rig { decisions, .. } = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let dir = temp_dir("rollback");
+    let path = dir.join("rollback");
+    let wire = RollbackWire::spawn(
+        RollbackRequest::at(&path)?,
+        std::time::Duration::from_millis(5),
+    )?;
+    let mut decisions = decisions.with_rollback(wire);
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(20));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(20),
+    );
+    let policy = VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(20))?;
+    decisions.cell_mut().apply_policy(policy, t(20))?;
+    // Premise: with no request on disk, a turn leaves the cell where it is.
+    drive(&mut decisions, 21, 2);
+    assert_eq!(decisions.cell().policy_sequence(), Some(2));
+
+    std::fs::write(&path, "2\n").expect("the request can be written");
+    let rollback = decisions_wire_reading(&path);
+    assert_eq!(rollback, RollbackReading::AwayFrom(2));
+    let waited = std::time::Instant::now();
+    while decisions.cell().policy_sequence() == Some(2) {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the rollback request never reached the cell through the decision loop"
+        );
+        decisions.turn(t(30))?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "the cell left sequence 2 for something other than its previous payload"
+    );
+    // The request stays on disk and acts once: further turns keep sequence 1.
+    drive(&mut decisions, 31, 3);
+    assert_eq!(decisions.cell().policy_sequence(), Some(1));
+    Ok(())
+}
+
+/// What the request file reads as, through the same type the wire reads it
+/// with — so the premise above is about the file the reader thread sees.
+fn decisions_wire_reading(path: &std::path::Path) -> qip_edge_node::rollback::RollbackReading {
+    qip_edge_node::rollback::RollbackRequest::at(path)
+        .expect("an absolute path is accepted")
+        .read()
+}

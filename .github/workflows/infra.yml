@@ -168,6 +168,32 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # No agent starts this workflow (R12 GOV-9067): it plans, applies and
+      # tears down infrastructure under a cloud credential, and a
+      # development agent may read and plan locally but never apply. The
+      # rule and the agent identities are `scripts/agent-policy.json`, read
+      # from the default branch so a branch cannot loosen it; the actor and
+      # whoever re-ran the run are both judged. First, before anything
+      # authenticates.
+      - name: no development agent starts this workflow
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .agent-guard
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: refuse an agent actor
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          for who in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            node .agent-guard/scripts/agent-guard.mjs dispatch \
+              --policy .agent-guard/scripts/agent-policy.json \
+              --actor "$who" --workflow infra.yml
+          done
+          rm -rf .agent-guard
       - name: refuse what this workflow must never do
         env:
           # Through the environment, never pasted into the script below. An
@@ -238,6 +264,18 @@ jobs:
             echo "the tfvars carry no project_id/project_number; nothing to authenticate against" >&2
             exit 1
           }
+          # `project_number = 0` beside a real project id is the marker a tfvars
+          # carries between the project being declared and its number being recorded
+          # (ADR 0118): Google assigns the number at creation, so it cannot be
+          # committed before. Read through, it becomes `projects/0/…` and the OIDC
+          # exchange fails naming an audience, which sends an operator to workload
+          # identity federation for a problem that is one line in this file. The
+          # `unprovisioned` marker carries 0 too and has its own refusal below.
+          if [ "$number" = "0" ] && [ "$project" != "unprovisioned" ]; then
+            echo "$tfvars records project_number = 0: the number Google assigned to $project has not been recorded yet." >&2
+            echo "Run scripts/bootstrap-foundation.sh as the owner (docs/ops/runbooks/new-project-from-scratch.md), commit the number it writes, then dispatch this again." >&2
+            exit 1
+          fi
           # The character set of what was read, before any of it is pasted
           # anywhere. The tfvars are reviewed configuration, but this step reads
           # them out of the tree the dispatch checked out rather than out of the

@@ -15,9 +15,11 @@ These are settled. Reopening one requires an ADR, not a code change.
 - **Paper trading by default and in fact** (ADR 0003). Not a phase.
 - **Rust everywhere** (ADR 0001, ADR 0011). Latency-sensitive and core
   services are Rust; the browser layer is not, and that is the only exception.
-- **Two dependencies** (ADR 0002, ADR 0009). The cost of a dependency is not
-  its download size; it is the supply chain, the audit surface, and the
-  semantics somebody else may change.
+- **Dependencies by allow-list** (ADR 0109, superseding ADR 0002/0009's two).
+  The cost of a dependency is not its download size; it is the supply chain,
+  the audit surface, and the semantics somebody else may change — which is why
+  every admission is a committed, reasoned line. At real-money scale an
+  audited crate is usually the smaller risk than an in-tree rewrite.
 - **Cells decide alone** (ADR 0008). Seven regional edge cells; a cell that
   cannot reach the centre keeps working within its envelope rather than
   stopping. Regional low-latency execution is separate from centralised

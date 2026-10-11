@@ -4,8 +4,9 @@
 //! # One record, one batch
 //!
 //! [`LedgerStore::apply`] turns one P1 delivery into exactly one
-//! [`WriteBatch`] handed to [`DurableStore::commit`], which writes it as one
-//! write-ahead-log record and `fsync`s it. Whatever that delivery changes —
+//! [`LedgerBatch`] handed to [`LedgerBackend::commit`] — on the local store
+//! one write-ahead-log record, `fsync`ed; on Spanner one read-write
+//! transaction (ADR 0113). Whatever that delivery changes —
 //! the event's postings, every balance they touch, the cell's chain tail, a
 //! park, a journal note, and the partition's consumed offset with the record
 //! hash — is in that one batch. The failure this prevents is the one a
@@ -60,15 +61,47 @@
 //! There is no method that changes or removes a posting or a balance
 //! (LEDGER-017). The only key this module ever deletes is a park, when the
 //! gap it recorded fills or an operator releases it.
+//!
+//! # Balances are a fold of the history, and the store proves it at open
+//!
+//! A balance row is written in exactly one place — the batch that books the
+//! event moving it — and is checked against the history every time the
+//! ledger opens ([`LedgerStore::with_backend`]): every event the ledger holds,
+//! fill or operation, is re-folded from nothing, and the result must equal
+//! the stored rows exactly, key for key. A row with no history behind it, a
+//! row whose amount the history does not produce, a row whose key does not
+//! parse back to the account it holds, or a history with no row, stops the
+//! ledger opening.
+//!
+//! The failure this replaces: `import_state`, a public method that wrote
+//! balance rows straight from an export with no event behind them, "replacing
+//! the current state entirely", and that silently skipped every key with more
+//! than one `:` — which was every key a trading account renders to. It is
+//! removed rather than repaired. A ledger is restored by replaying the stream
+//! it was built from, through [`LedgerStore::apply`], and nothing else.
+//!
+//! # Operations
+//!
+//! Treasury, custody, inventory, collateral, margin, transfers, tax lots,
+//! commitments, tax and mandate ownership arrive as a
+//! [`LedgerOperation`] and are booked by [`LedgerStore::record_operation`]:
+//! the operation's own event, its balance rows and its deduplication record
+//! in one batch, keyed by the operation id, so a redelivered operation moves
+//! nothing (R12-LEDGER-8024). An event that would take a quantity-holding
+//! account below zero — releasing more than was reserved, closing more of a
+//! lot than was opened — is refused and moves nothing.
 
+use crate::backend::{LedgerBackend, LedgerBatch, LocalBackend};
 use crate::telemetry::LedgerTelemetry;
+use qip_capital::LedgerObligations;
 use qip_contracts::ledger::{Account, Direction, LedgerEvent};
+use qip_contracts::ledger_operation::{LedgerOperation, OperationKind, Phase};
 use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
-use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, hmac_sha256, to_hex};
+use qip_core::{Decimal, Timestamp};
 use qip_portfolio::ledger::{PaperFill, post};
-use qip_storage::{DurableStore, EngineConfig, KeyValueStore, WriteBatch};
+use qip_storage::EngineConfig;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -93,6 +126,9 @@ const PREFIX_PARK: &str = "park/";
 const PREFIX_CURSOR: &str = "cursor/";
 const PREFIX_JOURNAL: &str = "journal/";
 const PREFIX_WATERMARK: &str = "watermark/";
+const PREFIX_OPERATION: &str = "operation/";
+const PREFIX_LOT: &str = "lot/";
+const KEY_PROBE: &str = "meta/probe";
 const KEY_JOURNAL_NEXT: &str = "meta/journal_next";
 const KEY_CURRENT_WATERMARK: &str = "meta/current_watermark";
 
@@ -230,7 +266,37 @@ pub struct ChainTail {
     pub digest: String,
 }
 
-/// Ledger state suitable for export and import (recovery, backups).
+/// What [`LedgerStore::record_operation`] did with one operation. Both were
+/// committed durably before they were returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationDisposition {
+    /// The operation was booked as one balanced event of this many postings.
+    Posted { postings: usize },
+    /// The ledger already holds this operation id with the same digest;
+    /// nothing moved.
+    Duplicate,
+}
+
+/// One tax lot as the ledger holds it: what is left of it, and since when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TaxLotView {
+    pub cell: String,
+    pub strategy: String,
+    pub lot: String,
+    pub unit: String,
+    /// The lot's open quantity: the fold of its postings in `unit`.
+    pub quantity: Decimal,
+    pub cost_unit: String,
+    /// The lot's remaining cost basis: the fold of its postings in
+    /// `cost_unit`.
+    pub cost: Decimal,
+    /// When the lot was acquired, from the operation that opened it; the
+    /// holding period runs from here.
+    pub acquired_at: Timestamp,
+}
+
+/// Ledger state for export (backups, reconciliation). Read-only: there is
+/// no import. See the module documentation for why.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LedgerStateExport {
     /// All balances as "account:unit" -> decimal string.
@@ -317,6 +383,18 @@ pub struct ChainRecord {
     pub event: Option<LedgerEvent>,
 }
 
+/// One operation the ledger booked, keyed by its operation id. The event is
+/// stored beside the operation so the history is re-foldable without
+/// re-deriving it, and the operation beside the event so a lot's
+/// acquisition time and a duplicate's digest are both answerable from the
+/// ledger alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct OperationRecord {
+    digest: String,
+    operation: LedgerOperation,
+    event: LedgerEvent,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Cursor {
     /// The next offset a consumer resuming this partition must read.
@@ -335,10 +413,10 @@ struct Position {
 
 // --- the store ----------------------------------------------------------------
 
-/// The ledger's single writer over one [`DurableStore`].
+/// The ledger's single writer over one [`LedgerBackend`].
 #[derive(Debug)]
 pub struct LedgerStore {
-    store: DurableStore,
+    store: Box<dyn LedgerBackend>,
     telemetry: LedgerTelemetry,
     /// Serialises read-decide-commit. The engine serialises commits, but the
     /// decision reads the tail, the park and the cursor first, and two
@@ -347,22 +425,271 @@ pub struct LedgerStore {
 }
 
 impl LedgerStore {
-    /// Open the ledger at `directory`, recovering whatever the last process
-    /// committed.
+    /// Open the ledger on the local store at `directory`, recovering
+    /// whatever the last process committed. Tests and single-node
+    /// development only; see [`crate::backend`].
     pub fn open(
         directory: impl AsRef<Path>,
         config: EngineConfig,
         telemetry: LedgerTelemetry,
     ) -> Result<Self> {
-        let store = DurableStore::open(directory, config)?;
+        Self::with_backend(Box::new(LocalBackend::open(directory, config)?), telemetry)
+    }
+
+    /// Open the ledger on `backend`, refusing to open one whose balances are
+    /// not the fold of its own history (see the module documentation).
+    pub fn with_backend(
+        backend: Box<dyn LedgerBackend>,
+        telemetry: LedgerTelemetry,
+    ) -> Result<Self> {
         let ledger = Self {
-            store,
+            store: backend,
             telemetry,
             writer: Mutex::new(()),
         };
+        ledger.verify_history()?;
         // A restarted process reports the parks it inherited, not zero.
         ledger.record_parked_keys()?;
         Ok(ledger)
+    }
+
+    /// `local` or `spanner`.
+    pub fn backend_kind(&self) -> &'static str {
+        self.store.kind()
+    }
+
+    /// Prove the store takes a write and gives it back: the readiness probe
+    /// for a backend with no directory to probe. The row is the ledger's own
+    /// metadata, never a balance.
+    pub fn prove_writable(&self, token: &str) -> Result<()> {
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        self.store
+            .commit(LedgerBatch::new().put_as(KEY_PROBE, &token)?)?;
+        let read: Option<String> = self.read(KEY_PROBE)?;
+        if read.as_deref() != Some(token) {
+            return Err(Error::io(format!(
+                "the {} ledger store did not return the probe it was just given; refusing to \
+                 report a ledger ready that could book nothing",
+                self.store.kind()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Re-fold every event the ledger holds and compare it, key for key,
+    /// with the stored balance rows. Called by [`Self::with_backend`].
+    ///
+    /// Refuses — never skips — a balance row whose key does not decode to
+    /// the account and unit the row holds, or whose account text does not
+    /// parse; a row the history does not produce; an amount the history
+    /// does not produce; and a history entry with no row.
+    pub fn verify_history(&self) -> Result<()> {
+        let refolded = self.refold()?;
+        let mut stored: BTreeMap<(Account, String), Decimal> = BTreeMap::new();
+        for (key, value) in self.store.scan_prefix(PREFIX_BALANCE)? {
+            let row: BalanceRow = decode(value)?;
+            let (account, unit) = parse_balance_key(&key)?;
+            if account != row.account || unit != row.unit {
+                return Err(Error::invalid(format!(
+                    "balance row {key} is keyed as {account} in {unit} but holds {} in {}; the \
+                     ledger will not open on a row filed under another account",
+                    row.account, row.unit
+                )));
+            }
+            stored.insert((account, unit), row.amount);
+        }
+        for ((account, unit), amount) in &stored {
+            match refolded.get(&(account.clone(), unit.clone())) {
+                Some(expected) if expected == amount => {}
+                Some(expected) => {
+                    return Err(Error::invalid(format!(
+                        "the stored {unit} balance of {account} is {amount} and its history \
+                         folds to {expected}; a balance written outside the event history is \
+                         refused at open, and the ledger is restored by replaying its stream"
+                    )));
+                }
+                None => {
+                    return Err(Error::invalid(format!(
+                        "the ledger holds a {unit} balance of {amount} for {account} and no \
+                         event that posts to it; a balance written outside the event history \
+                         is refused at open, and the ledger is restored by replaying its stream"
+                    )));
+                }
+            }
+        }
+        if let Some(((account, unit), amount)) =
+            refolded.iter().find(|(key, _)| !stored.contains_key(*key))
+        {
+            return Err(Error::invalid(format!(
+                "the history folds {account} to {amount} {unit} and the ledger holds no balance \
+                 row for it; a lost balance row is refused at open rather than read as zero"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Every balance as the history folds it, from nothing.
+    pub fn refold(&self) -> Result<BTreeMap<(Account, String), Decimal>> {
+        let mut balances: BTreeMap<(Account, String), Decimal> = BTreeMap::new();
+        for event in self.events()? {
+            for posting in event.postings() {
+                let entry = balances
+                    .entry((posting.account.clone(), posting.unit.clone()))
+                    .or_insert(Decimal::ZERO);
+                let moved = match posting.direction {
+                    Direction::Debit => entry.checked_add(posting.amount),
+                    Direction::Credit => entry.checked_sub(posting.amount),
+                };
+                *entry = moved.ok_or_else(|| {
+                    Error::numeric(format!(
+                        "refolding the {} balance of {} overflows",
+                        posting.unit, posting.account
+                    ))
+                })?;
+            }
+        }
+        Ok(balances)
+    }
+
+    /// The sum of every balance, per unit. Zero in every unit for a
+    /// double-entry ledger whatever subledgers its events touched; a unit
+    /// that does not close names a defect, not rounding.
+    pub fn trial_balance(&self) -> Result<BTreeMap<String, Decimal>> {
+        let mut totals: BTreeMap<String, Decimal> = BTreeMap::new();
+        for ((_, unit), amount) in self.balances()? {
+            let entry = totals.entry(unit.clone()).or_insert(Decimal::ZERO);
+            *entry = entry
+                .checked_add(amount)
+                .ok_or_else(|| Error::numeric(format!("the trial balance in {unit} overflows")))?;
+        }
+        Ok(totals)
+    }
+
+    /// Book one operation: its event, the balance rows it moves and its
+    /// deduplication record, in one batch.
+    ///
+    /// The same operation id with the same digest is a duplicate and moves
+    /// nothing. The same id with another digest is refused — the ledger will
+    /// not choose between two things one id was said to mean. An event that
+    /// would overflow a balance or take a quantity-holding account below
+    /// zero is refused. A refusal moves nothing.
+    pub fn record_operation(&self, operation: &LedgerOperation) -> Result<OperationDisposition> {
+        let digest = operation.digest()?;
+        let event = operation.to_event()?;
+        let key = operation_key(&operation.operation_id);
+
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(held) = self.read::<OperationRecord>(&key)? {
+            if held.digest == digest {
+                self.telemetry.duplicate("operation");
+                self.telemetry.commit("duplicate");
+                return Ok(OperationDisposition::Duplicate);
+            }
+            self.telemetry.commit("conflict");
+            return Err(Error::invalid(format!(
+                "operation {} is held with digest {} and has arrived again as {digest}; two \
+                 different operations claim one id, and the ledger books neither again",
+                operation.operation_id, held.digest
+            )));
+        }
+
+        // A lot is opened once. Opening one id twice would fold two
+        // acquisitions into one balance with one acquisition time, and the
+        // holding period of the second would be the first's.
+        let opened_lot = match &operation.kind {
+            OperationKind::TaxLot {
+                book,
+                lot,
+                phase: Phase::Establish,
+                ..
+            } => {
+                let lot_key = lot_key(&book.cell, &book.strategy, lot);
+                if self.store.get(&lot_key)?.is_some() {
+                    self.telemetry.commit("refused");
+                    return Err(Error::invalid(format!(
+                        "tax lot {lot} of {}/{} is already open; a lot id is opened once, and \
+                         a second acquisition is a new lot",
+                        book.cell, book.strategy
+                    )));
+                }
+                Some(lot_key)
+            }
+            _ => None,
+        };
+
+        let rows = match self.fold(&event) {
+            Ok(rows) => rows,
+            Err(refusal) => {
+                self.telemetry.commit("refused");
+                return Err(refusal);
+            }
+        };
+        let mut batch = LedgerBatch::new();
+        for (row_key, row) in rows {
+            batch = batch.put_as(row_key, &row)?;
+        }
+        if let Some(lot_key) = opened_lot {
+            batch = batch.put_as(lot_key, &operation.operation_id)?;
+        }
+        batch = batch.put_as(
+            key,
+            &OperationRecord {
+                digest,
+                operation: operation.clone(),
+                event: event.clone(),
+            },
+        )?;
+        self.store.commit(batch)?;
+        self.telemetry.commit("success");
+        Ok(OperationDisposition::Posted {
+            postings: event.postings().len(),
+        })
+    }
+
+    /// Every tax lot the ledger has opened, with what is left of it. A lot
+    /// is read from the balances its postings left — never from the
+    /// operation's stated quantity — and its acquisition time from the
+    /// operation that opened it.
+    pub fn tax_lots(&self) -> Result<Vec<TaxLotView>> {
+        let balances = self.balances()?;
+        let mut lots: BTreeMap<(String, String, String), TaxLotView> = BTreeMap::new();
+        for (_, value) in self.store.scan_prefix(PREFIX_OPERATION)? {
+            let record: OperationRecord = decode(value)?;
+            if let OperationKind::TaxLot {
+                book,
+                lot,
+                unit,
+                cost_unit,
+                acquired_at,
+                phase: Phase::Establish,
+                ..
+            } = &record.operation.kind
+            {
+                let account = Account::TaxLot {
+                    cell: book.cell.clone(),
+                    strategy: book.strategy.clone(),
+                    lot: lot.clone(),
+                };
+                let held = |u: &str| {
+                    balances
+                        .get(&(account.clone(), u.to_string()))
+                        .copied()
+                        .unwrap_or(Decimal::ZERO)
+                };
+                lots.entry((book.cell.clone(), book.strategy.clone(), lot.clone()))
+                    .or_insert_with(|| TaxLotView {
+                        cell: book.cell.clone(),
+                        strategy: book.strategy.clone(),
+                        lot: lot.clone(),
+                        unit: unit.clone(),
+                        quantity: held(unit),
+                        cost_unit: cost_unit.clone(),
+                        cost: held(cost_unit),
+                        acquired_at: *acquired_at,
+                    });
+            }
+        }
+        Ok(lots.into_values().collect())
     }
 
     /// Apply one delivery, committing everything it changes in one batch.
@@ -518,7 +845,7 @@ impl LedgerStore {
             },
         };
 
-        let mut batch = WriteBatch::new();
+        let mut batch = LedgerBatch::new();
         if let Some(event) = &event {
             match self.fold(event) {
                 Ok(rows) => {
@@ -613,12 +940,17 @@ impl LedgerStore {
         Ok(balances)
     }
 
-    /// Every event booked, in chain order per cell and session.
+    /// Every event booked: fills in chain order per cell and session, then
+    /// operations in operation-id order.
     pub fn events(&self) -> Result<Vec<LedgerEvent>> {
         let mut events = Vec::new();
         for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
             let record: ChainRecord = decode(value)?;
             events.extend(record.event);
+        }
+        for (_, value) in self.store.scan_prefix(PREFIX_OPERATION)? {
+            let record: OperationRecord = decode(value)?;
+            events.push(record.event);
         }
         Ok(events)
     }
@@ -673,7 +1005,7 @@ impl LedgerStore {
         }
         let mut cursor = self.cursor(&park.partition)?;
         cursor.next = cursor.next.min(park.offset);
-        let mut batch = WriteBatch::new()
+        let mut batch = LedgerBatch::new()
             .delete(park_key(cell))
             .put_as(cursor_key(&park.partition), &cursor)?;
         batch = self.note(
@@ -716,7 +1048,7 @@ impl LedgerStore {
                         delivery.offset, position.first, record.record_hash, delivery.record_hash
                     )
                 } else {
-                    let batch = WriteBatch::new()
+                    let batch = LedgerBatch::new()
                         .put_as(cursor_key(&delivery.partition), &advance(cursor, delivery)?)?;
                     self.store.commit(batch)?;
                     self.telemetry.duplicate(DUPLICATE_BY_CHAIN);
@@ -750,7 +1082,7 @@ impl LedgerStore {
         cursor: &Cursor,
         reason: ParkReason,
     ) -> Result<Disposition> {
-        let batch = WriteBatch::new()
+        let batch = LedgerBatch::new()
             .put_as(cursor_key(&delivery.partition), &advance(cursor, delivery)?)?;
         self.store.commit(batch)?;
         Ok(Disposition::Held { reason })
@@ -808,7 +1140,7 @@ impl LedgerStore {
                 park.offset
             )
         };
-        let mut batch = WriteBatch::new()
+        let mut batch = LedgerBatch::new()
             .put_as(park_key(cell), &park)?
             .put_as(cursor_key(&delivery.partition), &advance(cursor, delivery)?)?;
         batch = self.note(
@@ -839,6 +1171,18 @@ impl LedgerStore {
         Ok(self
             .read::<BalanceRow>(&key)?
             .map_or(Decimal::ZERO, |row| row.amount))
+    }
+
+    /// Margin booked, collateral pledged and cash owed and not yet settled,
+    /// folded from the stored balances in `unit` as of `as_of` — the reading
+    /// the survival waterfall withholds from (R12-CAPITAL-4087,
+    /// `qip_kernel::Platform::observe_ledger_obligations`).
+    ///
+    /// Read from [`Self::balances`], which the store proved equal to the
+    /// refold of its history when it opened, so the figures are a fold of
+    /// booked postings and not a second account kept beside them.
+    pub fn obligations(&self, unit: &str, as_of: Timestamp) -> Result<LedgerObligations> {
+        LedgerObligations::from_balances(&self.balances()?, unit, as_of)
     }
 
     /// Query all chain records (postings).
@@ -874,7 +1218,7 @@ impl LedgerStore {
 
         let watermark = LedgerWatermark::new(timestamp, state_digest, previous_digest, signing_key);
 
-        let batch = WriteBatch::new()
+        let batch = LedgerBatch::new()
             .put_as(KEY_CURRENT_WATERMARK, &watermark)?
             .put_as(format!("{PREFIX_WATERMARK}{:020}", timestamp), &watermark)?;
 
@@ -900,73 +1244,9 @@ impl LedgerStore {
         })
     }
 
-    /// Import ledger state from an export.
-    ///
-    /// This replaces the current state entirely. Used for recovery or
-    /// initialization from a backup.
-    pub fn import_state(&self, export: &LedgerStateExport) -> Result<()> {
-        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-
-        let mut batch = WriteBatch::new();
-
-        // Import all balances
-        for (key_str, amount_str) in &export.balances {
-            let parts: Vec<&str> = key_str.split(':').collect();
-            if parts.len() == 2 {
-                // Parse account string format: "trading:cell/strategy", "venue:vvv", "fees:vvv"
-                let account_str = parts[0];
-                let unit = parts[1];
-
-                let account = if let Some(rest) = account_str.strip_prefix("trading:") {
-                    let trading_parts: Vec<&str> = rest.split('/').collect();
-                    if trading_parts.len() == 2 {
-                        Account::Trading {
-                            cell: trading_parts[0].to_string(),
-                            strategy: trading_parts[1].to_string(),
-                        }
-                    } else {
-                        continue;
-                    }
-                } else if let Some(rest) = account_str.strip_prefix("venue:") {
-                    Account::Venue {
-                        venue: rest.to_string(),
-                    }
-                } else if let Some(rest) = account_str.strip_prefix("fees:") {
-                    Account::Fees {
-                        venue: rest.to_string(),
-                    }
-                } else {
-                    continue;
-                };
-
-                let amount = Decimal::parse(amount_str).ok_or_else(|| {
-                    Error::invalid(format!("invalid decimal in export: {}", amount_str))
-                })?;
-                let key = balance_key(&account, unit);
-                batch = batch.put_as(
-                    key,
-                    &BalanceRow {
-                        account,
-                        unit: unit.to_string(),
-                        amount,
-                    },
-                )?;
-            }
-        }
-
-        // Import watermark if present
-        if let Some(ref watermark) = export.current_watermark {
-            batch = batch.put_as(KEY_CURRENT_WATERMARK, watermark)?.put_as(
-                format!("{PREFIX_WATERMARK}{:020}", watermark.timestamp),
-                watermark,
-            )?;
-        }
-
-        self.store.commit(batch)?;
-        Ok(())
-    }
-
-    /// The balance rows an event moves, each checked, or a refusal.
+    /// The balance rows an event moves, each checked, or a refusal: a
+    /// balance that would overflow, or a quantity-holding account
+    /// ([`Account::holds_a_quantity`]) that would go below zero.
     fn fold(&self, event: &LedgerEvent) -> Result<BTreeMap<String, BalanceRow>> {
         let mut rows: BTreeMap<String, BalanceRow> = BTreeMap::new();
         for posting in event.postings() {
@@ -983,11 +1263,19 @@ impl LedgerStore {
             };
             let Some(amount) = moved else {
                 return Err(Error::numeric(format!(
-                    "the {} balance of {} would overflow; the fill is refused rather than \
+                    "the {} balance of {} would overflow; the event is refused rather than \
                      booked against a wrapped balance",
                     posting.unit, posting.account
                 )));
             };
+            if amount.is_negative() && posting.account.holds_a_quantity() {
+                return Err(Error::invalid(format!(
+                    "{} holds {current} {} and this event would take it to {amount}; more \
+                     cannot be released, withdrawn or closed than is held, and the event is \
+                     refused rather than booked as a negative holding",
+                    posting.account, posting.unit
+                )));
+            }
             rows.insert(
                 key,
                 BalanceRow {
@@ -1002,7 +1290,7 @@ impl LedgerStore {
 
     // --- rows -------------------------------------------------------------
 
-    fn note(&self, batch: WriteBatch, note: JournalNote) -> Result<WriteBatch> {
+    fn note(&self, batch: LedgerBatch, note: JournalNote) -> Result<LedgerBatch> {
         let next: u64 = self.read(KEY_JOURNAL_NEXT)?.unwrap_or(0);
         let after = next
             .checked_add(1)
@@ -1132,12 +1420,70 @@ fn hex(text: &str) -> String {
     text.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
+fn unhex(text: &str) -> Option<String> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            text.get(i..i + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        })
+        .collect::<Option<Vec<u8>>>()?;
+    // Only the form `hex` writes: lowercase. An uppercase spelling decodes
+    // to the same bytes and is a different key, which is a row filed twice.
+    if hex(std::str::from_utf8(&bytes).ok()?) != text {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 fn balance_key(account: &Account, unit: &str) -> String {
     format!(
         "{PREFIX_BALANCE}{}/{}",
         hex(&account.to_string()),
         hex(unit)
     )
+}
+
+/// The account and unit a balance key names, or a refusal naming the key.
+/// Never a skip: a key this cannot read is a row the ledger cannot account
+/// for, and [`LedgerStore::verify_history`] stops the ledger on it.
+pub fn parse_balance_key(key: &str) -> Result<(Account, String)> {
+    let refuse = |why: &str| {
+        Error::invalid(format!(
+            "balance key {key:?} {why}; the ledger refuses a balance it cannot attribute rather \
+             than skipping it"
+        ))
+    };
+    let body = key
+        .strip_prefix(PREFIX_BALANCE)
+        .ok_or_else(|| refuse("is not under the balance prefix"))?;
+    let (account_hex, unit_hex) = body
+        .split_once('/')
+        .ok_or_else(|| refuse("has no account/unit separator"))?;
+    let account_text =
+        unhex(account_hex).ok_or_else(|| refuse("has an account that is not hex"))?;
+    let unit = unhex(unit_hex).ok_or_else(|| refuse("has a unit that is not hex"))?;
+    if unit.is_empty() {
+        return Err(refuse("names no unit"));
+    }
+    let account = account_text.parse::<Account>().map_err(|e| {
+        refuse(&format!(
+            "names no account this ledger keeps ({})",
+            e.message()
+        ))
+    })?;
+    Ok((account, unit))
+}
+
+fn operation_key(operation_id: &str) -> String {
+    format!("{PREFIX_OPERATION}{}", hex(operation_id))
+}
+
+fn lot_key(cell: &str, strategy: &str, lot: &str) -> String {
+    format!("{PREFIX_LOT}{}/{}/{}", hex(cell), hex(strategy), hex(lot))
 }
 
 fn chain_key(cell: &str, session: u64, first: u64) -> String {

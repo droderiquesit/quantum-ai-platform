@@ -10,7 +10,7 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
 use qip_contracts::edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
 use qip_contracts::feature::{
     FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, KnowableAt, Revision,
@@ -479,7 +479,7 @@ fn every_capital_refusal_names_the_bound_that_stopped_it() -> Result<()> {
     let venue = VenueId::new("XNYS");
 
     match grant.admit(&venue, dec!("10"), &Utilisation::default(), t(4000)) {
-        CapitalGrant::Refused(why) => assert!(why.contains("expired"), "{why}"),
+        CapitalAdmission::Refused(why) => assert!(why.contains("expired"), "{why}"),
         other => panic!("an expired envelope admitted an order: {other:?}"),
     }
 
@@ -489,7 +489,7 @@ fn every_capital_refusal_names_the_bound_that_stopped_it() -> Result<()> {
         orders_sent: 3,
     };
     match grant.admit(&venue, dec!("10"), &breached, t(10)) {
-        CapitalGrant::Refused(why) => assert!(why.contains("loss"), "{why}"),
+        CapitalAdmission::Refused(why) => assert!(why.contains("loss"), "{why}"),
         other => panic!("a breached loss limit admitted an order: {other:?}"),
     }
 
@@ -499,7 +499,7 @@ fn every_capital_refusal_names_the_bound_that_stopped_it() -> Result<()> {
         orders_sent: 9,
     };
     match grant.admit(&venue, dec!("10"), &full, t(10)) {
-        CapitalGrant::Refused(why) => assert!(why.contains("gross"), "{why}"),
+        CapitalAdmission::Refused(why) => assert!(why.contains("gross"), "{why}"),
         other => panic!("a fully committed envelope admitted an order: {other:?}"),
     }
     Ok(())
@@ -519,18 +519,18 @@ fn an_order_larger_than_its_envelopes_order_limit_is_refused_whole_naming_the_li
     assert!(dec!("600") < grant.gross_limit());
     let answer = grant.admit(&venue, dec!("600"), &used, t(10));
     assert!(
-        matches!(answer, CapitalGrant::Refused(_)),
+        matches!(answer, CapitalAdmission::Refused(_)),
         "an order over the order limit must be refused whole, got {answer:?}"
     );
     assert_eq!(answer.permitted_quantity(dec!("600")), Decimal::ZERO);
     assert_eq!(
         answer,
-        CapitalGrant::Refused("order notional 600 exceeds the 400 order limit".into())
+        CapitalAdmission::Refused("order notional 600 exceeds the 400 order limit".into())
     );
     // The bound is inclusive: exactly the order limit is taken whole.
     assert_eq!(
         grant.admit(&venue, dec!("400"), &used, t(10)),
-        CapitalGrant::Full
+        CapitalAdmission::Full
     );
     Ok(())
 }
@@ -554,22 +554,22 @@ fn an_order_larger_than_the_headroom_left_is_refused_whole_naming_the_headroom()
     assert!(headroom < dec!("400"));
     let answer = grant.admit(&venue, dec!("400"), &used, t(10));
     assert!(
-        matches!(answer, CapitalGrant::Refused(_)),
+        matches!(answer, CapitalAdmission::Refused(_)),
         "an order over the headroom must be refused whole, got {answer:?}"
     );
     assert_eq!(
         answer,
-        CapitalGrant::Refused(
+        CapitalAdmission::Refused(
             "order notional 400 exceeds the 200 of the 1000 gross limit left".into()
         )
     );
     assert!(matches!(
         grant.admit(&venue, dec!("150"), &used, t(10)),
-        CapitalGrant::Full
+        CapitalAdmission::Full
     ));
     assert!(matches!(
         grant.admit(&venue, dec!("200"), &used, t(10)),
-        CapitalGrant::Full
+        CapitalAdmission::Full
     ));
     Ok(())
 }
@@ -593,11 +593,14 @@ fn for_generated_commitment_sequences_nothing_is_admitted_in_part_and_nothing_pa
         let notional = Decimal::from_int(draw);
         let answer = grant.admit(&venue, notional, &used, t(10));
         assert!(
-            matches!(answer, CapitalGrant::Full | CapitalGrant::Refused(_)),
+            matches!(
+                answer,
+                CapitalAdmission::Full | CapitalAdmission::Refused(_)
+            ),
             "{notional} against {} committed was admitted in part: {answer:?}",
             used.gross_committed
         );
-        if answer == CapitalGrant::Full {
+        if answer == CapitalAdmission::Full {
             used.gross_committed += notional;
             used.orders_sent += 1;
             full += 1;
@@ -2852,6 +2855,12 @@ fn a_model_pack_with_all_required_fields_present_is_accepted() -> Result<()> {
         budget_microseconds: 1_000_000,
         expires_at: 1_760_086_400,
         rollback_parent: "prev_digest_hash".to_string(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
+        inline_model: None,
     };
     pack.validate()?;
     Ok(())
@@ -2869,6 +2878,12 @@ fn a_model_pack_missing_any_required_field_is_refused() {
         budget_microseconds: 1_000_000,
         expires_at: 1_760_086_400,
         rollback_parent: String::new(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
+        inline_model: None,
     };
 
     pack.artifact_digest = String::new();
@@ -2915,6 +2930,12 @@ fn a_model_pack_with_out_of_range_calibration_is_refused() {
         budget_microseconds: 1_000_000,
         expires_at: 1_760_086_400,
         rollback_parent: String::new(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
+        inline_model: None,
     };
 
     // Calibration > 1.0
@@ -2952,6 +2973,12 @@ fn a_model_pack_serialises_and_deserialises_round_trip() -> Result<()> {
         budget_microseconds: 5_000_000,
         expires_at: 1_760_172_800,
         rollback_parent: "prev_sha256_xyz789".to_string(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
+        inline_model: None,
     };
 
     let json = serde_json::to_string(&pack)?;

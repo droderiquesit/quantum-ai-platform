@@ -198,16 +198,6 @@ locals {
     for path in values(var.permitted_paths) : path.from
     if path.to == "ledger" && path.mode == "append" && contains(keys(var.zones), path.from)
   ])
-
-  fabric_publishers = distinct([
-    for path in values(var.permitted_paths) : path.from
-    if path.to == "control-fabric" && path.mode == "publish" && contains(keys(var.zones), path.from)
-  ])
-
-  fabric_subscribers = distinct([
-    for path in values(var.permitted_paths) : path.to
-    if path.from == "control-fabric" && path.mode == "publish" && contains(keys(var.zones), path.to)
-  ])
 }
 
 # --- the zones themselves ----------------------------------------------------
@@ -256,22 +246,6 @@ locals {
   ledger_append_members = {
     for pair in flatten([
       for zone in local.ledger_appenders : [
-        for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
-      ]
-    ]) : pair.key => pair.email
-  }
-
-  fabric_publish_members = {
-    for pair in flatten([
-      for zone in local.fabric_publishers : [
-        for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
-      ]
-    ]) : pair.key => pair.email
-  }
-
-  fabric_attach_members = {
-    for pair in flatten([
-      for zone in local.fabric_subscribers : [
         for index, email in lookup(var.zone_identities, zone, []) : { key = "${zone}-${index}", email = email }
       ]
     ]) : pair.key => pair.email
@@ -618,29 +592,16 @@ resource "google_spanner_database_iam_member" "ledger_append" {
 
 # --- the control fabric -------------------------------------------------------
 
-# Publish down, outcomes up, and never the two grants on one identity for one
-# direction. A publisher that can also subscribe can read every other zone's
-# payload, which turns a fabric into a shared bus.
-resource "google_pubsub_topic_iam_member" "fabric_publish" {
-  for_each = var.control_fabric_topic == null ? {} : local.fabric_publish_members
-
-  project = var.project_id
-  topic   = var.control_fabric_topic
-  role    = "roles/pubsub.publisher"
-  member  = "serviceAccount:${each.value}"
-}
-
-# The attach side, and only the attach side. `subscriber` on a topic grants
-# the right to attach a subscription to it; consuming from that subscription
-# needs a binding on the subscription itself, which this module does not create
-# because it does not create the subscription. Said plainly rather than left to
-# be inferred: a reader who takes this for the whole grant will look for a
-# consumer permission that is not here.
-resource "google_pubsub_topic_iam_member" "fabric_attach" {
-  for_each = var.control_fabric_topic == null ? {} : local.fabric_attach_members
-
-  project = var.project_id
-  topic   = var.control_fabric_topic
-  role    = "roles/pubsub.subscriber"
-  member  = "serviceAccount:${each.value}"
-}
+# No IAM here, on purpose. This section held two Pub/Sub topic bindings —
+# publisher for a zone with a `publish` path to `control-fabric`, attach for
+# the zone it published to — behind a `control_fabric_topic` variable the
+# root could only ever set to null. They were inert, and inert is not
+# harmless: they read as though §46.1's control fabric were Pub/Sub, which
+# §1.1 contradicts — the platform's messaging semantics are the Rust Fabric's
+# (ADR 0100) and Pub/Sub carries no internal messaging here — and a reviewer
+# who took them for a capability would go looking for a topic no ADR asks
+# for. Both were `for_each` over an empty map in every environment, so
+# removing them removes nothing from any state. The zone, its subnet and its
+# firewall paths stay: a `publish` path between zones is a network fact the
+# Fabric's own traffic uses. What the Fabric's identities may do belongs to
+# the module that runs it (`modules/event-fabric-broker`).

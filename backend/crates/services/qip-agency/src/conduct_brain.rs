@@ -1,27 +1,46 @@
-//! Communications & Conduct Brain: gates external communications through seven checks.
+//! Communications & Conduct Brain: gates every external intervention through
+//! seven checks, and a set of interventions through one more.
 //!
-//! AGENCY-037: "The Conduct Brain gates every external communication"
+//! AGENCY-037, R12-AGENCY-1056..1069. Every proposed external communication —
+//! and [`crate::engine::execute`] treats every adapter call as one, because
+//! an order, a quote and a post are all something the world sees — is checked
+//! for:
+//! 1. Factual support — claims backed by well-formed evidence citations
+//! 2. Provenance — every cited source is an authorized one
+//! 3. Identity — the sender is an authorized identity
+//! 4. Required disclosures — each required kind present, with text
+//! 5. Audience/channel permissions — the channel is configured *and* the
+//!    audience is one that channel may address
+//! 6. Jurisdiction — a permitted jurisdiction
+//! 7. Market conduct — every [`ConductRule`] the gate holds, matched as whole
+//!    words, never substrings
 //!
-//! Every proposed external communication is checked for:
-//! 1. Factual support — claims backed by evidence
-//! 2. Provenance — sources traceable and authorized
-//! 3. Identity — speaker properly identified and authenticated
-//! 4. Required disclosures — regulatory/policy disclosures present
-//! 5. Audience/channel permissions — message appropriate for channel
-//! 6. Jurisdiction — compliance with applicable regulatory jurisdictions
-//! 7. Market-conduct constraints — compliance with conduct rules
+//! and, across every draft released together, [`checks::check_coordinated_voices`]:
+//! the same message under more than one identity is fake consensus however
+//! each draft reads alone.
 //!
-//! All seven must pass before release. Shadow-only form (drafting & gating without live channels).
+//! What this replaced, because it is the failure each check now prevents:
+//! check 7 took a `_conduct_rules` argument it never read and refused only
+//! the substring "guaranteed", so a policy naming `no_manipulation` refused
+//! no manipulation; check 5 passed whenever the channel key existed and never
+//! read the audience list it mapped to; and nothing anywhere addressed fake
+//! consensus or rumour engineering. None of it was called before an adapter.
+//!
+//! Shadow-only form: drafting and gating, with no live channel anywhere.
 
+use qip_contracts::action::{MANIPULATION_PHRASES, contains_phrase, words};
 use qip_core::Error;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A proposed external communication awaiting conduct review.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommunicationDraft {
     /// Unique identifier for this draft
     pub id: String,
-    /// The message content
+    /// The message content: for a market step, the order as the venue and
+    /// the tape will see it described.
     pub content: String,
     /// Channel/venue this will be published to (e.g., "press", "social", "direct")
     pub channel: String,
@@ -38,15 +57,19 @@ pub struct CommunicationDraft {
 }
 
 /// Reference to evidence supporting a claim in the communication.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceCitation {
     pub source_id: String,
     pub evidence_id: String,
-    pub confidence_bps: i64, // basis points, 0-10000
+    /// Basis points, `0..=10000`. Outside that range the citation is refused,
+    /// not clamped.
+    pub confidence_bps: i64,
 }
 
 /// A required disclosure for regulatory/policy compliance.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Disclosure {
     pub kind: String, // e.g., "conflict_of_interest", "paid_promotion", "confidentiality_status"
     pub text: String,
@@ -60,189 +83,379 @@ pub struct CheckResult {
     pub reason: Option<String>,
 }
 
-/// The seven conduct checks, each returning pass/fail.
-pub mod checks {
-    use super::*;
-
-    /// Check 1: Factual Support
-    /// Claims must be backed by evidence citations.
-    pub fn check_factual_support(draft: &CommunicationDraft) -> CheckResult {
-        if draft.evidence_citations.is_empty() && !draft.content.is_empty() {
-            return CheckResult {
-                check_name: "factual_support".to_string(),
-                passed: false,
-                reason: Some(
-                    "Communication contains claims but provides no evidence citations".to_string(),
-                ),
-            };
-        }
-
-        CheckResult {
-            check_name: "factual_support".to_string(),
+impl CheckResult {
+    fn pass(check: &str) -> Self {
+        Self {
+            check_name: check.to_string(),
             passed: true,
             reason: None,
         }
     }
 
-    /// Check 2: Provenance
-    /// Evidence sources must be traceable and authorized.
+    fn fail(check: &str, reason: String) -> Self {
+        Self {
+            check_name: check.to_string(),
+            passed: false,
+            reason: Some(reason),
+        }
+    }
+}
+
+/// Promissory language: a statement that an uncertain outcome is certain.
+const FALSE_CLAIM_PHRASES: &[&str] = &[
+    "guaranteed",
+    "guarantee",
+    "guarantees",
+    "risk free",
+    "riskless",
+    "cannot lose",
+    "can not lose",
+    "cant lose",
+    "sure thing",
+    "no risk",
+    "certain profit",
+    "certain profits",
+    "free money",
+];
+
+/// A claim that a crowd already holds a view, which is how manufactured
+/// consensus reads from the inside of one message (R12-AGENCY-1064).
+const FAKE_CONSENSUS_PHRASES: &[&str] = &[
+    "everyone is buying",
+    "everybody is buying",
+    "everyone is selling",
+    "everybody is selling",
+    "everyone agrees",
+    "everybody agrees",
+    "all analysts agree",
+    "every analyst agrees",
+    "the whole market agrees",
+    "the crowd agrees",
+    "smart money is buying",
+    "smart money is selling",
+    "nobody is selling",
+    "nobody is buying",
+    "join thousands of investors",
+];
+
+/// Hearsay presented as information: the vocabulary of a rumour being started
+/// or passed on (R12-AGENCY-1069).
+const RUMOUR_PHRASES: &[&str] = &[
+    "rumour",
+    "rumours",
+    "rumoured",
+    "rumor",
+    "rumors",
+    "rumored",
+    "rumour has it",
+    "rumor has it",
+    "sources say",
+    "insiders say",
+    "people are saying",
+    "unconfirmed reports",
+    "word is",
+    "i heard",
+    "whispers",
+];
+
+/// One market-conduct rule. Parsed from a closed vocabulary so a rule nobody
+/// implemented cannot be configured: a policy naming `no_insider_tips`, which
+/// no detector reads, is refused at construction rather than accepted as a
+/// rule that silently never fires.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConductRule {
+    /// `no_false_claims`: promissory language — "guaranteed", "risk-free".
+    NoFalseClaims,
+    /// `no_manipulation`: the shared [`MANIPULATION_PHRASES`].
+    NoManipulation,
+    /// `no_fake_consensus`: a claim that a crowd already agrees.
+    NoFakeConsensus,
+    /// `no_rumour_engineering`: hearsay presented as information.
+    NoRumourEngineering,
+    /// `prohibit:<phrase>`: a phrase this deployment refuses, as whole words.
+    Prohibit(String),
+}
+
+/// The rules every conduct policy must hold. R12-AGENCY-1063..1069 say the
+/// platform *never* does these things; a policy that could be configured not
+/// to check one is a policy that eventually will be.
+pub const MANDATORY_RULES: [&str; 4] = [
+    "no_false_claims",
+    "no_manipulation",
+    "no_fake_consensus",
+    "no_rumour_engineering",
+];
+
+impl ConductRule {
+    /// Parse one rule, refusing anything outside the vocabulary.
+    pub fn parse(rule: &str) -> Result<Self, Error> {
+        let trimmed = rule.trim();
+        if let Some(phrase) = trimmed.strip_prefix("prohibit:") {
+            if words(phrase).is_empty() {
+                return Err(Error::invalid(format!(
+                    "conduct rule `{rule}` prohibits no words; a blank phrase matches nothing"
+                )));
+            }
+            return Ok(Self::Prohibit(phrase.trim().to_string()));
+        }
+        match trimmed {
+            "no_false_claims" => Ok(Self::NoFalseClaims),
+            "no_manipulation" => Ok(Self::NoManipulation),
+            "no_fake_consensus" => Ok(Self::NoFakeConsensus),
+            "no_rumour_engineering" => Ok(Self::NoRumourEngineering),
+            other => Err(Error::invalid(format!(
+                "conduct rule `{other}` is not one this gate can evaluate; use one of {} or \
+                 `prohibit:<phrase>`",
+                MANDATORY_RULES.join(", ")
+            ))),
+        }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Self::NoFalseClaims => "no_false_claims".to_string(),
+            Self::NoManipulation => "no_manipulation".to_string(),
+            Self::NoFakeConsensus => "no_fake_consensus".to_string(),
+            Self::NoRumourEngineering => "no_rumour_engineering".to_string(),
+            Self::Prohibit(phrase) => format!("prohibit:{phrase}"),
+        }
+    }
+
+    /// The first phrase of this rule that `content` contains as whole words.
+    pub fn breach<'a>(&'a self, content: &str) -> Option<&'a str> {
+        let phrases: &[&str] = match self {
+            Self::NoFalseClaims => FALSE_CLAIM_PHRASES,
+            Self::NoManipulation => MANIPULATION_PHRASES,
+            Self::NoFakeConsensus => FAKE_CONSENSUS_PHRASES,
+            Self::NoRumourEngineering => RUMOUR_PHRASES,
+            Self::Prohibit(phrase) => {
+                return contains_phrase(content, phrase).then_some(phrase.as_str());
+            }
+        };
+        phrases
+            .iter()
+            .copied()
+            .find(|phrase| contains_phrase(content, phrase))
+    }
+}
+
+/// The seven per-draft checks and the one across drafts, each a pure
+/// function of what it is given.
+pub mod checks {
+    use super::*;
+
+    /// Check 1: Factual Support. Content with claims needs citations, and a
+    /// citation with no evidence id or a confidence outside `0..=10000` is not
+    /// support: it is the shape of a citation with nothing behind it.
+    pub fn check_factual_support(draft: &CommunicationDraft) -> CheckResult {
+        const CHECK: &str = "factual_support";
+        if draft.evidence_citations.is_empty() && !draft.content.trim().is_empty() {
+            return CheckResult::fail(
+                CHECK,
+                "Communication contains claims but provides no evidence citations".to_string(),
+            );
+        }
+        for citation in &draft.evidence_citations {
+            if citation.evidence_id.trim().is_empty() {
+                return CheckResult::fail(
+                    CHECK,
+                    format!(
+                        "a citation of source '{}' names no evidence; cite the item, not the source",
+                        citation.source_id
+                    ),
+                );
+            }
+            if !(0..=10_000).contains(&citation.confidence_bps) {
+                return CheckResult::fail(
+                    CHECK,
+                    format!(
+                        "citation '{}' claims confidence {} bps, outside 0..=10000",
+                        citation.evidence_id, citation.confidence_bps
+                    ),
+                );
+            }
+        }
+        CheckResult::pass(CHECK)
+    }
+
+    /// Check 2: Provenance. Every cited source must be an authorized one.
     pub fn check_provenance(
         draft: &CommunicationDraft,
         authorized_sources: &[String],
     ) -> CheckResult {
-        if draft.evidence_citations.is_empty() {
-            return CheckResult {
-                check_name: "provenance".to_string(),
-                passed: true,
-                reason: None,
-            };
-        }
-
-        for citation in &draft.evidence_citations {
-            if !authorized_sources.contains(&citation.source_id) {
-                return CheckResult {
-                    check_name: "provenance".to_string(),
-                    passed: false,
-                    reason: Some(format!(
-                        "Evidence source '{}' is not in authorized sources list",
-                        citation.source_id
-                    )),
-                };
-            }
-        }
-
-        CheckResult {
-            check_name: "provenance".to_string(),
-            passed: true,
-            reason: None,
+        const CHECK: &str = "provenance";
+        match draft
+            .evidence_citations
+            .iter()
+            .find(|c| !authorized_sources.contains(&c.source_id))
+        {
+            Some(citation) => CheckResult::fail(
+                CHECK,
+                format!(
+                    "Evidence source '{}' is not in authorized sources list",
+                    citation.source_id
+                ),
+            ),
+            None => CheckResult::pass(CHECK),
         }
     }
 
-    /// Check 3: Identity
-    /// Sender must be properly identified and authenticated.
+    /// Check 3: Identity. The sender must be an authorized identity: a name
+    /// nobody authorized is a fabricated identity whatever it calls itself.
     pub fn check_identity(
         draft: &CommunicationDraft,
         authorized_identities: &[String],
     ) -> CheckResult {
+        const CHECK: &str = "identity";
         if !authorized_identities.contains(&draft.sender_identity) {
-            return CheckResult {
-                check_name: "identity".to_string(),
-                passed: false,
-                reason: Some(format!(
+            return CheckResult::fail(
+                CHECK,
+                format!(
                     "Sender identity '{}' is not authorized to communicate",
                     draft.sender_identity
-                )),
-            };
+                ),
+            );
         }
-
-        CheckResult {
-            check_name: "identity".to_string(),
-            passed: true,
-            reason: None,
-        }
+        CheckResult::pass(CHECK)
     }
 
-    /// Check 4: Required Disclosures
-    /// All mandatory disclosures must be present.
+    /// Check 4: Required Disclosures. Each required kind must be present
+    /// with text: a `paid_promotion` disclosure whose text is blank discloses
+    /// nothing, and promotion behind it is undisclosed (R12-AGENCY-1066).
     pub fn check_disclosures(
         draft: &CommunicationDraft,
         required_disclosures: &[String],
     ) -> CheckResult {
-        let present_kinds: std::collections::HashSet<_> =
-            draft.disclosures.iter().map(|d| d.kind.as_str()).collect();
-
+        const CHECK: &str = "disclosures";
         for required in required_disclosures {
-            if !present_kinds.contains(required.as_str()) {
-                return CheckResult {
-                    check_name: "disclosures".to_string(),
-                    passed: false,
-                    reason: Some(format!(
-                        "Required disclosure '{}' is missing from communication",
-                        required
-                    )),
-                };
+            let present = draft
+                .disclosures
+                .iter()
+                .any(|d| &d.kind == required && !d.text.trim().is_empty());
+            if !present {
+                return CheckResult::fail(
+                    CHECK,
+                    format!(
+                        "Required disclosure '{required}' is missing from communication, or its text is blank"
+                    ),
+                );
             }
         }
-
-        CheckResult {
-            check_name: "disclosures".to_string(),
-            passed: true,
-            reason: None,
-        }
+        CheckResult::pass(CHECK)
     }
 
-    /// Check 5: Audience/Channel Permissions
-    /// Message must be appropriate for its intended channel.
+    /// Check 5: Audience/Channel Permissions. The channel must be configured
+    /// and the draft's audience must be one that channel may address. An
+    /// empty audience list permits nobody: fail closed.
     pub fn check_audience_permissions(
         draft: &CommunicationDraft,
         channel_policies: &BTreeMap<String, Vec<String>>,
     ) -> CheckResult {
+        const CHECK: &str = "audience_permissions";
         match channel_policies.get(&draft.channel) {
-            None => CheckResult {
-                check_name: "audience_permissions".to_string(),
-                passed: false,
-                reason: Some(format!(
+            None => CheckResult::fail(
+                CHECK,
+                format!(
                     "Channel '{}' is not configured in channel policies",
                     draft.channel
-                )),
-            },
-            Some(_) => CheckResult {
-                check_name: "audience_permissions".to_string(),
-                passed: true,
-                reason: None,
-            },
+                ),
+            ),
+            Some(audiences) if !audiences.contains(&draft.target_audience) => CheckResult::fail(
+                CHECK,
+                format!(
+                    "Channel '{}' may not address audience '{}'; it permits {:?}",
+                    draft.channel, draft.target_audience, audiences
+                ),
+            ),
+            Some(_) => CheckResult::pass(CHECK),
         }
     }
 
-    /// Check 6: Jurisdiction
-    /// Communication must comply with applicable regulatory jurisdictions.
+    /// Check 6: Jurisdiction.
     pub fn check_jurisdiction(
         draft: &CommunicationDraft,
         permitted_jurisdictions: &[String],
     ) -> CheckResult {
+        const CHECK: &str = "jurisdiction";
         if !permitted_jurisdictions.contains(&draft.jurisdiction) {
-            return CheckResult {
-                check_name: "jurisdiction".to_string(),
-                passed: false,
-                reason: Some(format!(
+            return CheckResult::fail(
+                CHECK,
+                format!(
                     "Jurisdiction '{}' is not in permitted list for communications",
                     draft.jurisdiction
-                )),
-            };
+                ),
+            );
         }
-
-        CheckResult {
-            check_name: "jurisdiction".to_string(),
-            passed: true,
-            reason: None,
-        }
+        CheckResult::pass(CHECK)
     }
 
-    /// Check 7: Market-Conduct Constraints
-    /// Communication must comply with market conduct rules and regulations.
+    /// Check 7: Market conduct. Evaluates exactly the rules it is given,
+    /// against the content, as whole words. The first breach is reported with
+    /// the rule and the phrase, so an operator can see which rule fired.
     pub fn check_market_conduct(
         draft: &CommunicationDraft,
-        _conduct_rules: &[String],
+        conduct_rules: &[ConductRule],
     ) -> CheckResult {
-        // This is a simplified check; in production it would parse the content
-        // against conduct rules. For now, we check that no obvious red flags exist.
-        if draft.content.to_lowercase().contains("guaranteed") {
-            return CheckResult {
-                check_name: "market_conduct".to_string(),
-                passed: false,
-                reason: Some(
-                    "Communication contains prohibited language ('guaranteed') that violates market conduct rules"
-                        .to_string(),
-                ),
-            };
+        const CHECK: &str = "market_conduct";
+        for rule in conduct_rules {
+            if let Some(phrase) = rule.breach(&draft.content) {
+                return CheckResult::fail(
+                    CHECK,
+                    format!(
+                        "Communication breaches conduct rule `{}` with '{phrase}'",
+                        rule.name()
+                    ),
+                );
+            }
         }
+        CheckResult::pass(CHECK)
+    }
 
-        CheckResult {
-            check_name: "market_conduct".to_string(),
-            passed: true,
-            reason: None,
+    /// Across drafts: the same message, by its words, released under more
+    /// than one identity is one voice posing as several — fake consensus
+    /// (R12-AGENCY-1064) and sockpuppetry (R12-AGENCY-1063), however
+    /// innocent each draft reads alone. One identity repeating itself on two
+    /// channels is not consensus and passes.
+    pub fn check_coordinated_voices(drafts: &[&CommunicationDraft]) -> CheckResult {
+        const CHECK: &str = "coordinated_voices";
+        let mut voices: BTreeMap<Vec<String>, BTreeSet<&str>> = BTreeMap::new();
+        for draft in drafts {
+            let said = words(&draft.content);
+            if said.is_empty() {
+                continue;
+            }
+            voices
+                .entry(said)
+                .or_default()
+                .insert(draft.sender_identity.as_str());
+        }
+        match voices.values().find(|senders| senders.len() > 1) {
+            Some(senders) => CheckResult::fail(
+                CHECK,
+                format!(
+                    "the same message is released under {} identities ({}); one voice posing \
+                     as several is manufactured consensus",
+                    senders.len(),
+                    senders.iter().copied().collect::<Vec<_>>().join(", ")
+                ),
+            ),
+            None => CheckResult::pass(CHECK),
         }
     }
+}
+
+/// The gate's configuration as a document, so a composition root or a
+/// request can carry it; [`ConductGate::new`] still refuses a bad one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConductPolicy {
+    pub authorized_sources: Vec<String>,
+    pub authorized_identities: Vec<String>,
+    pub required_disclosures: Vec<String>,
+    /// Channel to the audiences it may address.
+    pub channel_policies: BTreeMap<String, Vec<String>>,
+    pub permitted_jurisdictions: Vec<String>,
+    pub conduct_rules: Vec<String>,
 }
 
 /// The Conduct Gate that runs all seven checks.
@@ -253,11 +466,14 @@ pub struct ConductGate {
     required_disclosures: Vec<String>,
     channel_policies: BTreeMap<String, Vec<String>>,
     permitted_jurisdictions: Vec<String>,
-    conduct_rules: Vec<String>,
+    conduct_rules: Vec<ConductRule>,
 }
 
 impl ConductGate {
     /// Create a new conduct gate with the given policies.
+    ///
+    /// Refuses no identities, no jurisdictions, a conduct rule outside the
+    /// vocabulary, and a rule set missing any of [`MANDATORY_RULES`].
     pub fn new(
         authorized_sources: Vec<String>,
         authorized_identities: Vec<String>,
@@ -272,15 +488,43 @@ impl ConductGate {
         if permitted_jurisdictions.is_empty() {
             return Err(Error::invalid("permitted_jurisdictions must not be empty"));
         }
-
+        let parsed = conduct_rules
+            .iter()
+            .map(|r| ConductRule::parse(r))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        for mandatory in MANDATORY_RULES {
+            let rule = ConductRule::parse(mandatory)?;
+            if !parsed.contains(&rule) {
+                return Err(Error::invalid(format!(
+                    "conduct_rules omits `{mandatory}`; the platform never does what it forbids, \
+                     so no conduct policy may leave it unchecked"
+                )));
+            }
+        }
         Ok(Self {
             authorized_sources,
             authorized_identities,
             required_disclosures,
             channel_policies,
             permitted_jurisdictions,
-            conduct_rules,
+            conduct_rules: parsed.into_iter().collect(),
         })
+    }
+
+    pub fn from_policy(policy: ConductPolicy) -> Result<Self, Error> {
+        Self::new(
+            policy.authorized_sources,
+            policy.authorized_identities,
+            policy.required_disclosures,
+            policy.channel_policies,
+            policy.permitted_jurisdictions,
+            policy.conduct_rules,
+        )
+    }
+
+    /// The rules this gate evaluates, in a fixed order.
+    pub fn rules(&self) -> &[ConductRule] {
+        &self.conduct_rules
     }
 
     /// Run all seven checks on a draft communication.
@@ -309,11 +553,30 @@ impl ConductGate {
             .filter(|r| !r.passed)
             .collect()
     }
+
+    /// Every failure across a set of drafts released together: each draft's
+    /// own seven, tagged with its id, then the cross-draft check. Empty means
+    /// the whole set may be released.
+    pub fn campaign_failures(&self, drafts: &[&CommunicationDraft]) -> Vec<(String, CheckResult)> {
+        let mut failed: Vec<(String, CheckResult)> = drafts
+            .iter()
+            .flat_map(|d| self.failures(d).into_iter().map(move |f| (d.id.clone(), f)))
+            .collect();
+        let voices = checks::check_coordinated_voices(drafts);
+        if !voices.passed {
+            failed.push(("*".to_string(), voices));
+        }
+        failed
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rules() -> Vec<String> {
+        MANDATORY_RULES.iter().map(|r| r.to_string()).collect()
+    }
 
     fn basic_draft() -> CommunicationDraft {
         CommunicationDraft {
@@ -337,7 +600,7 @@ mod tests {
 
     fn basic_gate() -> ConductGate {
         let mut channel_policies = BTreeMap::new();
-        channel_policies.insert("press".to_string(), vec![]);
+        channel_policies.insert("press".to_string(), vec!["institutional".to_string()]);
 
         ConductGate::new(
             vec!["source-001".to_string()],
@@ -345,7 +608,7 @@ mod tests {
             vec!["conflict_of_interest".to_string()],
             channel_policies,
             vec!["US".to_string()],
-            vec![],
+            rules(),
         )
         .unwrap()
     }
@@ -364,6 +627,22 @@ mod tests {
         let result = checks::check_factual_support(&draft);
         assert!(!result.passed);
         assert!(result.reason.is_some());
+    }
+
+    #[test]
+    fn a_citation_with_no_evidence_id_or_an_impossible_confidence_is_not_factual_support() {
+        assert!(
+            checks::check_factual_support(&basic_draft()).passed,
+            "premise"
+        );
+        let mut draft = basic_draft();
+        draft.evidence_citations[0].evidence_id = " ".to_string();
+        assert!(!checks::check_factual_support(&draft).passed);
+        for bps in [-1, 10_001] {
+            let mut draft = basic_draft();
+            draft.evidence_citations[0].confidence_bps = bps;
+            assert!(!checks::check_factual_support(&draft).passed, "{bps}");
+        }
     }
 
     #[test]
@@ -418,6 +697,18 @@ mod tests {
     }
 
     #[test]
+    fn a_required_disclosure_present_by_kind_with_blank_text_discloses_nothing() {
+        let gate = basic_gate();
+        assert!(
+            checks::check_disclosures(&basic_draft(), &gate.required_disclosures).passed,
+            "premise"
+        );
+        let mut draft = basic_draft();
+        draft.disclosures[0].text = "   ".to_string();
+        assert!(!checks::check_disclosures(&draft, &gate.required_disclosures).passed);
+    }
+
+    #[test]
     fn check_audience_permissions_passes_for_configured_channel() {
         let draft = basic_draft();
         let gate = basic_gate();
@@ -432,6 +723,30 @@ mod tests {
         let gate = basic_gate();
         let result = checks::check_audience_permissions(&draft, &gate.channel_policies);
         assert!(!result.passed);
+    }
+
+    /// R12-AGENCY-1061 was INCORRECT: the check passed on `Some(_)` whatever
+    /// the list held. Each assertion below changes only the list.
+    #[test]
+    fn the_audience_list_a_channel_maps_to_decides_the_verdict() {
+        let draft = basic_draft();
+        let policy = |audiences: &[&str]| {
+            BTreeMap::from([(
+                "press".to_string(),
+                audiences.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            )])
+        };
+        assert!(
+            checks::check_audience_permissions(&draft, &policy(&["institutional"])).passed,
+            "premise: the configured audience is admitted"
+        );
+        let refused = checks::check_audience_permissions(&draft, &policy(&["retail"]));
+        assert!(!refused.passed);
+        assert!(refused.reason.unwrap().contains("institutional"));
+        assert!(
+            !checks::check_audience_permissions(&draft, &policy(&[])).passed,
+            "an empty audience list permits nobody"
+        );
     }
 
     #[test]
@@ -466,6 +781,110 @@ mod tests {
         let gate = basic_gate();
         let result = checks::check_market_conduct(&draft, &gate.conduct_rules);
         assert!(!result.passed);
+        assert!(result.reason.unwrap().contains("no_false_claims"));
+    }
+
+    /// R12-AGENCY-1060 was INCORRECT: the rules argument was `_conduct_rules`
+    /// and changed nothing. Here the same content is judged under rule sets
+    /// that differ by exactly one rule, and the verdict follows the rule.
+    #[test]
+    fn the_rules_given_decide_the_market_conduct_verdict() {
+        let mut draft = basic_draft();
+        let cases: [(&str, ConductRule); 5] = [
+            ("returns are guaranteed", ConductRule::NoFalseClaims),
+            ("we will spoof the bid", ConductRule::NoManipulation),
+            ("everyone is buying this name", ConductRule::NoFakeConsensus),
+            (
+                "rumour has it the CEO is leaving",
+                ConductRule::NoRumourEngineering,
+            ),
+            (
+                "a pre-announcement allocation is open",
+                ConductRule::Prohibit("pre announcement allocation".to_string()),
+            ),
+        ];
+        for (content, rule) in cases {
+            draft.content = content.to_string();
+            assert!(
+                checks::check_market_conduct(&draft, &[]).passed,
+                "premise: with no rule, `{content}` passes"
+            );
+            let verdict = checks::check_market_conduct(&draft, std::slice::from_ref(&rule));
+            assert!(
+                !verdict.passed,
+                "{} did not fire on `{content}`",
+                rule.name()
+            );
+            assert!(verdict.reason.unwrap().contains(&rule.name()));
+        }
+    }
+
+    /// The substring test this replaced would refuse every line below; whole
+    /// words refuse none of them, under every mandatory rule at once.
+    #[test]
+    fn a_word_that_merely_contains_a_prohibited_word_does_not_trip_its_rule() {
+        let gate = basic_gate();
+        let mut draft = basic_draft();
+        draft.content = "we will spoof the bid".to_string();
+        assert!(
+            !checks::check_market_conduct(&draft, gate.rules()).passed,
+            "premise: the gate's rules do fire on the whole word"
+        );
+        for honest in [
+            "unwashed inventory and a dishwasher maker in Washington",
+            "spoofproof feed handlers",
+            "a guarantor bank reported",
+            "every analyst disagrees with every other",
+            "the storefront running costs fell",
+        ] {
+            draft.content = honest.to_string();
+            let verdict = checks::check_market_conduct(&draft, gate.rules());
+            assert!(verdict.passed, "{honest}: {:?}", verdict.reason);
+        }
+    }
+
+    #[test]
+    fn a_conduct_policy_missing_a_mandatory_rule_or_naming_an_unknown_one_is_refused() {
+        let build = |rules: Vec<String>| {
+            ConductGate::new(
+                vec![],
+                vec!["a".to_string()],
+                vec![],
+                BTreeMap::new(),
+                vec!["US".to_string()],
+                rules,
+            )
+        };
+        assert!(build(rules()).is_ok(), "premise: the mandatory set builds");
+        for omitted in MANDATORY_RULES {
+            let partial = rules().into_iter().filter(|r| r != omitted).collect();
+            let err = build(partial).unwrap_err();
+            assert!(err.message().contains(omitted), "{err}");
+        }
+        let mut unknown = rules();
+        unknown.push("no_insider_tips".to_string());
+        assert!(build(unknown).is_err());
+        let mut blank = rules();
+        blank.push("prohibit:  -- ".to_string());
+        assert!(build(blank).is_err());
+    }
+
+    #[test]
+    fn the_same_message_under_two_identities_is_fake_consensus_and_under_one_is_not() {
+        let a = basic_draft();
+        let mut same_voice_elsewhere = basic_draft();
+        same_voice_elsewhere.channel = "social".to_string();
+        assert!(
+            checks::check_coordinated_voices(&[&a, &same_voice_elsewhere]).passed,
+            "premise: one identity on two channels is one voice"
+        );
+        let mut puppet = basic_draft();
+        puppet.sender_identity = "analyst-02".to_string();
+        // Different case and punctuation are the same words.
+        puppet.content = "MARKET UPDATE -- stock x is rising!".to_string();
+        let verdict = checks::check_coordinated_voices(&[&a, &puppet]);
+        assert!(!verdict.passed);
+        assert!(verdict.reason.unwrap().contains("analyst-02"));
     }
 
     #[test]
@@ -504,7 +923,7 @@ mod tests {
             vec![],
             channel_policies,
             vec!["US".to_string()],
-            vec![],
+            rules(),
         );
         assert!(result.is_err());
     }
@@ -518,7 +937,7 @@ mod tests {
             vec![],
             channel_policies,
             vec![], // empty - should fail
-            vec![],
+            rules(),
         );
         assert!(result.is_err());
     }

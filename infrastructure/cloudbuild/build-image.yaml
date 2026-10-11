@@ -1,0 +1,107 @@
+# One platform image, built twice in the private pool, handed back only if
+# both builds are the same image (R12 CICD-9097).
+#
+# Submitted by `.github/workflows/deploy.yml`'s `build` step when the build
+# environment's committed tfvars set `cloud_build_private_pool_enabled =
+# true`. It is the runner path's `build` and `a second build of the commit is
+# the same image` steps, moved — not a second recipe: the same Dockerfile,
+# the same `SOURCE_DATE_EPOCH` (the commit's own time), the same
+# `rewrite-timestamp=true`, the same two OCI labels, the same image-id
+# comparison. A recipe that differed between the two paths would make the
+# reproducibility check prove something about a build nobody runs.
+#
+# It pushes nothing. The image both builds agreed on is saved as a tarball,
+# beside the id this build computed, under `_OUTPUT` in the staging bucket;
+# the workflow loads it, refuses unless the loaded id is that id, and then
+# pushes, scans, signs and attests exactly as on the runner path. So the
+# build identity needs no registry write, and a build can never attest — or
+# even publish — its own output.
+#
+# Every value arrives as a substitution and is mapped into the script's
+# environment (`automapSubstitutions`), never pasted into the script text:
+# the rule `deploy.yml` follows for every expression it hands a shell.
+#
+# The builder is pinned by digest. `gcr.io/cloud-builders/docker` at
+# `latest` resolved to this digest on 2026-10-11; a tag would trust whoever
+# can next push to it.
+
+steps:
+  - id: build twice and compare
+    name: gcr.io/cloud-builders/docker@sha256:f772ab459889c67835bd959c2b9e9351f2c0752c4f989710ecda20c229f0733e
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      # Shapes first, before any of it reaches an argument. deploy.yml
+      # checked each already; this is the second reading, because anyone
+      # holding the pipeline's grant can submit a build.
+      case "${_EPOCH}" in ''|*[!0-9]*) echo "_EPOCH is not a number of seconds" >&2; exit 1 ;; esac
+      case "${_REVISION}" in ''|*[!0-9a-f]*) echo "_REVISION is not a hex commit sha" >&2; exit 1 ;; esac
+      if [ "${#_REVISION}" -ne 40 ]; then echo "_REVISION is not a full commit sha" >&2; exit 1; fi
+      case "${_REPRODUCIBLE}" in true|false) ;; *) echo "_REPRODUCIBLE must be true or false" >&2; exit 1 ;; esac
+
+      # rewrite-timestamp needs buildx. A builder without it would build
+      # different bytes from the runner path and the comparison below would
+      # compare two of those — so refuse rather than fall back.
+      if ! docker buildx version >/dev/null 2>&1; then
+        echo "the pinned builder has no docker buildx; nothing is built. Re-pin the builder to one that has it." >&2
+        exit 1
+      fi
+
+      recipe=(--build-arg "SOURCE_DATE_EPOCH=${_EPOCH}")
+      if [ -n "${_DOCKERFILE}" ]; then
+        recipe+=(--file "${_DOCKERFILE}")
+      else
+        recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${_BINARY}" --build-arg "QIP_SOURCE_COMMIT=${_REVISION}")
+      fi
+      labels=(
+        --label "org.opencontainers.image.revision=${_REVISION}"
+        --label "org.opencontainers.image.source=${_SOURCE}"
+      )
+
+      docker buildx build "${recipe[@]}" \
+        --output "type=docker,rewrite-timestamp=true" \
+        "${labels[@]}" \
+        --tag "${_IMAGE}" \
+        "${_CONTEXT:-.}"
+      first="$(docker image inspect --format '{{.Id}}' "${_IMAGE}")"
+
+      if [ "${_REPRODUCIBLE}" = "true" ]; then
+        docker buildx build --no-cache "${recipe[@]}" \
+          --output "type=docker,rewrite-timestamp=true" \
+          "${labels[@]}" \
+          --tag "qip-reproducibility/${_BINARY}:${_REVISION}" \
+          "${_CONTEXT:-.}"
+        second="$(docker image inspect --format '{{.Id}}' "qip-reproducibility/${_BINARY}:${_REVISION}")"
+        if [ "$first" != "$second" ]; then
+          echo "two builds of ${_REVISION} in the private pool produced two images: ${first} and ${second}." >&2
+          echo "Nothing is handed back. An image nobody can rebuild from its commit cannot be verified against it." >&2
+          exit 1
+        fi
+        echo "two builds of ${_REVISION} are the same image: ${first}"
+      else
+        echo "${_BINARY} is exempt from the reproducibility rebuild (deploy.yml states why); built once."
+      fi
+
+      docker save --output /workspace/image.tar "${_IMAGE}"
+      printf '%s\n' "$first" > /workspace/image.id
+
+# Uploaded only when the step above succeeded, by the build identity, which
+# holds object create on the staging bucket and nothing in the registry.
+artifacts:
+  objects:
+    location: ${_OUTPUT}/
+    paths:
+      - /workspace/image.tar
+      - /workspace/image.id
+
+options:
+  automapSubstitutions: true
+  # Required for a build run as a named service account, and the only mode
+  # whose permission (`logging.logWriter`) the build identity holds.
+  logging: CLOUD_LOGGING_ONLY
+  # A substitution the workflow did not pass is an error, not an empty
+  # string: an empty _EPOCH would stamp a different time into every layer.
+  substitutionOption: MUST_MATCH
+
+timeout: 5400s

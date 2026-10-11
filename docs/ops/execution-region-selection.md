@@ -97,7 +97,7 @@ Once the measurements above are collected and a region is selected for each exec
 1. **Updating this file** with the selected regions and the measured RTT/residency/machine/Interconnect/proximity findings
 2. **Adding a comment to the Terraform configuration** in `infrastructure/environments/prod/terraform.tfvars` explaining the selection rationale
 3. **Updating `infrastructure/terraform/modules/connectivity/main.tf`** with any partner Interconnect configurations required
-4. **Recording in `DELIVERY-STATUS.md`** with the date of selection and the measurement source
+4. **Recording the selection** in the commit that makes it, with the date and the measurement source
 
 See `infrastructure/terraform/modules/execution-node/README.md` for the machine-type validation and Regional computing resources section.
 

@@ -7,7 +7,7 @@
 //! The rule this crate exists to make enforceable is that **no quantum result
 //! is used without a classical baseline solved on the same problem**. That is
 //! not implemented here — it belongs to the compute router in
-//! `qip-optimization-engine`, which is the only thing that calls a provider —
+//! `qip-optimization-engine`, which reaches a provider only through the gateway —
 //! but everything here is shaped to make it possible: a
 //! [`qaoa::QaoaResult`] is a candidate to be checked, and
 //! [`provider::ProviderCapabilities::simulated`] means a simulated result can
@@ -31,9 +31,17 @@
 //! its classical baseline in a non-optional field, and the only usable answer
 //! is a [`benchmark::ValidatedSolution`], whose sole constructor re-evaluates
 //! the assignment classically and refuses a claim that does not match.
+//!
+//! ## Nothing waits on a provider
+//!
+//! [`gateway::QuantumGateway`] is the only production path to a
+//! [`provider::QuantumProvider`]: it admits a job through
+//! [`foundry::admit_job`], runs it on a worker thread, and answers polls
+//! without blocking, so a device queue can never stall the cycle that asked.
 
 pub mod benchmark;
 pub mod foundry;
+pub mod gateway;
 pub mod provider;
 pub mod qaoa;
 pub mod registry;
@@ -45,12 +53,13 @@ pub use benchmark::{
     BenchmarkReport, ClassicalValidation, ClassicalValidator, QualityMeasure, Reliability,
     SolverBenchmark, SolverRecord, ValidatedSolution,
 };
+pub use gateway::{Delivery, GatewayLimits, GatewayStats, JobPoll, JobTicket, QuantumGateway};
 pub use provider::{
     ConfirmedDevice, HostedConfig, HostedProvider, HostedStats, HostedToken, HostedTransport,
     ProviderCapabilities, QuantumProvider, SimulatedProvider,
 };
 pub use qaoa::{QaoaResult, QaoaSettings};
-pub use registry::{SolverRegistry, SolverRegistryBuilder};
+pub use registry::{SolverObservation, SolverRegistry, SolverRegistryBuilder, SolverStanding};
 pub use solver::{
     ClassicalSearch, ClassicalSolver, IbmQuantumConfig, IbmQuantumSolver, ProviderSolver,
     QuantumInspiredSolver, QuboSolver, QueuePolicy, SearchTrace, SolverCandidate, SolverCostModel,

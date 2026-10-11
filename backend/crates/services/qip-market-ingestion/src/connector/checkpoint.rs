@@ -87,6 +87,17 @@ pub enum CursorPosition {
 }
 
 impl CursorPosition {
+    /// The position as one token for a reference's cursor field: exact
+    /// nanoseconds for an event time, for the reason the serde form uses
+    /// them, and a source's own token verbatim.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Beginning => "beginning".to_string(),
+            Self::EventTime { at } => format!("event_time_ns:{}", at.as_nanos()),
+            Self::Token { token } => format!("token:{token}"),
+        }
+    }
+
     pub const fn event_time(&self) -> Option<Timestamp> {
         match self {
             Self::EventTime { at } => Some(*at),

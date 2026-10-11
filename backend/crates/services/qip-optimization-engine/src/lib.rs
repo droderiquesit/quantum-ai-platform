@@ -146,14 +146,21 @@
 //! only, because nothing deployed has issued a grant for a day to be retained
 //! against.
 
+pub mod compute;
 pub mod families;
 pub mod horizons;
+pub mod learning;
 pub mod problem;
 pub mod regime;
+pub mod research;
 pub mod router;
 pub mod tiers;
 pub mod universe;
 
+pub use compute::{
+    CompiledTask, ComputeDecision, Formulation, InformationValue, Substrate, SubstrateRole,
+    SubstrateVerdict, TaskClass, TaskSpec,
+};
 pub use families::{
     Diagnostics, FamilyAssignment, FamilyClustering, FamilyId, Linkage, StrategyReturns,
     StressCorrelation, StressWindow,
@@ -163,8 +170,14 @@ pub use horizons::{
     HorizonRegister, HorizonSource, ReconciledPlan, SettledHorizons, family_horizons,
     family_horizons_settled, reconcile,
 };
+pub use learning::{MeasurementOutcome, RoutingLearning, SolverMeasurement, SubstrateRecord};
 pub use problem::{Objective, PortfolioConstraint, PortfolioProblem, QuboEncoding};
 pub use regime::{AllocationRegime, Stance};
-pub use router::{ComputeRouter, RoutingDecision, RoutingPolicy, Solver, SolverRun};
+pub use research::{
+    AdvantageBoundary, AdvantageEvidence, AdvantageStanding, EnsembleFeature, ResearchDomain,
+};
+pub use router::{
+    ComputeRouter, QuantumDispatch, RoutingDecision, RoutingPolicy, Solver, SolverRun,
+};
 pub use tiers::{EvaluationTier, HOT_TIER_CAP, TierCadence, TierPlan};
 pub use universe::AlphaFamily;

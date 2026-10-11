@@ -1,0 +1,2770 @@
+[
+  {
+    "id": "R12-ARCH-3001",
+    "domain": "ARCH",
+    "title": "Cognitive Core stays off the hot order path",
+    "statement": "The Cognitive Core (slow-thinking planner/scientific engine) must not act as the hot-path trader: no cognitive-core crate or language model is reachable from the reflex cell's order path.",
+    "rationale": "A slow planner on the order path breaks latency bounds and lets an unbounded model act on orders.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Dependency-graph test fails if qip-edge or qip-edge-node can reach qip-ai/qip-reasoning-engine/qip-world-model or a language-model provider; adding such a dependency must turn it red."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-3002",
+    "domain": "AGENCY",
+    "title": "Cognitive Core decomposes goals",
+    "statement": "The Cognitive Core can decompose a goal into sub-goals, each a validated goal specification.",
+    "rationale": "Without decomposition, research and action plans cannot be attributed to the goal they serve.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Decomposing a goal yields typed sub-goals and refuses a malformed part; removing validation makes the refusal test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3003",
+    "domain": "REASON",
+    "title": "Cognitive Core launches research campaigns",
+    "statement": "The Cognitive Core can launch bounded research campaigns (fetch, verify, backtest, emit results/manifest).",
+    "rationale": "Research that is not run as a bounded campaign has no manifest and cannot be reproduced.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A campaign run produces a manifest and results and deletes its TTL cache; removing the manifest emission fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-3004",
+    "domain": "AGENCY",
+    "title": "Cognitive Core calls tools through authorized adapters",
+    "statement": "The Cognitive Core calls tools only through registered tools with declared authority, and a plan step using an undeclared tool or unheld authority is refused.",
+    "rationale": "Unregistered tool calls are unattributable external actions.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A plan using a lever whose authority the identity lacks is refused; deleting the authority check fails the test."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3005",
+    "domain": "REASON",
+    "title": "Cognitive Core coordinates specialist agents",
+    "statement": "The Cognitive Core dispatches work to a governed society of specialist agents and records each run.",
+    "rationale": "Uncoordinated agents duplicate work and leave no audit of who concluded what.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A REASON stage dispatch reaches every specialist and the audit trail records each run; removing an agent from dispatch fails the coverage assertion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3006",
+    "domain": "REASON",
+    "title": "Cognitive Core builds causal hypotheses from evidence",
+    "statement": "The Cognitive Core inspects evidence and forms causal hypotheses whose confidence is computed from that evidence.",
+    "rationale": "A hypothesis with an asserted confidence cannot be audited.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A hypothesis cannot be constructed with a free confidence; drift between stated and evidence-implied confidence is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3007",
+    "domain": "TICK",
+    "title": "Cognitive Core runs simulations",
+    "statement": "The Cognitive Core runs simulations (market, scenario, stress) as part of its reasoning loop.",
+    "rationale": "Untested conclusions reach decisions without any simulated consequence.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The SIMULATE stage runs every cycle and reports results; skipping it fails the stage-count test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-3008",
+    "domain": "DATA",
+    "title": "Cognitive Core requests new data",
+    "statement": "The Cognitive Core can request new data where it is blind or wrong, producing source-discovery targets.",
+    "rationale": "A platform that looks only where an operator pointed it never discovers its own blind spots.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Forecast-error spikes and knowledge gaps produce ranked discovery targets; removing the forecast-error input empties the targets."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3009",
+    "domain": "MODEL",
+    "title": "Cognitive Core trains models",
+    "statement": "The Cognitive Core can train models from its learning data as part of the slow lane.",
+    "rationale": "Without training, discovered patterns never become reusable models.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A learning round produces a trained artifact with manifest; removing the training step fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3010",
+    "domain": "REASON",
+    "title": "Cognitive Core challenges its own conclusions",
+    "statement": "Every hypothesis the Cognitive Core forms is attacked by an adversarial review before it can be acted on.",
+    "rationale": "A thesis nobody attacked reads as vetted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A hypothesis failing a red-team check is refused; disabling RedTeam lets it through and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-3011",
+    "domain": "CONTRACT",
+    "title": "Cognitive Core produces deployable policy/model packages",
+    "statement": "The Cognitive Core's output is a signed, versioned policy or model package that the warm/reflex lanes can consume.",
+    "rationale": "Conclusions that are not packaged cannot be deployed or audited by version.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§9 Financial Superintelligence / Cognitive Core"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The central plane issues a signed policy payload a cell accepts; tampering is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3012",
+    "domain": "REASON",
+    "title": "Macro/Geopolitical Brain",
+    "statement": "A Macro/Geopolitical Brain exists as a specialist covering: rates, inflation, policy, elections/public policy facts, trade, conflict, sanctions, sovereign and currency regimes.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Macro/Geopolitical Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3013",
+    "domain": "REASON",
+    "title": "Company/Fundamental Brain",
+    "statement": "A Company/Fundamental Brain exists as a specialist covering: financial statements, earnings, corporate events, management guidance, credit and capital structure.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Company/Fundamental Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3014",
+    "domain": "REASON",
+    "title": "Microstructure Brain",
+    "statement": "A Microstructure Brain exists as a specialist covering: books, flows, liquidity, queue dynamics, adverse selection, venue behavior and execution cost.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Microstructure Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-3015",
+    "domain": "EVENT",
+    "title": "Event/Prediction Brain",
+    "statement": "A Event/Prediction Brain exists as a specialist covering: event probabilities, scenario trees, information arrival and event-contract valuation.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Event/Prediction Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3016",
+    "domain": "REASON",
+    "title": "Supply Chain/Physical Brain",
+    "statement": "A Supply Chain/Physical Brain exists as a specialist covering: products, commodities, suppliers, logistics, inventories, production constraints and shipping.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Supply Chain/Physical Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMMERCE"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-3017",
+    "domain": "ASSET",
+    "title": "Crypto/On-chain Brain",
+    "statement": "A Crypto/On-chain Brain exists as a specialist covering: protocol state, token economics, bridges, liquidity, smart contracts and on-chain flows.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Crypto/On-chain Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-3018",
+    "domain": "ASSET",
+    "title": "Private Markets Brain",
+    "statement": "A Private Markets Brain exists as a specialist covering: illiquid valuations, commitments, capital calls, private-company/fund lifecycle.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Private Markets Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-3019",
+    "domain": "ASSET",
+    "title": "Portfolio/Asset Brain",
+    "statement": "A Portfolio/Asset Brain exists as a specialist covering: mandates, horizons, exposures, hedges, divestment, factor/causal-driver allocation.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Portfolio/Asset Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-3020",
+    "domain": "CAPITAL",
+    "title": "Capital Brain",
+    "statement": "A Capital Brain exists as a specialist covering: liquidity, collateral, leverage, funding, capital grants, placement and compounding.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Capital Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-3021",
+    "domain": "RISK",
+    "title": "Risk Brain",
+    "statement": "A Risk Brain exists as a specialist covering: risk forecasting, scenario/stress generation and risk recommendations.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Risk Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-3022",
+    "domain": "RISK",
+    "title": "Hard risk limits enforced by deterministic gates, not the Risk Brain",
+    "statement": "The Risk Brain only recommends; hard limits are enforced by deterministic gates that never route to a model.",
+    "rationale": "A model-enforced limit can be argued out of firing.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A decision marked Determinism::Required cannot be routed to any model tier; letting it route fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3023",
+    "domain": "REASON",
+    "title": "Adversarial Brain",
+    "statement": "A Adversarial Brain exists as a specialist covering: manipulation, regime breaks, model failure, source poisoning and strategies that exploit Algorik itself.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Adversarial Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3024",
+    "domain": "AMBIENT",
+    "title": "Meta Brain",
+    "statement": "A Meta Brain exists as a specialist covering: allocating research attention, measuring which brains/models are reliable in which regimes, and resolving disagreements.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Meta Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3025",
+    "domain": "WORLD",
+    "title": "World Model Arbitration Brain",
+    "statement": "A World Model Arbitration Brain exists as a specialist covering: scoring and reconciling competing world models, preserving disagreement, tracking calibration, and deciding branch/merge/abstain/request-more-data.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The World Model Arbitration Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3026",
+    "domain": "REASON",
+    "title": "Symbolic Reasoning Brain",
+    "statement": "A Symbolic Reasoning Brain exists as a specialist covering: ontology, temporal, causal, rule, probabilistic and constraint reasoning producing explicit derivations and machine-checkable constraints.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Symbolic Reasoning Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3027",
+    "domain": "AMBIENT",
+    "title": "Ambient Attention Brain",
+    "statement": "A Ambient Attention Brain exists as a specialist covering: always-on attention routing that combines surprise, opportunity, risk and assumption signals and wakes specialist/research/reflex pathways.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Ambient Attention Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-3028",
+    "domain": "AGENCY",
+    "title": "Causal Agency Brain",
+    "statement": "A Causal Agency Brain exists as a specialist covering: goal decomposition, controllable-variable discovery, affordance graph, intervention generation, causal simulation, multi-step planning, effect/risk/cost comparison and execution orchestration through authorized tools.",
+    "rationale": "A scope with no responsible specialist is a blind spot the platform cannot report.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "16",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The Causal Agency Brain is constructed in the production organisation and emits findings for its scope; removing it drops its scope from coverage."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-3029",
+    "domain": "GOV",
+    "title": "Communications & Conduct Brain gates external communications",
+    "statement": "Every authorized external communication passes truthfulness/provenance, identity/disclosure, channel policy, audience/jurisdiction and market-conduct checks before release.",
+    "rationale": "An ungated publication is a conduct and market-manipulation exposure.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A draft failing any single check is blocked; removing one check lets a failing draft through and its independence test fails."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-3030",
+    "domain": "GOV",
+    "title": "Post-publication monitoring of external communications",
+    "statement": "The Conduct Brain monitors communications after publication.",
+    "rationale": "A message that becomes misleading after release goes unnoticed.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A published message is re-checked after publication and a later violation raises a finding."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-3031",
+    "domain": "GOV",
+    "title": "Block deceptive or manipulative influence patterns",
+    "statement": "Deceptive or manipulative influence methods have no policy and any plan or communication using one is refused.",
+    "rationale": "Manipulative influence is unlawful market conduct.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.1 Specialist Brain Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A plan using a deceptive method is infeasible; removing the is_deceptive check fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3032",
+    "domain": "WORLD",
+    "title": "Semantic memory of entities, relationships, definitions, policies",
+    "statement": "The platform keeps semantic memory: entities, relationships, definitions, policies and stable knowledge, readable point-in-time.",
+    "rationale": "Without stable knowledge every cycle relearns the world.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.2 Memory & Self Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Knowledge-graph facts are recorded bitemporally and read as-of; lesson promotion requires multiple episodes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3033",
+    "domain": "WORLD",
+    "title": "Episodic memory of world, belief, action and outcome",
+    "statement": "The platform keeps episodic memory of what the world looked like, what it believed, what it did, and what followed.",
+    "rationale": "Without episodes, precedent and attribution have nothing to read.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.2 Memory & Self Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cycle writes an episode carrying market/world state and belief, and a resolved episode records the outcome gap."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3034",
+    "domain": "WORLD",
+    "title": "Procedural memory of procedures, templates, adapters, playbooks",
+    "statement": "The platform keeps procedural memory: research procedures, strategy templates, data adapters, playbooks and remediation patterns.",
+    "rationale": "Procedures that are not memory cannot be reused or improved.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.2 Memory & Self Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A procedure is stored, versioned and retrieved for reuse."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3035",
+    "domain": "WORLD",
+    "title": "Counterfactual memory of rejected and alternate actions",
+    "statement": "The platform keeps counterfactual memory: what would likely have happened under rejected or alternate actions, never mixed with observed outcomes.",
+    "rationale": "Learning only from actions taken teaches nothing about vetoes.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.2 Memory & Self Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "LEARN prices declined paths and records them apart from observed outcomes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3036",
+    "domain": "WORLD",
+    "title": "Self-model of weaknesses, blind spots, drift, health, boundaries",
+    "statement": "The platform maintains a self-model of known weaknesses, blind spots, uncertainty, stale areas, model/data drift, operational health and capability boundaries.",
+    "rationale": "A platform that weights every component as reliable repeats its errors.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.2 Memory & Self Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Grading a resolved thesis moves the self-model for the producing components and REASON scales evidence by it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3037",
+    "domain": "WORLD",
+    "title": "Population of specialised world models, not a monolith",
+    "statement": "The platform maintains a population of world models specialised by domain, geography, horizon, abstraction level and hypothesis, not a single monolithic model.",
+    "rationale": "One shared model cannot say 'the models disagree'.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A population differing on all five axes is registered and every member produces state each cycle."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3038",
+    "domain": "WORLD",
+    "title": "Each world model declares scope, lineage, calibration, cadence, expiry",
+    "statement": "Each world model has explicit scope, evidence lineage, calibration, update cadence and expiry; a declaration missing any is refused.",
+    "rationale": "An undeclared model cannot be scored or retired.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A declaration missing a field is refused naming it; an expired model is excluded exactly at expiry."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3039",
+    "domain": "WORLD",
+    "title": "Model disagreement preserved as information",
+    "statement": "Disagreement between world models is preserved and measured, never averaged away; an arbitrated number exists only with its disagreement.",
+    "rationale": "An average hides that the platform does not know.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Arbitration over diverging views keeps every view and the spread; returning a bare merged number fails the type check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3040",
+    "domain": "WORLD",
+    "title": "Arbitration compares evidence fit, performance, causal coherence, uncertainty",
+    "statement": "World Model Arbitration compares evidence fit, predictive performance, causal coherence and uncertainty.",
+    "rationale": "Arbitrating on one dimension rewards a model that is coherent but wrong.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Arbitration records all four dimensions and ranks by evidence fit when only that differs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3041",
+    "domain": "WORLD",
+    "title": "Multiple live branches preserved until reality resolves them",
+    "statement": "Arbitration can preserve multiple live branches until an outcome resolves them, closing the refuted one with its score.",
+    "rationale": "Premature merging destroys the alternative that turns out right.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Competing branches stay live until resolve(); the refuted branch closes with its Brier score."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3042",
+    "domain": "WORLD",
+    "title": "Federation includes global causal model",
+    "statement": "The world-model federation includes global causal model covering long-horizon entities, events, drivers and cross-domain causal structure.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3043",
+    "domain": "WORLD",
+    "title": "Federation includes macro/geopolitical models",
+    "statement": "The world-model federation includes macro/geopolitical models covering rates, policy, trade, conflict, sanctions, currencies and sovereign regimes.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3044",
+    "domain": "WORLD",
+    "title": "Federation includes company/fundamental models",
+    "statement": "The world-model federation includes company/fundamental models covering firms, financials, management actions, credit and capital structure.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3045",
+    "domain": "WORLD",
+    "title": "Federation includes supply-chain/physical models",
+    "statement": "The world-model federation includes supply-chain/physical models covering factories, commodities, inventories, logistics, products, weather and real-world constraints.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3046",
+    "domain": "WORLD",
+    "title": "Federation includes market/microstructure models",
+    "statement": "The world-model federation includes market/microstructure models covering liquidity, order flow, venues, lead/lag, impact, arbitrage and execution state.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3047",
+    "domain": "WORLD",
+    "title": "Federation includes event/prediction models",
+    "statement": "The world-model federation includes event/prediction models covering event trees, conditional probabilities, information arrival and resolution mechanics.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3048",
+    "domain": "WORLD",
+    "title": "Federation includes portfolio/capital/liquidity models",
+    "statement": "The world-model federation includes portfolio/capital/liquidity models covering exposures, collateral, funding, leverage, optionality and capital mobility.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3049",
+    "domain": "WORLD",
+    "title": "Federation includes counterparty/network models",
+    "statement": "The world-model federation includes counterparty/network models covering brokers, exchanges, bridges, custodians, settlement dependencies and contagion paths.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3050",
+    "domain": "WORLD",
+    "title": "Federation includes regional world models",
+    "statement": "The world-model federation includes regional world models covering local language, regulation, venues, microstructure, logistics and information ecosystems.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3051",
+    "domain": "WORLD",
+    "title": "Federation includes scenario/counterfactual models",
+    "statement": "The world-model federation includes scenario/counterfactual models covering alternate futures, rejected actions, stress worlds and rare-regime branches.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3052",
+    "domain": "WORLD",
+    "title": "Federation includes self/system models",
+    "statement": "The world-model federation includes self/system models covering Algorik's own capabilities, failure states, blind spots, latency, data/model health and authority.",
+    "rationale": "A domain with no world model cannot be forecast or arbitrated.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.3 World Model Federation"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A registered federation member with this scope exists and produces state; absent member fails a population check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3053",
+    "domain": "REASON",
+    "title": "Reasoning as a society of interoperable reasoners",
+    "statement": "Reasoning is a society of interoperable explicit reasoners alongside neural inference, not a single chain-of-thought model.",
+    "rationale": "A single opaque model cannot provide invariants or auditable derivations.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "17",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "REASON composes at least one symbolic reasoner's verdict into hypothesis formation."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3054",
+    "domain": "REASON",
+    "title": "Knowledge-graph and ontology reasoning",
+    "statement": "The reasoning fabric provides knowledge-graph and ontology reasoning over typed entities, relationships, events and financial/physical lifecycles.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3055",
+    "domain": "REASON",
+    "title": "Temporal and event logic",
+    "statement": "The reasoning fabric provides temporal and event logic before/after, deadlines, settlement calendars, causal ordering and state transitions.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3056",
+    "domain": "REASON",
+    "title": "Causal graph reasoning",
+    "statement": "The reasoning fabric provides causal graph reasoning interventions, propagation paths, confounders and counterfactual explanations.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3057",
+    "domain": "REASON",
+    "title": "Rule and policy engines",
+    "statement": "The reasoning fabric provides rule and policy engines eligibility, accounting invariants, market structure, contracts and deterministic business logic.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3058",
+    "domain": "REASON",
+    "title": "Constraint reasoning",
+    "statement": "The reasoning fabric provides constraint reasoning graph solvers, CSP/SAT/SMT/MILP/QUBO-style formulations where appropriate.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3059",
+    "domain": "REASON",
+    "title": "Probabilistic symbolic reasoning",
+    "statement": "The reasoning fabric provides probabilistic symbolic reasoning uncertain rules, Bayesian structures and evidence-weighted hypotheses.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3060",
+    "domain": "REASON",
+    "title": "Abductive reasoning",
+    "statement": "The reasoning fabric provides abductive reasoning best current explanations for surprising observations while preserving alternatives.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3061",
+    "domain": "REASON",
+    "title": "Planning/program synthesis",
+    "statement": "The reasoning fabric provides planning/program synthesis compose tools, actions, experiments and research plans from explicit goals and constraints.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3062",
+    "domain": "REASON",
+    "title": "Proof/derivation artifacts",
+    "statement": "The reasoning fabric provides proof/derivation artifacts important conclusions carry a machine-readable derivation, evidence set, violated assumptions and uncertainty.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3063",
+    "domain": "REASON",
+    "title": "Neural-to-symbolic compilation",
+    "statement": "The reasoning fabric provides neural-to-symbolic compilation validated discoveries become rules, graph predicates, constraints or bounded reflex predicates that execute deterministically.",
+    "rationale": "Neural inference alone cannot hold invariants or exact constraints auditable afterwards.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.4 Symbolic & Neuro-Symbolic Reasoning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoner of this kind produces a deterministic, cited result on a fixture; mutating its core rule fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3064",
+    "domain": "AMBIENT",
+    "title": "Ambient models run persistently without a prompt",
+    "statement": "Ambient models run continuously in the background, maintaining forecasts, expected-state distributions, weak-signal detectors, surprise measures and conditional scenarios without waiting for a prompt or strategy tick.",
+    "rationale": "Intelligence that runs only on request notices nothing nobody asked about.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A background loop produces AmbientSignals between cycles; stopping it stops signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3065",
+    "domain": "AMBIENT",
+    "title": "Attention Router turns material deviations into routed work",
+    "statement": "An Attention Router turns material deviations into research tasks, specialist activation, risk review, capital preparation or reflex-model updates within a bounded budget, recording excess as deferred or shed.",
+    "rationale": "A signal storm waking every specialist starves everything; silent drops are unauditable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Below-materiality deviations wake nothing; a storm never exceeds the budget and excess is Deferred/Shed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3066",
+    "domain": "AMBIENT",
+    "title": "Forecast models over multiple horizons",
+    "statement": "The ambient mesh includes forecast models over multiple horizons that maintain expected future states over multiple horizons, from milliseconds to years.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3067",
+    "domain": "AMBIENT",
+    "title": "Surprise/novelty models",
+    "statement": "The ambient mesh includes surprise/novelty models that compare live observations with expected states and surface unexplained residuals.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3068",
+    "domain": "AMBIENT",
+    "title": "Assumption sentinels",
+    "statement": "The ambient mesh includes assumption sentinels that continuously test whether premises behind active strategies, beliefs and risk models still hold.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3069",
+    "domain": "AMBIENT",
+    "title": "Opportunity sentinels",
+    "statement": "The ambient mesh includes opportunity sentinels that look for precursors to cross-asset, cross-region, event, physical-product and multi-leg dislocations before a full trade signal.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3070",
+    "domain": "AMBIENT",
+    "title": "Risk sentinels",
+    "statement": "The ambient mesh includes risk sentinels that model tail conditions, contagion, liquidity evaporation, crowding and correlated failure before hard limits are reached.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3071",
+    "domain": "AMBIENT",
+    "title": "Counterfactual shadow models",
+    "statement": "The ambient mesh includes counterfactual shadow models that continuously simulate alternate actions and maintain learning data for decisions not taken.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3072",
+    "domain": "AMBIENT",
+    "title": "Capital-readiness models",
+    "statement": "The ambient mesh includes capital-readiness models that anticipate where collateral, cash, inventory or hedges may be needed and recommend pre-positioning within authority limits.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3073",
+    "domain": "AMBIENT",
+    "title": "Curiosity models",
+    "statement": "The ambient mesh includes curiosity models that search for high-value unknowns and trigger scouts, tools, simulations, specialists or symbolic hypotheses.",
+    "rationale": "Without this sentinel the condition is noticed only after it has cost money.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The sentinel runs in production and its output reaches the attention router; disabling it removes its signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3074",
+    "domain": "AMBIENT",
+    "title": "Ambient outputs are advisory until promoted",
+    "statement": "Ambient outputs are advisory until promoted through the same evidence, evaluation, authority and deterministic-control boundaries as any other model output; no order-path crate names an ambient type.",
+    "rationale": "An ambient guess must not reach capital by a shorter path than anything else.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.5 Proactive Ambient Model Mesh"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Advisory cannot be unwrapped except by promote() with a complete case; any order-path crate naming an ambient type fails the scan."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3075",
+    "domain": "WORLD",
+    "title": "NOW Brain estimates latent platform-wide state",
+    "statement": "A NOW Brain continuously infers the most likely hidden state of markets, economies, companies, supply chains, liquidity, positioning, policy, volatility and system health from incomplete and contradictory observations.",
+    "rationale": "Collected facts without inference leave the platform with no single estimate of 'now'.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A state estimator updates per observation and returns a state with uncertainty; contradictory inputs widen uncertainty."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3076",
+    "domain": "WORLD",
+    "title": "Every state variable carries confidence, freshness, rate-of-change, diversity, uncertainty",
+    "statement": "Every NOW state variable carries confidence, freshness, rate-of-change, source diversity and uncertainty.",
+    "rationale": "A state value without its quality is read as certain.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "18",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A state variable missing any of the five fields is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3077",
+    "domain": "WORLD",
+    "title": "State vectors at eight scopes",
+    "statement": "State vectors exist at global, regional, sector, company, instrument, venue, portfolio and infrastructure scopes.",
+    "rationale": "A single-scope state cannot answer regional or venue questions.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each of the eight scopes has a state vector type and estimator."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3078",
+    "domain": "WORLD",
+    "title": "Competing state estimators contribute estimates",
+    "statement": "Bayesian/state-space filters, neural state-space models, graph models, causal models and symbolic constraints can contribute competing state estimates.",
+    "rationale": "A single estimator's failure mode becomes the platform's.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Two estimators for one variable both contribute and their disagreement is recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3079",
+    "domain": "AMBIENT",
+    "title": "High-surprise state change wakes specialists",
+    "statement": "A state change with high surprise automatically wakes relevant forecast, adversarial, sensing and risk specialists.",
+    "rationale": "A material surprise that wakes no one is a missed warning.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A high-surprise change produces AttentionEvents to the four pathways."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-3080",
+    "domain": "DATA",
+    "title": "NOW Brain persists compact state and belief deltas only",
+    "statement": "The NOW Brain persists compact state and belief deltas, not raw world payloads.",
+    "rationale": "Copying raw world payloads is unbounded retention and a licensing exposure.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Persisted NOW records contain only deltas; a raw payload field fails the schema."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-3081",
+    "domain": "EVID",
+    "title": "External evidence re-fetchable by manifest",
+    "statement": "External evidence behind NOW state remains re-fetchable by manifest rather than stored.",
+    "rationale": "Evidence that cannot be re-fetched cannot be re-verified.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.6 Global State Estimation Engine - NOW Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each NOW delta cites a manifest entry resolvable to a source reference."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3082",
+    "domain": "WORLD",
+    "title": "Forecasts organised as a lattice of linked horizons",
+    "statement": "Prediction is organised as a lattice of linked horizons, each with its own specialist model population and calibration metrics.",
+    "rationale": "A single-horizon forecast cannot be calibrated per horizon.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each lattice horizon has registered models and a calibration series; per-horizon Brier is emitted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3083",
+    "domain": "WORLD",
+    "title": "Horizons constrain one another",
+    "statement": "Higher-level state and lower-level microstructure forecasts continuously constrain one another across the lattice.",
+    "rationale": "Inconsistent horizons produce contradictory positions.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A forecast inconsistent with its adjacent horizon is flagged or reconciled."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3084",
+    "domain": "WORLD",
+    "title": "Microseconds-ms lattice horizon promotes only to Local Reflex only",
+    "statement": "The Microseconds-ms horizon is served by reflex/microstructure models producing fill probability, queue movement, adverse selection, executable edge, and its outputs are promoted only to Local Reflex only.",
+    "rationale": "A model promoted to the wrong lane breaks latency or authority bounds.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Microseconds-ms model targeting any lane other than Local Reflex only is refused at admission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3085",
+    "domain": "WORLD",
+    "title": "Seconds-minutes lattice horizon promotes only to Reflex/warm packages",
+    "statement": "The Seconds-minutes horizon is served by flow and event reaction models producing price/volatility/liquidity distributions, propagation speed, and its outputs are promoted only to Reflex/warm packages.",
+    "rationale": "A model promoted to the wrong lane breaks latency or authority bounds.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Seconds-minutes model targeting any lane other than Reflex/warm packages is refused at admission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3086",
+    "domain": "WORLD",
+    "title": "Hours-days lattice horizon promotes only to Strategy/Capital/Risk",
+    "statement": "The Hours-days horizon is served by event, options, macro, company specialists producing scenario probabilities, catalyst impact, hedge demand, and its outputs are promoted only to Strategy/Capital/Risk.",
+    "rationale": "A model promoted to the wrong lane breaks latency or authority bounds.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Hours-days model targeting any lane other than Strategy/Capital/Risk is refused at admission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3087",
+    "domain": "WORLD",
+    "title": "Weeks-months lattice horizon promotes only to Portfolio/treasury",
+    "statement": "The Weeks-months horizon is served by macro/fundamental/supply-chain world models producing regime paths, earnings/credit/commodity distributions, and its outputs are promoted only to Portfolio/treasury.",
+    "rationale": "A model promoted to the wrong lane breaks latency or authority bounds.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Weeks-months model targeting any lane other than Portfolio/treasury is refused at admission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-3088",
+    "domain": "WORLD",
+    "title": "Quarters-years lattice horizon promotes only to Strategic allocation/research",
+    "statement": "The Quarters-years horizon is served by structural world models and digital twins producing capital-cycle, policy, technology and geopolitical scenarios, and its outputs are promoted only to Strategic allocation/research.",
+    "rationale": "A model promoted to the wrong lane breaks latency or authority bounds.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.7 Temporal Forecast Lattice"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Quarters-years model targeting any lane other than Strategic allocation/research is refused at admission."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3089",
+    "domain": "MODEL",
+    "title": "Population of thousands of specialist forecasters",
+    "statement": "A population of thousands of specialist and temporary models independently forecast the same questions.",
+    "rationale": "A handful of models gives no ensemble diversity.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Registry holds many independent forecasters for one question."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3090",
+    "domain": "MODEL",
+    "title": "Influence earned from calibration, information value, regime accuracy, cost, latency",
+    "statement": "Forecasters earn or lose influence from calibration, incremental information value, regime-specific accuracy, cost and latency.",
+    "rationale": "Influence by authority or size rewards confident, wrong models.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An ensemble weight moves with each of the five factors; a model with poor calibration loses weight."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3091",
+    "domain": "MODEL",
+    "title": "Forecaster disagreement preserved as research signal",
+    "statement": "Disagreement among forecasters is preserved and becomes a research signal.",
+    "rationale": "Discarded disagreement is lost information about what the platform does not know.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Material disagreement raises a research task citing the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3092",
+    "domain": "MODEL",
+    "title": "Model Tournament scores by regime",
+    "statement": "A Model Tournament continuously scores Brier, log loss, calibration, tail accuracy, economic usefulness and robustness by regime.",
+    "rationale": "A single global score credits a model for conditions it was never tested in.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Tournament output has all six metrics per model per regime; dropping one fails the schema test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3093",
+    "domain": "MODEL",
+    "title": "Forecast Market assigns synthetic reputation capital",
+    "statement": "A Forecast Market gives models synthetic reputation/capital so aggregate probabilities reflect measured historical skill, not model size.",
+    "rationale": "Aggregation by authority overweights large, uncalibrated models.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Aggregate probability weights equal reputation shares derived from scored history."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3094",
+    "domain": "MODEL",
+    "title": "Ephemeral specialists spawned and retired",
+    "statement": "Ephemeral specialists may be spawned for a company, election, supply shock, weather system, protocol, product or event and retired after relevance decays.",
+    "rationale": "Permanent specialists for transient questions waste compute and go stale.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A spawned specialist carries an expiry and is excluded once expired."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-3095",
+    "domain": "MODEL",
+    "title": "Meta-models predict forecaster failure and reweight",
+    "statement": "Meta-models predict which forecasters are likely to fail under the current regime and dynamically adjust ensemble weights.",
+    "rationale": "Static weights keep trusting a model through the regime it fails in.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.8 Predictive World Swarm & Model Tournament"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Ensemble weights change on a regime change predicted to break a forecaster."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3096",
+    "domain": "TICK",
+    "title": "Continuously evolving tree of plausible futures",
+    "statement": "The platform maintains a continuously evolving tree of plausible futures.",
+    "rationale": "Without branches the platform plans for one future.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A future tree exists in the cycle and is updated as observations arrive."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3097",
+    "domain": "TICK",
+    "title": "Synthetic-world generators vary causal assumptions",
+    "statement": "Synthetic-world generators vary causal assumptions, participant behavior, policy, liquidity, weather, supply constraints, defaults, market structure and Algorik actions.",
+    "rationale": "Simulating only history cannot test unseen worlds.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A generator produces worlds differing along the named dimensions."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3098",
+    "domain": "TICK",
+    "title": "Digital twins use compact learned state, not copied world data",
+    "statement": "Digital twins model economically important entities using compact learned state rather than copied world data.",
+    "rationale": "Copied world data is unbounded and licence-exposed.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Twin state contains no raw source payload."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3099",
+    "domain": "TICK",
+    "title": "Branches carry probability, assumptions, evidence, propagation, impact, hedges",
+    "statement": "Each future branch carries probability, causal assumptions, unresolved evidence, expected market propagation, portfolio impact and hedge requirements.",
+    "rationale": "A branch without impact and hedge needs cannot drive a decision.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A branch missing any of the six fields is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3100",
+    "domain": "TICK",
+    "title": "Reality prunes, reweights or splits branches",
+    "statement": "Arriving observations continuously prune, reweight or split future branches.",
+    "rationale": "A tree that never updates is a static scenario set.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "19",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An observation consistent with one branch reweights it; a contradicting one prunes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3101",
+    "domain": "TICK",
+    "title": "Exchange/venue twins simulate queueing, latency, fills, slippage, impact, responses",
+    "statement": "Exchange/venue twins simulate queueing, latency, fills, slippage, market impact and participant responses.",
+    "rationale": "A generous simulator makes every strategy look better than it is.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "SimBook sweep never fills beyond published depth; impact and latency applied."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-3102",
+    "domain": "TICK",
+    "title": "Macro/company/supply-chain twins explore second/third-order propagation",
+    "statement": "Macro, company and supply-chain twins explore second- and third-order propagation paths before they are obvious in prices.",
+    "rationale": "First-order exposure misses the dependency that hits the book.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Propagation names instruments two hops from a driver the book depends on."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-3103",
+    "domain": "RISK",
+    "title": "Rare-event factories synthesize unprecedented combinations",
+    "statement": "Rare-event factories deliberately synthesize unprecedented combinations so risk and hedge systems learn outside historical experience.",
+    "rationale": "Risk trained only on history fails on the first novel crisis.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.9 Future-State Tree, Synthetic Worlds & Digital Twins"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Generated scenarios include combinations absent from the historical library."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3104",
+    "domain": "AMBIENT",
+    "title": "Expected value of information computed for major uncertain decisions",
+    "statement": "Every major uncertain decision can calculate the expected value of additional information and launch the cheapest lawful observation most likely to discriminate between competing worlds.",
+    "rationale": "Deciding without asking what to observe next wastes cheap disambiguation.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.10 Active Sensing, Curiosity & Value-of-Information"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A decision with high uncertainty produces an InfoRequest choosing the cheapest discriminating source."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-3105",
+    "domain": "DATA",
+    "title": "Information requests trigger many acquisition kinds",
+    "statement": "Information requests may trigger a new source query, alternative provider, microstructure probe, simulation, specialist agent, public filing fetch or additional measurement.",
+    "rationale": "One acquisition kind leaves cheaper disambiguators unused.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.10 Active Sensing, Curiosity & Value-of-Information"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each request kind dispatches to its handler."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3106",
+    "domain": "AMBIENT",
+    "title": "Curiosity Engine ranks by significance x uncertainty reduction x urgency x cost",
+    "statement": "The Curiosity Engine ranks research by economic significance x uncertainty reduction x urgency x acquisition cost.",
+    "rationale": "A ranking that ignores any factor buys expensive, irrelevant or late information.",
+    "kind": "metric",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.10 Active Sensing, Curiosity & Value-of-Information"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Ranking is monotone in each factor as the formula states; zeroing any multiplicative factor zeroes the score."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3107",
+    "domain": "AMBIENT",
+    "title": "Evidence acquisition stops at marginal value or deadline",
+    "statement": "Evidence acquisition stops when marginal information value falls below compute/data cost or the decision deadline passes.",
+    "rationale": "Unbounded acquisition burns cost after the decision is made.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.10 Active Sensing, Curiosity & Value-of-Information"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "should_halt is true at the deadline and when net value is below minimum."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3108",
+    "domain": "REASON",
+    "title": "Important forecasts attacked by eight named critic kinds",
+    "statement": "Every important forecast is attacked by independent bull, bear, structural-break, manipulation, tail-risk, model-risk, data-poisoning and missing-variable critics that attempt to falsify the leading explanation.",
+    "rationale": "A critic set missing a kind leaves that failure unchallenged.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.11 Adversarial Intelligence & Independent Verification Society"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each of the eight critics runs on a hypothesis and can refuse it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3109",
+    "domain": "REASON",
+    "title": "Authority only by surviving challenge and staying calibrated",
+    "statement": "A conclusion gains authority only by surviving independent challenge and maintaining calibration over time.",
+    "rationale": "Authority by assertion lets an unchallenged or miscalibrated source drive capital.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.11 Adversarial Intelligence & Independent Verification Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A hypothesis refused by review cannot reach DECIDE; an origin with a poor record is down-weighted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3110",
+    "domain": "AMBIENT",
+    "title": "Meta-Intelligence allocates compute by expected uncertainty reduction or value",
+    "statement": "The Meta-Intelligence Brain decides which questions, models, agents, simulations and solvers receive another unit of CPU/GPU/TPU/QPU capacity based on expected uncertainty reduction or expected economic value.",
+    "rationale": "Compute allocated by habit scales cost, not intelligence.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.12 Meta-Intelligence Brain & Cognitive Attention Market"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Allocation records rationale and the expected value it was granted on."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FINOPS",
+      "QUANT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3111",
+    "domain": "AMBIENT",
+    "title": "Model reputation by domain, horizon and regime",
+    "statement": "The Meta-Intelligence Brain maintains model reputation by domain, horizon and regime.",
+    "rationale": "A global reputation credits models for regimes they were never tested in.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.12 Meta-Intelligence Brain & Cognitive Attention Market"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Reputation for an unseen regime cell reads as uninformed, not the global average."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3112",
+    "domain": "AMBIENT",
+    "title": "Marginal value of extra simulation, agent, call, source or QPU experiment measured",
+    "statement": "The platform measures the marginal value of an additional simulation, agent, model call, data source or QPU experiment.",
+    "rationale": "Without marginal value, spend cannot be stopped where it stops paying.",
+    "kind": "metric",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.12 Meta-Intelligence Brain & Cognitive Attention Market"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A marginal-value figure is recorded per added unit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3113",
+    "domain": "AMBIENT",
+    "title": "Create specialist populations where residual error is economically meaningful",
+    "statement": "The Meta-Intelligence Brain creates new specialist populations when residual error remains economically meaningful.",
+    "rationale": "Persistent residual error with no new specialist is a known blind spot left open.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.12 Meta-Intelligence Brain & Cognitive Attention Market"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Residual above threshold proposes a new specialist."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-3114",
+    "domain": "AMBIENT",
+    "title": "Kill redundant or persistently unproductive work",
+    "statement": "The Meta-Intelligence Brain kills redundant or persistently unproductive work so scaling follows value, not agent count.",
+    "rationale": "Unbounded agent count is uncontrolled cost.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.12 Meta-Intelligence Brain & Cognitive Attention Market"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Work unproductive for N windows is retired."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-3115",
+    "domain": "REASON",
+    "title": "Cognitive Compiler distils verified capability into bounded packages",
+    "statement": "Validated discoveries pass through symbolic formalisation and specialist training, and the Cognitive Compiler distils verified capability into bounded warm/reflex packages.",
+    "rationale": "Slow-lane discoveries otherwise never become fast, deterministic intelligence.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.13 Recursive Model Evolution & Cognitive Compiler"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A verified discovery yields a compiled bounded package with stated cost that the cell can load."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-3116",
+    "domain": "REFLEX",
+    "title": "No frontier model called from the order path",
+    "statement": "Fast intelligence derived in the slow lane runs without calling a frontier model from the order path.",
+    "rationale": "A model call on the order path is unbounded latency and unbounded authority.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.13 Recursive Model Evolution & Cognitive Compiler"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Architecture test fails if an edge cell can reach a language model."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-3117",
+    "domain": "CONTRACT",
+    "title": "Typed Forecast contract for every material prediction",
+    "statement": "Every material prediction uses a typed Forecast contract containing outcome distribution, horizon, target variable, epistemic uncertainty, aleatoric uncertainty, tail mass, model disagreement, regime confidence, expected impact, evidence lineage and expiration.",
+    "rationale": "A prediction without decomposed uncertainty and expiry cannot be calibrated or retired.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.14 Forecast Contract, Calibration & Uncertainty Decomposition"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A Forecast missing any field is refused on decode; every material prediction site constructs one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-3118",
+    "domain": "OBS",
+    "title": "Calibration is a production SLO",
+    "statement": "Calibration is a production SLO with an objective and alerting, not only a research metric.",
+    "rationale": "A metric nobody alerts on lets the platform drift into overconfidence unnoticed.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "20",
+        "section": "§9.14 Forecast Contract, Calibration & Uncertainty Decomposition"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "An SLO/alert policy on the calibration series exists and plans; removing it fails the infrastructure acceptance suite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  }
+]

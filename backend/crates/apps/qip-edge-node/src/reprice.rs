@@ -155,6 +155,12 @@ pub enum Requote {
     },
     /// The cancel was acknowledged and the replacement could not be sent.
     ReplacementRefused { order_id: String, reason: String },
+    /// The cancel was acknowledged and the cell's deterministic Risk Gate
+    /// refused the replacement, so nothing rests for the intention until
+    /// its time to live. Deliberately not `ReplacementRefused`: that is the
+    /// venue declining, this is the cell's own limit, and an operator who
+    /// read one as the other would look at the venue for a limit breach.
+    RiskRefused { order_id: String, reason: String },
     /// The cell's record could not be modelled as a parent order, so the
     /// order was left alone rather than repriced from a guess.
     Unmodelled { order_id: String, reason: String },
@@ -184,6 +190,7 @@ impl Requote {
             | Self::CancelRefused { order_id, .. }
             | Self::CancelDisagreed { order_id, .. }
             | Self::ReplacementRefused { order_id, .. }
+            | Self::RiskRefused { order_id, .. }
             | Self::Unmodelled { order_id, .. }
             | Self::ThresholdWidened { order_id, .. }
             | Self::BudgetRefused { order_id, .. } => order_id,
@@ -234,6 +241,10 @@ impl Requote {
             Self::ReplacementRefused { order_id, reason } => format!(
                 "order {order_id}: withdrawn, and the replacement was refused, so nothing rests \
                  for it until its time to live: {reason}"
+            ),
+            Self::RiskRefused { order_id, reason } => format!(
+                "order {order_id}: withdrawn, and the cell's risk gate refused the replacement, \
+                 so nothing rests for it until its time to live: {reason}"
             ),
             Self::Unmodelled { order_id, reason } => {
                 format!("order {order_id}: left alone; its record could not be modelled: {reason}")
@@ -614,6 +625,7 @@ impl Requoter {
                     }
                     let mut acknowledged = None;
                     let requote = Self::replace(
+                        cell,
                         &mut self.repricer,
                         &mut self.by_child,
                         &self.metrics,
@@ -670,8 +682,20 @@ impl Requoter {
     /// `withdrawal` is left holding the remainder the venue acknowledged
     /// withdrawing, the moment it has — whichever way the rest of the
     /// instruction goes — so the caller can seal it into the cell's journal.
+    ///
+    /// The replacement passes the cell's Risk Gate
+    /// ([`Cell::admit_replacement`]) after it is minted and before the venue
+    /// hears of it. Before, it was the one route to a venue the gate never
+    /// saw: it cannot add quantity, but a new price is a new notional, and a
+    /// requote chasing a moving touch could carry the cell's book past a
+    /// limit `Cell::send` would have refused. Checked after the cancel rather
+    /// than before because the replacement's price is the repricer's, minted
+    /// only once the withdrawal is acknowledged; a refusal therefore leaves
+    /// the intention withdrawn and unreplaced, which sheds exposure and is
+    /// the direction a gate is allowed to err in.
     #[allow(clippy::too_many_arguments)]
     fn replace(
+        cell: &mut Cell,
         repricer: &mut Repricer,
         by_child: &mut BTreeMap<String, String>,
         metrics: &CellMetrics,
@@ -743,6 +767,21 @@ impl Requoter {
             };
         };
         let side: BookSide = replacement.side;
+        if let Err(error) = cell.admit_replacement(
+            &order_id,
+            &order.object_id,
+            &order.venue,
+            side,
+            replacement.quantity,
+            price,
+            now,
+        ) {
+            release(tracked, &replacement.client_id, error.message());
+            return Requote::RiskRefused {
+                order_id,
+                reason: error.message().to_string(),
+            };
+        }
         if let Err(error) = venue.place(
             &replacement.client_id,
             &order.object_id,

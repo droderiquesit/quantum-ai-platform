@@ -1,6 +1,28 @@
-# The chain: dev → test → stage → prod, each requesting the warehouse's
-# freight from the stage before it (ADR 0036 decision 6). The overlay sets
-# each stage's registry and its Argo CD application; the shape is here.
+# The chain: dev → test → replay → paper → stage → prod, each requesting the
+# warehouse's freight from the link before it (ADR 0036 decision 6, R12
+# CICD-9112). `test` is the blueprint's "integration" and `stage` its
+# "staging"; the names are the environments'.
+#
+# One registry. Every stage's `registry` and `warehouseRegistry` are the
+# same path — the build registry `deploy.yml` builds into once, `qip-dev` in
+# the dev project — so the digest a promotion writes into
+# `envs/<stage>/kustomization.yaml` is the digest the warehouse discovered,
+# byte for byte, in every environment. Until this change each stage named
+# its own environment's registry, `deploy.yml` rebuilt per environment, and
+# a promotion wrote dev's digest under a registry that had never held it:
+# the bytes prod would have run were bytes nobody tested. The overlays now
+# set only which stage this control plane's Argo CD is notified for.
+#
+# `replay` and `paper` are gates, not environments. Neither has a runtime of
+# its own and neither writes an `envs/` directory: each runs the
+# `record-gate` task, which commits the freight's three digests and its
+# source commit into `gates/<stage>/freight.yaml`. No promotion policy
+# promotes either automatically (projectconfig.yaml), so freight reaches
+# `paper` only because a person promoted it out of `replay` after the replay
+# of the event log under it held, and reaches `stage` only because a person
+# promoted it out of `paper` after the paper-trading soak held. What each
+# person checks is in kargo/README.md; that the check itself is not yet an
+# automated verification is said there too.
 #
 # `prod` is the stage that exists so a person can see what would be
 # eligible, and whose promotion does nothing but fail. There is no
@@ -24,7 +46,13 @@ spec:
         direct: true
   promotionTemplate:
     spec:
-      vars: []
+      vars:
+        - name: registry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        - name: warehouseRegistry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        - name: argocdApplication
+          value: ""
       steps:
         - task:
             name: promote-cloud-run
@@ -52,7 +80,13 @@ spec:
           - dev
   promotionTemplate:
     spec:
-      vars: []
+      vars:
+        - name: registry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        - name: warehouseRegistry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        - name: argocdApplication
+          value: ""
       steps:
         - task:
             name: promote-cloud-run
@@ -68,7 +102,7 @@ spec:
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Stage
 metadata:
-  name: stage
+  name: replay
   namespace: qip
 spec:
   requestedFreight:
@@ -80,7 +114,65 @@ spec:
           - test
   promotionTemplate:
     spec:
-      vars: []
+      vars:
+        - name: warehouseRegistry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+      steps:
+        - task:
+            name: record-gate
+          as: record
+          vars:
+            - name: warehouseRegistry
+              value: ${{ vars.warehouseRegistry }}
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: paper
+  namespace: qip
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: qip-images
+      sources:
+        stages:
+          - replay
+  promotionTemplate:
+    spec:
+      vars:
+        - name: warehouseRegistry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+      steps:
+        - task:
+            name: record-gate
+          as: record
+          vars:
+            - name: warehouseRegistry
+              value: ${{ vars.warehouseRegistry }}
+---
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  name: stage
+  namespace: qip
+spec:
+  requestedFreight:
+    - origin:
+        kind: Warehouse
+        name: qip-images
+      sources:
+        stages:
+          - paper
+  promotionTemplate:
+    spec:
+      vars:
+        - name: registry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        - name: warehouseRegistry
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
+        - name: argocdApplication
+          value: ""
       steps:
         - task:
             name: promote-cloud-run

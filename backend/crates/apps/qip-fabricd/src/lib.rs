@@ -27,14 +27,22 @@
 //! boundary's three layers are in Terraform, in the trading composition
 //! roots and in `qip-edge`'s types, and nothing here can reach any of them.
 //!
-//! It is one broker with one disk (ADR 0100 §3). There is no follower, no
-//! replication and no failover; FABRIC-077 and FABRIC-086 are not met by it.
+//! By default it is one broker with one disk (ADR 0100 §3): no follower, no
+//! replication, no failover. With `QIP_EVENT_FABRIC_MANAGED_LOG=spanner` it
+//! is seated at ADR 0111's managed consensus: every P0 and P1 batch is
+//! committed by a Spanner transaction, under a leadership lease the database
+//! fences, before its producer is answered; two or three instances per
+//! region contend for each partition's lease, and the ones that do not hold
+//! it follow the committed log onto their own disks. P2 to P4 stay on the
+//! local path (ADR 0111 §2).
 //! And it is not deployed: ADR 0010 keeps it out of the image matrix until
 //! its placement is decided (ADR 0099 C8).
 
 pub mod archiver;
+pub mod bench;
 pub mod config;
 pub mod health;
+pub mod spanner;
 pub mod telemetry;
 
 use std::io::Read;
@@ -50,16 +58,20 @@ use qip_core::error::{Error, Result};
 use qip_events::event_fabric::catalogue::Catalogue;
 use qip_events::event_fabric::policy::StreamPolicy;
 use qip_observability::metrics::Metrics;
+use qip_storage::gcp::GcpAccess;
 use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::SegmentLogConfig;
-use qip_storage::{BlobStore, FileBlobStore};
+use qip_storage::{BlobStore, CloudStorageBlobStore, CloudStorageConfig, FileBlobStore};
 use qip_streaming::event_fabric::broker::Broker;
+use qip_streaming::event_fabric::managed::ManagedLog;
 use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
+use qip_transport::cas::CasIdentity;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
 use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
+use qip_transport::tls::{PeerNames, TlsServer, TlsSource, WorkloadIdentity};
 
-use crate::config::Config;
+use crate::config::{ArchiveTarget, Config, ManagedBackend, ManagedConfig};
 use crate::health::Health;
 use crate::telemetry::FabricdTelemetry;
 
@@ -74,7 +86,7 @@ const MAXIMUM_CATALOGUE_BYTES: u64 = 1024 * 1024;
 /// own 64 MiB produce limit, because each connection may buffer this much
 /// and sixty-four of them may be live (FABRIC-063). Raise it, per route, if
 /// a producer ever needs to send a larger batch.
-const MAXIMUM_REQUEST_BYTES: usize = 8 * 1024 * 1024 + 4096;
+pub const MAXIMUM_REQUEST_BYTES: usize = 8 * 1024 * 1024 + 4096;
 
 /// The key the archive's start-up probe is written under.
 const ARCHIVE_PROBE_KEY: &str = "fabricd/startup-probe";
@@ -126,6 +138,44 @@ fn prove_archive_writable(store: &dyn BlobStore, leader_epoch: u64) -> Result<()
     }
     store.delete(ARCHIVE_PROBE_KEY)?;
     Ok(())
+}
+
+/// Open the configured archive target. A bucket the configuration cannot
+/// reach — no endpoint, no credential — is refused here, and
+/// `prove_archive_writable` then proves it takes and returns an object, so a
+/// bucket that exists but this broker may not write is refused at start too.
+fn open_archive(target: &ArchiveTarget, clock: Arc<dyn Clock>) -> Result<Arc<dyn BlobStore>> {
+    match target {
+        ArchiveTarget::Directory(directory) => Ok(Arc::new(FileBlobStore::open(directory)?)),
+        ArchiveTarget::CloudStorage {
+            bucket,
+            prefix,
+            endpoint,
+            metadata_server,
+            token_file,
+        } => {
+            let metadata = metadata_server.then_some("1");
+            let access = GcpAccess::from_values(
+                Some(endpoint),
+                metadata,
+                token_file.as_deref(),
+                None,
+                clock,
+            )?;
+            let store = CloudStorageBlobStore::new(
+                CloudStorageConfig::new(bucket.clone())
+                    .with_prefix(prefix.clone())
+                    .with_access(access),
+            )?;
+            if !store.is_available() {
+                return Err(Error::unavailable(format!(
+                    "the archive bucket {bucket} cannot be reached: {}",
+                    store.requirement()
+                )));
+            }
+            Ok(Arc::new(store))
+        }
+    }
 }
 
 /// The protocol listener's handler: every request goes to the [`Service`],
@@ -216,6 +266,11 @@ pub struct Running {
     stop_housekeeping: Arc<AtomicBool>,
     data_thread: Option<JoinHandle<()>>,
     other_threads: Vec<JoinHandle<()>>,
+    /// The listener's certificate and its renewal loop, under
+    /// `QIP_TLS_MODE=cas`. Held here because dropping it stops the loop, and
+    /// a broker whose loop stopped would serve until its certificate lapsed
+    /// and then refuse everyone with nothing renewing it.
+    issued: Option<CasIdentity>,
 }
 
 impl std::fmt::Debug for Running {
@@ -277,6 +332,9 @@ impl Running {
         for thread in self.other_threads.drain(..) {
             let _ = thread.join();
         }
+        if let Some(issued) = self.issued.take() {
+            issued.stop();
+        }
     }
 
     /// Block until the protocol listener stops, which in a deployment is
@@ -326,19 +384,84 @@ fn reload_catalogue(
     Ok(())
 }
 
-/// Start the broker described by `config`, archiving to the directory it
-/// names. See the crate documentation for the order and why it is the order.
+/// Start the broker described by `config`, archiving to the directory or
+/// Cloud Storage bucket it names. See the crate documentation for the order and why it is the order.
 pub fn start(config: &Config, clock: Arc<dyn Clock>) -> Result<Running> {
     start_with_archive(config, clock, None)
 }
 
-/// [`start`], archiving to `archive` instead of the configured directory
-/// when one is given. The seam a test stalls the archive through; `main`
+/// [`start`], archiving to `archive` instead of the configured target when
+/// one is given. The seam a test stalls the archive through; `main`
 /// never passes one.
 pub fn start_with_archive(
     config: &Config,
     clock: Arc<dyn Clock>,
     archive: Option<Arc<dyn BlobStore>>,
+) -> Result<Running> {
+    start_with_seams(config, clock, archive, None)
+}
+
+/// Open the managed log `config` names (ADR 0111). Only Spanner exists.
+fn open_managed_log(managed: &ManagedConfig, clock: Arc<dyn Clock>) -> Result<Arc<dyn ManagedLog>> {
+    match &managed.backend {
+        ManagedBackend::Spanner {
+            database,
+            endpoint,
+            metadata_server,
+            token_file,
+        } => {
+            let access = GcpAccess::from_values(
+                Some(endpoint),
+                metadata_server.then_some("1"),
+                token_file.as_deref(),
+                None,
+                clock,
+            )?;
+            let rpc = spanner::HttpSpannerRpc::new(access)?;
+            Ok(Arc::new(spanner::SpannerManagedLog::new(
+                Arc::new(rpc),
+                database,
+                &managed.region,
+            )))
+        }
+    }
+}
+
+/// [`start_with_archive`], and with `managed` as the managed log instead of
+/// the one the configuration names. The seam the failover and chaos suites
+/// put two brokers on one in-memory managed log through; `main` never passes
+/// one. A managed log supplied to a configuration that names none is
+/// refused: the instance name and lease length come from the configuration,
+/// and a seam that silently invented them would test a broker no deployment
+/// runs.
+pub fn start_with_seams(
+    config: &Config,
+    clock: Arc<dyn Clock>,
+    archive: Option<Arc<dyn BlobStore>>,
+    managed: Option<Arc<dyn ManagedLog>>,
+) -> Result<Running> {
+    start_composed(config, clock, archive, managed, None)
+}
+
+/// [`start`] for a listener whose certificate Certificate Authority Service
+/// issues (`QIP_TLS_MODE=cas`, ADR 0112 §2). `issued` is the identity and
+/// renewal loop `main` started; the listener presents whatever certificate
+/// it holds at each handshake, so renewals reach new connections with no
+/// restart, and the broker reports not-ready whenever it holds none.
+pub fn start_issued(
+    config: &Config,
+    clock: Arc<dyn Clock>,
+    issued: CasIdentity,
+) -> Result<Running> {
+    start_composed(config, clock, None, None, Some(issued))
+}
+
+fn start_composed(
+    config: &Config,
+    clock: Arc<dyn Clock>,
+    archive: Option<Arc<dyn BlobStore>>,
+    managed: Option<Arc<dyn ManagedLog>>,
+    issued: Option<CasIdentity>,
 ) -> Result<Running> {
     let catalogue_bytes = read_bounded(
         &config.catalogue,
@@ -348,11 +471,30 @@ pub fn start_with_archive(
     let catalogue = parse_catalogue(&config.catalogue, &catalogue_bytes)?;
     let identities = IdentityTable::load(&config.identities_file)?;
 
-    let broker = Arc::new(Broker::open(&config.data_dir, clock.clone())?);
     let archive_store: Arc<dyn BlobStore> = match archive {
         Some(store) => store,
-        None => Arc::new(FileBlobStore::open(&config.archive_dir)?),
+        None => open_archive(&config.archive, clock.clone())?,
     };
+    // Every broker reads its archive back (FABRIC-8079): an offset whose
+    // local segment is gone hydrates from the archive, verified, rather than
+    // reading as the end of the partition.
+    let broker =
+        Broker::open(&config.data_dir, clock.clone())?.with_archive_reader(archive_store.clone());
+    let broker = match (&config.managed, managed) {
+        (Some(settings), Some(log)) => broker.with_managed_log(log, &settings.instance)?,
+        (Some(settings), None) => broker.with_managed_log(
+            open_managed_log(settings, clock.clone())?,
+            &settings.instance,
+        )?,
+        (None, Some(_)) => {
+            return Err(Error::invalid(
+                "a managed log was supplied to a configuration that names none; set \
+                 QIP_EVENT_FABRIC_MANAGED_LOG and the instance it runs as",
+            ));
+        }
+        (None, None) => broker,
+    };
+    let broker = Arc::new(broker);
     prove_archive_writable(archive_store.as_ref(), broker.leader_epoch())?;
     let service = Arc::new(Service::new(
         broker.clone(),
@@ -372,19 +514,67 @@ pub fn start_with_archive(
     telemetry.leader_epoch(broker.leader_epoch());
     let health = Arc::new(Health::new(broker.leader_epoch()));
     health.storage_proven();
+    // One lease pass before serving, so an instance that can lead starts
+    // leading rather than refusing its first P0/P1 produce for a third of a
+    // TTL. A pass that cannot reach the database is reported, not fatal: the
+    // P2-P4 streams this broker also serves do not depend on it.
+    if let Some(settings) = &config.managed {
+        let report = broker.tend_leases(settings.lease_ttl_ms);
+        if let Ok(report) = &report {
+            telemetry.leases(report);
+        }
+        health.lease_pass(&report);
+    }
 
-    let data = Server::bind(
-        &config.listen,
-        Arc::new(DataPlane {
-            service: service.clone(),
-            telemetry: telemetry.clone(),
-            clock,
-        }),
-        ServerLimits {
-            max_body: MAXIMUM_REQUEST_BYTES,
-            ..ServerLimits::default()
-        },
-    )?;
+    let data_plane = Arc::new(DataPlane {
+        service: service.clone(),
+        telemetry: telemetry.clone(),
+        clock,
+    });
+    let data_limits = ServerLimits {
+        max_body: MAXIMUM_REQUEST_BYTES,
+        ..ServerLimits::default()
+    };
+    // ADR 0112: the protocol listener is mutual TLS whenever the
+    // configuration carries a certificate, which outside a `local`
+    // deployment it must. Loaded here — after storage is proven, before the
+    // port is bound — and a certificate that will not load stops the broker:
+    // there is no fallback to the plaintext listener below.
+    //
+    // Under `cas` the identity is the one `main` started issuance for, and
+    // the readiness gate is its status: a broker with no current
+    // certificate refuses every handshake (the identity presents nothing)
+    // and says so on `/health`. A `cas` configuration handed no issued
+    // identity is refused rather than bound with no certificate source.
+    let server_config = match (&config.listener_tls, &issued) {
+        (Some(TlsSource::Files(paths)), _) => {
+            Some(WorkloadIdentity::from_files(paths)?.server_config()?)
+        }
+        (Some(TlsSource::Issued(_)), Some(issued)) => {
+            health.require_certificate(issued.status());
+            Some(issued.identity().server_config()?)
+        }
+        (Some(TlsSource::Issued(_)), None) => {
+            return Err(Error::invalid(
+                "QIP_TLS_MODE=cas and no issued identity was handed to the broker; start it \
+                 with `start_issued` after `qip_storage::gcp::workload_certificate::\
+                 workload_certificate`, as `main` does",
+            ));
+        }
+        (None, _) => None,
+    };
+    let data = match server_config {
+        Some(server_config) => Server::bind_tls(
+            &config.listen,
+            data_plane,
+            data_limits,
+            TlsServer {
+                config: server_config,
+                peers: PeerNames::new(config.admitted_peers.clone())?,
+            },
+        )?,
+        None => Server::bind(&config.listen, data_plane, data_limits)?,
+    };
     let probe = Server::bind(
         &config.health_listen,
         Arc::new(HealthPlane {
@@ -417,16 +607,43 @@ pub fn start_with_archive(
         let health = health.clone();
         let telemetry = telemetry.clone();
         let stop = stop_housekeeping.clone();
-        let archiver = Archiver::new(archive_store);
+        // Indexed, so a segment can be read back once its local copy is
+        // retained away or the disk holding it is gone (FABRIC-8079).
+        let archiver = Archiver::new(archive_store).with_manifest_index();
+        let hot_batches = config.hot_batches;
         std::thread::spawn(move || {
             let seals = archiver::SealCounts::default();
             while !stop.load(Ordering::SeqCst) {
-                let outcome = archiver::pass(service.broker(), &archiver, &telemetry, &seals);
+                let outcome = archiver::pass(service.broker(), &archiver, &telemetry, &seals)
+                    .and_then(|archived| {
+                        archiver::retain(service.broker(), hot_batches, &telemetry)
+                            .map(|_| archived)
+                    });
                 health.archive_pass(&outcome);
                 std::thread::sleep(interval);
             }
         })
     };
+    // ADR 0111's lease loop, on a thread of its own: a Spanner round trip
+    // that stalls holds this thread, never the produce path's.
+    let lease_thread = config.managed.as_ref().map(|settings| {
+        let broker = service.broker().clone();
+        let health = health.clone();
+        let telemetry = telemetry.clone();
+        let stop = stop_housekeeping.clone();
+        let ttl_ms = settings.lease_ttl_ms;
+        let renew_every = Duration::from_millis(ttl_ms / 3);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(renew_every);
+                let report = broker.tend_leases(ttl_ms);
+                if let Ok(report) = &report {
+                    telemetry.leases(report);
+                }
+                health.lease_pass(&report);
+            }
+        })
+    });
     let catalogue_thread = {
         let config = config.clone();
         let service = service.clone();
@@ -456,6 +673,10 @@ pub fn start_with_archive(
         stop_health,
         stop_housekeeping,
         data_thread: Some(data_thread),
-        other_threads: vec![health_thread, archive_thread, catalogue_thread],
+        other_threads: [health_thread, archive_thread, catalogue_thread]
+            .into_iter()
+            .chain(lease_thread)
+            .collect(),
+        issued,
     })
 }

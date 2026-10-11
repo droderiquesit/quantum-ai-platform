@@ -6,8 +6,10 @@
 //! [`Catalogue::parse`] reads a committed catalogue document — bytes the
 //! caller already read, so this stays a pure lib function with no I/O of its
 //! own — and refuses, by name, everything FABRIC-057 and CONTRACT-037
-//! require a stream to declare: a missing field, a replication factor besides
-//! one (C2), a mirroring policy besides none (C8), an acknowledgement
+//! require a stream to declare: a missing field, a replication claim no
+//! mechanism honours (ADR 0111 §3), a `quorum` acknowledgement on a stream
+//! with one replica (FABRIC-8086), a mirroring policy besides none (C8), an
+//! acknowledgement
 //! profile weaker than the stream's class, and a stream admitting a topic
 //! ADR 0089 marks lossy-tolerable outside the two classes allowed to lose
 //! one. It also parses and validates the [`Grant`] schema that
@@ -25,8 +27,8 @@ use crate::retention::RetentionClass;
 use crate::topic::Topic;
 
 use super::policy::{
-    AckProfile, Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy,
-    StreamPolicySpec,
+    AckProfile, Entitlement, MANAGED_REPLICATION_FACTOR, Mirroring, Ordering, OverloadPolicy,
+    QosClass, StreamPolicy, StreamPolicySpec,
 };
 
 /// Prefixes reserved for control surfaces the platform already names
@@ -217,11 +219,35 @@ fn parse_overload_policy(raw: &str) -> Result<OverloadPolicy> {
     }
 }
 
-fn parse_ack_profile(raw: &str) -> Result<AckProfile> {
+/// Read a stream's declared acknowledgement profile.
+///
+/// `quorum` is the spelling committed before FABRIC-086's rename. It was
+/// read, silently, as [`AckProfile::Archived`] — one broker's fsync plus an
+/// archive copy that can sit on the same machine — and the register kept
+/// FABRIC-8086 INCORRECT because of exactly that alias: a committed file said
+/// "quorum" and the platform delivered single-broker durability. It is now
+/// read only where it can be true: on a stream declaring the managed
+/// consensus's replication factor, where it means
+/// [`AckProfile::ManagedMajority`] (ADR 0111). Anywhere else it is refused by
+/// name, naming the two honest spellings, so a stale catalogue stops a broker
+/// at start rather than loading as something weaker than it says.
+fn parse_ack_profile(raw: &str, stream: &str, replication_factor: u32) -> Result<AckProfile> {
     match raw {
         "none" => Ok(AckProfile::None),
         "leader_only" => Ok(AckProfile::LeaderOnly),
-        "quorum" => Ok(AckProfile::Quorum),
+        "archived" => Ok(AckProfile::Archived),
+        "managed_majority" => Ok(AckProfile::ManagedMajority),
+        "quorum" if replication_factor == MANAGED_REPLICATION_FACTOR => {
+            Ok(AckProfile::ManagedMajority)
+        }
+        "quorum" => Err(Error::denied(format!(
+            "stream '{stream}' declares ack_profile 'quorum' at replication factor \
+             {replication_factor}; a quorum acknowledgement means a majority of replicas and \
+             this stream has none to be a majority of. Declare 'archived' for the single-broker \
+             archive acknowledgement, or 'managed_majority' at replication factor \
+             {MANAGED_REPLICATION_FACTOR} for a P0/P1 stream committed to the managed consensus \
+             (ADR 0111)"
+        ))),
         other => Err(Error::invalid(format!("unknown ack profile '{other}'"))),
     }
 }
@@ -257,7 +283,11 @@ impl Catalogue {
         let mirroring = parse_mirroring(&required(raw.mirroring, &name, "mirroring")?)?;
         let overload_policy =
             parse_overload_policy(&required(raw.overload_policy, &name, "overload_policy")?)?;
-        let ack_profile = parse_ack_profile(&required(raw.ack_profile, &name, "ack_profile")?)?;
+        let ack_profile = parse_ack_profile(
+            &required(raw.ack_profile, &name, "ack_profile")?,
+            &name,
+            replication_factor,
+        )?;
         let byte_quota_per_producer = required(
             raw.byte_quota_per_producer,
             &name,

@@ -138,3 +138,13 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # declaration. If this environment ever genuinely needs a name, it takes a
 # subdomain delegated from dev's zone, not a zone of its own for the same
 # domain.
+
+# The deep brain's compute router (qip_kernel::compute_routing): the in-tree
+# simulator behind the asynchronous quantum gateway, and the quantum-inspired
+# rung through the solver registry, so the dispatch gate, the gateway and the
+# classical verification of a returned candidate run in a deployed process
+# rather than only in tests. A classical baseline is solved first on every
+# problem (ADR 0006) and a simulated answer is never evidence of advantage.
+# Stage and prod leave both null, which is the binary's own default of off.
+deepbrain_quantum_provider = "simulated"
+deepbrain_quantum_inspired = "on"

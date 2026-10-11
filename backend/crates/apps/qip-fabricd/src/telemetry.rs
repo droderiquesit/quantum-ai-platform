@@ -2,7 +2,17 @@
 //! See ADR 0100 § 1 for this module's role.
 
 use qip_observability::metrics::{Labels, Metrics, names};
+use qip_streaming::event_fabric::broker::LeaseReport;
 use std::sync::Arc;
+
+/// Managed partitions by this instance's role in each (ADR 0111): `leading`,
+/// `following` or `failed`. Named here rather than in `qip-observability`'s
+/// registry because this binary is its only writer; the label is a source
+/// literal from three.
+pub const MANAGED_PARTITIONS: &str = "qip_fabricd_managed_partitions";
+/// Segments whose local copy was deleted once archived and indexed, so their
+/// history is now read back from the archive (FABRIC-8079).
+pub const SEGMENTS_RETAINED: &str = "qip_fabricd_segments_retained_total";
 
 /// Records metrics from the event fabric broker.
 ///
@@ -78,8 +88,37 @@ impl FabricdTelemetry {
             names::EVENT_FABRIC_GROUP_LAG,
             "offset lag for a consumer group, stream and partition",
         );
+        m.describe(
+            MANAGED_PARTITIONS,
+            "managed (P0/P1) partitions by this instance's role: leading, following, failed",
+        );
+        m.describe(
+            SEGMENTS_RETAINED,
+            "archived segments whose local copy was deleted; their history hydrates from the archive",
+        );
 
         Self { metrics }
+    }
+
+    /// One lease pass: how many managed partitions this instance leads,
+    /// follows, and could not tend. Written every pass, so a partition that
+    /// moves to another instance moves on the chart.
+    pub fn leases(&self, report: &LeaseReport) {
+        for (role, count) in [
+            ("leading", report.leading.len()),
+            ("following", report.following.len()),
+            ("failed", report.failed.len()),
+        ] {
+            let mut labels = Labels::new();
+            labels.insert("role".to_string(), role.to_string());
+            self.metrics.gauge(MANAGED_PARTITIONS, labels, count as f64);
+        }
+    }
+
+    /// `count` segments' local copies were retained away.
+    pub fn segments_retained(&self, count: u64) {
+        self.metrics
+            .increment(SEGMENTS_RETAINED, Labels::new(), count);
     }
 
     /// An append was attempted.

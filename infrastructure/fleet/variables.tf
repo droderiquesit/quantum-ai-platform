@@ -1,5 +1,5 @@
 variable "project_id" {
-  description = "The Google Cloud project the fleet runs in (algorik-platform-dev, from the environment's tfvars)."
+  description = "The Google Cloud project the fleet runs in (dev's project, from the environment's tfvars)."
   type        = string
 
   validation {

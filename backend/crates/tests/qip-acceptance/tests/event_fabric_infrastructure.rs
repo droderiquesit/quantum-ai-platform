@@ -3,6 +3,8 @@
 //! Metadata separation, admin tooling, partitioning, flow control, storage, node deployment,
 //! disaster recovery, and service integration contracts.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
@@ -214,197 +216,432 @@ fn fabric_080_credit_window_flow_control_paces_every_session() {
     assert!(try_send(&mut session, large_message));
 }
 
-#[test]
-fn fabric_085_broker_journals_on_persistent_hyperdisk_local_ssd_cache_only() {
-    // FABRIC-085: Broker journal disks must be persistent Hyperdisk sized for sustained
-    // append and read throughput; local SSD and page cache may be used only for transient
-    // acceleration.
-
-    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
-    #[derive(Debug, Clone)]
-    enum StorageType {
-        PersistentHyperdisk,
-        LocalSsd,
-        PageCache,
-    }
-
-    #[derive(Debug)]
-    struct BrokerStorageConfig {
-        journal_primary: StorageType,
-        journal_size_gb: u64,
-        provisioned_throughput_mbs: u64,
-        cache_layer: Option<StorageType>,
-        cache_is_transient: bool,
-    }
-
-    let config = BrokerStorageConfig {
-        journal_primary: StorageType::PersistentHyperdisk,
-        journal_size_gb: 1000,
-        provisioned_throughput_mbs: 1200,
-        cache_layer: Some(StorageType::LocalSsd),
-        cache_is_transient: true,
-    };
-
-    // Journal is on Hyperdisk
-    assert!(matches!(
-        config.journal_primary,
-        StorageType::PersistentHyperdisk
-    ));
-    assert!(config.journal_size_gb > 0);
-    assert!(config.provisioned_throughput_mbs > 0);
-
-    // Cache (if present) is transient only
-    if config.cache_layer.is_some() {
-        assert!(config.cache_is_transient);
-    }
+/// An HCL line with its whitespace collapsed.
+fn norm(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-#[test]
-fn fabric_090_archived_segments_content_addressed_in_regional_landing_buckets() {
-    // FABRIC-090: Each closed segment must be written to its region's Cloud Storage landing
-    // bucket under a content address (its hash), so an archived object's name proves its
-    // content.
-
-    fn compute_blake3_hash(data: &[u8]) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        format!("blake3:{:x}", hasher.finish())
-    }
-
-    // Segment data
-    let segment_data = b"segment_001_records...";
-    let content_hash = compute_blake3_hash(segment_data);
-
-    // Archived object name is the content hash
-    let gcs_object_name = format!("regional-landing/{}", content_hash);
-    assert!(gcs_object_name.contains(&content_hash));
-
-    // Re-archiving same segment is a no-op (same hash)
-    let reachive_hash = compute_blake3_hash(segment_data);
-    assert_eq!(content_hash, reachive_hash);
-
-    // Tampered segment has different hash
-    let mut tampered = segment_data.to_vec();
-    tampered[0] ^= 0xFF; // Flip bits
-    let tampered_hash = compute_blake3_hash(&tampered);
-    assert_ne!(content_hash, tampered_hash);
+/// The broker module's Terraform, read whole. Not a substring search over
+/// prose: the helpers below find HCL blocks by their opening line.
+fn broker_module(file: &str) -> String {
+    qip_acceptance::read(&format!(
+        "infrastructure/terraform/modules/event-fabric-broker/{file}"
+    ))
 }
 
-#[test]
-fn fabric_106_archiver_reaches_cloud_storage_over_private_google_api_access() {
-    // FABRIC-106: fabric-archive must write to Cloud Storage only through private Google API
-    // access, with no public-internet path.
-
-    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
-    #[derive(Debug, Clone, PartialEq)]
-    enum NetworkRoute {
-        PrivateGoogleApi,
-        PublicInternet,
-        DirectNat,
+/// The lines of the first block opening with `opening` (a line whose trimmed
+/// text starts with it), up to the line where its braces balance.
+fn hcl_block(source: &str, opening: &str) -> Option<Vec<String>> {
+    let mut lines = source
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with(opening));
+    let first = lines.next()?;
+    let mut depth = first.matches('{').count() as i64 - first.matches('}').count() as i64;
+    let mut block = vec![first.to_string()];
+    for line in lines {
+        if depth <= 0 {
+            break;
+        }
+        depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+        block.push(line.to_string());
     }
-
-    #[derive(Debug)]
-    struct ArchiverNetworkConfig {
-        gcs_route: NetworkRoute,
-        private_api_enabled: bool,
-        nat_enabled: bool,
-        external_ip: Option<String>,
-    }
-
-    let config = ArchiverNetworkConfig {
-        gcs_route: NetworkRoute::PrivateGoogleApi,
-        private_api_enabled: true,
-        nat_enabled: false,
-        external_ip: None,
-    };
-
-    // Only private API route is available
-    assert_eq!(config.gcs_route, NetworkRoute::PrivateGoogleApi);
-    assert!(config.private_api_enabled);
-    assert!(!config.nat_enabled);
-    assert!(config.external_ip.is_none());
+    Some(block)
 }
 
+/// FABRIC-085, what holds today. The broker journals on its **own**
+/// persistent disk — one non-boot `disk` block, attached as `qip-journal`,
+/// never auto-deleted — beside a boot disk, both of the module's `disk_type`,
+/// which defaults to `hyperdisk-balanced`; and no local-SSD (`SCRATCH`) disk
+/// is declared anywhere in the module.
+///
+/// **What changed (`d7675f60`, lane C), and why this test changed with it.**
+/// Until then the template declared a boot disk and nothing else, and this
+/// test pinned that as a gap: "the journal is the boot disk". Worse than a
+/// gap, the startup script was told to mount `/dev/sdb`, a disk the template
+/// did not declare, so the journal device the broker was given did not exist.
+/// The lane closed it with a second, non-boot disk named by `device_name`,
+/// and `qip_storage_journal_device` now defaults to the stable name Google
+/// gives that disk. This test asserts the fix rather than the gap, and pins
+/// the wiring end to end — the disk's name and the device path the script
+/// mounts — because either half alone is the `/dev/sdb` failure again.
+///
+/// **One gap remains, asserted rather than described:** `disk_type` carries
+/// no validation, so `pd-standard` or a local-SSD type would be accepted.
+/// Closing it makes this test fail, and it should then assert the fix.
+///
+/// Mutation: add a `disk { type = "SCRATCH" ... }` block to the template — the
+/// disk-count and scratch assertions fire. Change the `disk_type` default to
+/// `pd-balanced` — the default assertion fires. Set the journal disk's
+/// `auto_delete = true` — the persistence assertion fires. Point
+/// `qip_storage_journal_device` back at `/dev/sdb` — the wiring assertion
+/// fires.
 #[test]
-fn fabric_095_fabric_consumers_and_sinks_run_on_dedicated_node_pools() {
-    // FABRIC-095: Fabric consumers and sink workers must run on dedicated GKE node pools that
-    // no other warm service shares.
+fn fabric_085_the_broker_template_journals_on_one_persistent_hyperdisk_and_declares_no_local_ssd() {
+    let main = broker_module("main.tf");
+    let variables = broker_module("variables.tf");
+    let template = hcl_block(&main, "resource \"google_compute_instance_template\"")
+        .expect("premise: the broker module declares an instance template");
 
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct KubernetesNodePool {
-        name: String,
-        dedicated: bool,
-        taints: Vec<String>,
-        workloads: Vec<String>,
+    // Every `disk` block in the template, each as its own lines.
+    let mut disks: Vec<Vec<String>> = Vec::new();
+    let mut rest = template.join("\n");
+    while let Some(block) = hcl_block(&rest, "disk {") {
+        let consumed = block.join("\n");
+        let at = rest.find(&consumed).expect("the block came from this text") + consumed.len();
+        disks.push(block);
+        rest = rest[at..].to_string();
     }
+    assert_eq!(
+        disks.len(),
+        2,
+        "exactly two disk blocks, a boot disk and the journal: {template:#?}"
+    );
+    let has = |disk: &[String], want: &str| disk.iter().any(|line| norm(line) == want);
+    let boot: Vec<&Vec<String>> = disks.iter().filter(|d| has(d, "boot = true")).collect();
+    let journal: Vec<&Vec<String>> = disks.iter().filter(|d| has(d, "boot = false")).collect();
+    assert_eq!(boot.len(), 1, "exactly one boot disk: {disks:#?}");
+    assert_eq!(journal.len(), 1, "exactly one journal disk: {disks:#?}");
+    let journal = journal[0];
+    assert!(
+        has(journal, "device_name = \"qip-journal\""),
+        "the journal disk is not attached as `qip-journal`: {journal:#?}"
+    );
+    assert!(
+        has(journal, "auto_delete = false"),
+        "the journal disk is deleted with its machine, so a replaced broker loses its journal: \
+         {journal:#?}"
+    );
+    for disk in &disks {
+        assert!(
+            has(disk, "disk_type = var.disk_type"),
+            "premise: every disk's type is the module variable: {disk:#?}"
+        );
+    }
+    assert!(
+        !main
+            .lines()
+            .any(|line| line.contains("\"SCRATCH\"") || line.contains("local-ssd")),
+        "a local-SSD disk is declared in the broker module"
+    );
 
-    let consumer_pool = KubernetesNodePool {
-        name: "fabric-consumers".to_string(),
-        dedicated: true,
-        taints: vec!["fabric-consumer=true:NoSchedule".to_string()],
-        workloads: vec!["risk_consumer".to_string(), "capital_consumer".to_string()],
-    };
+    // The wiring: the device the startup script mounts is the disk above.
+    let device = hcl_block(&variables, "variable \"qip_storage_journal_device\"")
+        .expect("premise: the journal device variable exists");
+    assert!(
+        device
+            .iter()
+            .any(|line| norm(line) == "default = \"/dev/disk/by-id/google-qip-journal\""),
+        "the startup script is told to mount a device other than the `qip-journal` disk: \
+         {device:#?}"
+    );
 
-    let sink_pool = KubernetesNodePool {
-        name: "fabric-sinks".to_string(),
-        dedicated: true,
-        taints: vec!["fabric-sink=true:NoSchedule".to_string()],
-        workloads: vec!["spanner_sink".to_string(), "bigtable_sink".to_string()],
-    };
+    let disk_type = hcl_block(&variables, "variable \"disk_type\"")
+        .expect("premise: the disk_type variable exists");
+    assert!(
+        disk_type
+            .iter()
+            .any(|line| norm(line) == "default = \"hyperdisk-balanced\""),
+        "{disk_type:#?}"
+    );
+    // GAP: nothing refuses a non-Hyperdisk type.
+    assert!(
+        !disk_type.iter().any(|line| norm(line) == "validation {"),
+        "disk_type gained a validation — FABRIC-085 may be closing; assert it here"
+    );
+}
 
-    // Each pool is dedicated
-    assert!(consumer_pool.dedicated);
-    assert!(sink_pool.dedicated);
-
-    // Each pool has taints to prevent other workloads
-    assert!(!consumer_pool.taints.is_empty());
-    assert!(!sink_pool.taints.is_empty());
-
-    // No overlap in workloads
-    let all_workloads: BTreeSet<_> = consumer_pool
-        .workloads
+/// FABRIC-090, the half that exists: a sealed segment is archived under the
+/// SHA-256 of its exact bytes, so the object's name proves its content;
+/// re-archiving is a no-op; and an object whose bytes no longer match its
+/// name is refused on read. The *regional landing bucket* half does not exist
+/// — `qip-fabricd` archives to a local directory (W1.14) — and is not claimed.
+///
+/// Mutation: in `qip_storage::segment::archive::blob_key`, key by
+/// `start_offset` instead of the digest — the name assertion fires.
+/// Mutation: delete `manifest.verify(&bytes)?` in `ArchiveReader::hydrate` —
+/// the tampered read succeeds and the refusal assertion fires.
+#[test]
+fn fabric_090_an_archived_segment_is_named_by_the_hash_of_its_bytes_and_a_mismatch_is_refused() {
+    let (dir, log) = sealed_log("fabric-090", 1);
+    let start = log
+        .segments()
         .iter()
-        .chain(sink_pool.workloads.iter())
-        .cloned()
-        .collect();
-    assert_eq!(all_workloads.len(), 4);
+        .find(|s| s.sealed)
+        .expect("premise")
+        .start_offset;
+    let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
+    let archiver = Archiver::new(Arc::clone(&store));
+    let manifest = archiver
+        .archive(&log, start, "fabric.p1", 0, &BTreeSet::new())
+        .expect("archived");
+
+    let keys = store.list("").expect("listable");
+    assert_eq!(keys.len(), 1, "premise: one object");
+    let bytes = store.get(&keys[0]).expect("readable").expect("present");
+    assert!(!bytes.is_empty(), "premise: a real segment");
+    assert_eq!(
+        keys[0],
+        format!("segments/sha256/{}", qip_core::sha256_hex(&bytes))
+    );
+
+    // Idempotent: the same segment archived again writes nothing new.
+    let again = archiver
+        .archive(&log, start, "fabric.p1", 0, &BTreeSet::new())
+        .expect("re-archive is a no-op");
+    assert_eq!(again, manifest);
+    assert_eq!(store.list("").expect("listable").len(), 1);
+
+    // An object whose bytes no longer match its name is not served.
+    let reader = ArchiveReader::new(Arc::clone(&store));
+    assert!(reader.read(&log, start).expect("premise: reads").is_some());
+    let mut tampered = bytes.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    store.put(&keys[0], tampered).expect("writable");
+    assert!(
+        reader.read(&log, start).is_err(),
+        "a tampered object was served"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
+/// FABRIC-106, what exists: the broker template declares no `access_config`,
+/// so a broker has no external address and no public-internet route of its
+/// own. **Gap:** the archiver does not reach Cloud Storage at all yet (W1.14),
+/// and the broker module is not instantiated from the root module, so there
+/// is no deployed path — private or public — to assert about. Both are
+/// pinned.
+///
+/// Mutation: add `access_config {}` inside the template's
+/// `network_interface` — the first assertion fires.
 #[test]
-fn fabric_100_lost_regional_fabric_rebuilt_from_surviving_replicas_and_gcs_archives() {
-    // FABRIC-100: A lost regional fabric must be rebuildable from surviving replicas and its
-    // Cloud Storage segment archive while healthy regions continue.
+fn fabric_106_the_broker_template_has_no_external_address_and_the_module_is_not_yet_deployed() {
+    let main = broker_module("main.tf");
+    let interface = hcl_block(&main, "network_interface {")
+        .expect("premise: the template declares a network interface");
+    assert!(
+        interface.iter().any(|line| line.contains("subnetwork")),
+        "premise: the block parsed: {interface:#?}"
+    );
+    assert!(
+        !main
+            .lines()
+            .any(|line| line.trim_start().starts_with("access_config")),
+        "the broker template declares an external address"
+    );
+    let root = qip_acceptance::read("infrastructure/terraform/main.tf");
+    assert!(
+        !root.contains("modules/event-fabric-broker\""),
+        "the broker module is now instantiated — assert its subnet's private Google access here"
+    );
+}
 
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct RegionalFabricRecovery {
-        region: String,
-        surviving_brokers: Vec<u32>,
-        gcs_archive_present: bool,
-        rebuild_in_progress: bool,
+/// FABRIC-095 does not apply as written: no trading or warm service runs on
+/// GKE (ADR 0024 — Cloud Run for warm binaries, Compute Engine for
+/// execution). The test asserts that truthfully, so a cluster or node pool
+/// added without revisiting the requirement is noticed.
+///
+/// **What changed, and why.** This test said "no node pool or cluster is
+/// declared anywhere under `infrastructure/terraform`", which was never true
+/// of the tree it ran on: ADR 0036 (accepted) put Config Connector, Argo CD
+/// and Kargo on a control-plane cluster that runs no `qip-*` image, ADR 0093
+/// suspended it in `dev`, and ADR 0114 (accepted 2026-10-11) confirmed it as
+/// the one deliberate exception — controllers only, Autopilot, no node pool.
+/// So the property is now that exception, narrowly: exactly one
+/// `google_container_cluster` in the whole tree, `control_plane` in
+/// `modules/gitops-control-plane/main.tf`, with `enable_autopilot = true`;
+/// and **no** `google_container_node_pool` anywhere, because a node pool is
+/// where a warm service would be scheduled by hand. Any other cluster, in
+/// any module, still fails — as does a second cluster in the control-plane
+/// module or the control plane losing Autopilot.
+///
+/// Mutation: add a `resource "google_container_node_pool"` to any module —
+/// the node-pool assertion fires. Add a `resource "google_container_cluster"`
+/// to any other module — the cluster assertion fires. Delete
+/// `enable_autopilot = true` from the control plane — the Autopilot
+/// assertion fires.
+#[test]
+fn fabric_095_no_gke_node_pool_exists_because_warm_services_run_on_cloud_run() {
+    const CONTROL_PLANE: &str = "modules/gitops-control-plane/main.tf";
+    let files = qip_acceptance::files_with_extension("infrastructure/terraform", "tf");
+    assert!(files.len() > 10, "premise: the Terraform tree was walked");
+
+    let mut node_pools: Vec<String> = Vec::new();
+    let mut clusters: Vec<String> = Vec::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let shown = path.display().to_string().replace('\\', "/");
+        for line in text.lines() {
+            let line = line.trim_start();
+            if line.starts_with("resource \"google_container_node_pool\"") {
+                node_pools.push(format!("{shown}: {line}"));
+            }
+            if line.starts_with("resource \"google_container_cluster\"") {
+                clusters.push(format!("{shown}: {}", norm(line)));
+            }
+        }
+    }
+    assert!(
+        node_pools.is_empty(),
+        "a GKE node pool is declared — somewhere to schedule a warm service by hand: {node_pools:?}"
+    );
+    assert_eq!(
+        clusters.len(),
+        1,
+        "exactly one GKE cluster may exist, ADR 0036's controllers-only control plane: {clusters:?}"
+    );
+    assert!(
+        clusters[0].ends_with(&format!(
+            "{CONTROL_PLANE}: resource \"google_container_cluster\" \"control_plane\" {{"
+        )),
+        "the one GKE cluster is not ADR 0036's control plane: {clusters:?}"
+    );
+
+    let control_plane = qip_acceptance::read(&format!("infrastructure/terraform/{CONTROL_PLANE}"));
+    let cluster = hcl_block(
+        &control_plane,
+        "resource \"google_container_cluster\" \"control_plane\"",
+    )
+    .expect("premise: the control-plane cluster block is readable");
+    assert!(
+        cluster
+            .iter()
+            .any(|line| norm(line) == "enable_autopilot = true"),
+        "the control-plane cluster is not Autopilot, so it can carry hand-scheduled node pools: \
+         {cluster:#?}"
+    );
+}
+
+/// FABRIC-100, the half that exists: a partition whose hot segment files are
+/// lost is rebuilt for readers from its archive alone — every offset reads
+/// back byte-for-byte with the hot files deleted. The "surviving replicas"
+/// half cannot exist: `StreamPolicy::new` refuses any replication factor but
+/// one until consensus (C2) lands, and the test asserts that refusal so the
+/// gap is evidence.
+///
+/// Mutation: in `ArchiveReader::read`, fall through to `log.read(offset)`
+/// even for an archived segment — the read fails with the hot file gone.
+/// Mutation: delete the replication-factor refusal in `StreamPolicy::new` —
+/// the RF3 assertion fires.
+#[test]
+fn fabric_100_a_partition_whose_hot_segments_are_lost_is_read_back_whole_from_its_archive() {
+    let (dir, log) = sealed_log("fabric-100", 2);
+    let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
+    let archiver = Archiver::new(Arc::clone(&store));
+    let sealed: Vec<u64> = log
+        .segments()
+        .iter()
+        .filter(|s| s.sealed)
+        .map(|s| s.start_offset)
+        .collect();
+    assert!(sealed.len() >= 2, "premise: two sealed segments");
+    let mut originals = BTreeMap::new();
+    for start in &sealed {
+        let manifest = archiver
+            .archive(&log, *start, "fabric.p1", 0, &BTreeSet::new())
+            .expect("archived");
+        for offset in manifest.base_offset..=manifest.last_offset {
+            let batch = log.read(offset).expect("readable").expect("present");
+            originals.insert(offset, batch.encode().expect("encodes"));
+        }
+        std::fs::remove_file(dir.join(format!("segment.{start:020}"))).expect("deleted");
+    }
+    assert!(originals.len() >= 2, "premise: records to rebuild");
+
+    let reader = ArchiveReader::new(Arc::clone(&store));
+    for (offset, original) in &originals {
+        let batch = reader
+            .read(&log, *offset)
+            .unwrap_or_else(|error| panic!("offset {offset}: {error}"))
+            .unwrap_or_else(|| panic!("offset {offset} lost"));
+        assert_eq!(
+            &batch.encode().expect("encodes"),
+            original,
+            "offset {offset}"
+        );
     }
 
-    let recovery = RegionalFabricRecovery {
-        region: "us-central1".to_string(),
-        surviving_brokers: vec![2, 3], // Broker 1 lost
-        gcs_archive_present: true,
-        rebuild_in_progress: true,
+    // GAP: there are no replicas to survive.
+    use qip_events::event_fabric::policy::{
+        Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy, StreamPolicySpec,
     };
-
-    // Surviving replicas exist
-    assert!(!recovery.surviving_brokers.is_empty());
-
-    // Archive is available for segment recovery
-    assert!(recovery.gcs_archive_present);
-
-    // Rebuild is possible and ongoing
-    assert!(recovery.rebuild_in_progress);
+    let spec = |replication_factor| StreamPolicySpec {
+        qos_class: QosClass::P1Outcomes,
+        partition_key: "account".to_string(),
+        ordering: Ordering::PerPartition,
+        retention: qip_events::retention::RetentionClass::Irreplaceable,
+        replication_factor,
+        mirroring: Mirroring::None,
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile: QosClass::P1Outcomes.ack_floor(),
+        byte_quota_per_producer: 1 << 20,
+        message_quota_per_producer: 1_000,
+        lag_limit: 10_000,
+        entitlement: Entitlement::new("ledger", "trade").expect("valid"),
+        seal_age_ms: 60_000,
+        peak_bytes_per_second: 1 << 16,
+    };
+    assert!(
+        StreamPolicy::new(spec(1)).is_ok(),
+        "premise: RF1 is admitted"
+    );
+    let refused = StreamPolicy::new(spec(3)).expect_err("RF3 was admitted");
+    assert!(refused.to_string().contains("(C2)"), "{refused}");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
+// --- segment-log fixtures for FABRIC-090 and FABRIC-100 -----------------------
+
+use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record};
+use qip_storage::segment::archive::{ArchiveReader, Archiver};
+use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
+use qip_storage::{BlobStore, MemoryBlobStore};
+use std::sync::Arc;
+
+/// A segment log in a fresh directory, appended to until `sealed` segments
+/// have sealed.
+fn sealed_log(label: &str, sealed: usize) -> (std::path::PathBuf, SegmentLog) {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "qip-acceptance-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let clock: Arc<dyn qip_core::Clock> = Arc::new(qip_core::ManualClock::new(
+        qip_core::Timestamp::from_civil(2026, 9, 26),
+    ));
+    let log = SegmentLog::open(
+        &dir,
+        SegmentLogConfig::new(clock)
+            .with_roll_after_bytes(2_000)
+            .with_archive_required(true),
+    )
+    .expect("opens");
+    let mut tag = 0u64;
+    while log.segments().iter().filter(|s| s.sealed).count() < sealed {
+        let batch = Batch::new(
+            MessageType::Data,
+            1,
+            1,
+            PayloadCodec::CanonicalJson,
+            vec![Record {
+                event_id: format!("evt-{tag}"),
+                trace_id: None,
+                source_timestamp_ns: tag as i64,
+                payload: vec![0x37u8; 400],
+            }],
+        )
+        .expect("a batch");
+        log.append(&batch).expect("appends");
+        tag += 1;
+        assert!(tag < 1_000, "the roll threshold must seal segments");
+    }
+    (dir, log)
+}
 #[test]
 fn fabric_104_regional_services_publish_policy_envelopes_grants_research_to_fabric() {
     // FABRIC-104: Regional warm (GKE) services must publish policy, risk-envelope and

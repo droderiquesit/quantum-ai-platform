@@ -93,6 +93,7 @@ fn conversion(
         to: to.to_string(),
         side,
         cost_fraction: dec!("0.0004"),
+        costs: None,
     }
 }
 
@@ -625,6 +626,53 @@ fn a_book_side_the_whitelist_gives_no_edge_is_reported_at_installation_and_a_whi
     assert_eq!(
         covering.install(&mut node.cell, t(12)),
         Installation::Installed(6)
+    );
+    Ok(())
+}
+/// R12-MESH-5055 to -5057 reach the deployed desk through the signed
+/// whitelist: a conversion stating its costs puts them on the graph the
+/// node builds, and a stated cost out of range refuses the whole whitelist
+/// naming the conversion. Mutation: drop the `set_costs` call in
+/// `graph_from_whitelist` and the first assertion reads the default costs;
+/// drop its error mapping's `?` and the out-of-range whitelist builds.
+#[test]
+fn a_whitelist_stating_per_conversion_costs_puts_them_on_the_desks_graph_and_refuses_one_out_of_range()
+-> Result<()> {
+    use qip_contracts::policy::WhitelistedCosts;
+    let stated = WhitelistedCosts {
+        tax_duty_fraction: dec!("0.001"),
+        logistics_fraction: dec!("0.0002"),
+        settlement_risk_fraction: dec!("0.0001"),
+        fill_probability: dec!("0.98"),
+        borrow_rate_annual: dec!("0.05"),
+    };
+    let mut whitelist = triangle(VENUE);
+    whitelist.conversions[0].costs = Some(stated.clone());
+    let graph = graph_from_whitelist(&whitelist, &[VenueId::new(VENUE)])?;
+    let first = graph.edge(0).expect("the first conversion is an edge");
+    assert_eq!(first.costs.tax_duty_fraction, stated.tax_duty_fraction);
+    assert_eq!(first.costs.logistics_fraction, stated.logistics_fraction);
+    assert_eq!(
+        first.costs.settlement_risk_fraction,
+        stated.settlement_risk_fraction
+    );
+    assert_eq!(first.costs.fill_probability, stated.fill_probability);
+    assert_eq!(first.costs.borrow_rate_annual, stated.borrow_rate_annual);
+    // Premise: a conversion stating nothing carries the default.
+    let second = graph.edge(1).expect("the second conversion is an edge");
+    assert!(second.costs.is_free());
+
+    whitelist.conversions[0].costs = Some(WhitelistedCosts {
+        fill_probability: Decimal::ZERO,
+        ..stated
+    });
+    let refused = graph_from_whitelist(&whitelist, &[VenueId::new(VENUE)])
+        .expect_err("a whitelist stating a zero fill probability built a graph");
+    assert!(
+        refused.message().contains("conversion 0")
+            && refused.message().contains("fill probability"),
+        "{}",
+        refused.message()
     );
     Ok(())
 }

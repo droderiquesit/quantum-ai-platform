@@ -22,6 +22,7 @@ use qip_core::{Clock, SystemClock};
 use qip_transport::event_fabric::auth::BearerToken;
 use qip_transport::event_fabric::transport::FabricTransport;
 use qip_transport::retry::{Sleeper, ThreadSleeper};
+use qip_transport::tls::LinkSecurity;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -45,6 +46,18 @@ pub type Lookup = Box<dyn Fn(&str) -> Option<String>>;
 /// call presents.
 pub type Connector = Box<dyn Fn(SocketAddr, BearerToken) -> Box<dyn FabricTransport + Send>>;
 
+/// How a transport to a checked peer is opened over the link the command
+/// configured (ADR 0112): mutual TLS, or the plaintext only a `local`
+/// deployment may choose.
+///
+/// Separate from [`Connector`] because the link is decided per run from the
+/// deployment, and a connector that could not be told the link would be
+/// free to open plaintext under a run configured for TLS. Fallible because
+/// building a TLS client from the workload identity can fail, and that
+/// failure must stop the run rather than become a plaintext connection.
+pub type LinkConnector =
+    Box<dyn Fn(&LinkSecurity, SocketAddr, BearerToken) -> Result<Box<dyn FabricTransport + Send>>>;
+
 /// Everything a family subcommand reaches outside its arguments.
 ///
 /// Gathered so a test can supply each one and a subcommand never reads the
@@ -57,6 +70,11 @@ pub struct Environment {
     clock: Arc<dyn Clock>,
     sleeper: Arc<dyn Sleeper>,
     connect: Connector,
+    connect_link: LinkConnector,
+    /// What this machine's DMI `product_name` says, read once by
+    /// [`Self::process`] and `None` everywhere else, so a test never depends
+    /// on whether the host running it is a Compute Engine guest.
+    product_name: Option<String>,
 }
 
 impl Environment {
@@ -68,9 +86,17 @@ impl Environment {
             clock: Arc::new(SystemClock),
             sleeper: Arc::new(ThreadSleeper),
             connect: Box::new(grant::http_transport),
+            connect_link: Box::new(grant::link_transport),
+            product_name: std::fs::read_to_string(
+                qip_core::deployment::COMPUTE_ENGINE_PRODUCT_FILE,
+            )
+            .ok(),
         }
     }
 
+    /// Every seam supplied by the caller except the link connector, which
+    /// is the production one ([`grant::link_transport`]) until
+    /// [`Self::with_link_connector`] replaces it.
     pub fn new(
         lookup: Lookup,
         clock: Arc<dyn Clock>,
@@ -82,11 +108,32 @@ impl Environment {
             clock,
             sleeper,
             connect,
+            connect_link: Box::new(grant::link_transport),
+            product_name: None,
         }
+    }
+
+    /// The same environment opening its secured links through `connect_link`
+    /// — a test's recording broker, or a TLS listener it owns.
+    #[must_use]
+    pub fn with_link_connector(mut self, connect_link: LinkConnector) -> Self {
+        self.connect_link = connect_link;
+        self
     }
 
     pub fn variable(&self, name: &str) -> Option<String> {
         (self.lookup)(name)
+    }
+
+    /// The signs that this process runs on Cloud Run, Kubernetes or Compute
+    /// Engine, which refuse `QIP_DEPLOYMENT=local` (ADR 0110 decision 5):
+    /// a `local` set by an unreviewed edit on a deployed machine would
+    /// otherwise re-admit the plaintext link and the shared key.
+    pub fn deployment_markers(&self) -> qip_core::deployment::DeploymentMarkers {
+        qip_core::deployment::DeploymentMarkers::observe(
+            &|name| self.variable(name),
+            self.product_name.as_deref(),
+        )
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {
@@ -103,6 +150,16 @@ impl Environment {
         identity: BearerToken,
     ) -> Box<dyn FabricTransport + Send> {
         (self.connect)(peer, identity)
+    }
+
+    /// A transport to `peer` over `link`, presenting `identity`.
+    pub fn connect_over(
+        &self,
+        link: &LinkSecurity,
+        peer: SocketAddr,
+        identity: BearerToken,
+    ) -> Result<Box<dyn FabricTransport + Send>> {
+        (self.connect_link)(link, peer, identity)
     }
 }
 

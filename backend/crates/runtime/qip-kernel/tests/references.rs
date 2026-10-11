@@ -639,33 +639,29 @@ fn every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_ex
         "premise: a reference was built for the test source"
     );
 
-    // Verify all six new fields are accessible and present (currently None, but
-    // the accessors exist and work). When re-fetch paths wire the field
-    // population, these assertions will update to verify populated values.
-    assert!(
-        reference.etag().is_none(),
-        "etag field is accessible (currently unpopulated)"
+    // Filled on acquisition since 2026-10-11 (R12-DATA-1033..1035, 1037).
+    // This test asserted all six were `None` until then, which was a test of
+    // the gap rather than of the field. The digest here is built outside a
+    // connector runtime, so no etag arrived and no cursor was recorded, and
+    // those two stay `None` honestly; a runtime poll fills both
+    // (`qip-market-ingestion/tests/evidence_stage.rs`).
+    let manifest = FrankfurterRatesConnector::shipped_manifest()?;
+    assert!(reference.etag().is_none());
+    assert!(reference.cursor().is_none());
+    assert_eq!(reference.entitlement(), Some(manifest.licensing));
+    assert_eq!(reference.geography(), Some(manifest.region));
+    assert_eq!(
+        reference.expiry(),
+        Some(Timestamp::from_secs(1_760_100_000).saturating_add(manifest.freshness_sla()))
     );
     assert!(
-        reference.cursor().is_none(),
-        "cursor field is accessible (currently unpopulated)"
+        reference
+            .re_fetch_instructions()
+            .is_some_and(|text| text.contains(LOCATOR) && text.contains(reference.content_hash())),
+        "{:?}",
+        reference.re_fetch_instructions()
     );
-    assert!(
-        reference.entitlement().is_none(),
-        "entitlement field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.geography().is_none(),
-        "geography field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.expiry().is_none(),
-        "expiry field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.re_fetch_instructions().is_none(),
-        "re_fetch_instructions field is accessible (currently unpopulated)"
-    );
+    assert!(reference.parser().is_some());
 
     Ok(())
 }

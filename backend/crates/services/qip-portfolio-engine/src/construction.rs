@@ -169,6 +169,14 @@ impl PortfolioConstructor {
         self.mandate
     }
 
+    /// The compute router this constructor sizes through, read-only: so the
+    /// kernel can show an operator — and a test can prove — which arms the
+    /// deployed router carries and what it has learned, without a second
+    /// router that could disagree with the one that sized the book.
+    pub fn router(&self) -> &ComputeRouter {
+        &self.router
+    }
+
     /// Build a proposal.
     ///
     /// `covariance` must be in the same asset order as `theses`. `current`

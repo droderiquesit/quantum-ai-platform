@@ -926,6 +926,10 @@ pub(crate) struct FlowInputs<'a> {
     pub prices: &'a [Decimal],
     pub calm_half_spread_bps: f64,
     pub venues: &'a [String],
+    /// The platform's own filled taker flow on this instrument, signed (a
+    /// buy positive) and keyed by the instant it reached the book. Empty
+    /// for a run that has sent nothing.
+    pub own_flow: Option<&'a BTreeMap<Timestamp, Decimal>>,
 }
 
 /// Generate every agent's flow for one instrument over its whole path.
@@ -934,6 +938,15 @@ pub(crate) struct FlowInputs<'a> {
 /// The maker's inventory is settled at the end of each step from the taker
 /// flow the other agents sent in it, so a maker never reacts to flow that
 /// has not happened yet.
+///
+/// That flow includes the platform's own fills (R12-TICK-3101). A maker the
+/// platform bought from is short afterwards, and it backs its ask off or
+/// withdraws past its inventory limit, exactly as it does after an agent's
+/// buy. Until 2026-10-11 the flow was a function of the path alone, so a
+/// strategy could lift the same offer step after step and the market never
+/// noticed. A fill arriving at or before an observation, and after the one
+/// before it, is settled at that observation's end, so it moves quotes from
+/// the next step on and never the book it filled against.
 pub(crate) fn generate_flow(
     agents: &BTreeMap<String, CounterpartyAgent>,
     inputs: &FlowInputs<'_>,
@@ -965,6 +978,7 @@ pub(crate) fn generate_flow(
     }
 
     let mut records = Vec::new();
+    let mut previous: Option<Timestamp> = None;
     for (index, observation) in inputs.observations.iter().enumerate() {
         let price = *inputs.prices.get(index).ok_or_else(|| {
             Error::invalid(format!(
@@ -1010,6 +1024,16 @@ pub(crate) fn generate_flow(
                 records.push(record);
             }
         }
+        if let Some(own) = inputs.own_flow {
+            let since = previous.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+            for signed in own
+                .range((since, std::ops::Bound::Included(observation.at)))
+                .map(|(_, signed)| *signed)
+            {
+                taker_flow += signed;
+            }
+        }
+        previous = Some(observation.at);
         for (name, agent) in agents {
             if agent.kind() == AgentKind::Maker
                 && let Some(state) = states.get_mut(name.as_str())

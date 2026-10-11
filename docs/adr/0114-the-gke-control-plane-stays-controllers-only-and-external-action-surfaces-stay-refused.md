@@ -1,0 +1,206 @@
+# ADR 0114: The GKE control plane stays controllers-only, and external-action surfaces stay refused
+
+- **Status**: **Accepted**, 2026-10-11, by the owner in the session
+  conversation, adopting the recommendation as drafted: "Update as needed
+  remove my decisions make the recommended". Drafted as *Proposed* the same day. It confirms standing positions rather
+  than changing them, so acceptance moves no resource and no code.
+- **Date**: 2026-10-11
+- **Resolves**: owner decisions D4 and D8 in
+  `docs/blueprint/v12-completion-plan.md`; ADR 0101 conflicts C3 and C7 for
+  the present.
+- **Confirms**: ADR 0036 (Argo CD and Kargo on a control-plane cluster that
+  runs no trading binary), ADR 0093 (that cluster is suspended in `dev` while
+  no Argo CD release passes the scan gate), ADR 0024 decision 1 (Cloud Run for
+  warm binaries, one Compute Engine execution node per region), ADR 0091
+  (binaries composed from libraries).
+
+## D4 — Kubernetes
+
+**Context.** The plan records D4 as "ADR 0024 / ADR 0036 disagree; CLAUDE.md
+says none". They do not disagree once read with their dates: ADR 0036
+superseded ADR 0024's decision 2 *for the controllers only* and kept every
+trading binary off Kubernetes (`No Pod runs a qip-* image`), and ADR 0093
+suspended the cluster without amending 0036. `CLAUDE.md`'s "no Kubernetes"
+in the `infrastructure/` row is shorthand that is true of workloads and false
+of the control plane. ADR 0101's C3 notes v3.0 places most of its
+twenty-seven new services on regional GKE.
+
+**Decision.** Keep it as it is. The control-plane cluster, when resumed,
+runs Config Connector, Argo CD, Kargo and cert-manager and nothing else.
+Every `qip-*` binary runs on Cloud Run or a bare Compute Engine node. Every
+R12 row whose requirement places a workload on GKE stays BLOCKED by this
+decision — not by an oversight — until a runtime record with a *measurement*
+argues otherwise, as ADR 0091 requires for any claim of independent scaling.
+
+**Why.** The real-money direction strengthens this rather than weakening
+it. The execution node's founding property is that nothing sits between the
+cell and the venue (`gcp_placement.rs` refuses an execution node behind a
+load balancer or mesh); a Kubernetes node pool adds a kubelet, a CNI and a
+scheduler to that path. And a Kubernetes API that can schedule a `qip-*`
+image is a fourth way to change what trades, beside the three ADR 0036 already
+guards.
+
+**Rejected.** *Regional GKE Standard for warm services* (v3.0's shape):
+re-argues ADR 0024 decision 1 — secrets as volumes, the trust zones'
+network tags — for scaling nobody has measured. *Retire the control-plane
+cluster entirely*: reverses ADR 0036, an owner decision, on cost grounds ADR
+0093 already answered by suspension.
+
+**What would make this wrong.** A `qip-*` image in any Pod spec. A
+measurement showing Cloud Run cannot meet a warm service's latency or
+concurrency need that a GKE deployment does. The cluster staying suspended
+indefinitely — then ADR 0036's delivery path is a configuration nobody runs,
+and a record should decide whether it exists.
+
+**Instruction-file note.** `CLAUDE.md`'s `infrastructure/` row ("no
+Kubernetes") should read "no workload on Kubernetes; the GitOps control-plane
+cluster of ADR 0036 runs controllers only". That edit is the owner's to make.
+
+## D8 — external-action surfaces
+
+**Context.** Blueprint §24.4 asks for agents that publish to the outside
+world, conduct outreach, price products and change operations. The register
+scores six AGENCY rows BLOCKED, and they are two different kinds:
+
+- **External action**: R12-AGENCY-6092 (publishing), R12-AGENCY-6093
+  (outreach), R12-AGENCY-6095 (pricing a product), R12-AGENCY-6096 (operational
+  change by an agent). `qip-agency`'s engine documentation already says an
+  adapter needs the paper boundary and an ADR.
+- **Live capital**: R12-AGENCY-6097 (allocation and hedging that move real
+  capital and collateral), R12-AGENCY-6098 (live market actions), and
+  R12-GOV-6119 (custody, transfer, banking credentials). These are **not**
+  D8's. ADR 0003, ADR 0021 and ADR 0108 govern them, and this record does not
+  touch them.
+
+**Decision.** The four external-action rows stay refused, by design. No
+adapter that publishes, sends, prices or deploys on an agent's initiative is
+built; the `EXTERNAL_ACTION` refusal and the `AffordanceGraph`'s confinement
+of operational edges to the owned-system registry stay as they are. Agents
+may *draft* — a release note, a message, a price analysis — as an artefact a
+person reads and acts on through their own credential.
+
+**Why.** Each of these is an action the platform cannot take back and whose
+consequences are not reproducible from the event log — the property ADR 0007
+and the product direction put first. A real-money platform raises the cost of
+an agent speaking or acting for the owner in public, it does not lower it;
+and change-management rules already forbid an agent deploying, so §24.4's
+operations surface would contradict them.
+
+**Rejected.** *Build the adapters behind a disabled flag*: a refusal held by a
+flag is one value from an action, the shape ADR 0003 and ADR 0108 reject for
+live orders. *A human-in-the-loop approval per action*: viable later, and it
+needs ADR 0108 P9's per-person, platform-unmintable approval credential
+first; it gets its own record then.
+
+**What would make this wrong.** An adapter in `qip-agency` that calls an
+outside system on an agent's initiative. An agent-drafted artefact sent
+without a person's act. The owner deciding the platform should act externally
+— then a record per surface, with its own preconditions, supersedes this
+section.
+
+## What it costs
+
+- **A cluster that bills while it delivers nothing to trading.** D4 keeps
+  ADR 0036's control-plane cluster in the tree, so resuming it brings back
+  its standing control-plane and controller cost (ADR 0036's own cost list),
+  and while ADR 0093 keeps it suspended it is a configuration nobody runs.
+  Keeping it is chosen over retiring it; that is a cost, not a saving.
+- **Every GKE-placed R12 row stays BLOCKED.** The G1/G2/G3 rows ADR 0101
+  C3/C7 names are not unblocked by this record and will be scored BLOCKED
+  until a runtime record with a measurement argues otherwise. A reader
+  counting open rows sees them as open by decision, and the count does not
+  improve.
+- **v3.0's GKE-first shape is not adopted.** Twenty-seven services the
+  blueprint places on regional GKE must instead be argued onto Cloud Run or a
+  bare node one by one, each against ADR 0091, which is slower than adopting
+  the blueprint's placement wholesale.
+- **A test and a prose rule carry a named exception.** "No GKE" is no longer
+  a flat refusal in `event_fabric_infrastructure.rs` or in `CLAUDE.md`'s
+  shorthand: the controllers-only cluster is the one admitted declaration,
+  and every other GKE resource is still refused. An exception is a place a
+  later change can widen, and the test has to name it narrowly to hold.
+- **Agents draft and people act.** D8 leaves publishing, outreach, product
+  pricing and operational change as manual work: each needs a person to read
+  an agent's draft and act through their own credential, which is slower and
+  does not scale with the number of agents.
+
+## What would make this wrong
+
+Each decision states its own reversal condition above, under **What would
+make this wrong**; in short: a `qip-*` image in any Pod spec, a measurement
+that Cloud Run cannot meet a warm service's need that GKE does, the cluster
+staying suspended indefinitely, an adapter in `qip-agency` calling an outside
+system on an agent's initiative, an agent-drafted artefact sent without a
+person's act, or the owner deciding the platform should act externally.
+
+## Dependency direction
+
+Nothing moves. No code, no crate, no Terraform. The D4 decision keeps
+`apps/**` binaries deployed outside Kubernetes; the D8 decision keeps
+`qip-agency` (service) free of any adapter crate reaching an outside system.
+
+## R12 ids
+
+D4: the GKE-placed G1/G2/G3 rows stay BLOCKED by decision (ADR 0101 C3/C7);
+none is unblocked. D8: **R12-AGENCY-6092**, **6093**, **6095**, **6096** stay
+BLOCKED by decision. **R12-AGENCY-6097**, **6098** and **R12-GOV-6119** are
+listed so that they are not mistaken for D8 rows; they belong to ADR 0108.
+
+## The paper-trading boundary
+
+Untouched, and D8 is partly a statement of it: no agent-initiated external
+action, and no live capital path. The four fences and `Determinism::Required`
+stand.
+
+## Gates
+
+None run: no shell in the session that wrote this record.
+
+## Amendment 1 — 2026-10-11, which GKE-placed rows are mechanisms and which are capabilities, and what agents may draft through
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line and both
+decisions above are unchanged; this sorts the rows they govern.
+
+### D4: the mechanism stays refused; a capability is built on the runtime of record
+
+A row whose subject **is** the Kubernetes mechanism stays BLOCKED by D4. A
+row whose subject is a **capability** that the requirement happened to place
+on GKE is built on Cloud Run, Cloud Run Jobs or Compute Engine, and is
+scored against that equivalent; the GKE wording of such a row is refused, and
+the register says so in the row rather than leaving the capability unbuilt.
+The two columns below are independent lists; a row on the left is not paired
+with the row beside it.
+
+| Stays BLOCKED (the mechanism is the requirement) | Built on the runtime of record (the capability is) |
+|---|---|
+| R12-GCP-8005 (regional GKE Standard service plane) | R12-GCP-8104, 8105, 8106 — warm portfolio, capital and risk brains on Cloud Run; managed-store backing is ADR 0113's ledger |
+| R12-GCP-8115 (GKE Standard regional clusters) | R12-EVID-8108 — continuous source scoring as a scheduled stage of the deep brain, its derived state reproducible from the event log (no Spanner Graph; ADR 0113) |
+| R12-GCP-9183 (HPA/VPA, Cluster Autoscaler) | R12-FABRIC-8109 — sinks on a dedicated Compute Engine managed instance group per destination, autoscaled on the consumer-lag series |
+| R12-GCP-10030, R12-GCP-7006 (warm/stateful services on GKE) | R12-TICK-8110 — replay shards and counterfactual comparison as Cloud Run Jobs |
+| R12-GCP-9015 (cognitive services on GKE; the burst half is ADR 0122) | R12-REASON-8111 — custom Rust solvers on the deep brain's Cloud Run capacity, off every hot path; Z3/OR-Tools not admitted |
+| R12-CICD-9113 (Argo Rollouts) | R12-GCP-8116 — "research cannot starve control" as per-service maximum instances and concurrency, and research in separately budgeted Cloud Run Jobs |
+| R12-MODEL-10065 (GPU node pools; also waits on a measured need, ADR 0122) | R12-CICD-9116 — canary by Cloud Run traffic split, an SLO gate read from the pushed series (ADR 0121), rollback to the previous promoted digest (ADR 0115) |
+
+### D8: an agent may draft through an adapter whose only effect is an internal outbox
+
+D8 permits drafting and refuses acting. To make the draft path auditable
+rather than informal, `qip-agency` may have exactly one production adapter,
+a **drafting adapter**, whose only effect is to append the draft artefact to
+an internal outbox in the hash-chained log for a person to read. It calls no
+outside system, holds no outside credential, and is in the owned-system
+registry. Through it a shipped binary can write the third record of
+R12-GOV-6124's chain honestly — "executed" meaning a draft was written, which
+is what the record says. Everything after the outbox is a person acting
+through their own credential, outside the platform.
+
+The guard's quality gaps on R12-AGENCY-1006, 1025, 1056, 1057, 1059 and 1060
+— citations resolved against the evidence store rather than checked for
+shape, provenance established rather than declared, disclosures that cannot
+be configured inert, conduct judged on the step and not only its words — are
+buildable now: they govern drafts as much as actions. Their "needs governance
+approval" clause is answered here: external action stays refused, drafting is
+approved.
+
+The four external-action rows (6092, 6093, 6095, 6096) and R12-AGENCY-9062
+(an adapter service per action class) stay BLOCKED by D8.

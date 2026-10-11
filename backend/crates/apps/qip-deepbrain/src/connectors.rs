@@ -48,18 +48,159 @@
 //! a file this repository owns; a vendor is not.
 
 use qip_core::Timestamp;
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_data_finder::admission::{AdmittedSource, CatalogueEntry, StandingAdmission};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
+use qip_kernel::evidence_intake::EvidenceIntake;
 use qip_market_ingestion::adapter::{DataAdapter, SensedRecord};
 use qip_market_ingestion::connector::SourceConnector;
 use qip_market_ingestion::connector::journal::StreamLedger;
 use qip_market_ingestion::connector::manifest::SourceManifest;
 use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector_feed::ConnectorFeed;
+use qip_storage::BlobStore;
+use qip_storage::tick_capture::{RetentionRight, TickLakeWriter};
+use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// The variable naming what the tick lake may keep per licensing class, as
+/// `class=canonical` or `class=canonical+raw`, comma-separated — for example
+/// `public=canonical+raw,internal=canonical`. Unset, no arm captures.
+///
+/// Read here and not defaulted: a retention right is a reading of a vendor's
+/// terms, and a right nobody evaluated is not a right. A class the variable
+/// does not name is refused by the writer at capture, counted on the feed's
+/// `tick_lake_failures`, and never written under a default.
+pub const TICK_LAKE_RETENTION_VARIABLE: &str = "QIP_DEEPBRAIN_TICK_LAKE_RETENTION";
+
+/// Events per partition before a segment is sealed, and in total before
+/// every partition is. Bounded so a burst cannot hold memory the process
+/// does not have.
+pub const TICK_LAKE_BATCH: usize = 512;
+pub const TICK_LAKE_MAX_BUFFERED: usize = 4_096;
+
+/// The licensing classes a retention policy may name: the strings the feed
+/// files a capture under (`format!("{:?}", licensing).to_ascii_lowercase()`).
+const LICENSING_CLASSES: [&str; 5] = ["public", "internal", "licensed", "restricted", "synthetic"];
+
+/// The tick lake each connector arm seals its released ticks, quotes and
+/// trades into (R12-TICK-2042, R12-DATA-2004), when the operator has said
+/// what may be kept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TickLakeSettings {
+    pub retention: BTreeMap<String, RetentionRight>,
+}
+
+impl TickLakeSettings {
+    /// `None` when the variable is unset. Refuses a blank list, an unknown
+    /// class, a class named twice, and any right other than `canonical` or
+    /// `canonical+raw` — raw bytes kept without the canonical record would
+    /// be a lake nothing can replay, and `none` is said by leaving the class
+    /// out.
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Option<Self>> {
+        let Some(raw) = lookup(TICK_LAKE_RETENTION_VARIABLE) else {
+            return Ok(None);
+        };
+        let mut retention = BTreeMap::new();
+        for entry in raw.split(',').map(str::trim) {
+            let Some((class, right)) = entry.split_once('=') else {
+                return Err(Error::invalid(format!(
+                    "{TICK_LAKE_RETENTION_VARIABLE} entry `{entry}` is not `class=right`; name a \
+                     licensing class and `canonical` or `canonical+raw`"
+                )));
+            };
+            let class = class.trim().to_ascii_lowercase();
+            if !LICENSING_CLASSES.contains(&class.as_str()) {
+                return Err(Error::invalid(format!(
+                    "{TICK_LAKE_RETENTION_VARIABLE} names `{class}`, which is not a licensing \
+                     class; use one of {LICENSING_CLASSES:?}"
+                )));
+            }
+            let right = match right.trim() {
+                "canonical" => RetentionRight {
+                    canonical: true,
+                    raw: false,
+                },
+                "canonical+raw" => RetentionRight {
+                    canonical: true,
+                    raw: true,
+                },
+                other => {
+                    return Err(Error::invalid(format!(
+                        "{TICK_LAKE_RETENTION_VARIABLE} gives `{class}` the right `{other}`; \
+                         only `canonical` and `canonical+raw` exist, and a class that may keep \
+                         nothing is left out of the list"
+                    )));
+                }
+            };
+            if retention.insert(class.clone(), right).is_some() {
+                return Err(Error::invalid(format!(
+                    "{TICK_LAKE_RETENTION_VARIABLE} names `{class}` twice; one class has one \
+                     reading of its terms"
+                )));
+            }
+        }
+        Ok(Some(Self { retention }))
+    }
+
+    /// One writer over `store`, for one arm.
+    pub fn writer(&self, store: Arc<dyn BlobStore>) -> Result<TickLakeWriter> {
+        TickLakeWriter::new(
+            store,
+            self.retention.clone(),
+            TICK_LAKE_BATCH,
+            TICK_LAKE_MAX_BUFFERED,
+        )
+    }
+}
+
+/// The variable that turns on the durable knowledge-pack store
+/// (R12-DATA-1041): `store` keeps every pack a connector poll produces under
+/// [`KNOWLEDGE_PACK_NAMESPACE`]; `off`, or unset, keeps none. Anything else
+/// stops the process.
+pub const KNOWLEDGE_PACKS_VARIABLE: &str = "QIP_DEEPBRAIN_KNOWLEDGE_PACKS";
+
+/// The blob namespace knowledge packs are kept under.
+pub const KNOWLEDGE_PACK_NAMESPACE: &str = "knowledge-packs";
+
+/// Whether this node keeps knowledge packs. `false` when unset.
+pub fn knowledge_packs_enabled(lookup: &dyn Fn(&str) -> Option<String>) -> Result<bool> {
+    match lookup(KNOWLEDGE_PACKS_VARIABLE).as_deref().map(str::trim) {
+        None | Some("off") => Ok(false),
+        Some("store") => Ok(true),
+        Some(other) => Err(Error::invalid(format!(
+            "{KNOWLEDGE_PACKS_VARIABLE} is `{other}`; it is `store` or `off`"
+        ))),
+    }
+}
+
+/// What an arm's knowledge-pack store has done, for the banner and for a
+/// test that asserts the store ran rather than assuming it did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackStoreStats {
+    /// Packs written.
+    pub written: u64,
+    /// Encoded bytes of the packs written, and of the bodies they were
+    /// derived from: the durable layer's size beside the source's.
+    pub pack_bytes: u64,
+    pub source_bytes: u64,
+    /// Packs refused because they were not smaller than their source, or
+    /// could not be measured. Refused rather than kept: the durable layer
+    /// is a compact interpretation, and a pack as large as the body it came
+    /// from is a copy wearing a schema.
+    pub refused_not_smaller: u64,
+    /// Writes the store failed, and the last reason.
+    pub failures: u64,
+    pub last_failure: Option<String>,
+}
+
+/// The footprint of a pack worth keeping: measured, and smaller than the
+/// body it was derived from.
+fn keepable(footprint: Option<(u64, u64)>) -> Option<(u64, u64)> {
+    footprint.filter(|(pack_bytes, source_bytes)| pack_bytes < source_bytes)
+}
 
 /// One catalogued connector, its standing gate, and the admission the
 /// platform's reference ledger names the licence by.
@@ -70,6 +211,12 @@ pub struct ConnectorArm {
     /// The gate's latest decision bound to the manifest — what
     /// `Platform::admit_source` is handed before every poll.
     admitted: AdmittedSource,
+    /// What the last poll's evidence did to the world fabric.
+    last_evidence: EvidenceIntake,
+    /// Where this arm keeps its knowledge packs, when the root opened a
+    /// store for them (R12-DATA-1041).
+    pack_store: Option<Arc<dyn BlobStore>>,
+    pack_stats: PackStoreStats,
 }
 
 impl ConnectorArm {
@@ -112,6 +259,9 @@ impl ConnectorArm {
                 feed,
                 admission,
                 admitted,
+                last_evidence: EvidenceIntake::default(),
+                pack_store: None,
+                pack_stats: PackStoreStats::default(),
             }),
             Err(error) => Err(error.and_release(feed.shutdown(at))),
         }
@@ -179,7 +329,77 @@ impl ConnectorArm {
             feed,
             admission,
             admitted,
+            last_evidence: EvidenceIntake::default(),
+            pack_store: None,
+            pack_stats: PackStoreStats::default(),
         })
+    }
+
+    /// Seal what this arm releases into the tick lake `writer` holds.
+    pub fn with_tick_lake(mut self, writer: TickLakeWriter) -> Self {
+        self.feed = self.feed.with_tick_lake(writer);
+        self
+    }
+
+    /// Keep every knowledge pack this arm's polls produce on `store`.
+    pub fn with_knowledge_packs(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.pack_store = Some(store);
+        self
+    }
+
+    /// What the knowledge-pack store has done.
+    pub const fn knowledge_packs(&self) -> &PackStoreStats {
+        &self.pack_stats
+    }
+
+    /// Write the packs the feed holds, keyed by source and content hash so a
+    /// re-run writes the same key rather than a second copy. A failed write
+    /// does not fail the poll — the records are committed and the loop is
+    /// owed them — but it is counted with its reason, as the tick lake's is.
+    fn persist_packs(&mut self) {
+        let packs = self.feed.drain_knowledge_packs();
+        let Some(store) = &self.pack_store else {
+            return;
+        };
+        for (pack, footprint) in packs {
+            let Some((pack_bytes, source_bytes)) = keepable(footprint) else {
+                self.pack_stats.refused_not_smaller =
+                    self.pack_stats.refused_not_smaller.saturating_add(1);
+                continue;
+            };
+            let written = pack.encode().and_then(|bytes| {
+                let key = format!(
+                    "{}/{}-{}.json",
+                    self.admitted.source_id(),
+                    pack.created_ms,
+                    qip_core::hash::sha256_hex(&bytes)
+                );
+                store.put(&key, bytes)
+            });
+            match written {
+                Ok(()) => {
+                    self.pack_stats.written = self.pack_stats.written.saturating_add(1);
+                    self.pack_stats.pack_bytes =
+                        self.pack_stats.pack_bytes.saturating_add(pack_bytes);
+                    self.pack_stats.source_bytes =
+                        self.pack_stats.source_bytes.saturating_add(source_bytes);
+                }
+                Err(error) => {
+                    self.pack_stats.failures = self.pack_stats.failures.saturating_add(1);
+                    self.pack_stats.last_failure = Some(error.message().to_string());
+                }
+            }
+        }
+    }
+
+    /// Captures the lake refused or failed, and the last reason.
+    pub fn tick_lake_failures(&self) -> (u64, Option<&str>) {
+        self.feed.tick_lake_failures()
+    }
+
+    /// What the last poll's checked evidence did to the world fabric.
+    pub const fn last_evidence(&self) -> &EvidenceIntake {
+        &self.last_evidence
     }
 
     pub fn source_id(&self) -> &str {
@@ -218,6 +438,15 @@ impl ConnectorArm {
     /// from the platform and is the poll's error; a refusal by the platform
     /// to reference the fetch unwinds the connector so the next poll
     /// re-fetches (`ConnectorFeed::poll_referencing`).
+    ///
+    /// The poll's checked evidence is then forwarded into the world model's
+    /// fabric (`Platform::absorb_evidence`, R12-EVID-2031..2039), after the
+    /// records were committed and before they are handed up — so the fabric
+    /// the poisoning detector reads holds every claim this arm released,
+    /// beside every other arm's, and a disagreement between two vendors is a
+    /// contest there rather than two private fabrics each agreeing with
+    /// itself. Until this call the feed held its evidence, bounded, until it
+    /// dropped the oldest: `drain_evidence` had no caller in any binary.
     pub fn poll(&mut self, platform: &mut Platform, until: Timestamp) -> Result<Vec<SensedRecord>> {
         match self
             .admission
@@ -235,14 +464,25 @@ impl ConnectorArm {
                 return Err(refusal);
             }
         }
-        self.feed.poll_referencing(until, &mut |digest| {
+        let records = self.feed.poll_referencing(until, &mut |digest| {
             platform.reference_fetch(digest, until).map(|_| ())
-        })
+        })?;
+        self.last_evidence = platform.absorb_evidence(self.feed.drain_evidence(), until);
+        self.persist_packs();
+        Ok(records)
     }
 
-    /// Release what `open` acquired, at an instant the caller owns.
+    /// Release what `open` acquired, at an instant the caller owns, after
+    /// sealing whatever the tick lake still buffers. Both are asked: a lake
+    /// that cannot be sealed does not keep the session open, and a failed
+    /// release on top of a failed seal is appended rather than lost.
     pub fn shutdown(&mut self, at: Timestamp) -> Result<()> {
-        self.feed.shutdown(at)
+        let sealed = self.feed.flush_tick_lake().map(|_| ());
+        let released = self.feed.shutdown(at);
+        match sealed {
+            Ok(()) => released,
+            Err(error) => Err(error.and_release(released)),
+        }
     }
 
     pub fn descriptor(&self) -> qip_market_ingestion::adapter::SourceDescriptor {
@@ -369,6 +609,67 @@ mod tests {
             "the feed opened by `over_transport_admitted_by` was not released when the \
              admission check that followed refused it"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_pack_is_kept_only_when_measured_and_smaller_than_its_source() {
+        assert_eq!(keepable(Some((40, 400))), Some((40, 400)));
+        assert_eq!(keepable(Some((400, 400))), None, "as large as the body");
+        assert_eq!(keepable(Some((401, 400))), None, "larger than the body");
+        assert_eq!(keepable(None), None, "never measured");
+    }
+
+    #[test]
+    fn the_knowledge_pack_switch_is_off_unless_it_says_store() {
+        let unset = |_: &str| None;
+        assert!(matches!(knowledge_packs_enabled(&unset), Ok(false)));
+        let say = |value: &'static str| move |_: &str| Some(value.to_string());
+        assert!(matches!(knowledge_packs_enabled(&say("off")), Ok(false)));
+        assert!(matches!(knowledge_packs_enabled(&say("store")), Ok(true)));
+        assert!(knowledge_packs_enabled(&say("yes")).is_err());
+        assert!(knowledge_packs_enabled(&say("")).is_err());
+    }
+
+    fn lake(value: &str) -> Result<Option<TickLakeSettings>> {
+        TickLakeSettings::from_lookup(&|name| {
+            (name == TICK_LAKE_RETENTION_VARIABLE).then(|| value.to_string())
+        })
+    }
+
+    /// A retention right is a reading of a vendor's terms, so the variable
+    /// says exactly what may be kept and anything it does not say is
+    /// refused: an unknown class, a right that does not exist, a class
+    /// named twice. Unset means no lake at all. Mutation: default an
+    /// unknown right to `canonical` instead of refusing — the `keep-all`
+    /// assertion fails.
+    #[test]
+    fn a_tick_lake_retention_list_admits_only_what_it_names() -> Result<()> {
+        assert!(
+            TickLakeSettings::from_lookup(&|_| None)?.is_none(),
+            "unset is no lake"
+        );
+        let settings = lake("public=canonical+raw, internal=canonical")?
+            .ok_or_else(|| qip_core::error::Error::not_found("settings"))?;
+        assert_eq!(
+            settings.retention.get("public"),
+            Some(&RetentionRight {
+                canonical: true,
+                raw: true
+            })
+        );
+        assert_eq!(
+            settings.retention.get("internal"),
+            Some(&RetentionRight {
+                canonical: true,
+                raw: false
+            })
+        );
+        assert!(!settings.retention.contains_key("licensed"));
+        assert!(lake("public=keep-all").is_err());
+        assert!(lake("vendorx=canonical").is_err());
+        assert!(lake("public=canonical,public=canonical+raw").is_err());
+        assert!(lake("public").is_err());
         Ok(())
     }
 }

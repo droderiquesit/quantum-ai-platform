@@ -33,6 +33,7 @@
 
 pub mod approval;
 pub mod artifacts;
+pub mod eligibility;
 pub mod incident;
 pub mod licensing;
 pub mod model_risk;
@@ -48,6 +49,7 @@ pub use approval::{
 pub use artifacts::{
     ArtifactStore, ChainBreak, ChainNode, ProvenanceChain, RawDataset, StoredArtifact,
 };
+pub use eligibility::{EligibilityRecord, EligibilityRegister, Refusal, Subject, SubjectKind};
 pub use incident::{Clearance, Halt, HaltScope, Incident, IncidentLog, ResponsePolicy};
 pub use licensing::{EntitlementCheck, EntitlementRegistry, LicensedData};
 pub use model_risk::{

@@ -16,7 +16,20 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use qip_core::deployment::{COMPUTE_ENGINE_PRODUCT_FILE, Deployment, DeploymentMarkers};
 use qip_core::error::{Error, Result};
+#[cfg(test)]
+use qip_transport::tls::TLS_MODE_VARIABLE;
+use qip_transport::tls::{PeerNames, TlsSource, link_source};
+
+/// Which deployment this broker runs in (ADR 0110 decision 5, ADR 0112).
+/// Required: it decides whether the protocol listener may be plaintext,
+/// and an omission must not decide that.
+pub const DEPLOYMENT: &str = "QIP_DEPLOYMENT";
+/// The workload names a client certificate must be valid for, comma
+/// separated (ADR 0112). Empty or unset admits any certificate the CA pool
+/// issued, which is the pool template's identity control alone.
+pub const ADMITTED_PEERS: &str = "QIP_EVENT_FABRIC_ADMITTED_PEERS";
 
 /// Where partition segments, the leader epoch and consumer checkpoints live.
 pub const DATA_DIR: &str = "QIP_EVENT_FABRIC_DATA_DIR";
@@ -24,8 +37,16 @@ pub const DATA_DIR: &str = "QIP_EVENT_FABRIC_DATA_DIR";
 pub const CATALOGUE: &str = "QIP_EVENT_FABRIC_CATALOGUE";
 /// The identities file: one `<identity> <sha256 of its token>` per line.
 pub const IDENTITIES_FILE: &str = "QIP_EVENT_FABRIC_IDENTITIES_FILE";
-/// Where sealed segments are archived to.
+/// Where sealed segments are archived to, when the archive is a directory.
+/// Exactly one of this and [`ARCHIVE_BUCKET`] is set.
 pub const ARCHIVE_DIR: &str = "QIP_EVENT_FABRIC_ARCHIVE_DIR";
+/// The Cloud Storage landing bucket sealed segments are archived to, when
+/// the archive is a bucket (FABRIC-8101, DATA-8124). Exactly one of this and
+/// [`ARCHIVE_DIR`] is set.
+pub const ARCHIVE_BUCKET: &str = "QIP_EVENT_FABRIC_ARCHIVE_BUCKET";
+/// Optional: the key prefix inside [`ARCHIVE_BUCKET`] this broker writes
+/// under, so one regional landing bucket can hold several brokers.
+pub const ARCHIVE_PREFIX: &str = "QIP_EVENT_FABRIC_ARCHIVE_PREFIX";
 /// The address the fabric protocol is served on.
 pub const LISTEN: &str = "QIP_EVENT_FABRIC_LISTEN";
 /// The address health and metrics are served on, never the protocol's own.
@@ -37,6 +58,59 @@ pub const SEGMENT_BYTES: &str = "QIP_EVENT_FABRIC_SEGMENT_BYTES";
 /// Optional: how often the archiver and the catalogue reload run.
 pub const HOUSEKEEPING_MS: &str = "QIP_EVENT_FABRIC_HOUSEKEEPING_MS";
 
+/// Optional: which managed consensus P0 and P1 are committed to (ADR 0111).
+/// Unset is the local single-broker fabric, the default for development and
+/// tests; `spanner` is the only other value, and anything else is refused
+/// rather than read as either.
+pub const MANAGED_LOG: &str = "QIP_EVENT_FABRIC_MANAGED_LOG";
+/// With `spanner`: the database, `projects/<p>/instances/<i>/databases/<d>`.
+pub const SPANNER_DATABASE: &str = "QIP_EVENT_FABRIC_SPANNER_DATABASE";
+/// With a managed log: the region this broker's leases are keyed under.
+pub const REGION: &str = "QIP_EVENT_FABRIC_REGION";
+/// With a managed log: this instance's name, unique in its region (the zone
+/// and the VM name, say). The lease holder is this joined to the process's
+/// leader epoch.
+pub const INSTANCE: &str = "QIP_EVENT_FABRIC_INSTANCE";
+/// Optional, with a managed log: how long a lease lasts in the database's
+/// time. The lease loop renews at a third of it.
+pub const LEASE_TTL_MS: &str = "QIP_EVENT_FABRIC_LEASE_TTL_MS";
+/// Optional: how many batches of each partition stay on this broker's disk
+/// once their segments are archived and indexed; older history is read back
+/// from the archive (FABRIC-8079). Unset keeps everything on disk.
+pub const HOT_BATCHES: &str = "QIP_EVENT_FABRIC_HOT_BATCHES";
+
+/// The lease TTL when none is stated.
+pub const DEFAULT_LEASE_TTL_MS: u64 = 10_000;
+/// The shortest lease accepted: below this a renewal at a third of it races
+/// one Spanner round trip, and a healthy leader would depose itself.
+pub const MINIMUM_LEASE_TTL_MS: u64 = 1_500;
+/// The longest lease accepted: a dead leader holds its partitions this long
+/// before a standby may take them, and every P0/P1 producer waits for it.
+pub const MAXIMUM_LEASE_TTL_MS: u64 = 120_000;
+
+/// Where the managed consensus lives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManagedBackend {
+    /// A Spanner database reached through the TLS-terminating proxy, with a
+    /// token from the metadata server or a token file — the same access the
+    /// Cloud Storage archive uses, refused the same way.
+    Spanner {
+        database: String,
+        endpoint: String,
+        metadata_server: bool,
+        token_file: Option<String>,
+    },
+}
+
+/// ADR 0111's managed commit path, when configured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedConfig {
+    pub backend: ManagedBackend,
+    pub region: String,
+    pub instance: String,
+    pub lease_ttl_ms: u64,
+}
+
 /// The most partitions a stream may be declared with. Every partition is a
 /// directory, an open segment and a producer window; a count past this is a
 /// typo, not a deployment.
@@ -46,18 +120,195 @@ pub const MAXIMUM_PARTITIONS: u32 = 1024;
 /// cadence for the local slice (`seal_age_ms: 1000`).
 pub const DEFAULT_HOUSEKEEPING_MS: u64 = 1000;
 
+/// Where sealed segments go.
+///
+/// A directory stays the target for development and tests. A bucket is the
+/// deployed target: content-addressed segment objects in a regional landing
+/// bucket, reached over the in-VPC TLS-terminating proxy with a token from
+/// the metadata server or a token file (`qip_storage::gcp`). There is no
+/// fallback from one to the other — a broker told to archive to a bucket it
+/// cannot reach refuses to start rather than writing to the container's
+/// disk and acknowledging P0/P1 batches as archived on a copy that dies with
+/// the pod.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArchiveTarget {
+    Directory(PathBuf),
+    CloudStorage {
+        bucket: String,
+        prefix: String,
+        /// `http://` address of the TLS-terminating proxy (`QIP_GCP_ENDPOINT`).
+        endpoint: String,
+        /// Take tokens from the instance metadata server
+        /// (`QIP_GCP_METADATA_SERVER`); otherwise `token_file`.
+        metadata_server: bool,
+        /// A token file something else keeps fresh (`QIP_GCP_TOKEN_FILE`).
+        token_file: Option<String>,
+    },
+}
+
 /// The broker's validated configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub data_dir: PathBuf,
     pub catalogue: PathBuf,
     pub identities_file: PathBuf,
-    pub archive_dir: PathBuf,
+    pub archive: ArchiveTarget,
     pub listen: String,
     pub health_listen: String,
     pub partitions: u32,
     pub segment_bytes: Option<u64>,
     pub housekeeping_ms: u64,
+    /// `None` is the local single-broker fabric (ADR 0100); `Some` seats the
+    /// broker at the managed consensus and requires every P0/P1 stream to
+    /// be declared `managed_majority` (ADR 0111).
+    pub managed: Option<ManagedConfig>,
+    /// The hot window, in batches per partition, when retention is on.
+    pub hot_batches: Option<u64>,
+    /// The protocol listener's workload certificate (ADR 0112): `Some` is
+    /// mutual TLS with a client certificate required on every connection;
+    /// `None` is plaintext, which [`Config::parse`] admits only when
+    /// [`DEPLOYMENT`] is `local` and `QIP_TLS_MODE=plaintext` says so. The
+    /// health listener is plaintext either way: a probe carries no
+    /// certificate, and health on its own listener is FABRIC-073's point.
+    pub listener_tls: Option<TlsSource>,
+    /// [`ADMITTED_PEERS`], validated as names a certificate can carry.
+    pub admitted_peers: Vec<String>,
+}
+
+/// The proxy endpoint and the one lasting credential a Google API is reached
+/// with, refused by name when either is missing or a literal token is given.
+fn gcp_access(
+    variables: &BTreeMap<String, String>,
+    for_what: &str,
+) -> Result<(String, bool, Option<String>)> {
+    use qip_storage::gcp::{
+        ENDPOINT_VARIABLE, METADATA_VARIABLE, TOKEN_FILE_VARIABLE, TOKEN_VARIABLE,
+    };
+    // A literal token expires in about an hour and nothing in a long-running
+    // broker would notice; the archive or the managed log would start failing
+    // an hour after start-up with every P0/P1 producer waiting on it.
+    if present(variables, TOKEN_VARIABLE).is_some() {
+        return Err(Error::invalid(format!(
+            "{TOKEN_VARIABLE} is set for {for_what}; a broker runs for longer than a literal \
+             token lives. Use {METADATA_VARIABLE}=1 or {TOKEN_FILE_VARIABLE}"
+        )));
+    }
+    let endpoint = present(variables, ENDPOINT_VARIABLE).ok_or_else(|| {
+        Error::invalid(format!(
+            "{for_what} is configured but {ENDPOINT_VARIABLE} is not; set it to the http:// \
+             address of the TLS-terminating proxy in front of Google"
+        ))
+    })?;
+    let metadata_server = present(variables, METADATA_VARIABLE)
+        .is_some_and(|v| matches!(v, "1" | "true" | "TRUE" | "yes" | "on"));
+    let token_file = present(variables, TOKEN_FILE_VARIABLE).map(str::to_string);
+    if metadata_server == token_file.is_some() {
+        return Err(Error::invalid(format!(
+            "{for_what} needs exactly one credential: {METADATA_VARIABLE}=1 on Google Cloud, or \
+             {TOKEN_FILE_VARIABLE} pointing at a file something keeps fresh"
+        )));
+    }
+    Ok((endpoint.to_string(), metadata_server, token_file))
+}
+
+/// A Spanner database path, refused unless it is exactly
+/// `projects/<id>/instances/<id>/databases/<id>` in the characters those ids
+/// allow — it is spliced into every request path.
+fn spanner_database(raw: &str) -> Result<String> {
+    let parts: Vec<&str> = raw.split('/').collect();
+    let shaped = parts.len() == 6
+        && parts[0] == "projects"
+        && parts[2] == "instances"
+        && parts[4] == "databases"
+        && [parts[1], parts[3], parts[5]].iter().all(|id| {
+            !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        });
+    if !shaped {
+        return Err(Error::invalid(format!(
+            "{SPANNER_DATABASE} must be projects/<project>/instances/<instance>/databases/<db> in \
+             lower-case letters, digits, '-' and '_', not '{raw}'"
+        )));
+    }
+    Ok(raw.to_string())
+}
+
+/// A label-safe name: lower-case letters, digits and `-`, as a region or an
+/// instance name is. Both reach a lease row and a log line.
+fn label_name(variables: &BTreeMap<String, String>, name: &str, what: &str) -> Result<String> {
+    let value = required(variables, name, what)?;
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(Error::invalid(format!(
+            "{name} must be lower-case letters, digits and '-', not '{value}'"
+        )));
+    }
+    Ok(value)
+}
+
+/// ADR 0111's managed commit path, or `None` for the local fabric.
+fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<ManagedConfig>> {
+    let backend = match present(variables, MANAGED_LOG) {
+        None => {
+            // Fail closed on a half-configured managed log: settings for it
+            // with the switch off mean somebody meant to turn it on, and a
+            // broker that started local would acknowledge P0/P1 on one disk
+            // while the deployment believed otherwise.
+            for stray in [SPANNER_DATABASE, LEASE_TTL_MS] {
+                if present(variables, stray).is_some() {
+                    return Err(Error::invalid(format!(
+                        "{stray} is set but {MANAGED_LOG} is not; set {MANAGED_LOG}=spanner to \
+                         commit P0/P1 to the managed consensus, or unset {stray}"
+                    )));
+                }
+            }
+            return Ok(None);
+        }
+        Some("spanner") => {
+            let database = spanner_database(&required(
+                variables,
+                SPANNER_DATABASE,
+                "the Spanner database P0/P1 are committed to",
+            )?)?;
+            let (endpoint, metadata_server, token_file) =
+                gcp_access(variables, "the Spanner managed log")?;
+            ManagedBackend::Spanner {
+                database,
+                endpoint,
+                metadata_server,
+                token_file,
+            }
+        }
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "{MANAGED_LOG} is '{other}'; the only managed log is 'spanner' (ADR 0111). Unset \
+                 it for the local single-broker fabric"
+            )));
+        }
+    };
+    let region = label_name(
+        variables,
+        REGION,
+        "the region this broker's leases are keyed in",
+    )?;
+    let instance = label_name(variables, INSTANCE, "this instance's name in its region")?;
+    let lease_ttl_ms = optional_number(variables, LEASE_TTL_MS)?.unwrap_or(DEFAULT_LEASE_TTL_MS);
+    if !(MINIMUM_LEASE_TTL_MS..=MAXIMUM_LEASE_TTL_MS).contains(&lease_ttl_ms) {
+        return Err(Error::invalid(format!(
+            "{LEASE_TTL_MS} must be between {MINIMUM_LEASE_TTL_MS} and {MAXIMUM_LEASE_TTL_MS}, \
+             not {lease_ttl_ms}"
+        )));
+    }
+    Ok(Some(ManagedConfig {
+        backend,
+        region,
+        instance,
+        lease_ttl_ms,
+    }))
 }
 
 fn required(variables: &BTreeMap<String, String>, name: &str, what: &str) -> Result<String> {
@@ -81,14 +332,88 @@ fn optional_number(variables: &BTreeMap<String, String>, name: &str) -> Result<O
     }
 }
 
+fn present<'a>(variables: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    variables
+        .get(name)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+/// Exactly one archive target, refused by name when there are none or two.
+fn archive_target(variables: &BTreeMap<String, String>, data_dir: &str) -> Result<ArchiveTarget> {
+    match (
+        present(variables, ARCHIVE_DIR),
+        present(variables, ARCHIVE_BUCKET),
+    ) {
+        (Some(_), Some(_)) => Err(Error::invalid(format!(
+            "both {ARCHIVE_DIR} and {ARCHIVE_BUCKET} are set; set exactly one. Archiving to \
+             whichever a match arm happened to prefer would leave the other believed in"
+        ))),
+        (None, None) => Err(Error::invalid(format!(
+            "{ARCHIVE_DIR} is not set; set it to the directory sealed segments are archived \
+             to, or set {ARCHIVE_BUCKET} to a Cloud Storage landing bucket. The event fabric \
+             has no default for it (ADR 0100 §5: nothing rests on a broker default)"
+        ))),
+        (Some(directory), None) => {
+            // An archive inside the data directory is deleted by the same
+            // mistake, and filled by the same disk, as the segments it copies.
+            if PathBuf::from(directory).starts_with(data_dir) {
+                return Err(Error::invalid(format!(
+                    "{ARCHIVE_DIR} ('{directory}') is inside {DATA_DIR} ('{data_dir}'); archive \
+                     to a directory outside the one being archived"
+                )));
+            }
+            Ok(ArchiveTarget::Directory(PathBuf::from(directory)))
+        }
+        (None, Some(bucket)) => {
+            let (endpoint, metadata_server, token_file) =
+                gcp_access(variables, &format!("{ARCHIVE_BUCKET} (a bucket archive)"))?;
+            Ok(ArchiveTarget::CloudStorage {
+                bucket: bucket.to_string(),
+                prefix: present(variables, ARCHIVE_PREFIX)
+                    .unwrap_or_default()
+                    .to_string(),
+                endpoint,
+                metadata_server,
+                token_file,
+            })
+        }
+    }
+}
+
 impl Config {
     /// Read the process environment. The only place this binary does.
     pub fn from_environment() -> Result<Self> {
-        Self::parse(&std::env::vars().collect())
+        let variables: BTreeMap<String, String> = std::env::vars().collect();
+        // The broker runs on Compute Engine (`modules/event-fabric-broker`),
+        // so the DMI product name is the marker that matters here: it is
+        // what refuses `local` on a node an `add-metadata` edit relabelled.
+        let markers = DeploymentMarkers::observe(
+            &|name| variables.get(name).cloned(),
+            std::fs::read_to_string(COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        );
+        Self::parse_with(&variables, &markers)
     }
 
-    /// Validate `variables`, refusing the first thing wrong by name.
+    /// Validate `variables`, refusing the first thing wrong by name, with
+    /// the deployment markers observed from `variables` alone — the form a
+    /// test drives. The process itself goes through [`Self::parse_with`]
+    /// with the host's DMI product name as well.
     pub fn parse(variables: &BTreeMap<String, String>) -> Result<Self> {
+        Self::parse_with(
+            variables,
+            &DeploymentMarkers::observe(&|name| variables.get(name).cloned(), None),
+        )
+    }
+
+    /// Validate `variables` against what the root observed of its platform:
+    /// [`DEPLOYMENT`]=`local` is refused wherever `markers` is not empty.
+    pub fn parse_with(
+        variables: &BTreeMap<String, String>,
+        markers: &DeploymentMarkers,
+    ) -> Result<Self> {
         let data_dir = required(
             variables,
             DATA_DIR,
@@ -100,11 +425,7 @@ impl Config {
             IDENTITIES_FILE,
             "the identities file of token digests",
         )?;
-        let archive_dir = required(
-            variables,
-            ARCHIVE_DIR,
-            "the directory sealed segments are archived to",
-        )?;
+        let archive = archive_target(variables, &data_dir)?;
         let listen = required(variables, LISTEN, "the address the protocol is served on")?;
         let health_listen = required(
             variables,
@@ -119,14 +440,6 @@ impl Config {
             return Err(Error::invalid(format!(
                 "{LISTEN} and {HEALTH_LISTEN} are both '{listen}'; health is served on its own \
                  listener so that it still answers when the protocol's does not"
-            )));
-        }
-        // An archive inside the data directory is deleted by the same
-        // mistake, and filled by the same disk, as the segments it copies.
-        if PathBuf::from(&archive_dir).starts_with(&data_dir) {
-            return Err(Error::invalid(format!(
-                "{ARCHIVE_DIR} ('{archive_dir}') is inside {DATA_DIR} ('{data_dir}'); archive \
-                 to a directory outside the one being archived"
             )));
         }
         let partitions_text = required(
@@ -144,6 +457,50 @@ impl Config {
                 "{PARTITIONS} must be between 1 and {MAXIMUM_PARTITIONS}, not {partitions}"
             )));
         }
+        // ADR 0112: decided here, before anything is opened, from the
+        // deployment and the TLS variables; the identity itself is loaded by
+        // `start`, after storage is proven and before the port is bound.
+        let deployment = Deployment::parse_observed(present(variables, DEPLOYMENT), markers)?;
+        // `cas` (ADR 0112 §2) is decided here too, and its settings are
+        // validated here — pool, template, lifetime bounds, both roots — so a
+        // malformed pool stops the broker before storage is touched; the
+        // certificate itself is requested in `main`.
+        let listener_tls = link_source(deployment, &|name| {
+            present(variables, name).map(str::to_string)
+        })?;
+        let admitted_peers: Vec<String> = present(variables, ADMITTED_PEERS)
+            .map(|names| {
+                names
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        PeerNames::new(admitted_peers.clone())?;
+        // An empty list admits every certificate the CA pool chains — and
+        // the pool issues to every workload in the environment, the API's
+        // and the ledger's and each cell's alike. So outside `local` the
+        // broker names who may produce and consume, and a deployment that
+        // forgot to is refused here rather than served to anyone holding a
+        // certificate from the pool.
+        if deployment != Deployment::Local && admitted_peers.is_empty() {
+            return Err(Error::invalid(format!(
+                "{ADMITTED_PEERS} is not set and {DEPLOYMENT} is `{deployment}`; with no list \
+                 the broker admits any certificate its roots chain, which is every workload the \
+                 environment's CA pool has issued to. Set {ADMITTED_PEERS} to the \
+                 comma-separated certificate names of the workloads that produce to and consume \
+                 from this broker"
+            )));
+        }
+        if listener_tls.is_none() && !admitted_peers.is_empty() {
+            return Err(Error::invalid(format!(
+                "{ADMITTED_PEERS} names workloads and the protocol listener is plaintext; a \
+                 peer list nothing can check reads as a control. Configure the listener's \
+                 certificate or unset {ADMITTED_PEERS}"
+            )));
+        }
         let housekeeping_ms =
             optional_number(variables, HOUSEKEEPING_MS)?.unwrap_or(DEFAULT_HOUSEKEEPING_MS);
         if housekeeping_ms == 0 {
@@ -151,16 +508,26 @@ impl Config {
                 "{HOUSEKEEPING_MS} must be at least 1; zero would spin the archiver thread"
             )));
         }
+        let hot_batches = optional_number(variables, HOT_BATCHES)?;
+        if hot_batches == Some(0) {
+            return Err(Error::invalid(format!(
+                "{HOT_BATCHES} must be at least 1; unset it to keep every segment on disk"
+            )));
+        }
         Ok(Self {
             data_dir: PathBuf::from(data_dir),
             catalogue: PathBuf::from(catalogue),
             identities_file: PathBuf::from(identities_file),
-            archive_dir: PathBuf::from(archive_dir),
+            archive,
             listen,
             health_listen,
             partitions,
             segment_bytes: optional_number(variables, SEGMENT_BYTES)?,
             housekeeping_ms,
+            managed: managed_config(variables)?,
+            hot_batches,
+            listener_tls,
+            admitted_peers,
         })
     }
 }
@@ -178,6 +545,8 @@ mod tests {
             (LISTEN, "127.0.0.1:7100"),
             (HEALTH_LISTEN, "127.0.0.1:7101"),
             (PARTITIONS, "4"),
+            (DEPLOYMENT, "local"),
+            (TLS_MODE_VARIABLE, "plaintext"),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_string(), value.to_string()))
@@ -200,6 +569,7 @@ mod tests {
             LISTEN,
             HEALTH_LISTEN,
             PARTITIONS,
+            DEPLOYMENT,
         ] {
             let mut variables = complete();
             variables.remove(name);
@@ -219,6 +589,11 @@ mod tests {
         let error = Config::parse(&shared).expect_err("a shared listener is refused");
         assert!(error.to_string().contains("its own listener"), "{error}");
 
+        let mut both = complete();
+        both.insert(ARCHIVE_BUCKET.to_string(), "landing-eu".to_string());
+        let error = Config::parse(&both).expect_err("two archive targets are refused");
+        assert!(error.to_string().contains("set exactly one"), "{error}");
+
         let mut nested = complete();
         nested.insert(
             ARCHIVE_DIR.to_string(),
@@ -232,5 +607,333 @@ mod tests {
             variables.insert(PARTITIONS.to_string(), bad.to_string());
             assert!(Config::parse(&variables).is_err(), "partitions = {bad}");
         }
+    }
+
+    /// ADR 0112 at the broker. Mutation: let `plaintext` through outside
+    /// `local`, or treat an unset mode with no certificate as plaintext, and
+    /// one of these parses; this fails.
+    #[test]
+    fn a_broker_serves_plaintext_only_where_a_local_deployment_chose_it() {
+        // Premise: the local plaintext fixture is accepted and is plaintext.
+        assert_eq!(
+            Config::parse(&complete())
+                .expect("local plaintext")
+                .listener_tls,
+            None
+        );
+        let mut deployed = complete();
+        deployed.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        let error = Config::parse(&deployed).expect_err("plaintext was admitted in prod");
+        assert!(error.to_string().contains("mutual TLS"), "{error}");
+
+        let mut unset = complete();
+        unset.remove(TLS_MODE_VARIABLE);
+        assert!(
+            Config::parse(&unset).is_err(),
+            "an unset mode with no certificate came up plaintext"
+        );
+
+        let mut tls = complete();
+        tls.remove(TLS_MODE_VARIABLE);
+        tls.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (
+                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+                "/etc/qip/tls/chain.pem",
+            ),
+            (
+                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+                "/run/qip/tls/key.pem",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/roots.pem",
+            ),
+            (
+                ADMITTED_PEERS,
+                "edge-node.prod.qip.internal, ledgerd.prod.qip.internal",
+            ),
+        ] {
+            tls.insert(name.to_string(), value.to_string());
+        }
+        let config = Config::parse(&tls).expect("a deployed broker with a certificate");
+        assert!(matches!(config.listener_tls, Some(TlsSource::Files(_))));
+        assert_eq!(config.admitted_peers.len(), 2);
+    }
+
+    /// ADR 0112 §2 at the broker: `cas` parses to an issued source with its
+    /// settings validated, and a malformed pool stops the parse. Mutation:
+    /// parse the broker's TLS with `link_mode` again (which cannot read the
+    /// pool) and the first assertion fails.
+    #[test]
+    fn a_broker_on_certificate_authority_service_is_validated_before_it_starts() {
+        let mut cas = complete();
+        cas.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (TLS_MODE_VARIABLE, "cas"),
+            (
+                qip_transport::cas::CA_POOL_VARIABLE,
+                "projects/p/locations/europe-west2/caPools/qip-prod-internal",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/pool-roots.pem",
+            ),
+            (
+                qip_transport::cas::GOOGLE_TLS_ROOTS_VARIABLE,
+                "/etc/qip/tls/google-roots.pem",
+            ),
+            (ADMITTED_PEERS, "edge-node.prod.qip.internal"),
+        ] {
+            cas.insert(name.to_string(), value.to_string());
+        }
+        let config = Config::parse(&cas).expect("a broker on CA Service");
+        assert!(matches!(config.listener_tls, Some(TlsSource::Issued(_))));
+        cas.insert(
+            qip_transport::cas::CA_POOL_VARIABLE.to_string(),
+            "qip-prod-internal".to_string(),
+        );
+        assert!(
+            Config::parse(&cas).is_err(),
+            "a malformed pool was accepted"
+        );
+    }
+
+    /// A deployed broker with a certificate and the peer list, as
+    /// `a_broker_serves_plaintext_only_where_a_local_deployment_chose_it`
+    /// builds it.
+    fn deployed_tls() -> BTreeMap<String, String> {
+        let mut tls = complete();
+        tls.remove(TLS_MODE_VARIABLE);
+        tls.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (
+                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+                "/etc/qip/tls/chain.pem",
+            ),
+            (
+                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+                "/run/qip/tls/key.pem",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/roots.pem",
+            ),
+            (ADMITTED_PEERS, "edge-node.prod.qip.internal"),
+        ] {
+            tls.insert(name.to_string(), value.to_string());
+        }
+        tls
+    }
+
+    /// The failure this prevents: with the list unset, `PeerNames::admit`
+    /// returns `Ok(None)` and the broker serves any certificate the CA pool
+    /// chains — every workload in the environment. Mutation: delete the
+    /// empty-list refusal in `parse_with` and the deployed broker with no
+    /// list (and with a list of only separators) parses; this fails.
+    #[test]
+    fn a_deployed_broker_refuses_to_start_without_naming_the_peers_it_admits() {
+        // Premise: the deployed fixture is accepted with its list.
+        assert!(Config::parse(&deployed_tls()).is_ok());
+        for list in [None, Some(""), Some(" , ,")] {
+            let mut variables = deployed_tls();
+            match list {
+                None => variables.remove(ADMITTED_PEERS),
+                Some(value) => variables.insert(ADMITTED_PEERS.to_string(), value.to_string()),
+            };
+            let error = Config::parse(&variables).expect_err("a deployed broker admitted anyone");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{ADMITTED_PEERS} is not set")),
+                "{list:?}: {error}"
+            );
+        }
+        // `local` keeps the open list a developer's two-process run needs.
+        assert!(Config::parse(&complete()).is_ok());
+    }
+
+    /// The failure this prevents: `gcloud compute instances add-metadata`
+    /// setting `QIP_DEPLOYMENT=local` and `QIP_TLS_MODE=plaintext` on the
+    /// broker's VM brought its protocol listener up in plaintext. Mutation:
+    /// call `Deployment::parse_observed` with `&DeploymentMarkers::none()`
+    /// in `parse_with` and both relabelled brokers parse; this fails.
+    #[test]
+    fn a_broker_that_can_see_it_is_deployed_refuses_local() {
+        // Premise: the local plaintext fixture parses with no marker.
+        assert!(Config::parse_with(&complete(), &DeploymentMarkers::none()).is_ok());
+        let on_compute_engine =
+            DeploymentMarkers::observe(&|_| None, Some("Google Compute Engine\n"));
+        let error = Config::parse_with(&complete(), &on_compute_engine)
+            .expect_err("local was admitted on a Compute Engine guest");
+        assert!(
+            error.to_string().contains("can see it is deployed"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("product_name"), "{error}");
+
+        let mut on_cloud_run = complete();
+        on_cloud_run.insert("K_SERVICE".to_string(), "fabricd".to_string());
+        let error = Config::parse(&on_cloud_run).expect_err("local was admitted on Cloud Run");
+        assert!(error.to_string().contains("K_SERVICE"), "{error}");
+    }
+
+    fn bucket() -> BTreeMap<String, String> {
+        let mut variables = complete();
+        variables.remove(ARCHIVE_DIR);
+        for (name, value) in [
+            (ARCHIVE_BUCKET, "qip-fabric-landing-europe-west2"),
+            (ARCHIVE_PREFIX, "fabricd-0"),
+            (qip_storage::gcp::ENDPOINT_VARIABLE, "http://127.0.0.1:8443"),
+            (qip_storage::gcp::METADATA_VARIABLE, "1"),
+        ] {
+            variables.insert(name.to_string(), value.to_string());
+        }
+        variables
+    }
+
+    /// FABRIC-8101 / DATA-8124: a bucket is a selectable archive target, and
+    /// one that could not be reached for longer than an hour, or at all, is
+    /// refused at start rather than discovered by the first sealed segment.
+    /// Mutation: in `archive_target`, accept a bucket with no credential —
+    /// the credential-less iteration is accepted and this fails.
+    #[test]
+    fn a_bucket_archive_is_accepted_with_an_endpoint_and_one_lasting_credential_and_refused_otherwise()
+     {
+        let config = Config::parse(&bucket()).expect("premise: a complete bucket archive loads");
+        assert_eq!(
+            config.archive,
+            ArchiveTarget::CloudStorage {
+                bucket: "qip-fabric-landing-europe-west2".to_string(),
+                prefix: "fabricd-0".to_string(),
+                endpoint: "http://127.0.0.1:8443".to_string(),
+                metadata_server: true,
+                token_file: None,
+            }
+        );
+        let directory = Config::parse(&complete()).expect("the directory archive still loads");
+        assert!(matches!(directory.archive, ArchiveTarget::Directory(_)));
+
+        for (remove, insert) in [
+            (Some(qip_storage::gcp::ENDPOINT_VARIABLE), None),
+            (Some(qip_storage::gcp::METADATA_VARIABLE), None),
+            (
+                None,
+                Some((qip_storage::gcp::TOKEN_FILE_VARIABLE, "/run/token")),
+            ),
+            (
+                None,
+                Some((qip_storage::gcp::TOKEN_VARIABLE, "ya29.literal")),
+            ),
+        ] {
+            let mut variables = bucket();
+            if let Some(name) = remove {
+                variables.remove(name);
+            }
+            if let Some((name, value)) = insert {
+                variables.insert(name.to_string(), value.to_string());
+            }
+            assert!(
+                Config::parse(&variables).is_err(),
+                "removed {remove:?}, inserted {insert:?}"
+            );
+        }
+    }
+
+    fn spanner() -> BTreeMap<String, String> {
+        let mut variables = complete();
+        for (name, value) in [
+            (MANAGED_LOG, "spanner"),
+            (
+                SPANNER_DATABASE,
+                "projects/qip-dev/instances/fabric-ew2/databases/fabric",
+            ),
+            (REGION, "europe-west2"),
+            (INSTANCE, "fabricd-ew2-a"),
+            (qip_storage::gcp::ENDPOINT_VARIABLE, "http://127.0.0.1:8443"),
+            (qip_storage::gcp::METADATA_VARIABLE, "1"),
+        ] {
+            variables.insert(name.to_string(), value.to_string());
+        }
+        variables
+    }
+
+    /// ADR 0111: the managed commit path is off unless asked for, and asked
+    /// for it is complete or refused. The failure this prevents is a broker
+    /// that half-reads a Spanner configuration and starts local, answering
+    /// P0/P1 producers from one disk while the deployment believes they
+    /// survive a zone.
+    ///
+    /// Mutation: in `managed_config`, return `Ok(None)` for an unknown
+    /// `MANAGED_LOG` value — the `raft` iteration is accepted and this fires.
+    /// Mutation: drop the stray-setting check — a database with the switch
+    /// off is accepted and this fires.
+    #[test]
+    fn the_managed_log_is_local_by_default_complete_when_asked_for_and_refused_half_configured() {
+        let local = Config::parse(&complete()).expect("premise: the local fabric loads");
+        assert_eq!(local.managed, None);
+        assert_eq!(local.hot_batches, None);
+
+        let managed = Config::parse(&spanner()).expect("a complete Spanner path loads");
+        assert_eq!(
+            managed.managed,
+            Some(ManagedConfig {
+                backend: ManagedBackend::Spanner {
+                    database: "projects/qip-dev/instances/fabric-ew2/databases/fabric".to_string(),
+                    endpoint: "http://127.0.0.1:8443".to_string(),
+                    metadata_server: true,
+                    token_file: None,
+                },
+                region: "europe-west2".to_string(),
+                instance: "fabricd-ew2-a".to_string(),
+                lease_ttl_ms: DEFAULT_LEASE_TTL_MS,
+            })
+        );
+
+        let mut unknown = spanner();
+        unknown.insert(MANAGED_LOG.to_string(), "raft".to_string());
+        assert!(Config::parse(&unknown).is_err(), "an unknown managed log");
+
+        let mut stray = complete();
+        stray.insert(
+            SPANNER_DATABASE.to_string(),
+            "projects/p/instances/i/databases/d".to_string(),
+        );
+        let error = Config::parse(&stray).expect_err("a database with the switch off");
+        assert!(error.to_string().contains(MANAGED_LOG), "{error}");
+
+        for name in [
+            SPANNER_DATABASE,
+            REGION,
+            INSTANCE,
+            qip_storage::gcp::ENDPOINT_VARIABLE,
+            qip_storage::gcp::METADATA_VARIABLE,
+        ] {
+            let mut variables = spanner();
+            variables.remove(name);
+            assert!(Config::parse(&variables).is_err(), "without {name}");
+        }
+        for (name, bad) in [
+            (SPANNER_DATABASE, "projects/p/instances/i"),
+            (SPANNER_DATABASE, "projects/p/instances/i/databases/d?x=1"),
+            (REGION, "Europe West"),
+            (LEASE_TTL_MS, "100"),
+            (LEASE_TTL_MS, "999999"),
+            (qip_storage::gcp::TOKEN_VARIABLE, "ya29.literal"),
+        ] {
+            let mut variables = spanner();
+            variables.insert(name.to_string(), bad.to_string());
+            assert!(Config::parse(&variables).is_err(), "{name} = {bad}");
+        }
+
+        let mut zero = complete();
+        zero.insert(HOT_BATCHES.to_string(), "0".to_string());
+        assert!(Config::parse(&zero).is_err(), "a zero hot window");
+        let mut hot = complete();
+        hot.insert(HOT_BATCHES.to_string(), "64".to_string());
+        assert_eq!(
+            Config::parse(&hot).expect("a hot window").hot_batches,
+            Some(64)
+        );
     }
 }

@@ -57,7 +57,7 @@
 use crate::platform::Platform;
 use qip_ai::registry::{ModelRegistry, PublishedArtifact};
 use qip_ai::serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};
-use qip_contracts::policy::{ModelManifest, Slot};
+use qip_contracts::policy::{InlineModel, ModelManifest, Slot};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::log::EventLog;
@@ -172,7 +172,7 @@ impl EventBody for ModelPromotion {
 /// What the `trained_models` slot carries this cycle, or why it ships
 /// unproduced — the same shape as the causal and episodic issues, so
 /// `pending_policy` reads all three alike.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModelManifestIssue {
     manifest: ModelManifest,
     /// The newest promotion the manifest names, which is the instant a cell
@@ -187,6 +187,11 @@ pub struct ModelManifestIssue {
     /// shipping line names which version of the promoted set a cell was
     /// told about and which one it superseded.
     pack: Option<ModelPack>,
+    /// Promoted distillates left out because no verified release pack names
+    /// their artifact at the inline model the cells compute (ADR 0110),
+    /// counted so the line says how many and why.
+    /// Always zero while no release packs are admitted.
+    unreleased: usize,
 }
 
 impl ModelManifestIssue {
@@ -203,8 +208,13 @@ impl ModelManifestIssue {
         self.pack.as_ref()
     }
 
+    /// Promoted distillates withheld for want of a verified release pack.
+    pub const fn unreleased(&self) -> usize {
+        self.unreleased
+    }
+
     pub fn describe(&self) -> String {
-        format!(
+        let line = format!(
             "trained models: shipped {} distillate(s) by digest, newest promoted {}; {} \
              promoted model(s) named to no cell because the fidelity policy admitted no \
              distillate of them; {}",
@@ -215,7 +225,16 @@ impl ModelManifestIssue {
                 || "no model pack on record".to_string(),
                 ModelPack::describe
             )
-        )
+        );
+        if self.unreleased == 0 {
+            line
+        } else {
+            format!(
+                "{line}; {} promoted distillate(s) withheld because no verified release pack \
+                 names their artifact (ADR 0110)",
+                self.unreleased
+            )
+        }
     }
 }
 
@@ -690,6 +709,34 @@ impl Platform {
         let desk = self.require_model_desk(&artifact.reference, "promoted")?;
         let mut scratch = registry.clone();
         let published = scratch.promote_artifact(artifact, now)?;
+        // Blueprint §9.11 (R12-MODEL-7201): the verifier society attacks the
+        // candidate before the alias moves. Placed after the registry's own
+        // refusals so a card the registry refuses is refused for the
+        // registry's reason; journaled whichever way it goes, so a promotion
+        // the society let through is as visible as one it stopped. A
+        // refutation refuses the promotion — authority not added, never a
+        // path created. See `crate::model_tournament`.
+        let verification = self.tournament.verify_model(
+            card,
+            self.quarantined_datasets(),
+            self.latest_regime_crossing(),
+            now,
+        );
+        let refuted = verification
+            .verdict
+            .is_refuted()
+            .then(|| verification.verdict.summary());
+        self.journal_record(
+            crate::model_tournament::ModelVerified { verification },
+            crate::model_tournament::VERIFIER_ORIGIN,
+            now,
+        )?;
+        if let Some(summary) = refuted {
+            return Err(Error::denied(format!(
+                "{} is not promoted: {summary}",
+                artifact.reference
+            )));
+        }
         for reference in displaced {
             scratch.retire(reference, now)?;
         }
@@ -844,24 +891,55 @@ impl Platform {
     /// the line says which.
     pub fn model_manifest(&self) -> Result<ModelManifestIssue> {
         let mut models = BTreeMap::new();
+        let mut packs = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
         let mut advisory_only = 0usize;
+        let mut unreleased = 0usize;
         for promotion in self.model_promotions.values() {
-            match &promotion.distilled {
-                Some(entry) => {
-                    models.insert(entry.name.clone(), entry.digest.clone());
-                    produced_at = Some(produced_at.map_or(promotion.at, |at| at.max(promotion.at)));
+            let Some(entry) = &promotion.distilled else {
+                advisory_only += 1;
+                continue;
+            };
+            // ADR 0110: with release packs admitted, a distillate is named to
+            // a cell only when a verified pack names its artifact *and* the
+            // inline model the cell will compute — name and digest — and
+            // the pack rides beside it, because a bundle cell verifies that
+            // pack itself rather than trusting this process's payload
+            // signature (Amendment 1). A pack for the artifact that names a
+            // different inline model, or none, would be refused by every
+            // cell, so it is withheld and counted here instead.
+            if let Some(released) = &self.release_packs {
+                let inline = InlineModel {
+                    name: entry.name.clone(),
+                    digest: entry.digest.clone(),
+                };
+                match released.get(&promotion.artifact_digest) {
+                    Some(pack) if pack.inline_model.as_ref() == Some(&inline) => {
+                        packs.insert(entry.name.clone(), pack.clone());
+                    }
+                    _ => {
+                        unreleased += 1;
+                        continue;
+                    }
                 }
-                None => advisory_only += 1,
             }
+            models.insert(entry.name.clone(), entry.digest.clone());
+            produced_at = Some(produced_at.map_or(promotion.at, |at| at.max(promotion.at)));
         }
         match produced_at {
             Some(produced_at) => Ok(ModelManifestIssue {
-                manifest: ModelManifest { models },
+                manifest: ModelManifest { models, packs },
                 produced_at,
                 advisory_only,
                 pack: self.model_pack.clone(),
+                unreleased,
             }),
+            None if unreleased > 0 => Err(Error::not_found(format!(
+                "{unreleased} promoted distillate(s) held and no verified release pack names any \
+                 of their artifacts at the inline model the cells compute (ADR 0110); the trained_models slot ships unproduced and \
+                 every cell refuses a plan carrying a model inline until a two-person release \
+                 signs one under the model-pack key"
+            ))),
             None => Err(Error::not_found(format!(
                 "no distilled model has been promoted in this process ({} promotion(s) held, \
                  {advisory_only} advisory-only); the trained_models slot ships unproduced and \

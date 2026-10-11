@@ -1,0 +1,19 @@
+[package]
+name = "qip-peer"
+description = "The peer Reflex Mesh protocol: what regional cells say to each other, with no sockets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# ADR 0116: these three and nothing else. The edge node's peer link links this
+# crate, so anything added here is linked beside the reflex cell; `qip-mesh`'s
+# BigQuery closure in particular must never be reachable from it (DATA-058).
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+qip-core.workspace = true
+
+[lints]
+workspace = true

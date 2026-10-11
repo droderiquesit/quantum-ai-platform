@@ -6,7 +6,8 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation};
+use qip_contracts::action::Method;
+use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation, Identification};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
@@ -666,6 +667,10 @@ fn an_effect_attribution_with_empty_goal_id_is_refused_naming_the_field() -> Res
         intervention_id: "intervention-1".into(),
         action_id: "action-1".into(),
         observations: vec![],
+        action_class: Method::Market,
+        identification: Identification::Experiment,
+        causal_chain: vec!["quote width".into(), "fill rate".into()],
+        competing_explanations: vec!["none considered".into()],
         counterfactual_method: "simulated".into(),
         effect: Effect {
             mean: 0.05,
@@ -699,6 +704,10 @@ fn valid_attribution(goal: &str) -> EffectAttribution {
             horizon_ms: 60_000,
             value: 0.047,
         }],
+        action_class: Method::Market,
+        identification: Identification::Experiment,
+        causal_chain: vec!["quote width".into(), "fill rate".into()],
+        competing_explanations: vec!["none considered".into()],
         counterfactual_method: "simulated".into(),
         effect: Effect {
             mean: 0.047,
@@ -764,5 +773,87 @@ fn an_attribution_the_contract_refuses_is_refused_and_not_journalled() -> Result
         before,
         "nothing journalled for a refused attribution"
     );
+    Ok(())
+}
+#[test]
+fn a_research_task_cites_an_absolute_position_that_survives_draining_the_journal() -> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("a", 1_000))?;
+    register(&mut f, plain("b", 1_000))?;
+    // Premise: the declarations are journaled, and draining takes them.
+    let drained = f.drain_journal();
+    assert_eq!(drained.len(), 2);
+    assert!(f.journal().is_empty());
+    assert_eq!(f.journal_base(), 2);
+    f.assess("a", view("p", 0.9, 0.5, 0.2, 3))?;
+    f.assess("b", view("p", 0.1, 0.5, 0.2, 3))?;
+    let arbitration = f.arbitrate("p", at(4))?;
+    let Some(task) = arbitration.research else {
+        panic!("a 0.8 spread is material and raises a task");
+    };
+    // The Decided record is the first event after the two drained ones.
+    assert_eq!(task.cites, 2);
+    assert!(matches!(f.journal().first(), Some(Event::Decided { .. })));
+    Ok(())
+}
+
+#[test]
+fn an_abandoned_proposition_withdraws_its_views_unscored_and_says_so_on_the_journal() -> Result<()>
+{
+    let mut f = Federation::new();
+    register(&mut f, plain("a", 1_000))?;
+    register(&mut f, plain("b", 1_000))?;
+    f.assess("a", view("p", 0.9, 0.5, 0.2, 3))?;
+    f.assess("b", view("p", 0.2, 0.5, 0.2, 3))?;
+    // Premise: both views are held.
+    assert_eq!(f.arbitrate("p", at(4))?.disagreement.views.len(), 2);
+    assert_eq!(f.abandon("p", at(5)), 2);
+    assert!(matches!(
+        f.journal().last(),
+        Some(Event::Abandoned { views: 2, .. })
+    ));
+    assert_eq!(f.calibration("a")?, Calibration::Unscored);
+    assert!(f.arbitrate("p", at(6))?.disagreement.views.is_empty());
+    // Nothing to withdraw journals nothing.
+    let before = f.journal().len();
+    assert_eq!(f.abandon("p", at(7)), 0);
+    assert_eq!(f.journal().len(), before);
+    Ok(())
+}
+
+#[test]
+fn a_recorded_arbitration_reproduces_its_decision_from_its_own_views_and_a_tampered_one_does_not()
+-> Result<()> {
+    let mut f = Federation::new();
+    for id in ["a", "b"] {
+        register(&mut f, plain(id, 1_000))?;
+    }
+    warm_up(&mut f, &["a", "b"])?;
+    f.assess("a", view("p", 0.61, 0.9, 0.2, 3))?;
+    f.assess("b", view("p", 0.60, 0.9, 0.2, 3))?;
+    let recorded = f.arbitrate("p", at(4))?;
+    // Premise: this is a merge, the case that carries a number.
+    assert_eq!(recorded.decision, Decision::Merge);
+    let (decision, reason, merged) =
+        qip_world_model::federation::decide_on(&recorded.proposition, &recorded.disagreement);
+    assert_eq!(decision, recorded.decision);
+    assert_eq!(reason, recorded.reason);
+    assert_eq!(merged, recorded.arbitrated_probability);
+    let mut tampered = recorded.disagreement.clone();
+    tampered.views[0].probability = 0.95;
+    tampered.spread = 0.35;
+    let (decision, _, _) = qip_world_model::federation::decide_on(&recorded.proposition, &tampered);
+    assert_ne!(decision, recorded.decision);
+    Ok(())
+}
+
+#[test]
+fn live_specs_exclude_a_member_exactly_at_its_expiry() -> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("a", 100))?;
+    register(&mut f, plain("b", 1_000))?;
+    assert_eq!(f.live_specs(at(99)).len(), 2);
+    let ids: Vec<&str> = f.live_specs(at(100)).iter().map(|s| s.id()).collect();
+    assert_eq!(ids, vec!["b"]);
     Ok(())
 }

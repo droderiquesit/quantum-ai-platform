@@ -49,9 +49,11 @@ use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
 use qip_kernel::central::{CentralConfig, HorizonPolicy};
+use qip_kernel::compute_routing::ComputeSettings;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{LimitSet, RISK_LIMITS_PATH_VARIABLE};
 use qip_risk_engine::autonomy::AutonomyLevel;
 use qip_storage::ChainArchive;
@@ -115,6 +117,10 @@ fn run() -> Result<()> {
     // nothing could reach.
     let telemetry = Telemetry::foreground("qip-deepbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
+    // A third handle on the same registry, for the cycle-line closure: the
+    // model-package series is recorded where the artifact is written, which
+    // is in this root and outside the platform the run loop borrows.
+    let package_metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the
     // cycle writes to. A `Telemetry::new` of its own would export an empty
@@ -165,12 +171,22 @@ fn run() -> Result<()> {
         horizons: load_central_horizons()?,
         ..CentralConfig::default()
     };
-    let platform_config = PlatformConfig::default()
-        .with_event_log(config.event_log.clone())
-        .with_central(central)
-        .with_live_ceiling(AutonomyLevel::deployable(
-            std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
-        )?);
+    // The compute router's arms (R12-QUANT-4052, 7016, 7206): read here, the
+    // one root that runs the slow lane, and nowhere else — the fast brain is
+    // the reflex path and attaches nothing. Unset is the classical router
+    // every deployment ran before; `simulated` attaches the in-tree
+    // simulator behind the asynchronous gateway, so the dispatch gate, the
+    // gateway and the classical verification of a returned candidate run in
+    // this process. An unknown value stops it, exit 78.
+    let (platform_config, compute) = with_compute_settings(
+        &|name| std::env::var(name).ok(),
+        PlatformConfig::default()
+            .with_event_log(config.event_log.clone())
+            .with_central(central)
+            .with_live_ceiling(AutonomyLevel::deployable(
+                std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
+            )?),
+    )?;
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape
     // time, and a router asked for a latency budget from the wall clock
@@ -209,6 +225,9 @@ fn run() -> Result<()> {
     // platform exists — see `load_universe` for why an unset path is a
     // refusal and not an empty universe.
     let catalogue = load_universe(&config.storage, started)?;
+    // The coverage detector's view of the universe, taken before the
+    // universe moves into the platform, which does not hand it back.
+    let research_coverage = qip_deepbrain::research::coverage_map(&catalogue.universe);
     // The language model the organisation narrates through (ADR 0037): the
     // hosted adapter first when the configuration names one *and* the
     // preconditions in `language.rs` are met — a provider pinned, its terms
@@ -234,6 +253,12 @@ fn run() -> Result<()> {
         language_model.chain.clone(),
         Box::new(qip_training::serve::InTreeProvider),
     )?;
+
+    // The survival policy, before anything is served (R12-CAPITAL-4089): the
+    // hedge capacity and emergency reserve every construction withholds, and
+    // the survival ceiling the Risk Gate reads re-derived under them at once.
+    let survival_banner = apply_survival_policy(&mut platform)?;
+    println!("  survival:         {survival_banner}");
     // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
     // a library and performs no I/O, `Platform::promote_model` hands back
     // the digest-named bytes, and this root writes them under its own
@@ -258,8 +283,31 @@ fn run() -> Result<()> {
     let envelope_key =
         qip_core::secret::from_environment(qip_deepbrain::trust::ENVELOPE_KEY_VARIABLE)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // ADR 0110 decision 5: which deployment this is, named and never
+    // inferred. Absent is refused, so a deployment that forgot to say what it
+    // is cannot run on the seed-derived key the way a developer's machine may.
+    // And `local` is refused where the platform's own markers show this is
+    // deployed — Cloud Run's `K_*`, the GCE DMI name — so the one value that
+    // relaxes the guards cannot be set by an environment edit on a revision.
+    let deployment = qip_core::deployment::Deployment::parse_observed(
+        std::env::var(qip_deepbrain::trust::DEPLOYMENT_VARIABLE)
+            .ok()
+            .as_deref(),
+        &qip_core::deployment::DeploymentMarkers::observe(
+            &|name| std::env::var(name).ok(),
+            std::fs::read_to_string(qip_core::deployment::COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        ),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // R12-GOV-6121: a deployed process states the commit it was built from,
+    // or it does not start — every decision it journals would otherwise name
+    // code nobody can check out (`qip_kernel::decision_record`).
+    qip_kernel::decision_record::require_source_commit(deployment)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
-        qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref())
+        qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
     // The durable trial book, on the same storage the event log archives to.
@@ -274,6 +322,25 @@ fn run() -> Result<()> {
     platform
         .open_trial_book(config.storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // The breadth plan (R12-EXEC-5080, R12-EVENT-5082…, R12-COMMERCE-5090…):
+    // the Market Factory, event markets and commerce research, installed
+    // before the first cycle so DISCOVER and SIMULATE run them from the
+    // start. Unset is none of it; a plan that cannot be honoured stops the
+    // process here with exit 78 — see `qip_deepbrain::breadth`.
+    // On the platform's clock, not the wall's: under a tape the synthetic
+    // sources must start at tape time or their first reading would lie in a
+    // future the tape never reaches.
+    let breadth_at = platform.context().now();
+    // Re-read each cycle, so revoking a market permission in the plan file
+    // reaches the factory's validity monitor (R12-EXEC-5081).
+    let mut permission_watch =
+        qip_deepbrain::breadth::PermissionWatch::from_lookup(&|name| std::env::var(name).ok());
+    let breadth = qip_deepbrain::breadth::install(
+        &mut platform,
+        &|name| std::env::var(name).ok(),
+        breadth_at,
+    )?;
 
     // The OpenObserve drain (ADR 0028): absent configuration means this
     // process's telemetry stays where it already is, on /metrics on the health
@@ -316,7 +383,20 @@ fn run() -> Result<()> {
     // When a provider was named and withheld, this line is where an operator
     // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
+    println!("  compute routing:  {}", compute.describe());
     println!("  tool registry:    {}", language_model.describe_tools());
+    match &breadth {
+        Some(lines) => {
+            for line in lines {
+                println!("  breadth:          {line}");
+            }
+        }
+        None => println!(
+            "  breadth:          none ({} is not set); no market factory, event-market or \
+             commerce source runs",
+            qip_deepbrain::breadth::PLAN_VARIABLE
+        ),
+    }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
@@ -515,10 +595,21 @@ fn run() -> Result<()> {
             )
         }
     );
-    evolution = evolution.with_discovery(qip_deepbrain::discovery::DiscoveryDesk::new(
-        discovery_config,
-        source_candidates,
-    ));
+    // Entity profiles turn each discovery target into tagged queries
+    // (R12-DATA-2016); unset, no target generates one and the pass says so.
+    let discovery_profiles = load_discovery_profiles()?;
+    println!(
+        "  discovery queries: {}",
+        if discovery_profiles.is_empty() {
+            "none (QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH unset)".to_string()
+        } else {
+            format!("{} profiled entit(y/ies)", discovery_profiles.len())
+        }
+    );
+    evolution = evolution.with_discovery(
+        qip_deepbrain::discovery::DiscoveryDesk::new(discovery_config, source_candidates)
+            .with_profiles(discovery_profiles),
+    );
     // The catalogued connectors this node polls beside its own stream, each
     // through the licensing gate before any socket, each with its stream's
     // durable record opened before the first poll — see
@@ -526,6 +617,19 @@ fn run() -> Result<()> {
     // this is the one brain that can reach the vendor its manifest names
     // (ADR 0024). None in every environment today.
     let mut connector_banner = Vec::new();
+    // What the tick lake may keep per licensing class, when the operator has
+    // read the terms and said so; unset, no arm captures. Read before any
+    // arm opens so a malformed value stops the process with nothing to
+    // release.
+    let tick_lake =
+        qip_deepbrain::connectors::TickLakeSettings::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    // Whether each arm keeps the knowledge packs its polls derive
+    // (R12-DATA-1041); off unless the operator says `store`, and anything
+    // else stops the process before an arm opens.
+    let knowledge_packs =
+        qip_deepbrain::connectors::knowledge_packs_enabled(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
     if let Some(settings) = &config.connector_feed {
         let registrations = platform
             .config()
@@ -562,6 +666,41 @@ fn run() -> Result<()> {
                     ));
                 }
             };
+            // The lake the arm seals its released market events into, one
+            // writer per arm over the node's one lake namespace. A store
+            // that cannot be opened releases what is open, like the journal
+            // failure below.
+            if let Some(lake) = &tick_lake {
+                match config
+                    .storage
+                    .blobs(qip_storage::lake::LAKE_NAMESPACE)
+                    .and_then(|store| lake.writer(store))
+                {
+                    Ok(writer) => arm = arm.with_tick_lake(writer),
+                    Err(error) => {
+                        let release = fold_releases(
+                            arm.shutdown(clock.now()),
+                            evolution.shutdown_connectors(clock.now()),
+                        );
+                        return Err(with_release(configuration(error), release));
+                    }
+                }
+            }
+            if knowledge_packs {
+                match config
+                    .storage
+                    .blobs(qip_deepbrain::connectors::KNOWLEDGE_PACK_NAMESPACE)
+                {
+                    Ok(store) => arm = arm.with_knowledge_packs(store),
+                    Err(error) => {
+                        let release = fold_releases(
+                            arm.shutdown(clock.now()),
+                            evolution.shutdown_connectors(clock.now()),
+                        );
+                        return Err(with_release(configuration(error), release));
+                    }
+                }
+            }
             let journaled = config
                 .storage
                 .key_value(StreamJournal::NAMESPACE)
@@ -586,8 +725,24 @@ fn run() -> Result<()> {
                 }
             };
             connector_banner.push(format!(
-                "  connector:        {}; {}",
+                "  connector:        {}; evidence forwarded to the world fabric every poll; {}; \
+                 {}; {}",
                 arm.describe(),
+                if knowledge_packs {
+                    "knowledge packs kept when smaller than their source"
+                } else {
+                    "no knowledge packs kept (QIP_DEEPBRAIN_KNOWLEDGE_PACKS unset)"
+                },
+                match &tick_lake {
+                    Some(lake) => format!(
+                        "ticks sealed into the lake for {:?}",
+                        lake.retention.keys().collect::<Vec<_>>()
+                    ),
+                    None => format!(
+                        "no tick lake ({} unset)",
+                        qip_deepbrain::connectors::TICK_LAKE_RETENTION_VARIABLE
+                    ),
+                },
                 match resumed {
                     0 => "nothing resumed, so this is a first session (or the last checkpoint \
                           carried nothing) and the next poll republishes whatever the source \
@@ -611,7 +766,87 @@ fn run() -> Result<()> {
     // log the archive below seals — and nowhere else. A second copy in the
     // node's key-value store was two claims about one fact.
 
-    let run = node::run(
+    // The research loop (expansion engine, ambient mesh, value of
+    // information) and the operations loop (AIOps graph, incidents,
+    // runbook-only remediation, critical-path objectives). See
+    // `research.rs` and `operations.rs` for what each may and may not do;
+    // neither holds a `&mut Platform`.
+    let research_config =
+        qip_deepbrain::research::ResearchConfig::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    println!(
+        "  research:         {}",
+        if research_config.every_cycles == 0 {
+            "disabled (QIP_DEEPBRAIN_RESEARCH_EVERY=0)".to_string()
+        } else {
+            format!(
+                "every {} cycle(s) under jurisdiction {}; the compute market grants {} CPU and \
+                 {} GPU unit(s) and {} QPU unit(s) a sweep by marginal value (a QPU unit only \
+                 with its classical baseline); {} bp of information acquisitions a sweep in \
+                 curiosity-rank order; capabilities paper and shadow only",
+                research_config.every_cycles,
+                research_config.jurisdiction,
+                research_config.compute_per_sweep,
+                research_config.compute_per_sweep,
+                research_config.qpu_per_sweep,
+                research_config.acquisition_budget_bp
+            )
+        }
+    );
+    // Reflex packages the Cognitive Compiler distils from promoted research
+    // are published here only once signed. No signer is installed: ADR
+    // 0110's KMS signer is a separate lane, and the in-tree alternative — an
+    // HMAC under a seed-derived key — is the defect W1.4 exists to remove.
+    // Until it lands every package is compiled, counted as `held_unsigned`,
+    // and written nowhere.
+    let mut research =
+        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?
+            .with_package_store(
+                config
+                    .storage
+                    .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+            );
+    println!(
+        "  compiler:         promoted research is distilled into bounded reflex packages; no \
+         package signer is installed, so packages are held unsigned and none is published"
+    );
+    // The ambient journal (`ambient_journal.rs`): every sweep's signals and
+    // attention events, on a hash-chained log as durable as the platform's.
+    // A blank variable, an unopenable file or a broken chain stops the
+    // process here rather than running a mesh whose attention nobody can
+    // attribute afterwards.
+    let ambient_destination = qip_deepbrain::ambient_journal::JournalDestination::resolve(
+        std::env::var(qip_deepbrain::ambient_journal::AMBIENT_JOURNAL_VARIABLE).ok(),
+        &config.event_log,
+    )
+    .map_err(configuration)?;
+    let mut ambient = qip_deepbrain::ambient_journal::AmbientJournal::open(&ambient_destination)?;
+    println!("  ambient journal:  {}", ambient_destination.describe());
+    let mut operations = qip_deepbrain::operations::Operations::new(started)?;
+    println!(
+        "  operations:       level shifts in iteration time open an incident; the one runbook \
+         may switch off research until restart"
+    );
+
+    // The tick desk (`tick_desk.rs`): the one reader of recorded market
+    // history in a shipped binary. Off unless QIP_DEEPBRAIN_TICK_EVERY is
+    // set; set, it refuses to start without an entitlement grant. It reads
+    // the same lake namespace the outcome archive above writes the
+    // platform's own records into, and writes its model cards and
+    // opportunity maps under a namespace of its own.
+    let tick_config =
+        qip_deepbrain::tick_desk::TickDeskConfig::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    println!("  tick desk:        {}", tick_config.describe());
+    let mut tick_desk = qip_deepbrain::tick_desk::TickDesk::new(
+        tick_config,
+        config.storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?,
+        config
+            .storage
+            .blobs(qip_deepbrain::tick_desk::OUTPUT_NAMESPACE)?,
+    );
+
+    let run = node::run_with(
         &mut platform,
         &archive,
         &config,
@@ -620,6 +855,13 @@ fn run() -> Result<()> {
         &clock,
         inherited,
         Some(&mut evolution),
+        node::Loops {
+            research: Some(&mut research),
+            operations: Some(&mut operations),
+            tick: Some(&mut tick_desk),
+            permissions: permission_watch.as_mut(),
+            ambient: Some(&mut ambient),
+        },
         |outcome| {
             println!();
             println!("{}", outcome.report.summarise());
@@ -645,15 +887,23 @@ fn run() -> Result<()> {
                 // says it is.
                 if let Some(published) = round.promotion.as_ref().and_then(|p| p.published()) {
                     match write_model_artifact(model_artifacts.as_ref(), published) {
-                        Ok(()) => println!(
-                            "  model artifact written: {MODEL_ARTIFACTS_NAMESPACE}/{}",
-                            published.file_name
-                        ),
-                        Err(error) => println!(
-                            "  model artifact NOT written ({}): {}",
-                            published.file_name,
-                            error.message()
-                        ),
+                        Ok(()) => {
+                            package_metrics
+                                .count(names::MODEL_PACKAGES, labels([("outcome", "written")]));
+                            println!(
+                                "  model artifact written: {MODEL_ARTIFACTS_NAMESPACE}/{}",
+                                published.file_name
+                            );
+                        }
+                        Err(error) => {
+                            package_metrics
+                                .count(names::MODEL_PACKAGES, labels([("outcome", "failed")]));
+                            println!(
+                                "  model artifact NOT written ({}): {}",
+                                published.file_name,
+                                error.message()
+                            );
+                        }
                     }
                 }
                 // Named individually, not summed. An operator needs to know
@@ -687,6 +937,18 @@ fn run() -> Result<()> {
                             .join(", ")
                     );
                 }
+            }
+            if let Some(round) = &outcome.tick {
+                println!("  {}", round.describe());
+            }
+            if let Some(round) = &outcome.research {
+                println!("  {}", round.describe());
+            }
+            if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {
+                println!("  {line}");
+            }
+            for failure in &outcome.side_failures {
+                println!("  not run: {failure}");
             }
             if let Some(assessment) = &outcome.discovery {
                 println!(
@@ -864,6 +1126,27 @@ fn relabel(error: &Error, message: String) -> Error {
         Error::Guard(_) => Error::Guard(message),
         Error::Timeout(_) => Error::Timeout(message),
     }
+}
+
+/// The compute router's arms, read through `lookup` and applied to `base`.
+///
+/// The two variables are `QUANTUM_PROVIDER_VARIABLE` and
+/// `QUANTUM_INSPIRED_VARIABLE` from `qip_kernel::compute_routing`, read by
+/// `ComputeSettings::from_lookup` and by nothing else; the catalogue sets
+/// them for this workload from `deepbrain_quantum_provider` and
+/// `deepbrain_quantum_inspired`, non-null in dev and test only.
+///
+/// A function of its own, rather than two lines in `run`, so the test below
+/// drives exactly the code the process runs: the settings this root reads,
+/// applied to the configuration it builds the platform from. Before it, no
+/// root set `quantum_enabled`, and the gateway, the dispatch gate and the
+/// classical verification of a quantum candidate ran in no shipped binary.
+fn with_compute_settings(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    base: PlatformConfig,
+) -> Result<(PlatformConfig, ComputeSettings)> {
+    let compute = ComputeSettings::from_lookup(lookup)?;
+    Ok((compute.apply(base), compute))
 }
 
 /// What this process will do, before it does any of it.
@@ -1063,6 +1346,33 @@ fn load_source_candidates(
     parse_source_candidates(&text, &path, now)
 }
 
+/// The discovery entity profiles `QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH`
+/// names (R12-DATA-2016), or none where the variable is unset or empty.
+/// Present but unreadable or malformed stops the process, as an unreadable
+/// candidate catalogue does: a pass that silently generated no queries would
+/// read the same as a platform with nothing to look for.
+fn load_discovery_profiles()
+-> Result<std::collections::BTreeMap<String, qip_data_finder::discovery_targets::EntityProfile>> {
+    let path = std::env::var("QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let Some(path) = path else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH names {path}, which cannot be \
+             read: {error}"
+        ))
+    })?;
+    qip_deepbrain::discovery::parse_profiles(&text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {path} does not hold valid discovery profiles: {}",
+            error.message()
+        ))
+    })
+}
+
 /// The parsing half of [`load_source_candidates`], split out for the same
 /// reason [`parse_central_horizons`] is: no test here may set the
 /// environment variable the caller reads.
@@ -1148,6 +1458,52 @@ fn banner(
     if let Some(note) = config.durability_note() {
         println!("  note:             {note}");
     }
+}
+
+/// Apply the survival policy this process withholds under (R12-CAPITAL-4089)
+/// and return the banner line.
+///
+/// Until this existed no composition root called
+/// `Platform::set_survival_policy`, so every binary ran the kernel's library
+/// default and the hedge tier of the survival waterfall withheld nothing in
+/// any process that ever ran. Unset is the shipped figure, never zero; a
+/// value that is not UTF-8, not a fraction, or below the shipped floor stops
+/// the process with the variable named — see
+/// `qip_kernel::survival::SurvivalPolicy::from_settings`.
+fn apply_survival_policy(platform: &mut Platform) -> Result<String> {
+    apply_survival_policy_from(platform, &|name| std::env::var(name))
+}
+
+/// [`apply_survival_policy`] over any lookup, so a test drives the root's own
+/// install rather than calling the kernel beside it — a test that called
+/// `set_survival_policy` itself passed with this function's call deleted.
+fn apply_survival_policy_from(
+    platform: &mut Platform,
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    let policy = survival_policy_from(lookup)?;
+    platform.set_survival_policy(policy);
+    Ok(policy.describe())
+}
+
+/// The reading half of [`apply_survival_policy`], over any lookup, so the
+/// refusals are testable without touching the process environment.
+fn survival_policy_from(
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<qip_kernel::survival::SurvivalPolicy> {
+    let read = |name: &str| -> Result<Option<String>> {
+        match lookup(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(Error::invalid(format!(
+                "configuration: {name} is not valid UTF-8; set a decimal fraction or unset it \
+                 for the shipped figure — an unreadable reserve is not a reserve of zero"
+            ))),
+        }
+    };
+    let hedge = read(qip_kernel::survival::HEDGE_CAPACITY_VARIABLE)?;
+    let emergency = read(qip_kernel::survival::EMERGENCY_RESERVE_VARIABLE)?;
+    qip_kernel::survival::SurvivalPolicy::from_settings(hedge.as_deref(), emergency.as_deref())
 }
 
 #[cfg(test)]
@@ -1487,5 +1843,207 @@ mod tests {
             "the refusal does not say what kind of document was expected: {}",
             error.message()
         );
+    }
+
+    use qip_kernel::compute_routing::{QUANTUM_INSPIRED_VARIABLE, QUANTUM_PROVIDER_VARIABLE};
+
+    /// A discrete problem the default routing policy admits to the quantum
+    /// arm: 23 names, one over the exhaustive limit so the baseline is a
+    /// heuristic, and within the simulator's 24 qubits.
+    fn eligible_problem() -> Result<qip_optimization_engine::PortfolioProblem> {
+        let n = 23;
+        let assets: Vec<String> = (0..n).map(|i| format!("obj-A{i}")).collect();
+        let covariance: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 0.04 } else { 0.012 }).collect())
+            .collect();
+        Ok(
+            qip_optimization_engine::PortfolioProblem::new(assets, covariance)?
+                .with_objective(qip_optimization_engine::Objective::MeanVariance)
+                .with_expected_returns((0..n).map(|i| 0.05 + 0.001 * i as f64).collect())
+                .with_risk_aversion(5.0)
+                .with_bounds(vec![0.0; n], vec![0.3; n])
+                .fully_invested(1.0)
+                .with_cardinality(4),
+        )
+    }
+
+    fn platform_from(
+        pairs: &[(&str, &str)],
+    ) -> Result<(Platform, qip_kernel::compute_routing::ComputeSettings)> {
+        let map: std::collections::BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let (config, settings) =
+            with_compute_settings(&|name| map.get(name).cloned(), PlatformConfig::default())?;
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        Ok((platform, settings))
+    }
+
+    /// R2.6 (R12-QUANT-4052, 7016, 7206, 1076): the settings this root reads
+    /// attach the simulated provider to the very router the platform sizes
+    /// through, and an eligible problem is dispatched through the
+    /// asynchronous gateway — submitted, not waited on, with the classical
+    /// baseline answering the cycle that asked. Unset, no gateway exists.
+    ///
+    /// Mutation: in `with_compute_settings`, return `(base, compute)` instead
+    /// of `(compute.apply(base), compute)` — no gateway is attached and the
+    /// `quantum_gateway()` assertion fires. In `ComputeSettings::apply`,
+    /// delete `config = config.with_quantum();` — the same assertion fires.
+    #[test]
+    fn the_deep_brains_compute_settings_attach_the_simulator_and_dispatch_through_the_gateway()
+    -> Result<()> {
+        let (unset, settings) = platform_from(&[])?;
+        assert!(
+            unset.compute_router().quantum_gateway().is_none(),
+            "premise: with nothing set the router is classical, as every deployment was"
+        );
+        assert!(settings.describe().contains("off"));
+
+        let (platform, settings) = platform_from(&[
+            (QUANTUM_PROVIDER_VARIABLE, "simulated"),
+            (QUANTUM_INSPIRED_VARIABLE, "on"),
+        ])?;
+        let router = platform.compute_router();
+        let gateway = router
+            .quantum_gateway()
+            .ok_or_else(|| Error::invalid("the simulated provider was not attached"))?;
+        assert!(gateway.provider().capabilities().simulated);
+        assert!(settings.describe().contains("simulated"));
+
+        let problem = eligible_problem()?;
+        let (eligible, note) = router.quantum_assessment(&problem);
+        assert!(
+            eligible,
+            "premise: the default policy admits this problem: {note}"
+        );
+
+        let decision = router.solve(&problem)?;
+        assert!(
+            decision.quantum_dispatch.submitted.is_some(),
+            "the gateway was not asked: {:?}",
+            decision.quantum_dispatch
+        );
+        assert!(
+            !decision.chosen.is_quantum(),
+            "the cycle that asked adopted a quantum answer, so the call was inline"
+        );
+        assert_eq!(gateway.stats()?.submitted, 1);
+        // ADR 0006: the classical baseline was solved first, and whatever
+        // answered is no worse than it.
+        assert!(
+            !decision.runs[0].solver.is_quantum()
+                && decision.runs[0].solver != qip_optimization_engine::Solver::QuantumInspired,
+            "the first run is not the classical baseline"
+        );
+        assert!(decision.objective <= decision.classical_objective);
+        // The quantum-inspired rung the same settings turned on ran beside
+        // it, through the solver registry, from this root's configuration.
+        assert!(
+            decision
+                .run_for(qip_optimization_engine::Solver::QuantumInspired)
+                .is_some(),
+            "the quantum-inspired rung the settings enabled did not run"
+        );
+        Ok(())
+    }
+
+    /// An unknown provider value stops the process with the configuration
+    /// prefix `main` exits 78 on, rather than starting classical.
+    ///
+    /// Mutation: in `ComputeSettings::from_lookup`, make the `Some(other)`
+    /// arm return `QuantumProviderChoice::Off` — the `expect_err` fires.
+    #[test]
+    fn an_unknown_quantum_provider_value_stops_the_deep_brain_rather_than_starting_classical() {
+        let refusal = platform_from(&[(QUANTUM_PROVIDER_VARIABLE, "qpu")])
+            .map(|_| ())
+            .expect_err("an unknown provider value was accepted");
+        assert!(
+            refusal.message().starts_with("configuration:"),
+            "{}",
+            refusal.message()
+        );
+    }
+
+    /// R12-CAPITAL-4089 at the composition root: an unset survival
+    /// configuration runs the shipped reserves, not the library's zero; a
+    /// figure below the shipped floor, or one that is not readable, stops the
+    /// process; a raised one is admitted; and the policy the root reads is the
+    /// one the platform it assembles withholds under.
+    ///
+    /// Mutations that make it fail: return `SurvivalPolicy::default()` for an
+    /// unset variable in `survival_policy_from` (first assertion); map the
+    /// `NotUnicode` arm to `Ok(None)` (the unreadable assertion); delete the
+    /// `set_survival_policy` call's body in the kernel, or the call to it in
+    /// `apply_survival_policy_from` (the last assertion). The second of those
+    /// passed until the round-2 mutation pass: the test called the kernel
+    /// itself instead of the root's install.
+    #[test]
+    fn an_unset_survival_configuration_withholds_the_shipped_reserves_and_a_lowered_one_stops_the_process()
+     {
+        use qip_kernel::survival::{HEDGE_CAPACITY_VARIABLE, SurvivalPolicy};
+        let only_hedge = |value: &'static str| {
+            move |name: &str| {
+                if name == HEDGE_CAPACITY_VARIABLE {
+                    Ok(value.to_string())
+                } else {
+                    Err(std::env::VarError::NotPresent)
+                }
+            }
+        };
+        let unset = super::survival_policy_from(&|_| Err(std::env::VarError::NotPresent))
+            .expect("an unset configuration is the shipped policy");
+        assert_eq!(unset, SurvivalPolicy::shipped());
+        assert!(
+            unset.hedge_capacity_fraction().is_positive(),
+            "premise: the shipped policy withholds hedge capacity"
+        );
+        assert!(
+            super::survival_policy_from(&only_hedge("0")).is_err(),
+            "a hedge capacity below the shipped floor was admitted"
+        );
+        assert!(
+            super::survival_policy_from(&only_hedge("five percent")).is_err(),
+            "a hedge capacity that is not a number was admitted"
+        );
+        assert!(
+            super::survival_policy_from(&|_| Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from("x")
+            )))
+            .is_err(),
+            "an unreadable survival variable was read as unset"
+        );
+        let raised = super::survival_policy_from(&only_hedge("0.2"))
+            .expect("raising a reserve is always admitted");
+        assert!(raised.hedge_capacity_fraction() > unset.hedge_capacity_fraction());
+
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(
+            qip_core::Timestamp::from_secs(1_760_000_000),
+            config.seed,
+        );
+        let mut platform = qip_kernel::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .expect("a platform assembles");
+        assert_eq!(
+            platform.survival_policy(),
+            &SurvivalPolicy::default(),
+            "premise: before the root applies it, the library default withholds nothing"
+        );
+        super::apply_survival_policy_from(&mut platform, &|_| Err(std::env::VarError::NotPresent))
+            .expect("the root installs the shipped policy");
+        assert_eq!(platform.survival_policy(), &unset);
     }
 }

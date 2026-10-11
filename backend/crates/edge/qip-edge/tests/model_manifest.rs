@@ -106,7 +106,7 @@ fn regime_model(intercept: f64) -> Result<DistilledModel> {
 /// A signed policy whose only produced slot is the model manifest.
 fn manifest_policy(sequence: u64, models: BTreeMap<String, String>) -> Result<VerifiedPolicy> {
     let mut payload = PolicyPayload::unproduced(sequence, CELL, t(10));
-    payload.trained_models = Slot::produced(ModelManifest { models }, t(10));
+    payload.trained_models = Slot::produced(ModelManifest::unreleased(models), t(10));
     VerifiedPolicy::verify(payload.signed(POLICY_KEY)?, POLICY_KEY, CELL, t(10))
 }
 

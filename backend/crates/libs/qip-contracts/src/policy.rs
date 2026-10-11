@@ -279,11 +279,112 @@ impl<T> Slot<T> {
 
 /// A model named by digest. Weights never travel this fabric — a payload is
 /// policy, and ten ONNX artifacts are an artifact store's business.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelManifest {
     /// Model name to content digest, ordered so the wire form is stable.
     pub models: BTreeMap<String, String>,
+    /// The two-person release behind each named model, by model name (ADR
+    /// 0110, Amendment 1).
+    ///
+    /// The payload this manifest rides in is signed once per cycle by the
+    /// API's own `policy` key — issuance, not publication — so the payload's
+    /// signature alone would let one compromised process name any model to
+    /// every cell. Each pack carries its own `model-pack` signature, which
+    /// only the publish workflow's identity can make, naming the model and
+    /// digest the cell computes from the inline value
+    /// ([`ModelPack::inline_model`]); a cell under a trust bundle refuses a
+    /// payload naming a model without one ([`Self::check_releases`]).
+    ///
+    /// Off the wire while empty, so every payload signed before the field
+    /// existed keeps its slot digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packs: BTreeMap<String, ModelPack>,
+}
+
+impl ModelManifest {
+    /// A manifest naming `models` with no release packs — the shape every
+    /// pre-amendment payload had, and the one a shared-key cell still reads.
+    pub fn unreleased(models: BTreeMap<String, String>) -> Self {
+        Self {
+            models,
+            packs: BTreeMap::new(),
+        }
+    }
+
+    /// Refuse unless every named model has a pack here that names it at its
+    /// digest, verifies under the `model-pack` key at `now`, names two
+    /// distinct people and has not expired; and unless every pack is for a
+    /// named model.
+    ///
+    /// The second half is not tidiness: a pack for a model the manifest does
+    /// not name is a release the centre chose not to run, and a cell that
+    /// admitted it beside the manifest would be reading two lists.
+    pub fn check_releases(
+        &self,
+        verifier: &dyn crate::trust::ArtefactVerifier,
+        now: Timestamp,
+    ) -> Result<()> {
+        for (name, digest) in &self.models {
+            let pack = self.packs.get(name).ok_or_else(|| {
+                Error::denied(format!(
+                    "the manifest names model `{name}` and carries no release pack for it; a \
+                     per-cycle payload is signed by one process, and a model reaches a cell only \
+                     under a two-person release signed by the model-pack key (ADR 0110, \
+                     Amendment 1)"
+                ))
+            })?;
+            match &pack.inline_model {
+                Some(inline) if inline.name == *name && inline.digest == *digest => {}
+                Some(inline) => {
+                    return Err(Error::denied(format!(
+                        "the release pack filed under model `{name}` (digest {digest}) names \
+                         `{}` at digest {}; a pack is the release of the model it names, not of \
+                         the slot it was filed under",
+                        inline.name, inline.digest
+                    )));
+                }
+                None => {
+                    return Err(Error::denied(format!(
+                        "the release pack for model `{name}` names no inline model, so it does \
+                         not say which weights the cell may run; publish the pack with its \
+                         inline_model set"
+                    )));
+                }
+            }
+            pack.verify(verifier, now).map_err(|error| {
+                Error::denied(format!(
+                    "the release pack for model `{name}` does not verify: {}",
+                    error.message()
+                ))
+            })?;
+        }
+        if let Some(stray) = self
+            .packs
+            .keys()
+            .find(|name| !self.models.contains_key(*name))
+        {
+            return Err(Error::denied(format!(
+                "the manifest carries a release pack for `{stray}` and does not name that model; \
+                 the manifest is the one list of what a cell may run"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The inline model a [`ModelPack`] releases to the cells: the name a
+/// compiled plan carries it under and `DistilledModel::digest()`, the digest
+/// the cell computes from the inline value.
+///
+/// Distinct from [`ModelPack::artifact_digest`], the SHA-256 of the artifact
+/// file: a cell never sees that file, so a pack naming only the file would
+/// be a release the cell cannot connect to anything it runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InlineModel {
+    pub name: String,
+    pub digest: String,
 }
 
 /// A complete model pack carrying signed artifacts, calibration, and deployment constraints.
@@ -295,7 +396,11 @@ pub struct ModelManifest {
 pub struct ModelPack {
     /// Artifact digest of the signed model, hex-encoded SHA-256.
     pub artifact_digest: String,
-    /// Signature over the digest, HMAC-SHA256 keyed with the region key.
+    /// `ecdsa-p256-sha256:<key version>:<hex DER>` over
+    /// [`ModelPack::signing_payload`] under the `model-pack` key (ADR 0110).
+    /// Until 2026-10-11 this was described as an HMAC and checked only for
+    /// being non-empty, so any string loaded; [`ModelPack::verify`] is now the
+    /// check and [`ModelPack::validate`] is only the shape.
     pub signature: String,
     /// Feature names this model consumes, in canonical order.
     pub features: Vec<String>,
@@ -309,9 +414,107 @@ pub struct ModelPack {
     pub expires_at: u64,
     /// Digest of the model pack this one replaces, empty string if no rollback parent.
     pub rollback_parent: String,
+    /// The two people who published this pack (ADR 0110 decision 4). Inside
+    /// the signed bytes, so a pack cannot be re-attributed after signing.
+    pub publication: crate::trust::Publication,
+    /// The inline model this pack releases to the cells, inside the signed
+    /// bytes. `None` releases the artifact to the centre only: such a pack
+    /// can still gate the kernel's manifest but no cell will run a model on
+    /// its strength ([`ModelManifest::check_releases`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_model: Option<InlineModel>,
 }
 
 impl ModelPack {
+    /// The bytes the `model-pack` key signs: every field but the signature,
+    /// each length-prefixed, in declaration order.
+    ///
+    /// Explicit rather than the serialised JSON so the bytes cannot move with
+    /// a serialiser's float formatting: the calibration enters as its IEEE
+    /// bits, and two packs that print alike but differ in the last bit sign
+    /// differently.
+    pub fn signing_payload(&self) -> Vec<u8> {
+        let mut out = b"model-pack/v1".to_vec();
+        out.extend_from_slice(&length_prefixed_bytes(self.artifact_digest.as_bytes()));
+        out.extend_from_slice(&(self.features.len() as u64).to_be_bytes());
+        for feature in &self.features {
+            out.extend_from_slice(&length_prefixed_bytes(feature.as_bytes()));
+        }
+        out.extend_from_slice(&self.calibration.to_bits().to_be_bytes());
+        out.extend_from_slice(&(self.allowed_universes.len() as u64).to_be_bytes());
+        for universe in &self.allowed_universes {
+            out.extend_from_slice(&length_prefixed_bytes(universe.as_bytes()));
+        }
+        out.extend_from_slice(&self.budget_microseconds.to_be_bytes());
+        out.extend_from_slice(&self.expires_at.to_be_bytes());
+        out.extend_from_slice(&length_prefixed_bytes(self.rollback_parent.as_bytes()));
+        out.extend_from_slice(&self.publication.canonical());
+        // Appended only when present, after the last fixed-shape field, so
+        // a pack signed before the field existed keeps its bytes; the tag
+        // keeps a pack with the tail from ever reading as one without.
+        if let Some(inline) = &self.inline_model {
+            out.extend_from_slice(b"inline-model/v1");
+            out.extend_from_slice(&length_prefixed_bytes(inline.name.as_bytes()));
+            out.extend_from_slice(&length_prefixed_bytes(inline.digest.as_bytes()));
+        }
+        out
+    }
+
+    /// Sign under the `model-pack` key. The publication is checked first, so
+    /// a one-person pack is never signed at all.
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        self.publication.validate()?;
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::ModelPack,
+            &self.signing_payload(),
+        )?;
+        Ok(self)
+    }
+
+    /// The check that decides whether a pack loads (R12-MODEL-4023): its
+    /// shape, its two-person publication, its expiry, and its signature under
+    /// a `model-pack` key the verifier trusts at `now`.
+    ///
+    /// Every arm refuses. A pack whose signature verifies but whose
+    /// publication names one person is a one-person publish a compromised
+    /// signer could produce, and is refused for that, not admitted for the
+    /// signature.
+    pub fn verify(
+        &self,
+        verifier: &dyn crate::trust::ArtefactVerifier,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.validate()?;
+        self.publication.validate()?;
+        let expires = Timestamp::from_secs(
+            i64::try_from(self.expires_at)
+                .map_err(|_| Error::invalid("model_pack: expires_at does not fit a timestamp"))?,
+        );
+        if now > expires {
+            return Err(Error::denied(format!(
+                "model pack {} expired at {} and is not loaded",
+                self.artifact_digest,
+                expires.to_rfc3339()
+            )));
+        }
+        verifier.verify(
+            crate::trust::ArtefactClass::ModelPack,
+            &self.signing_payload(),
+            &self.signature,
+            now,
+        )
+    }
+
+    /// Whether `artifact` is the bytes this pack names: SHA-256 of the
+    /// artifact against [`Self::artifact_digest`]. A pack that verifies
+    /// says nothing about a file that is not the one it names.
+    pub fn names_artifact(&self, artifact: &[u8]) -> bool {
+        qip_core::hash::constant_time_eq(
+            sha256_hex(artifact).as_bytes(),
+            self.artifact_digest.as_bytes(),
+        )
+    }
     /// Refuse a pack with any empty required field, out-of-range calibration, or empty universe list.
     pub fn validate(&self) -> Result<()> {
         if self.artifact_digest.is_empty() {
@@ -512,6 +715,35 @@ pub struct WhitelistedConversion {
     /// Proportional cost of taking the conversion, as a fraction in `[0, 1)`.
     /// Exact, because it is charged against money.
     pub cost_fraction: Decimal,
+    /// The conversion's own costs beyond its fee (R12-MESH-5055 to -5057),
+    /// when the centre states them.
+    ///
+    /// Additive to the signed shape on the same terms as `conversions`:
+    /// skipped when absent, so a payload signed before the field existed
+    /// serialises to the bytes — and the digest — it always did. Absent is
+    /// "none stated", which the cell prices as no duty, no logistics, no
+    /// settlement risk, a certain fill and no borrow, exactly as every
+    /// conversion was priced before; present, every figure is stated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub costs: Option<WhitelistedCosts>,
+}
+
+/// Per-conversion costs as the centre ships them. Every field is required
+/// once the block is present, so a half-stated block is refused by
+/// deserialisation rather than read as zeros the centre never measured.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhitelistedCosts {
+    /// Tax or duty on the conversion, a fraction of notional in `[0, 1)`.
+    pub tax_duty_fraction: Decimal,
+    /// Transfer, bridge or logistics charge beyond the venue fee, in `[0, 1)`.
+    pub logistics_fraction: Decimal,
+    /// Expected loss from a failure to settle, in `[0, 1)`.
+    pub settlement_risk_fraction: Decimal,
+    /// Probability the conversion fills, in `(0, 1]`.
+    pub fill_probability: Decimal,
+    /// Measured annualised borrow or funding rate, non-negative.
+    pub borrow_rate_annual: Decimal,
 }
 
 /// Which cycles may run and which of the eight mechanisms each is assigned.
@@ -999,6 +1231,19 @@ impl PolicyPayload {
         self.signature = to_hex(&hmac_sha256(key, payload.as_bytes()));
         Ok(self)
     }
+
+    /// Sign under the `policy` key of a trust bundle (ADR 0110): the same
+    /// [`Self::signing_payload`], so the two schemes cover identical facts
+    /// and differ only in who can produce the signature.
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        let payload = self.signing_payload()?;
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::Policy,
+            payload.as_bytes(),
+        )?;
+        Ok(self)
+    }
 }
 
 /// A free-text field, made safe to join with delimiters.
@@ -1017,6 +1262,15 @@ impl PolicyPayload {
 /// where a field ends, whatever the field contains.
 fn length_prefixed(field: &str) -> String {
     format!("{}:{}", field.len(), field)
+}
+
+/// The binary counterpart of [`length_prefixed`] for the asymmetric
+/// signing payloads (ADR 0110): an eight-byte big-endian length, then the
+/// bytes. Injective for the same reason, without a decimal parse.
+pub(crate) fn length_prefixed_bytes(field: &[u8]) -> Vec<u8> {
+    let mut out = (field.len() as u64).to_be_bytes().to_vec();
+    out.extend_from_slice(field);
+    out
 }
 
 /// A halt, as a command rather than as staleness.
@@ -1085,6 +1339,19 @@ impl HaltCommand {
             ));
         }
         self.signature = to_hex(&hmac_sha256(key, self.signing_payload().as_bytes()));
+        Ok(self)
+    }
+
+    /// Sign under the `halt` key (ADR 0110). One signer, deliberately: a halt
+    /// only restricts, and the on-call operator's identity signs it without
+    /// waiting for anyone — [`crate::trust::ArtefactClass::widens`] is false
+    /// for this class and nothing here asks for a [`crate::trust::Publication`].
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::Halt,
+            self.signing_payload().as_bytes(),
+        )?;
         Ok(self)
     }
 }

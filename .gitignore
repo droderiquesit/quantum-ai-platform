@@ -70,3 +70,6 @@ __pycache__/
 # with room — which happened to be this one.
 /.claude/tmp/
 graphify-out/
+
+# Personal Claude Code overrides (permission rules), never shared
+.claude/settings.local.json

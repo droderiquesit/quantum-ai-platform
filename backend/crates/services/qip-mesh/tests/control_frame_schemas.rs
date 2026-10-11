@@ -63,9 +63,7 @@ fn the_three_p0_control_frames_each_register_under_their_own_topic() -> qip_core
 
     // Populate all 13 required slots
     policy_payload.trained_models = Slot::produced(
-        ModelManifest {
-            models: BTreeMap::from([("m1".to_string(), "d1".to_string())]),
-        },
+        ModelManifest::unreleased(BTreeMap::from([("m1".to_string(), "d1".to_string())])),
         now,
     );
     policy_payload.compiled_plan = Slot::produced(

@@ -1,50 +1,111 @@
 #!/bin/bash
 # Event Fabric Broker startup script.
-# ADR 0100 §1: The broker runs on dedicated GCE VMs with no external address.
-# This script is rendered by Terraform and should refuse to start if preconditions fail.
+#
+# ADR 0100 §1: the broker runs on a dedicated Compute Engine machine with no
+# external address. Rendered by Terraform's `templatefile`, which escapes
+# nothing: every substitution below is either base64 (a closed alphabet), a
+# number, or a value — a device path, a region, a deployment name, a CA
+# Service or Spanner resource name, a SAN list — the module's validation
+# restricts to a closed character set with no shell syntax in it. A new
+# substitution needs a validation in the same diff.
+#
+# Fail closed throughout. This script used to end most steps in `|| true`,
+# including the mount — so a journal that failed to mount left the broker
+# writing its fsynced, acknowledged records to the boot disk, which is
+# replaced with the machine. A broker that cannot prove where its journal
+# is does not start.
 
-set -e
-set -u
+set -euo pipefail
 
-trap 'echo "ERROR: Startup failed"; exit 1' ERR
+journal_device='${qip_storage_journal_device}'
+journal_mount=/var/lib/qip/journal
 
-# Configuration passed from Terraform as base64-encoded JSON.
-export QIP_EVENTS_CONFIG="${qip_events_config}"
-export QIP_FABRICD_CONFIG="${qip_fabricd_config}"
-export QIP_STORAGE_JOURNAL_DEVICE="${qip_storage_journal_device}"
-export QIP_BROKER_NAME="${broker_instance_name}"
-
-# Verify no external IP is assigned (FABRIC-089).
-EXTERNAL_IP=$(curl -H "Metadata-Flavor: Google" \
-  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null || echo "")
-
-if [ ! -z "$EXTERNAL_IP" ] && [ "$EXTERNAL_IP" != "0.0.0.0" ]; then
-  echo "ERROR: Broker has external IP: $EXTERNAL_IP (FABRIC-089 violation)"
+# FABRIC-089: no external address, checked rather than assumed.
+external_ip="$(curl -fs -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip || true)"
+if [ -n "$external_ip" ] && [ "$external_ip" != "0.0.0.0" ]; then
+  echo "refusing to start: the broker has an external address ($external_ip), which FABRIC-089 forbids" >&2
   exit 1
 fi
+internal_ip="$(curl -fs -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)"
+case "$internal_ip" in
+  ''|*[!0-9.]*) echo "refusing to start: no internal address from the metadata server" >&2; exit 1 ;;
+esac
 
-INTERNAL_IP=$(curl -H "Metadata-Flavor: Google" \
-  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
+# The journal disk. Waited for, because udev may not have linked it yet.
+for _ in $(seq 1 30); do
+  [ -b "$journal_device" ] && break
+  sleep 2
+done
+[ -b "$journal_device" ] || { echo "refusing to start: no journal device at $journal_device" >&2; exit 1; }
 
-echo "Broker starting on internal address: $INTERNAL_IP"
-
-# Journal device validation.
-if [ ! -b "$QIP_STORAGE_JOURNAL_DEVICE" ]; then
-  echo "WARNING: Journal device $QIP_STORAGE_JOURNAL_DEVICE not found (may appear after systemd-udevd)"
+# Formatted only when it carries no filesystem at all. This used to format
+# whenever a marker file on the *boot* disk was absent — so a machine
+# replaced from the template, with a fresh boot disk and the old journal
+# attached, would have erased the journal it was meant to resume from.
+if [ -z "$(blkid -o value -s TYPE "$journal_device" || true)" ]; then
+  echo "journal device $journal_device carries no filesystem; creating one"
+  mkfs.ext4 -q "$journal_device"
 fi
 
-# Create journal mount point and mount filesystem.
-mkdir -p /var/lib/qip/journal
-chmod 700 /var/lib/qip/journal
-
-# Format and mount journal device if needed (with caution).
-if [ ! -f /var/lib/qip/.journal_formatted ]; then
-  echo "Initializing journal device $QIP_STORAGE_JOURNAL_DEVICE"
-  mkfs.ext4 -F "$QIP_STORAGE_JOURNAL_DEVICE" > /dev/null 2>&1 || true
-  touch /var/lib/qip/.journal_formatted
+install -d -m 0700 "$journal_mount"
+if ! mountpoint -q "$journal_mount"; then
+  mount -o noatime "$journal_device" "$journal_mount"
 fi
+mountpoint -q "$journal_mount" || { echo "refusing to start: $journal_mount is not mounted" >&2; exit 1; }
 
-mount "$QIP_STORAGE_JOURNAL_DEVICE" /var/lib/qip/journal 2>/dev/null || true
+# Configuration as files, readable by root alone, and an environment file
+# naming them for the unit. Neither carries a credential: the catalogue and
+# the broker's settings are ADR 0100 §5's committed configuration.
+install -d -m 0700 /etc/qip
+echo '${qip_events_config}' | base64 -d > /etc/qip/events.json
+echo '${qip_fabricd_config}' | base64 -d > /etc/qip/fabricd.json
+chmod 0600 /etc/qip/events.json /etc/qip/fabricd.json
+# The CA Service pool's CA certificates, every client of this listener chains
+# to (ADR 0112). Public material, base64 for the reason the header gives.
+echo '${cas_trust_roots_base64}' | base64 -d > /etc/qip/tls-trust-roots.pem
+chmod 0644 /etc/qip/tls-trust-roots.pem
+grep -q -- '-----BEGIN CERTIFICATE-----' /etc/qip/tls-trust-roots.pem \
+  || { echo "refusing to start: the CA Service trust roots rendered empty" >&2; exit 1; }
+[ -r '${google_tls_roots_path}' ] \
+  || { echo "refusing to start: ${google_tls_roots_path} is not on this image; the pinned Google roots are baked from infrastructure/trust/" >&2; exit 1; }
 
-# System is ready. The qip-fabricd binary will be started by a systemd unit.
-echo "Event fabric broker preconditions satisfied; waiting for binary startup"
+# This instance's name in its region's lease, from the metadata server.
+instance_name="$(curl -fs -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/name)"
+case "$instance_name" in
+  ''|*[!a-z0-9-]*) echo "refusing to start: no usable instance name from the metadata server" >&2; exit 1 ;;
+esac
+
+cat > /etc/qip/fabricd.env <<EOF
+QIP_EVENT_FABRIC_DATA_DIR=$journal_mount
+QIP_EVENT_FABRIC_CATALOGUE=/etc/qip/events.json
+QIP_EVENT_FABRIC_LISTEN=$internal_ip:${broker_port}
+QIP_DEPLOYMENT=${deployment}
+QIP_TLS_MODE=cas
+QIP_CAS_CA_POOL=${cas_ca_pool}
+QIP_CAS_CERTIFICATE_TEMPLATE=${cas_certificate_template}
+QIP_CAS_LIFETIME_SECS=${cas_lifetime_secs}
+QIP_TLS_TRUST_ROOTS_PATH=/etc/qip/tls-trust-roots.pem
+QIP_GOOGLE_TLS_ROOTS_PATH=${google_tls_roots_path}
+QIP_EVENT_FABRIC_ADMITTED_PEERS=${admitted_peers}
+%{ if managed_log_database != "" ~}
+QIP_EVENT_FABRIC_REGION=${region}
+QIP_EVENT_FABRIC_INSTANCE=$instance_name
+QIP_EVENT_FABRIC_MANAGED_LOG=spanner
+QIP_EVENT_FABRIC_SPANNER_DATABASE=${managed_log_database}
+QIP_EVENT_FABRIC_LEASE_TTL_MS=${managed_log_lease_ttl_ms}
+%{ endif ~}
+EOF
+chmod 0600 /etc/qip/fabricd.env
+
+# The binary is the boot image's, under its own unit. An image without the
+# unit is an image that cannot run a broker, and that is said here rather
+# than discovered by a client that cannot connect.
+if ! systemctl cat qip-fabricd.service >/dev/null 2>&1; then
+  echo "refusing to start: the boot image carries no qip-fabricd.service" >&2
+  exit 1
+fi
+systemctl restart qip-fabricd.service
+echo "qip-fabricd started on $internal_ip:${broker_port}, journal at $journal_mount"

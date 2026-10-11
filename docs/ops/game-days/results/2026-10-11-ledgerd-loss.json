@@ -1,0 +1,73 @@
+{
+  "schema": "qip.game-day.result/v1",
+  "scenario": "ledgerd-loss",
+  "drill": "G3 §25 ledger outage: qip-ledgerd is killed while the reflex cell and the broker run; the cell keeps deciding, the broker keeps the P1 outcomes stream for the ledger to resume from, and the restarted ledger serves again (RES-10154, RES-10128).",
+  "run_at": "2026-10-11T08:50:05.184Z",
+  "commit": "b6ee74ad",
+  "environment": "local",
+  "binaries": {
+    "qip-fabricd": "1743f071b337d73b11f11484237b4db1316054c32dc9fe19359ffd64b5a685ff",
+    "qip-edge-node": "6439c1584ca06a051b5a4497c7d6229754d637d269ddd5676bf36bd443db3881",
+    "qip-ledgerd": "8418969ce6fd7ecd55c7f393615559009cd87d105a55424d6a921fd6f18307e1"
+  },
+  "objectives": {
+    "rto_ms": 10000,
+    "rpo_records": 0
+  },
+  "measurements": {
+    "detected_ms": 27,
+    "outage_ms": 5019,
+    "rto_ms": 16,
+    "rpo_records": null
+  },
+  "checks": [
+    {
+      "phase": "steady",
+      "name": "every process became ready",
+      "passed": true,
+      "detail": "159 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the cell is running passes",
+      "passed": true,
+      "detail": "held after 5 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the ledger is serving",
+      "passed": true,
+      "detail": "held after 6 ms"
+    },
+    {
+      "phase": "fault",
+      "name": "the ledger no longer answers",
+      "passed": true,
+      "detail": "27 ms"
+    },
+    {
+      "phase": "during",
+      "name": "the cell keeps running passes with the ledger down",
+      "passed": true,
+      "detail": "held for 5000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "the broker keeps serving without its consumer",
+      "passed": true,
+      "detail": "held for 5000 ms"
+    },
+    {
+      "phase": "recovery",
+      "name": "every process ready again",
+      "passed": true,
+      "detail": "16 ms after the recovery action"
+    }
+  ],
+  "verdict": "inconclusive",
+  "notes": [
+    "durable position before the fault: 0",
+    "durable position when the recovered process first answered: 0",
+    "Nothing had been acknowledged before the fault, so there was nothing to lose; RPO is vacuous and not recorded."
+  ]
+}

@@ -8,11 +8,11 @@
 )]
 
 use qip_agency::affordance::{AffordanceGraph, Method, ToolEdgeDraft};
-use qip_agency::attribution::{EffectAttributionDraft, Identification};
+use qip_agency::attribution::{Effect, HorizonObservation, Identification};
 use qip_agency::comparison::ComparisonDraft;
 use qip_agency::goal::{GoalClass, GoalSpec, GoalSpecDraft};
 use qip_agency::plan::{ActingIdentity, Candidate, CandidateSet, InterventionPlan, PlanNode, Step};
-use qip_agency::tools::{ToolDraft, ToolRegistry};
+use qip_agency::tools::{ToolRegistration, ToolRegistry};
 use qip_core::Decimal;
 use std::collections::BTreeSet;
 
@@ -363,58 +363,71 @@ fn a_bound_is_checked_against_every_branch_not_only_the_one_that_fires() {
 
 // ---- AGENCY-026 ------------------------------------------------------------
 
-fn tool(name: &str) -> ToolDraft {
-    ToolDraft {
-        name: s(name),
-        acting_identity: s("desk-agent"),
-        permission_scope: s("quotes"),
-        disclosure_policy: s("none required"),
-        jurisdiction_channel_policy: s("US paper venue"),
-        rate_limit_calls: Some(2),
-        rate_window_secs: Some(60),
-        rollback_stop_control: s("cancel all resting quotes"),
+fn tool(name: &str) -> ToolRegistration {
+    ToolRegistration {
+        tool: name.to_string(),
+        acting_identity: "desk-agent".to_string(),
+        permission_scope: BTreeSet::from(["quotes".to_string()]),
+        disclosure_policy: "none required".to_string(),
+        channels: BTreeSet::from(["paper-venue".to_string()]),
+        max_actions_per_window: 2,
+        budget_units: 100,
+        revocation_path: "cancel all resting quotes".to_string(),
     }
 }
 
 #[test]
 fn a_tool_missing_any_of_its_six_declarations_is_not_registered() {
-    let cases: [(&str, fn(&mut ToolDraft)); 6] = [
-        ("acting_identity", |t| t.acting_identity = None),
-        ("permission_scope", |t| t.permission_scope = None),
-        ("disclosure_policy", |t| t.disclosure_policy = None),
-        ("jurisdiction_channel_policy", |t| {
-            t.jurisdiction_channel_policy = None
-        }),
-        ("rate_limit_calls", |t| t.rate_limit_calls = None),
-        ("rollback_stop_control", |t| t.rollback_stop_control = None),
+    let cases: [(&str, fn(&mut ToolRegistration)); 7] = [
+        ("acting identity", |t| t.acting_identity = " ".into()),
+        ("permission scope", |t| t.permission_scope.clear()),
+        ("disclosure policy", |t| t.disclosure_policy.clear()),
+        ("audience/channel rules", |t| t.channels.clear()),
+        ("rate limit", |t| t.max_actions_per_window = 0),
+        ("budget", |t| t.budget_units = 0),
+        ("revocation path", |t| t.revocation_path.clear()),
     ];
     let mut reg = ToolRegistry::new();
     assert!(
         reg.register(tool("probe")).is_ok(),
-        "premise: the full draft registers"
+        "premise: the full registration is admitted"
     );
     for (field, wipe) in cases {
         let mut t = tool(field);
         wipe(&mut t);
         let err = reg.register(t).unwrap_err().to_string();
-        assert!(err.contains(&format!("`{field}`")), "{field}: {err}");
-        assert!(reg.invoke(field, 0).is_err(), "{field} stayed unregistered");
+        assert!(err.contains(field), "{field}: {err}");
+        assert!(
+            reg.admits(field, "paper-venue", 0, 0).is_err(),
+            "{field} stayed unregistered"
+        );
     }
 }
 
 #[test]
-fn a_tripped_rate_limit_or_stop_control_refuses_the_next_call() {
+fn a_tripped_rate_limit_or_revocation_refuses_the_next_call_and_every_decision_is_audited() {
+    let at = qip_core::Timestamp::from_secs(1);
     let mut reg = ToolRegistry::new();
     reg.register(tool("quoter")).unwrap();
-    reg.invoke("quoter", 0).unwrap();
-    reg.invoke("quoter", 10).unwrap();
-    let err = reg.invoke("quoter", 20).unwrap_err();
+    reg.authorise("quoter", "paper-venue", 0, 1, at).unwrap();
+    reg.authorise("quoter", "paper-venue", 0, 1, at).unwrap();
+    let err = reg
+        .authorise("quoter", "paper-venue", 0, 1, at)
+        .unwrap_err();
     assert!(err.to_string().contains("rate limit"), "{err}");
-    reg.invoke("quoter", 61)
-        .expect("the window slid past the first call");
-    reg.stop("quoter").unwrap();
-    let err = reg.invoke("quoter", 1000).unwrap_err();
-    assert!(err.to_string().contains("stopped"), "{err}");
+    reg.authorise("quoter", "paper-venue", 1, 1, at)
+        .expect("the next window admits it again");
+    reg.revoke("quoter").unwrap();
+    let err = reg
+        .authorise("quoter", "paper-venue", 2, 1, at)
+        .unwrap_err();
+    assert!(err.to_string().contains("revoked"), "{err}");
+    assert!(
+        reg.register(tool("quoter")).is_err(),
+        "re-registering is not a way round revocation"
+    );
+    assert_eq!(reg.audit().len(), 5);
+    assert_eq!(reg.audit().iter().filter(|a| a.admitted).count(), 3);
 }
 
 // ---- AGENCY-036 / 048 ------------------------------------------------------
@@ -455,53 +468,41 @@ fn a_comparison_missing_any_of_the_nine_axes_is_refused_before_ranking() {
 }
 
 #[test]
-fn an_attribution_without_a_chain_confounders_rivals_or_confidence_is_refused() {
-    let full = || EffectAttributionDraft {
-        action_class: Some(Method::Market),
-        identification: Some(Identification::Experiment),
-        kpi_change: Some(d(3)),
-        causal_chain: list(&["quote_size", "spread"]),
-        confounders: list(&["macro_rate"]),
-        competing_explanations: list(&["seasonality"]),
-        confidence: Some(Decimal::from_scaled(7, 1).unwrap()),
-    };
-    assert!(full().build().is_ok(), "premise");
-    let cases: [(&str, fn(&mut EffectAttributionDraft)); 6] = [
-        ("action_class", |a| a.action_class = None),
-        ("identification", |a| a.identification = None),
-        ("causal_chain", |a| a.causal_chain = None),
-        ("confounders", |a| a.confounders = None),
+fn an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused() {
+    let full = || attribution(Method::Market, Identification::Experiment, 0.7);
+    assert!(full().validate().is_ok(), "premise");
+    let cases: [(&str, fn(&mut EffectAttribution)); 5] = [
+        ("causal_chain", |a| a.causal_chain.clear()),
+        ("confounders", |a| a.confounders.clear()),
         ("competing_explanations", |a| {
-            a.competing_explanations = None
+            a.competing_explanations.clear()
         }),
-        ("confidence", |a| a.confidence = None),
+        ("observations", |a| a.observations.clear()),
+        ("identifiability", |a| a.identifiability = 1.5),
     ];
     for (field, wipe) in cases {
         let mut a = full();
         wipe(&mut a);
-        let err = a.build().unwrap_err().to_string();
-        assert!(err.contains(&format!("`{field}`")), "{field}: {err}");
+        let err = a.validate().unwrap_err().to_string();
+        assert!(err.contains(field), "{field}: {err}");
     }
-    let mut empty_chain = full();
-    empty_chain.causal_chain = Some(vec![]);
-    assert!(
-        empty_chain.build().is_err(),
-        "an empty chain is not a chain"
-    );
 }
 
 // ============================================================================
 // The engine, the gates and the autonomy ladder.
 // ============================================================================
 
-use qip_agency::attribution::EffectAttribution;
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
+use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, EvidenceCitation};
 use qip_agency::engine::{
-    Adapter, Decision, EdgeDecl, LeverEvidence, ORDER, Outcome, ProposalDraft, Request, Stage,
-    StageLog, VariableDecl, decide, execute, run,
+    Adapter, Decision, EdgeDecl, Execution, Gated, LeverEvidence, ORDER, Outcome, ProposalDraft,
+    Request, Stage, StageLog, VariableDecl, decide, execute, learn, run, run_with, widen,
 };
+use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
 use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory};
 use qip_agency::plan::{Proposal, select};
+use qip_contracts::action::Ground;
+use qip_contracts::expansion::EffectAttribution;
 use qip_core::Error;
 use std::collections::BTreeMap;
 
@@ -898,6 +899,101 @@ fn a_stage_is_admitted_only_in_the_declared_order_and_never_after_a_failure() {
     );
 }
 
+/// A complete attribution of one action, valid as built.
+fn attribution(
+    class: Method,
+    identification: Identification,
+    identifiability: f64,
+) -> EffectAttribution {
+    EffectAttribution {
+        goal_id: "g1".into(),
+        intervention_id: "i1".into(),
+        action_id: "a1".into(),
+        action_class: class,
+        identification,
+        observations: vec![
+            HorizonObservation {
+                horizon_ms: 60_000,
+                value: 3.0,
+            },
+            HorizonObservation {
+                horizon_ms: 3_600_000,
+                value: 2.5,
+            },
+        ],
+        counterfactual_method: "staged rollout control".into(),
+        effect: Effect {
+            mean: 3.0,
+            std_dev: 0.5,
+        },
+        causal_chain: vec!["quote_size".into(), "spread".into()],
+        confounders: vec!["macro_rate".into()],
+        competing_explanations: vec!["seasonality".into()],
+        side_effects: vec!["none observed".into()],
+        identifiability,
+        resulting_updates: vec!["raise quote-size prior".into()],
+    }
+}
+
+/// The public face of the `quoter` step: what the venue and the tape see.
+fn quote_draft() -> CommunicationDraft {
+    CommunicationDraft {
+        id: "quote-1".into(),
+        content: "Quote 20 lots on venue-a at the published spread".into(),
+        channel: "paper-venue".into(),
+        sender_identity: "desk-agent".into(),
+        evidence_citations: vec![EvidenceCitation {
+            source_id: "venue-feed".into(),
+            evidence_id: "spread-series-1".into(),
+            confidence_bps: 9000,
+        }],
+        disclosures: vec![],
+        target_audience: "venue-a participants".into(),
+        jurisdiction: "US".into(),
+    }
+}
+
+fn approvals() -> ApprovalDecl {
+    ApprovalDecl {
+        goal_approver: "pm-a".into(),
+        goal_approved_at: qip_core::Timestamp::from_secs(10),
+        plan_approver: "risk-b".into(),
+        plan_approved_at: qip_core::Timestamp::from_secs(20),
+        execute_at: qip_core::Timestamp::from_secs(30),
+    }
+}
+
+/// A guard that admits the `quoter` step of [`request`], and nothing else.
+fn guard_decl() -> GuardDecl {
+    GuardDecl {
+        conduct: ConductPolicy {
+            authorized_sources: vec!["venue-feed".into()],
+            authorized_identities: vec!["desk-agent".into()],
+            required_disclosures: vec![],
+            channel_policies: BTreeMap::from([(
+                "paper-venue".to_string(),
+                vec!["venue-a participants".to_string()],
+            )]),
+            permitted_jurisdictions: vec!["US".into()],
+            conduct_rules: qip_agency::conduct_brain::MANDATORY_RULES
+                .iter()
+                .map(|r| r.to_string())
+                .collect(),
+        },
+        tools: vec![ToolRegistration {
+            max_actions_per_window: 10,
+            budget_units: 1_000,
+            ..tool("quoter")
+        }],
+        communications: BTreeMap::from([("quoter".to_string(), quote_draft())]),
+        grounds: vec![Ground::Evidence(
+            "spread series spread-series-1 shows quotes under-sized".into(),
+        )],
+        approvals: approvals(),
+        rate_window: 1,
+    }
+}
+
 #[derive(Default)]
 struct Counting {
     calls: Vec<String>,
@@ -952,21 +1048,15 @@ fn request() -> Request {
             root: step("quoter", 20),
             comparison: prediction(d(5), true),
         }],
+        guards: Some(guard_decl()),
+        pass: None,
+        structural: None,
+        touches: Vec::new(),
     }
 }
 
 fn identified(class: Method) -> EffectAttribution {
-    EffectAttributionDraft {
-        action_class: Some(class),
-        identification: Some(Identification::Experiment),
-        kpi_change: Some(d(3)),
-        causal_chain: list(&["quote_size", "spread"]),
-        confounders: list(&[]),
-        competing_explanations: list(&[]),
-        confidence: Some(tenths(7)),
-    }
-    .build()
-    .unwrap()
+    attribution(class, Identification::Experiment, 0.7)
 }
 
 fn operator() -> ActingIdentity {
@@ -1058,32 +1148,21 @@ fn over_generated_passes_an_adapter_is_called_only_after_simulation_and_the_gate
     let plan = InterventionPlan::plan(&r.goal, &graph(), &r.identity, step("quoter", 20)).unwrap();
     let mut adapter = Counting::default();
     let mut fresh = StageLog::new();
-    let err = execute(
-        &mut fresh,
-        Some(&policy),
-        &graph(),
-        &plan,
-        &r.observed_facts,
-        &mut adapter,
-    )
-    .unwrap_err();
+    let g = graph();
+    let gated = Gated {
+        goal: &r.goal,
+        graph: &g,
+        plan: &plan,
+        facts: &r.observed_facts,
+    };
+    let err = execute(&mut fresh, Some(&policy), gated, None, &mut adapter).unwrap_err();
     assert!(err.to_string().contains("out of order"), "{err}");
     let mut gate_failed = StageLog::new();
     for stage in &ORDER[..6] {
         gate_failed.pass(*stage).unwrap();
     }
     gate_failed.fail(Stage::Gate).unwrap();
-    assert!(
-        execute(
-            &mut gate_failed,
-            Some(&policy),
-            &graph(),
-            &plan,
-            &r.observed_facts,
-            &mut adapter
-        )
-        .is_err()
-    );
+    assert!(execute(&mut gate_failed, Some(&policy), gated, None, &mut adapter).is_err());
     assert!(adapter.calls.is_empty());
 }
 
@@ -1154,17 +1233,7 @@ fn autonomy_widens_only_on_an_identified_attribution_and_operator_authority_toge
     let mut policy = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
     // A forecast that came true, held with near-certainty, is still not
     // identified.
-    let correlational = EffectAttributionDraft {
-        action_class: Some(Method::Market),
-        identification: Some(Identification::NotIdentified),
-        kpi_change: Some(d(3)),
-        causal_chain: list(&["quote_size", "spread"]),
-        confounders: list(&[]),
-        competing_explanations: list(&[]),
-        confidence: Some(Decimal::from_scaled(99, 2).unwrap()),
-    }
-    .build()
-    .unwrap();
+    let correlational = attribution(Method::Market, Identification::NotIdentified, 0.0);
     let err = policy.widen(&correlational, &operator()).unwrap_err();
     assert!(err.to_string().contains("not identified"), "{err}");
     assert_eq!(policy.authority(), Authority::Shadow);
@@ -1194,18 +1263,17 @@ fn autonomy_widens_only_on_an_identified_attribution_and_operator_authority_toge
     assert!(err.to_string().contains("needs an ADR"), "{err}");
 
     // "Observational" with no strategy named is not a way round it.
-    let unnamed = EffectAttributionDraft {
-        action_class: Some(Method::Market),
-        identification: Some(Identification::Observational {
+    let unnamed = attribution(
+        Method::Market,
+        Identification::Observational {
             strategy: " ".into(),
-        }),
-        kpi_change: Some(d(3)),
-        causal_chain: list(&["a"]),
-        confounders: list(&[]),
-        competing_explanations: list(&[]),
-        confidence: Some(tenths(7)),
-    };
-    assert!(unnamed.build().is_err());
+        },
+        0.7,
+    );
+    assert!(unnamed.validate().is_err());
+    let mut fresh = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
+    assert!(fresh.widen(&unnamed, &operator()).is_err());
+    assert_eq!(fresh.authority(), Authority::Shadow);
 }
 
 // ---- AGENCY-054 ------------------------------------------------------------
@@ -1338,6 +1406,8 @@ fn outcome(state: &str, observed: i64, counterfactual: i64) -> ActionOutcomeDraf
     ActionOutcomeDraft {
         intervention_context: s("tighten quotes on venue-a"),
         environment_state: s(state),
+        audience: s("venue-a participants"),
+        delay_secs: Some(300),
         action_sequence: list(&["quoter"]),
         causal_hypothesis: s("larger quote size narrows the spread"),
         predicted_effect: Some(d(5)),
@@ -1349,10 +1419,13 @@ fn outcome(state: &str, observed: i64, counterfactual: i64) -> ActionOutcomeDraf
 }
 
 #[test]
-fn an_action_outcome_missing_any_of_its_nine_fields_is_refused_and_not_remembered() {
-    let cases: [(&str, fn(&mut ActionOutcomeDraft)); 9] = [
+fn an_action_outcome_missing_any_of_its_nine_fields_or_its_audience_or_delay_is_refused_and_not_remembered()
+ {
+    let cases: [(&str, fn(&mut ActionOutcomeDraft)); 11] = [
         ("intervention_context", |o| o.intervention_context = None),
         ("environment_state", |o| o.environment_state = None),
+        ("audience", |o| o.audience = None),
+        ("delay_secs", |o| o.delay_secs = None),
         ("action_sequence", |o| o.action_sequence = None),
         ("causal_hypothesis", |o| o.causal_hypothesis = None),
         ("predicted_effect", |o| o.predicted_effect = None),
@@ -1408,4 +1481,438 @@ fn the_learned_policy_selects_an_action_where_it_measurably_worked_and_no_action
     assert_eq!(memory.recommend("calm", 4).unwrap(), None);
     assert_eq!(memory.recommend("unseen", 1).unwrap(), None);
     assert!(memory.recommend("calm", 0).is_err());
+}
+
+// ---- R12-AGENCY-6108: for whom, and with what delay -------------------------
+
+#[test]
+fn what_worked_for_one_audience_is_not_recommended_for_another_and_the_delay_is_learned() {
+    let reaching = |audience: &str, observed: i64, delay: u64| {
+        let mut o = outcome("calm", observed, 4);
+        o.audience = s(audience);
+        o.delay_secs = Some(delay);
+        o
+    };
+    let mut memory = ActionOutcomeMemory::with_capacity(16).unwrap();
+    for delay in [100, 200, 300] {
+        memory.record(reaching("dealers", 10, delay)).unwrap();
+        memory.record(reaching("retail", 4, delay)).unwrap();
+    }
+    let any = memory.recommend_for("calm", None, 3).unwrap();
+    assert!(any.is_some(), "premise: pooled, the action wins");
+    let dealers = memory
+        .recommend_for("calm", Some("dealers"), 3)
+        .unwrap()
+        .unwrap();
+    assert_eq!(dealers.action_sequence, vec!["quoter".to_string()]);
+    assert_eq!(dealers.mean_delay_secs, 200);
+    assert_eq!(dealers.mean_effect, d(6));
+    assert_eq!(dealers.support, 3);
+    // For retail the observation equals the counterfactual: doing nothing wins.
+    assert_eq!(
+        memory.recommend_for("calm", Some("retail"), 3).unwrap(),
+        None
+    );
+}
+
+// ---- R12-AGENCY-1056..1069 / 6091 / GOV-6123 / 6124 / 6127: the guard -------
+
+#[test]
+fn an_adapter_is_never_called_without_a_guard_even_at_narrow_reversible_authority() {
+    let policy = narrow();
+    let mut adapter = Counting::default();
+    let acted = run(request(), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        matches!(acted.outcome, Outcome::Executed(_)),
+        "premise: guarded, the same request is sent"
+    );
+    assert_eq!(adapter.calls.len(), 1, "premise");
+
+    let mut unguarded = request();
+    unguarded.guards = None;
+    let mut adapter = Counting::default();
+    let err = run(unguarded.clone(), Some(&policy), &mut adapter).unwrap_err();
+    assert!(err.to_string().contains("no action guard"), "{err}");
+    assert!(adapter.calls.is_empty());
+    // Shadow without a guard is the shipped CLI's path and is unchanged.
+    let report = run(unguarded, None, &mut adapter).unwrap();
+    assert!(matches!(report.outcome, Outcome::Shadowed(_)));
+    assert!(report.approvals.is_none());
+}
+
+/// One mutation of the guard per case; each alone withholds the plan with
+/// the reason naming it, in shadow and at narrow-reversible alike, and no
+/// adapter is called. The unmutated guard executes, so every withheld case
+/// below is that one change.
+#[test]
+fn each_guard_check_alone_withholds_the_plan_before_any_adapter_call() {
+    type Mutate = fn(&mut Request);
+    let cases: Vec<(&str, Mutate)> = vec![
+        ("no_fake_consensus", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().content =
+                "Quote 20 lots: everyone is buying venue-a".into();
+        }),
+        ("no_rumour_engineering", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().content =
+                "Quote 20 lots; rumour has it venue-a widens".into();
+        }),
+        ("no_manipulation", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().content =
+                "Layering 20 lots of quotes on venue-a".into();
+        }),
+        ("audience_permissions", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().target_audience = "retail".into();
+        }),
+        ("provenance", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications
+                .get_mut("quoter")
+                .unwrap()
+                .evidence_citations[0]
+                .source_id = "chat-room".into();
+        }),
+        ("jurisdiction", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().jurisdiction = "KY".into();
+        }),
+        ("fabricated identity", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().sender_identity = "desk-agent-2".into();
+            g.conduct.authorized_identities.push("desk-agent-2".into());
+        }),
+        ("not registered", |r| {
+            r.guards.as_mut().unwrap().tools.clear();
+        }),
+        ("no drafted public face", |r| {
+            r.guards.as_mut().unwrap().communications.clear();
+        }),
+        ("budget would be exceeded", |r| {
+            r.guards.as_mut().unwrap().tools[0].budget_units = 29;
+        }),
+        ("outside the tool's channels", |r| {
+            r.guards.as_mut().unwrap().tools[0].channels = BTreeSet::from(["press".to_string()]);
+        }),
+        ("whole non-negative units", |r| {
+            r.tool_edges[0].edge.cost = Some(Decimal::from_scaled(305, 1).unwrap());
+        }),
+        ("expected profit", |r| {
+            r.guards.as_mut().unwrap().grounds = vec![Ground::ExpectedProfit];
+        }),
+        ("approving its own action", |r| {
+            r.guards.as_mut().unwrap().approvals.plan_approver = "desk-agent".into();
+        }),
+        ("precede the plan approval", |r| {
+            r.guards.as_mut().unwrap().approvals.execute_at = qip_core::Timestamp::from_secs(15);
+        }),
+    ];
+    let policy = narrow();
+    for (why, mutate) in cases {
+        for authority in [Some(&policy), None] {
+            let mut r = request();
+            mutate(&mut r);
+            let mut adapter = Counting::default();
+            let report = run(r, authority, &mut adapter).unwrap();
+            let Outcome::Stopped(reason) = &report.outcome else {
+                panic!("{why}: expected withheld, got {:?}", report.outcome)
+            };
+            assert!(reason.contains(why), "{why}: {reason}");
+            assert!(adapter.calls.is_empty(), "{why}: an adapter was called");
+            assert_eq!(report.failed, Some(Stage::Act), "{why}");
+            assert_eq!(report.passed, &ORDER[..7], "{why}");
+            assert!(report.approvals.is_none(), "{why}");
+        }
+    }
+}
+
+#[test]
+fn a_whole_word_conduct_rule_does_not_withhold_a_quote_whose_words_merely_contain_one() {
+    let policy = narrow();
+    let mut r = request();
+    r.guards
+        .as_mut()
+        .unwrap()
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .content = "Quote 20 lots on unwashed, spoofproof, storefront-running venue-a".into();
+    let mut adapter = Counting::default();
+    let report = run(r, Some(&policy), &mut adapter).unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Executed(_)),
+        "{:?}",
+        report.outcome
+    );
+    assert_eq!(adapter.calls.len(), 1);
+}
+
+#[test]
+fn an_executed_pass_leaves_three_linked_approval_records_and_an_audited_registry_decision() {
+    let policy = narrow();
+    let mut adapter = Counting::default();
+    let report = run(request(), Some(&policy), &mut adapter).unwrap();
+    assert!(matches!(report.outcome, Outcome::Executed(_)), "premise");
+    let chain = report.approvals.expect("approvals recorded");
+    let execution = chain.execution.expect("an execution record once sent");
+    assert_eq!(chain.plan.goal, chain.goal.id);
+    assert_eq!(execution.plan, chain.plan.id);
+    assert_eq!(
+        (
+            chain.goal.approver.as_str(),
+            chain.plan.approver.as_str(),
+            execution.executor.as_str()
+        ),
+        ("pm-a", "risk-b", "desk-agent")
+    );
+    assert_eq!(report.audit.len(), 1);
+    assert!(report.audit[0].admitted && report.audit[0].tool == "quoter");
+
+    // In shadow the goal and plan approvals exist; no execution does.
+    let report = run(request(), None, &mut adapter).unwrap();
+    assert!(matches!(report.outcome, Outcome::Shadowed(_)));
+    assert!(report.approvals.unwrap().execution.is_none());
+    assert!(report.audit.is_empty(), "shadow spent nothing");
+}
+
+#[test]
+fn a_guard_kept_across_passes_holds_the_rate_window_and_the_revocation() {
+    let policy = narrow();
+    let mut decl = guard_decl();
+    decl.tools[0].max_actions_per_window = 1;
+    let mut guard = ActionGuard::from_decl(decl).unwrap();
+    let bare = || {
+        let mut r = request();
+        r.guards = None;
+        r
+    };
+    let mut adapter = Counting::default();
+    let first = run_with(bare(), Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+    assert!(matches!(first.outcome, Outcome::Executed(_)), "premise");
+    let second = run_with(bare(), Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+    let Outcome::Stopped(why) = &second.outcome else {
+        panic!("{:?}", second.outcome)
+    };
+    assert!(why.contains("rate limit"), "{why}");
+    guard.advance(2, approvals());
+    let third = run_with(bare(), Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+    assert!(matches!(third.outcome, Outcome::Executed(_)));
+    guard.revoke("quoter").unwrap();
+    guard.advance(3, approvals());
+    let fourth = run_with(bare(), Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+    let Outcome::Stopped(why) = &fourth.outcome else {
+        panic!("{:?}", fourth.outcome)
+    };
+    assert!(why.contains("revoked"), "{why}");
+    assert_eq!(adapter.calls.len(), 2, "only the two admitted passes sent");
+    // Two guards are two sources of truth.
+    assert!(run_with(request(), Some(&policy), Some(&mut guard), &mut adapter).is_err());
+}
+
+// ---- R12-AGENCY-6103 / 6107 / 054: learning after an action ---------------
+
+/// A log that has been through `Act`, as an executed pass leaves it.
+fn acted_log() -> StageLog {
+    let mut log = StageLog::new();
+    for stage in &ORDER[..8] {
+        log.pass(*stage).unwrap();
+    }
+    log
+}
+
+fn quoted() -> Vec<Step> {
+    vec![Step {
+        tool: "quoter".into(),
+        variable: "quote_size".into(),
+        exposure: d(20),
+    }]
+}
+
+#[test]
+fn learning_runs_only_after_act_and_only_about_the_steps_that_ran() {
+    let mut policy = narrow();
+    let mut memory = ActionOutcomeMemory::with_capacity(4).unwrap();
+    let evidence = identified(Method::Market);
+    // Premise: after Act, the matching outcome is learned and remembered.
+    let mut log = acted_log();
+    let authority = learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &evidence,
+    )
+    .unwrap();
+    assert_eq!(authority, Authority::NarrowReversible);
+    assert_eq!(memory.len(), 1);
+    assert_eq!(log.passed(), &ORDER[..]);
+
+    // Before Act: refused, nothing remembered.
+    let mut before = StageLog::new();
+    for stage in &ORDER[..7] {
+        before.pass(*stage).unwrap();
+    }
+    let err = learn(
+        &mut before,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &evidence,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("out of order"), "{err}");
+    assert_eq!(memory.len(), 1);
+
+    // Crediting a tool that did not run.
+    let mut log = acted_log();
+    let mut credited = outcome("calm", 7, 4);
+    credited.action_sequence = list(&["delist"]);
+    let err = learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        credited,
+        &evidence,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("ran"), "{err}");
+    assert_eq!(log.failed(), Some(Stage::ObserveEffect));
+    assert_eq!(memory.len(), 1);
+}
+
+#[test]
+fn an_outcome_claiming_more_confidence_than_its_attribution_identifies_is_refused_and_not_remembered()
+ {
+    let mut policy = narrow();
+    let mut memory = ActionOutcomeMemory::with_capacity(4).unwrap();
+    // The outcome claims 0.7.
+    let at = |identifiability: f64| {
+        attribution(Method::Market, Identification::Experiment, identifiability)
+    };
+    let mut log = acted_log();
+    learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &at(0.7),
+    )
+    .expect("premise: an attribution identified at 0.7 supports 0.7");
+    let mut log = acted_log();
+    let err = learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &at(0.2),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not upgraded"), "{err}");
+    assert_eq!(log.failed(), Some(Stage::Attribute));
+    assert_eq!(memory.len(), 1, "the refused outcome was not kept");
+    // An attribution of another class of action is not about this one.
+    let mut log = acted_log();
+    let other = attribution(Method::Research, Identification::Experiment, 0.9);
+    assert!(
+        learn(
+            &mut log,
+            &quoted(),
+            &mut policy,
+            &mut memory,
+            outcome("calm", 7, 4),
+            &other
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn an_effect_outside_the_prediction_learned_after_an_action_returns_the_policy_to_shadow() {
+    // narrow() predicts uplift in [1, 5]; observed 14 against 4 is 10.
+    let mut policy = narrow();
+    let mut memory = ActionOutcomeMemory::with_capacity(4).unwrap();
+    let mut log = acted_log();
+    let in_range = learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &identified(Method::Market),
+    )
+    .unwrap();
+    assert_eq!(in_range, Authority::NarrowReversible, "premise");
+    let mut log = acted_log();
+    let drifted = learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 14, 4),
+        &identified(Method::Market),
+    )
+    .unwrap();
+    assert_eq!(drifted, Authority::Shadow);
+    assert_eq!(memory.len(), 2, "the drifted outcome is remembered too");
+    // And the next pass, guard and all, sends nothing.
+    let mut adapter = Counting::default();
+    let report = run(request(), Some(&policy), &mut adapter).unwrap();
+    assert!(matches!(report.outcome, Outcome::Shadowed(_)));
+    assert!(adapter.calls.is_empty());
+}
+
+#[test]
+fn widening_leaves_a_record_of_its_evidence_and_approver_and_refuses_a_correlation() {
+    let mut policy = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
+    let correlation = attribution(Method::Market, Identification::NotIdentified, 0.0);
+    assert!(widen(&mut policy, &correlation, &operator()).is_err());
+    // A correlation dressed up with a high identifiability is refused by
+    // the contract before the policy reads it.
+    let dressed = attribution(Method::Market, Identification::NotIdentified, 0.95);
+    let err = widen(&mut policy, &dressed, &operator()).unwrap_err();
+    assert!(err.to_string().contains("not identified"), "{err}");
+    assert_eq!(policy.authority(), Authority::Shadow);
+    let record = widen(&mut policy, &identified(Method::Market), &operator()).unwrap();
+    assert_eq!(policy.authority(), Authority::NarrowReversible);
+    assert_eq!(record.approver, "risk-officer");
+    assert_eq!(record.class, Method::Market);
+    assert_eq!(record.action_id, "a1");
+}
+
+#[test]
+fn execute_reports_withheld_rather_than_shadow_when_the_guard_refuses_in_shadow() {
+    let r = request();
+    let plan = InterventionPlan::plan(&r.goal, &graph(), &r.identity, step("quoter", 20)).unwrap();
+    let g = graph();
+    let gated = Gated {
+        goal: &r.goal,
+        graph: &g,
+        plan: &plan,
+        facts: &r.observed_facts,
+    };
+    let at_gate = || {
+        let mut log = StageLog::new();
+        for stage in &ORDER[..7] {
+            log.pass(*stage).unwrap();
+        }
+        log
+    };
+    let mut adapter = Counting::default();
+    let mut guard = ActionGuard::from_decl(guard_decl()).unwrap();
+    let acted = execute(&mut at_gate(), None, gated, Some(&mut guard), &mut adapter).unwrap();
+    assert!(matches!(acted.execution, Execution::Shadow(_)), "premise");
+    let mut decl = guard_decl();
+    decl.grounds = vec![Ground::DesiredPriceImpact];
+    let mut refusing = ActionGuard::from_decl(decl).unwrap();
+    let mut log = at_gate();
+    let acted = execute(&mut log, None, gated, Some(&mut refusing), &mut adapter).unwrap();
+    assert!(matches!(acted.execution, Execution::Withheld(_)));
+    assert_eq!(log.failed(), Some(Stage::Act));
 }

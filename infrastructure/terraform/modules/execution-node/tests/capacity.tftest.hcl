@@ -14,20 +14,27 @@
 mock_provider "google" {}
 
 variables {
-  project_id                 = "capacity-plan-harness"
-  environment                = "dev"
-  node_id                    = "harness"
-  region                     = "us-east4"
-  zone                       = "us-east4-a"
-  network_id                 = "projects/capacity-plan-harness/global/networks/harness"
-  subnet_cidr                = "10.0.48.0/24"
-  boot_image                 = "projects/capacity-plan-harness/global/images/qip-node-harness"
-  venues                     = { "sim" = { cidr = "192.0.2.0/24", port = 443 } }
-  egress_endpoints           = { "gcp" = "http://127.0.0.1:9105" }
-  capital_envelope_secret_id = "qip-capital-envelope-key"
-  region_allocation          = "0.25"
-  egress_bootstrap           = "static_resources:\n${join("\n", [for i in range(60) : "  # bootstrap line ${i} keeps this fixture past the one-kilobyte floor the module refuses below"])}\n"
-  machine_type               = "c3-highcpu-8"
+  project_id            = "capacity-plan-harness"
+  environment           = "dev"
+  node_id               = "harness"
+  region                = "us-east4"
+  zone                  = "us-east4-a"
+  network_id            = "projects/capacity-plan-harness/global/networks/harness"
+  subnet_cidr           = "10.0.48.0/24"
+  boot_image            = "projects/capacity-plan-harness/global/images/qip-node-harness"
+  venues                = { "sim" = { cidr = "192.0.2.0/24", port = 443 } }
+  egress_endpoints      = { "gcp" = "http://127.0.0.1:9105" }
+  trust_bundle_path     = "/etc/qip/trust/harness.json"
+  google_tls_roots_path = "/etc/qip/trust/google-roots.pem"
+  workload_certificates = {
+    ca_pool              = "projects/harness-project/locations/us-east4/caPools/qip-harness-internal"
+    certificate_template = "projects/harness-project/locations/us-east4/certificateTemplates/qip-harness-workload"
+    lifetime_secs        = 86400
+    trust_roots_pem      = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+  }
+  region_allocation = "0.25"
+  egress_bootstrap  = "static_resources:\n${join("\n", [for i in range(60) : "  # bootstrap line ${i} keeps this fixture past the one-kilobyte floor the module refuses below"])}\n"
+  machine_type      = "c4-highcpu-8"
 }
 
 run "a_node_with_an_instance_holds_a_reservation_sized_to_its_target_and_consumes_it" {
@@ -48,7 +55,7 @@ run "a_node_with_an_instance_holds_a_reservation_sized_to_its_target_and_consume
   }
 
   assert {
-    condition     = google_compute_reservation.node[0].specific_reservation[0].instance_properties[0].machine_type == "c3-highcpu-8"
+    condition     = google_compute_reservation.node[0].specific_reservation[0].instance_properties[0].machine_type == "c4-highcpu-8"
     error_message = "the reservation holds a different machine type from the one the template boots"
   }
 

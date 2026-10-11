@@ -42,7 +42,7 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
@@ -451,8 +451,8 @@ impl Run {
                     .envelope
                     .admit(&venue(), notional, &self.utilisation, self.now)
                 {
-                    CapitalGrant::Full => self.utilisation.gross_committed += notional,
-                    CapitalGrant::Reduced(cap) => {
+                    CapitalAdmission::Full => self.utilisation.gross_committed += notional,
+                    CapitalAdmission::Reduced(cap) => {
                         assert!(
                             cap <= notional,
                             "{}: a reduction was larger than the request",
@@ -460,7 +460,7 @@ impl Run {
                         );
                         self.utilisation.gross_committed += cap;
                     }
-                    CapitalGrant::Refused(_) => self.capital_refused += 1,
+                    CapitalAdmission::Refused(_) => self.capital_refused += 1,
                 }
                 self.utilisation.orders_sent += 1;
             }

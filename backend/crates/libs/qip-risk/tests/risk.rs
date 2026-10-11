@@ -527,6 +527,9 @@ fn state() -> RiskState {
         // No venue limit is exercised in this file; venue rules have their
         // pass and veto fixtures in limit_fixtures.rs.
         venue_exposures: BTreeMap::new(),
+        // Nor is the survival ceiling; its fixtures are there too.
+        survival_gross_ceiling: None,
+        gross_before_order: None,
     }
 }
 

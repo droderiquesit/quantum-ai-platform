@@ -155,6 +155,20 @@ locals {
           env_file_variable = "QIP_RISK_LIMITS_PATH"
         }
       },
+      # ADR 0110: which KMS key version the API signs each class under —
+      # `{"policy", "halt", "envelope"}`, each a full cryptoKeyVersions
+      # resource name, read off the same data sources the trust bundle is
+      # rendered from, so the versions signed under and the versions the
+      # cells trust are one fact. Configuration, not a credential: a resource
+      # name grants nothing, and the signer binding is the API's own identity.
+      var.artefact_trust_bundle_file == null ? {} : {
+        kms-key-versions = {
+          content           = jsonencode(local.artefact_api_key_versions)
+          file_name         = "kms-key-versions.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_KMS_KEY_VERSIONS_PATH"
+        }
+      },
     )
     # The fast brain's one optional file. It had no entry here until ADR
     # 0061, because nothing optional reached it; the limit set does, for the
@@ -271,6 +285,10 @@ locals {
         {
           QIP_API_ADDRESS    = "0.0.0.0:8080"
           QIP_STORAGE_TARGET = var.storage_target
+          # ADR 0110 decision 5: the deployment, named, so the binary can
+          # refuse the seed-derived signing key everywhere but a developer's
+          # machine. The binary refuses to start without it.
+          QIP_DEPLOYMENT = var.environment
           # The autonomy ceiling, from the one root variable whose validation
           # refuses the three live rungs at plan time. Every workload takes it
           # from here and never from a literal, so lowering or raising it is a
@@ -287,6 +305,20 @@ locals {
         # and anything above the envelope ceiling at start-up, by name.
         var.region_dark_after == null ? {} : {
           QIP_REGION_DARK_AFTER = var.region_dark_after
+        },
+        # ADR 0110: the API signs policy payloads, halts and envelopes under
+        # their own Cloud KMS keys, proven at start-up against the trust
+        # bundle the cells hold — both files baked into the image from
+        # `infrastructure/trust/` (Dockerfile), never fetched. Only once an
+        # environment names a committed bundle, because `kms` with no bundle
+        # stops the process; until then the API's stated interim posture is
+        # the shared key, refused outside `local` from
+        # `qip_transport::trust::SHARED_KEY_REMOVED_AFTER`. The key-version map
+        # is the `kms-key-versions` file in local.optional_config_files.
+        var.artefact_trust_bundle_file == null ? {} : {
+          QIP_ARTEFACT_SIGNER       = "kms"
+          QIP_TRUST_BUNDLE_PATH     = local.trust_bundle_image_path
+          QIP_GOOGLE_TLS_ROOTS_PATH = local.google_roots_image_path
         },
       )
       # The universe every root reads, and whatever optional files the tfvars
@@ -422,6 +454,10 @@ locals {
           QIP_FASTBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
           QIP_STORAGE_TARGET           = var.storage_target
           QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
+          # ADR 0110 decision 5: the deployment, named, so the binary can
+          # refuse the seed-derived signing key everywhere but a developer's
+          # machine. The binary refuses to start without it.
+          QIP_DEPLOYMENT = var.environment
         },
         # The live market-data connector, or nothing. Both keys or neither:
         # `connector_feed` refuses half a configuration by name rather than
@@ -517,6 +553,10 @@ locals {
           QIP_STORAGE_TARGET           = var.storage_target
           QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
           QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
+          # ADR 0110 decision 5: the deployment, named, so the binary can
+          # refuse the seed-derived signing key everywhere but a developer's
+          # machine. The binary refuses to start without it.
+          QIP_DEPLOYMENT = var.environment
         },
         # The source-discovery cadence `DiscoveryConfig::from_lookup` reads.
         # Unset, the desk runs its own default of zero — no pass at all,
@@ -525,6 +565,16 @@ locals {
         # catalogue chooses for them.
         var.deepbrain_discover_every == null ? {} : {
           QIP_DEEPBRAIN_DISCOVER_EVERY = var.deepbrain_discover_every
+        },
+        # The compute router's arms (`qip_kernel::compute_routing`). Unset,
+        # the binary runs the classical router; dev and test name the
+        # simulator so the asynchronous quantum path runs in a deployed
+        # process, and stage and prod leave both null.
+        var.deepbrain_quantum_provider == null ? {} : {
+          QIP_QUANTUM_PROVIDER = var.deepbrain_quantum_provider
+        },
+        var.deepbrain_quantum_inspired == null ? {} : {
+          QIP_QUANTUM_INSPIRED = var.deepbrain_quantum_inspired
         },
         # The catalogued connectors this node polls beside its own stream, or
         # nothing. Both keys or neither: `DeepBrainConfig` refuses half a

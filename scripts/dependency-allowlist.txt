@@ -1,0 +1,61 @@
+# Every third-party package permitted in backend/Cargo.lock — direct and transitive.
+# ADR 0109 (Accepted 2026-10-11): crates are admitted from this committed list,
+# one package per line, `name  # ADR NNNN — reason`. A package not listed here
+# fails ./scripts/check-dependencies.sh, so every admission appears in a diff.
+# Transitive packages are listed too, so a crate that quietly widens its own
+# dependency tree shows up here rather than nowhere.
+
+# The decision core (ADR 0002, 0009): serde, serde_json and their closure.
+serde            # ADR 0002 — serialisation of every contract
+serde_json       # ADR 0002 — the wire and journal format
+serde_derive     # ADR 0002 — serde's derive macro
+proc-macro2      # ADR 0002 — serde_derive's proc-macro support
+quote            # ADR 0002 — serde_derive's proc-macro support
+syn              # ADR 0002 — serde_derive's proc-macro support
+unicode-ident    # ADR 0002 — syn's identifier tables
+serde_core       # ADR 0002 — serde 1.0.229 split its core traits into this crate
+itoa             # ADR 0002 — serde_json integer formatting
+zmij             # ADR 0002 — serde_json float formatting
+memchr           # ADR 0002 — serde_json byte search
+
+# Cold-tier compression (ADR 0113 §3, admitted under ADR 0109): qip-storage
+# compresses sealed tick segments with zstd after the size measurement the ADR
+# required. zstd-sys builds the reference C library, so its build closure is
+# listed too; none of the build-only packages reach a shipped binary's code.
+zstd             # ADR 0113 — tick-segment compression in qip-storage
+zstd-safe        # ADR 0113 — zstd's safe wrapper over the C library
+zstd-sys         # ADR 0113 — the reference zstd C library, built from source
+cc               # ADR 0113 — build-only: compiles zstd-sys's C sources
+find-msvc-tools  # ADR 0113 — build-only: cc's Windows toolchain probe
+jobserver        # ADR 0113 — build-only: cc's parallel-build coordination
+shlex            # ADR 0113 — build-only: cc's flag parsing
+pkg-config       # ADR 0113 — build-only: zstd-sys's system-library probe
+libc             # ADR 0113 — jobserver/getrandom's libc bindings
+getrandom        # ADR 0113 — jobserver's dependency (build-only here)
+r-efi            # ADR 0113 — getrandom's UEFI target support, never built on Linux
+cfg-if           # ADR 0113 — conditional compilation helper in the closure
+
+# Asymmetric signing and verification (ADR 0110) and mutual TLS where the
+# platform owns the socket (ADR 0112), admitted under ADR 0109's crypto/TLS
+# tier. Verification uses ring; the fabric links use rustls over ring. The
+# windows-* and wasi packages are platform shims in the closure that are never
+# compiled for the Linux targets the platform ships.
+ring             # ADR 0110 — ECDSA P-256 verification and the local signer
+rustls           # ADR 0112 — mutual TLS on the fabric listener and its clients
+rustls-pki-types # ADR 0112 — certificate and key types rustls takes
+rustls-webpki    # ADR 0112 — certificate path validation against the trust roots
+untrusted        # ADR 0110 — ring's and webpki's bounds-checked input reader
+subtle           # ADR 0112 — rustls's constant-time comparisons
+zeroize          # ADR 0112 — rustls-pki-types wipes private keys on drop
+once_cell        # ADR 0112 — rustls's lazily initialised provider statics
+wasi             # ADR 0110 — getrandom's WASI shim, never built on Linux
+windows-sys      # ADR 0110 — ring's Windows bindings, never built on Linux
+windows-targets  # ADR 0110 — windows-sys's import libraries, never built on Linux
+windows_aarch64_gnullvm  # ADR 0110 — windows-targets shim, never built on Linux
+windows_aarch64_msvc     # ADR 0110 — windows-targets shim, never built on Linux
+windows_i686_gnu         # ADR 0110 — windows-targets shim, never built on Linux
+windows_i686_gnullvm     # ADR 0110 — windows-targets shim, never built on Linux
+windows_i686_msvc        # ADR 0110 — windows-targets shim, never built on Linux
+windows_x86_64_gnu       # ADR 0110 — windows-targets shim, never built on Linux
+windows_x86_64_gnullvm   # ADR 0110 — windows-targets shim, never built on Linux
+windows_x86_64_msvc      # ADR 0110 — windows-targets shim, never built on Linux

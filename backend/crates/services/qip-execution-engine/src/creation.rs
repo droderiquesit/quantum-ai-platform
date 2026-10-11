@@ -25,9 +25,10 @@
 //! * It is not [`crate::modes`], which enables an execution *mode* at a venue.
 //!   A venue where quoting is enabled is not thereby a venue where the
 //!   platform may list something new.
-//! * It creates nothing. No Market Factory exists in this workspace
-//!   (EXEC-006), so nothing consumes an admission yet; the gate is built
-//!   first so that the capability, when it is built, has no ungated form.
+//! * It creates nothing itself. [`crate::market_creation::MarketFactory`]
+//!   consumes an admission for each of create, list and seed, and has no
+//!   way to take any of the three without one; this gate was built first so
+//!   that the factory, when it was built, had no ungated form.
 //! * It does not relax the paper-trading boundary. An admitted request still
 //!   reaches only a simulated or sandbox venue (ADR 0003).
 //!

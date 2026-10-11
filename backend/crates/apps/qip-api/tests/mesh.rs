@@ -134,7 +134,11 @@ fn rig_full(
     )?;
     // The trust root first, exactly as `main` orders it: the key installed
     // here is the key the downlink in these tests verifies against.
-    harden_central(&mut platform, Some(ENVELOPE_KEY))?;
+    harden_central(
+        &mut platform,
+        Some(ENVELOPE_KEY),
+        qip_core::deployment::Deployment::Local,
+    )?;
 
     let settings = MeshSettings {
         cells: vec![CellAddress {
@@ -2833,5 +2837,273 @@ fn a_cycle_ships_the_cell_holding_a_retired_lot_its_disposition_and_no_other_cel
         VerifiedPolicy::verify(tampered, key, CELL, asked_at).is_err(),
         "a disposition altered after signing still verifies at the cell"
     );
+    Ok(())
+}
+
+// --- ADR 0110: the class keys, end to end over real sockets -------------------
+
+/// With the API signing under ADR 0110's class keys, a cell holding only the
+/// trust bundle verifies the cycle's payload and the operator's halt, and a
+/// cell still on the shared key refuses both. Real sockets, real P-256
+/// signatures, and the kill switch the console trips.
+///
+/// Mutation: make `MeshBackbone::dispatch_policy` ignore `signers` (sign
+/// with `policy_key` whenever one is present) and the bundle cell refuses
+/// the payload; make `broadcast_halt` sign under the policy signer and the
+/// bundle cell refuses the halt. Either fails this.
+#[test]
+fn a_backbone_signing_under_the_class_keys_is_verified_by_a_bundle_cell_and_refused_by_a_shared_key_cell()
+-> Result<()> {
+    use qip_contracts::trust::{ArtefactClass, ArtefactSigner, TrustBundle, TrustedKey};
+    use qip_transport::trust::{BundleVerifier, LocalSigner};
+
+    let rig = rig(64)?;
+    let policy = Arc::new(LocalSigner::generate(
+        ArtefactClass::Policy,
+        "test/policy/1",
+    )?);
+    let halt = Arc::new(LocalSigner::generate(ArtefactClass::Halt, "test/halt/1")?);
+    let envelope = LocalSigner::generate(ArtefactClass::Envelope, "test/envelope/1")?;
+    let bundle = TrustBundle::new(
+        [policy.as_ref(), halt.as_ref(), &envelope]
+            .into_iter()
+            .map(|signer| TrustedKey {
+                class: signer.class(),
+                key_version: signer.key_version().to_string(),
+                public_key: signer.public_key_hex(),
+                not_after: Timestamp::from_secs(4_000_000_000),
+            })
+            .collect(),
+        std::collections::BTreeSet::new(),
+    )?;
+    rig.mesh
+        .lock()
+        .map_err(|_| Error::unavailable("the mesh lock is poisoned"))?
+        .sign_with(qip_api::mesh::PolicySigners {
+            policy: policy.clone(),
+            halt: halt.clone(),
+        });
+
+    let mut bundle_cell = PolicyDownlink::connect_trusted(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config("policy-bundle", &format!("http://{}", rig.cell_peer)),
+        ),
+        qip_edge::TrustRoot::bundle(BundleVerifier::new(bundle)),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )?;
+    let mut shared_cell = policy_downlink(&rig, "policy-shared")?;
+
+    run_cycle(&rig)?;
+    let response = rig
+        .api
+        .handle(&request(Method::Post, "/api/v1/kill-switch"));
+    assert_eq!(response.status, 200);
+
+    let bundle_batch = bundle_cell.poll(at(Duration::from_secs(5)))?;
+    // Premise: the bundle cell received frames at all, so an empty refusal
+    // list below is not an empty inbox.
+    assert_eq!(bundle_batch.verified.len(), 1, "{bundle_batch:?}");
+    assert_eq!(bundle_batch.halts.len(), 1, "{bundle_batch:?}");
+    assert!(
+        bundle_batch.refused.is_empty(),
+        "{:?}",
+        bundle_batch.refused
+    );
+
+    let shared_batch = shared_cell.poll(at(Duration::from_secs(5)))?;
+    assert!(shared_batch.verified.is_empty() && shared_batch.halts.is_empty());
+    assert!(
+        !shared_batch.refused.is_empty()
+            && shared_batch
+                .refused
+                .iter()
+                .all(|refusal| refusal.reason.contains("trust bundle")),
+        "a shared-key cell did not refuse the asymmetric frames by name: {:?}",
+        shared_batch.refused
+    );
+    Ok(())
+}
+
+/// R12-CAPITAL-4088 on the binary path: the grant the centre's plane issues
+/// carries the liquidity and leverage bounds, `pending_capital` and the
+/// mesh dispatch carry them to the cell's capital inbox, and the cell's own
+/// downlink verifies them under the trust root — so the bounds the cell
+/// enforces are the ones the two approvers' grant was signed over. A copy
+/// whose participation bound was widened in transit does not verify.
+///
+/// Mutation: drop the `with_exposure` call from `EnvelopeIssuer::issue` —
+/// the verified envelope carries no bounds and the first assertion fails.
+#[test]
+fn the_plane_issued_grant_reaches_the_cells_downlink_with_its_exposure_bounds_signed() -> Result<()>
+{
+    let centre = rig(64)?;
+    let grant = {
+        let mut platform = centre
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        grant_the_desk(platform.central_mut())?
+    };
+    let issued = grant
+        .exposure()
+        .cloned()
+        .ok_or_else(|| Error::not_found("exposure bounds on the issued grant"))?;
+    assert_eq!(
+        issued.max_participation_bp,
+        qip_capital::DEFAULT_MAX_PARTICIPATION_BP
+    );
+    assert_eq!(issued.max_leverage, qip_capital::DEFAULT_MAX_LEVERAGE);
+    assert_eq!(
+        issued.capital,
+        grant.gross_limit(),
+        "the leverage is measured on the capital the grant was sized at"
+    );
+
+    // The pending set the cycle route builds, dispatched through the mesh.
+    let pending = {
+        let platform = centre
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        qip_api::mesh::pending_capital(&platform, at(Duration::from_secs(30)))
+    };
+    assert_eq!(pending.len(), 1, "premise: the plane offers the one grant");
+    let dispatched = centre
+        .mesh
+        .lock()
+        .map_err(|_| Error::invalid("the mesh lock is poisoned"))?
+        .dispatch(pending, at(Duration::from_secs(30)));
+    assert_eq!(dispatched.delivered, 1, "{dispatched:?}");
+
+    let mut downlink = CapitalDownlink::connect(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config("downlink", &format!("http://{}", centre.cell_peer)),
+        ),
+        ENVELOPE_KEY.as_bytes(),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )?;
+    let batch = downlink.poll(at(Duration::from_secs(60)))?;
+    assert_eq!(batch.verified.len(), 1, "{:?}", batch.refused);
+    let verified = &batch.verified[0];
+    assert_eq!(verified.exposure(), Some(&issued));
+    // The cell's check reads those bounds: a quarter of the visible side is
+    // the most one order may ask for.
+    let used = Utilisation::default();
+    assert!(
+        verified
+            .check_exposure(dec!("25"), dec!("100"), dec!("2500"), &used)
+            .is_ok()
+    );
+    assert!(
+        verified
+            .check_exposure(dec!("26"), dec!("100"), dec!("2600"), &used)
+            .is_err()
+    );
+
+    // Widened in transit, on a second rig so the dispatch is not deduplicated
+    // against the honest copy: same signature, different payload, refused.
+    let tampered: CapitalEnvelope = serde_json::from_str(
+        &serde_json::to_string(&grant)
+            .map_err(|e| Error::invalid(e.to_string()))?
+            .replace(
+                "\"max_participation_bp\":2500",
+                "\"max_participation_bp\":10000",
+            ),
+    )
+    .map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(
+        tampered
+            .exposure()
+            .map(|bounds| bounds.max_participation_bp),
+        Some(10_000),
+        "premise: the edit took"
+    );
+    let other = rig(64)?;
+    let dispatched = other
+        .mesh
+        .lock()
+        .map_err(|_| Error::invalid("the mesh lock is poisoned"))?
+        .dispatch(
+            vec![PendingGrant {
+                cell: CELL.to_string(),
+                envelope: tampered,
+            }],
+            at(Duration::from_secs(30)),
+        );
+    assert_eq!(dispatched.delivered, 1, "{dispatched:?}");
+    let mut downlink = CapitalDownlink::connect(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config("downlink-tampered", &format!("http://{}", other.cell_peer)),
+        ),
+        ENVELOPE_KEY.as_bytes(),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )?;
+    let batch = downlink.poll(at(Duration::from_secs(60)))?;
+    assert!(
+        batch.verified.is_empty() && batch.refused.len() == 1,
+        "a widened bound verified at the cell: {:?}",
+        batch.refused
+    );
+    Ok(())
+}
+
+/// The failure this prevents: `signing::configure` refused the shared key
+/// after its removal date only at start-up, so an API started on the last
+/// permitted day kept signing payloads and halts under it for as long as it
+/// stayed up. Mutation: make `MeshBackbone::shared_key_at` return the key
+/// without consulting `refuse_shared_key_after_removal` and both dispatches
+/// after the date are signed and sent; this fails.
+#[test]
+fn a_running_backbone_stops_signing_with_the_shared_key_at_its_removal_date() -> Result<()> {
+    let before = Timestamp::from_civil(2027, 1, 31);
+    let after = Timestamp::from_civil(2027, 2, 1);
+    let pending = |at: Timestamp| qip_api::mesh::PendingPolicy {
+        payloads: vec![(CELL.to_string(), PolicyPayload::unproduced(1, CELL, at))],
+        ..qip_api::mesh::PendingPolicy::default()
+    };
+
+    // A backbone nobody told its deployment is held to the date.
+    let rig = rig(64)?;
+    let mut mesh = rig
+        .mesh
+        .lock()
+        .map_err(|_| Error::unavailable("the mesh lock is poisoned"))?;
+    // Premise: the day before, the same backbone signs and sends both.
+    let sent = mesh.dispatch_policy(pending(before), before);
+    assert_eq!(sent.sent, 1, "{sent:?}");
+    assert_eq!(mesh.broadcast_halt("drill", before).sent, 1);
+
+    let refused = mesh.dispatch_policy(pending(after), after);
+    assert_eq!(refused.sent, 0, "a payload went out under the retired key");
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|error| error.contains(qip_transport::trust::SHARED_KEY_REMOVED_AFTER)),
+        "the refusal does not name the date: {refused:?}"
+    );
+    let halt = mesh.broadcast_halt("drill", after);
+    assert_eq!(halt.sent, 0, "a halt went out under the retired key");
+    assert!(
+        halt.errors
+            .iter()
+            .any(|error| error.contains("QIP_ARTEFACT_SIGNER=kms")),
+        "the refusal does not say what to set instead: {halt:?}"
+    );
+
+    // A deployed backbone, as `main` binds it outside `local`: the same.
+    mesh.bind_shared_key_to(qip_core::deployment::Deployment::Dev);
+    assert_eq!(mesh.broadcast_halt("drill", after).sent, 0);
+
+    // `local` keeps the key, mirroring the start-up rule exactly.
+    mesh.bind_shared_key_to(qip_core::deployment::Deployment::Local);
+    assert_eq!(mesh.dispatch_policy(pending(after), after).sent, 1);
+    assert_eq!(mesh.broadcast_halt("drill", after).sent, 1);
     Ok(())
 }

@@ -918,13 +918,49 @@ fn every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_tran
         cell_scanned >= 20,
         "only {cell_scanned} sources of qip-edge were read; the walk is not reaching the crate"
     );
+    //
+    // `trust.rs` (ADR 0110) is the third, and it names the transport crate
+    // for its `trust` module alone: `BundleVerifier`, whose `verify` is a
+    // pure `ring` signature check over bytes already in memory, and the
+    // shared-key removal date. Neither opens a socket or a file — the
+    // module's own doc says a cell that cannot reach Google must still
+    // accept a halt. That exemption is narrower than the other two, so it is
+    // held narrower: every line of `trust.rs` that the scan flags must name
+    // `qip_transport::trust::` and nothing else on the scan's list, so a
+    // `std::fs` read or a client creeping into the verification path fails
+    // here rather than riding in under the file's name.
     assert_eq!(
         cell_io,
-        BTreeSet::from(["journal.rs".to_string(), "mesh.rs".to_string()]),
-        "a source of qip-edge other than the mesh client and the journal's file mirror names \
-         a socket or a file (or one of those two no longer does); the cell's risk gate, \
-         netting, inventory and order generation must stay arithmetic and memory"
+        BTreeSet::from([
+            "journal.rs".to_string(),
+            "mesh.rs".to_string(),
+            "trust.rs".to_string(),
+        ]),
+        "a source of qip-edge other than the mesh client, the journal's file mirror and the \
+         trust root's pure verifier names a socket or a file (or one of those three no longer \
+         does); the cell's risk gate, netting, inventory and order generation must stay \
+         arithmetic and memory"
     );
+    let trust_path = repository_root().join("backend/crates/edge/qip-edge/src/trust.rs");
+    let trust = std::fs::read_to_string(&trust_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", trust_path.display()));
+    let flagged: Vec<&str> = trust
+        .lines()
+        .filter(|line| names_out_of_process_io(line))
+        .collect();
+    assert!(
+        !flagged.is_empty(),
+        "premise: trust.rs was expected to name qip_transport::trust and the scan saw nothing"
+    );
+    for line in flagged {
+        let without_trust = line.replace("qip_transport::trust::", "");
+        assert!(
+            line.contains("qip_transport::trust::") && !names_out_of_process_io(&without_trust),
+            "qip-edge's trust.rs names out-of-process I/O beyond the transport's pure `trust` \
+             module: `{}` — signature verification on the cell must not leave memory",
+            line.trim()
+        );
+    }
 
     // The adapters: the simulated exchange the node's passes place against
     // is in-process, and only the REST adapter names the transport.
@@ -1000,7 +1036,16 @@ fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
     // store and opens key-value stores only. `qip-storage`'s own suite holds
     // the other half: `key_value` refuses both targets
     // (a_warehouse_or_a_wide_column_target_cannot_be_opened_as_the_key_value_store_a_process_keeps_its_state_on).
-    const FORBIDDEN: [&str; 4] = ["BigQuery", "Bigtable", "bigquery", ".blobs("];
+    //
+    // A blob store is admitted in exactly one place since W1.13 (v12.0 §8.2:
+    // market events are captured at the edge into the tick lake): the
+    // `LakeSink` the drain thread owns, which writes sealed spool segments
+    // off the decision path. It was banned outright while the node had no
+    // lake; it is now allowed only as the argument to `LakeSink::new` in
+    // `main.rs`, and the decision loop (`scheduler.rs`) may never name one,
+    // so a blob read or write cannot reach a pass.
+    const FORBIDDEN: [&str; 3] = ["BigQuery", "Bigtable", "bigquery"];
+    let mut lake_sinks = 0usize;
     let adapters = qip_acceptance::read("backend/crates/libs/qip-storage/src/provider.rs");
     for token in ["BigQuery", "Bigtable", "pub fn blobs("] {
         assert!(
@@ -1020,6 +1065,21 @@ fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
             // the node does not use it.
             let code = line.split("//").next().unwrap_or_default();
             opens_key_value |= code.contains(".key_value(");
+            if code.contains(".blobs(") {
+                let previous = if index == 0 {
+                    ""
+                } else {
+                    text.lines().nth(index - 1).unwrap_or_default()
+                };
+                assert!(
+                    path.ends_with("main.rs") && previous.contains("LakeSink::new("),
+                    "{}:{} opens a blob store outside the drain's LakeSink; the edge node may \
+                     write the tick lake from its drain and reach no blob store anywhere else",
+                    path.display(),
+                    index + 1
+                );
+                lake_sinks += 1;
+            }
             for token in FORBIDDEN {
                 assert!(
                     !code.contains(token),
@@ -1039,6 +1099,15 @@ fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
         opens_key_value,
         "the node opens no key-value store, so the scan found nothing because it looked at \
          nothing a store is opened from"
+    );
+    assert_eq!(
+        lake_sinks, 1,
+        "the node should open exactly one blob store, for the drain's tick-lake sink"
+    );
+    let decision_loop = qip_acceptance::read("backend/crates/apps/qip-edge-node/src/scheduler.rs");
+    assert!(
+        decision_loop.contains("fn turn(") && !decision_loop.contains("blobs"),
+        "the decision loop must exist and must never name a blob store"
     );
 }
 
@@ -1455,6 +1524,37 @@ fn no_edge_cell_can_reach_a_quantum_solver() {
         graph.contains_key("qip-quantum"),
         "there is no crate called qip-quantum, so every absence asserted here \
          is trivially true and this test constrains nothing"
+    );
+}
+
+#[test]
+fn the_agency_authorisation_path_cannot_reach_a_quantum_solver() {
+    // R12-QUANT-7209: quantum search may explore candidate action spaces but
+    // may never authorise an intervention. `qip-agency` owns the conduct gate
+    // and the guarded act stage, so a solver it could link is a solver whose
+    // answer could become the approval. Nothing asserted this: the absence was
+    // a fact about today's Cargo.toml that one added line would undo, with
+    // every other test still green — the solver tests above guard the edge
+    // cells and the money crates, and agency is neither.
+    let graph = dependency_graph();
+    let reachable = reachable_from(&graph, "qip-agency");
+    for solver in ["qip-quantum", "qip-optimization-engine"] {
+        assert!(
+            !reachable.contains(solver),
+            "qip-agency can reach {solver}, so a quantum search answer could reach the \
+             authorisation of an intervention: {reachable:?}"
+        );
+    }
+    // Anchors: the crate is in the graph and reaches something, so the absences
+    // above are not true of an empty walk or a renamed crate.
+    assert!(
+        reachable.contains("qip-contracts"),
+        "qip-agency reaches nothing it is known to depend on, so this test proves nothing: \
+         {reachable:?}"
+    );
+    assert!(
+        graph.contains_key("qip-quantum") && graph.contains_key("qip-optimization-engine"),
+        "a solver crate was renamed, so every absence asserted here is trivially true"
     );
 }
 
@@ -1884,23 +1984,32 @@ fn the_dependency_graph_is_acyclic() {
 // --- external surface -------------------------------------------------------
 
 #[test]
-fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
+fn no_crate_declares_a_third_party_dependency_the_allow_list_does_not_admit() {
     // The lockfile check in `scripts/check-dependencies.sh` catches what was
     // resolved. This catches what was *asked for*, which is the line a
     // reviewer sees in the diff.
     //
-    // Served by `cargo metadata` like every other check in this file. It used
-    // to run its own, weaker manifest reader — one that classified a section by
-    // `contains("dependencies")` and split keys on `['.', ' ', '=']` — so the
-    // two disagreed about quoted keys, tables named after one dependency, and
-    // which sections counted. Three review rounds were decided by which of the
-    // two happened to fire on a given manifest, which is not a property a
-    // boundary check should have. There is now one reader.
+    // Until ADR 0109 this held every crate to serde and serde_json. ADR 0109
+    // replaced the fixed pair with the committed allow-list the shell script
+    // also reads, so both checks now answer to one list: a crate declared in a
+    // manifest and missing from `scripts/dependency-allowlist.txt` fails here
+    // even before the lockfile is regenerated. The decision core's own two
+    // (ADR 0009) is still held by the next test, so admitting a crate here
+    // does not let it into the core.
     //
-    // Unlike the boundary graph this counts **every** kind, including dev and
-    // build dependencies: the rule is that the workspace declares two
-    // third-party crates, and a test-only dependency is still a supply chain.
-    let permitted: BTreeSet<&str> = ["serde", "serde_json"].into_iter().collect();
+    // Served by `cargo metadata` like every other check in this file. It
+    // counts **every** kind, including dev and build dependencies: a
+    // test-only dependency is still a supply chain.
+    let allow_list = qip_acceptance::read("scripts/dependency-allowlist.txt");
+    let permitted: BTreeSet<&str> = allow_list
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(
+        permitted.contains("serde") && permitted.contains("serde_json"),
+        "premise: the allow-list was read and admits the decision core's two"
+    );
     let metadata = workspace_metadata();
     let members = workspace_member_names(&metadata);
     let mut offenders = Vec::new();
@@ -1927,7 +2036,8 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     );
     assert!(
         offenders.is_empty(),
-        "third-party dependencies were declared: {offenders:?}"
+        "third-party dependencies were declared that scripts/dependency-allowlist.txt \
+         does not admit (add each with the ADR that admits it): {offenders:?}"
     );
 }
 
@@ -3636,4 +3746,93 @@ fn multiple_independent_stores_claim_ledger_authority_ledger_001_is_incorrect() 
          and qip-ledgerd writer (SLICE-31).",
         found_writers.len()
     );
+}
+
+/// The Reflex Mesh crates and the durable event fabric's crates.
+const REFLEX_MESH: &[&str] = &["qip-peer", "qip-peer-link"];
+const DURABLE_FABRIC: &[&str] = &[
+    "qip-events",
+    "qip-streaming",
+    "qip-transport",
+    "qip-fabricd",
+];
+
+#[test]
+fn reflex_mesh_traffic_and_durable_fabric_traffic_share_no_crate_in_either_direction() {
+    // R12-COVERAGE-7194. Multi-leg coordination between cells rides the
+    // Reflex Mesh (`qip-peer`'s protocol, `qip-peer-link`'s wire, ADR 0116);
+    // journals, replay and backpressure ride the event fabric. The point of
+    // keeping them apart is that a leg's latency is never paid for a
+    // durability guarantee, and a fabric outage or replay storm is never
+    // felt on the mesh. That holds only while neither stack can reach the
+    // other: one innocent edge — the peer link journaling its frames through
+    // `qip-events`, or the fabric's producer reusing the peer wire — would
+    // put an fsync or a replay cursor on the leg path, and nothing else in
+    // this suite would notice. `mesh_lane` separates Lane 0 from Lane 1; this
+    // separates Lane 1 from the fabric.
+    let graph = dependency_graph();
+    for name in REFLEX_MESH.iter().chain(DURABLE_FABRIC) {
+        assert!(
+            graph.contains_key(*name),
+            "{name} is not a crate in this workspace; this test constrains nothing"
+        );
+    }
+    for mesh in REFLEX_MESH {
+        let reachable = reachable_from(&graph, mesh);
+        for fabric in DURABLE_FABRIC {
+            assert!(
+                !reachable.contains(*fabric),
+                "{mesh} reaches the durable fabric crate {fabric}: {reachable:?}"
+            );
+        }
+    }
+    for fabric in DURABLE_FABRIC {
+        let reachable = reachable_from(&graph, fabric);
+        for mesh in REFLEX_MESH {
+            assert!(
+                !reachable.contains(*mesh),
+                "{fabric} reaches the Reflex Mesh crate {mesh}: {reachable:?}"
+            );
+        }
+    }
+    // Vacuity guards: the absences above mean something only if each stack
+    // is a stack, and if one binary really does host both — the edge node,
+    // where the temptation to share a writer is greatest.
+    assert!(reachable_from(&graph, "qip-peer-link").contains("qip-peer"));
+    assert!(reachable_from(&graph, "qip-fabricd").contains("qip-streaming"));
+    let node = reachable_from(&graph, "qip-edge-node");
+    assert!(
+        node.contains("qip-peer-link") && node.contains("qip-events"),
+        "the edge node no longer hosts both stacks: {node:?}"
+    );
+}
+
+#[test]
+fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
+    // R12-COVERAGE-7191. A quantum-assisted search may one day rank a large
+    // intervention set, but its ranking must arrive as an input that the
+    // agency's classical causal validation, policy, identity, conduct and
+    // authorization gates (`qip_agency::guard::ActionGuard`,
+    // `conduct_brain::ConductGate`, `ActionPolicy::widen`) then judge — never
+    // as a call the engine makes and trusts. The way in would not be a direct
+    // `qip-quantum` edge, which a reviewer would question, but
+    // `qip-optimization-engine`, which looks like a reasonable thing for a
+    // planner to want. Transitively, so no intermediate crate can carry it.
+    let graph = dependency_graph();
+    assert!(
+        graph.contains_key("qip-agency"),
+        "qip-agency is not a crate in this workspace; this test constrains nothing"
+    );
+    let reachable = reachable_from(&graph, "qip-agency");
+    for solver in ["qip-quantum", "qip-optimization-engine"] {
+        assert!(
+            !reachable.contains(solver),
+            "qip-agency can reach {solver}, so a solver's ranking could be acted \
+             on without passing the agency's gates: {reachable:?}"
+        );
+    }
+    // Vacuity guard: the agency really does hold its gates' crates, and the
+    // solver crates really are solvers.
+    assert!(reachable.contains("qip-compliance"));
+    assert!(reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"));
 }

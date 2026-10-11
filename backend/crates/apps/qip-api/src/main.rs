@@ -27,6 +27,7 @@ use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
 use qip_data_finder::registration::RegistrationRecord;
 use qip_kernel::central::{ArbitragePolicy, CentralConfig, CentralPlane};
+use qip_kernel::compute_routing::ComputeSettings;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
@@ -157,9 +158,15 @@ fn run() -> Result<()> {
     // differences are visible and attributable (CICD-096).
     verify_config_signature()?;
 
-    let mut config = PlatformConfig::default()
-        .with_live_ceiling(ceiling)
-        .with_venue_registrations(venue_registrations);
+    // The compute router's arms, read here as the deep brain reads them, so
+    // the platform `POST /cycle` drives sizes through the same router shape.
+    // Unset is the classical router; an unknown value stops the process.
+    let compute = ComputeSettings::from_lookup(&|name| std::env::var(name).ok())?;
+    let mut config = compute.apply(
+        PlatformConfig::default()
+            .with_live_ceiling(ceiling)
+            .with_venue_registrations(venue_registrations),
+    );
     config.central.arbitrage = arbitrage;
     config.central.region_dark_after = region_dark_after;
 
@@ -275,8 +282,89 @@ fn run() -> Result<()> {
     // also has.
     let envelope_key = qip_core::secret::from_environment(qip_api::trust::ENVELOPE_KEY_VARIABLE)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
+    // ADR 0110 decision 5: which deployment this is, named and never
+    // inferred. Absent is refused, so a deployment that forgot to say what it
+    // is cannot run on the seed-derived key the way a developer's machine may.
+    // And `local` is refused where the platform's own markers show this is
+    // deployed — Cloud Run's `K_*`, the GCE DMI name — so the one value that
+    // relaxes the guards cannot be set by an environment edit on a revision.
+    let deployment = qip_core::deployment::Deployment::parse_observed(
+        std::env::var(qip_api::trust::DEPLOYMENT_VARIABLE)
+            .ok()
+            .as_deref(),
+        &qip_core::deployment::DeploymentMarkers::observe(
+            &|name| std::env::var(name).ok(),
+            std::fs::read_to_string(qip_core::deployment::COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        ),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // R12-GOV-6121: a deployed process states the commit it was built from,
+    // or it does not start — every decision it journals would otherwise name
+    // code nobody can check out (`qip_kernel::decision_record`).
+    qip_kernel::decision_record::require_source_commit(deployment)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let provenance =
+        qip_api::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // ADR 0110: the signer every policy payload, halt and capital envelope
+    // leaves this process under. `kms` signs through Cloud KMS with keys that
+    // never enter the process; `local` (a developer machine only) from a
+    // keys file; unset keeps the shared key above for its last release. Each
+    // asymmetric signer is proven against the trust bundle the cells hold
+    // before anything is served, and the envelope signer is installed into
+    // the plane here, after the operator key swap, so that swap cannot
+    // discard it.
+    let signing = qip_api::signing::configure(
+        &qip_api::signing::SigningSettings::from_env(&|name| std::env::var(name).ok()),
+        deployment,
+        now,
+        &|| {
+            Arc::new(qip_api::signing::MetadataBearer(
+                qip_storage::gcp::auth::MetadataServerTokens::new(clock.clone()),
+            ))
+        },
+        clock.clone(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // ADR 0110 / REFLEX-9011: what the trained_models slot may name. Outside
+    // a local deployment an absent release names nothing — see
+    // `hold_models_to_release` for why that is the fail-closed reading.
+    let release_banner = qip_api::signing::hold_models_to_release(
+        &mut platform,
+        deployment,
+        std::env::var(qip_api::signing::MODEL_PACKS_VARIABLE)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .as_deref()
+            .map(std::path::Path::new),
+        std::env::var(qip_api::signing::TRUST_BUNDLE_VARIABLE)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .as_deref()
+            .map(std::path::Path::new),
+        now,
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    if let qip_api::signing::SigningPosture::Asymmetric(signers) = &signing {
+        // Through the platform's one-purpose seam, not `central_mut`: that
+        // would hand this layer every mutator the central plane has.
+        platform
+            .install_envelope_signer(
+                Arc::clone(&signers.envelope),
+                Arc::clone(&signers.verifier) as Arc<dyn qip_contracts::trust::ArtefactVerifier>,
+                now,
+            )
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
+
+    // The survival policy, before anything is served (R12-CAPITAL-4089): the
+    // hedge capacity and emergency reserve every construction withholds, and
+    // the survival ceiling the Risk Gate reads re-derived under them at once.
+    let survival_banner = apply_survival_policy(&mut platform)?;
+    println!("  survival:         {survival_banner}");
 
     // A tape must end before the roster's authorisation does, and the
     // assembled organisation is asked directly. See
@@ -344,17 +432,33 @@ fn run() -> Result<()> {
     // banner says the deltas have nowhere to land here.
     let mesh_settings = qip_api::mesh::MeshSettings::from_env()?;
     let mesh = match &mesh_settings {
-        Some(settings) => Some(Arc::new(Mutex::new(qip_api::mesh::MeshBackbone::open(
-            settings,
-            storage.key_value("mesh")?,
-            clock.clone(),
-            // The same trust root the plane signs envelopes with, so a cell
-            // verifies policy and capital against one key and a rotation is
-            // one secret rolled in one place. Absent here means policy
-            // distribution is off and the backbone counts it, rather than
-            // signing with something nobody verifies.
-            envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
-        )?))),
+        Some(settings) => Some(Arc::new(Mutex::new(
+            qip_api::mesh::MeshBackbone::open(
+                settings,
+                storage.key_value("mesh")?,
+                clock.clone(),
+                // The same trust root the plane signs envelopes with, so a cell
+                // verifies policy and capital against one key and a rotation is
+                // one secret rolled in one place. Absent here means policy
+                // distribution is off and the backbone counts it, rather than
+                // signing with something nobody verifies.
+                envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
+            )
+            .map(|mut backbone| {
+                // The shared key's removal date, re-checked at each dispatch
+                // and not only by `signing::configure` above.
+                backbone.bind_shared_key_to(deployment);
+                // Under ADR 0110 the class keys replace the shared key for
+                // payloads and halts as well as for envelopes.
+                if let qip_api::signing::SigningPosture::Asymmetric(signers) = &signing {
+                    backbone.sign_with(qip_api::mesh::PolicySigners {
+                        policy: Arc::clone(&signers.policy),
+                        halt: Arc::clone(&signers.halt),
+                    });
+                }
+                backbone
+            })?,
+        ))),
         None => None,
     };
 
@@ -568,7 +672,10 @@ fn run() -> Result<()> {
         "  console:          read-only; it can trip the kill switch and has no path that \
          clears one"
     );
+    println!("  deployment:       {deployment} (QIP_DEPLOYMENT)");
     println!("  capital trust:    {}", provenance.describe());
+    println!("  artefact signing: {}", signing.describe());
+    println!("  model release:    {release_banner}");
     println!("  risk limits:      {limits_banner}");
     println!("  feed:             {feed_banner}");
     if let Some(line) = &journal_banner {
@@ -593,6 +700,7 @@ fn run() -> Result<()> {
     }
     println!("  arbitrage desk:   {arbitrage_banner}");
     println!("  region darkness:  {region_dark_banner}");
+    println!("  compute routing:  {}", compute.describe());
     println!("  wallet statement: {statement_banner}");
     println!("  capital fabric:   {fabric_banner}");
     match &mesh {
@@ -1129,6 +1237,52 @@ fn load_fabric_declaration(
     Ok((Some(feed), banner))
 }
 
+/// Apply the survival policy this process withholds under (R12-CAPITAL-4089)
+/// and return the banner line.
+///
+/// Until this existed no composition root called
+/// `Platform::set_survival_policy`, so every binary ran the kernel's library
+/// default and the hedge tier of the survival waterfall withheld nothing in
+/// any process that ever ran. Unset is the shipped figure, never zero; a
+/// value that is not UTF-8, not a fraction, or below the shipped floor stops
+/// the process with the variable named — see
+/// `qip_kernel::survival::SurvivalPolicy::from_settings`.
+fn apply_survival_policy(platform: &mut Platform) -> Result<String> {
+    apply_survival_policy_from(platform, &|name| std::env::var(name))
+}
+
+/// [`apply_survival_policy`] over any lookup, so a test drives the root's own
+/// install rather than calling the kernel beside it — a test that called
+/// `set_survival_policy` itself passed with this function's call deleted.
+fn apply_survival_policy_from(
+    platform: &mut Platform,
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    let policy = survival_policy_from(lookup)?;
+    platform.set_survival_policy(policy);
+    Ok(policy.describe())
+}
+
+/// The reading half of [`apply_survival_policy`], over any lookup, so the
+/// refusals are testable without touching the process environment.
+fn survival_policy_from(
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<qip_kernel::survival::SurvivalPolicy> {
+    let read = |name: &str| -> Result<Option<String>> {
+        match lookup(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(Error::invalid(format!(
+                "configuration: {name} is not valid UTF-8; set a decimal fraction or unset it \
+                 for the shipped figure — an unreadable reserve is not a reserve of zero"
+            ))),
+        }
+    };
+    let hedge = read(qip_kernel::survival::HEDGE_CAPACITY_VARIABLE)?;
+    let emergency = read(qip_kernel::survival::EMERGENCY_RESERVE_VARIABLE)?;
+    qip_kernel::survival::SurvivalPolicy::from_settings(hedge.as_deref(), emergency.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     //! Two things this root pins. The operator page's example policy is one
@@ -1523,5 +1677,80 @@ mod tests {
             "the refusal does not name sector-concentration as the control that fired: {refusal}"
         );
         Ok(())
+    }
+
+    /// R12-CAPITAL-4089 at the composition root: an unset survival
+    /// configuration runs the shipped reserves, not the library's zero; a
+    /// figure below the shipped floor, or one that is not readable, stops the
+    /// process; a raised one is admitted; and the policy the root reads is the
+    /// one the platform it assembles withholds under.
+    ///
+    /// Mutations that make it fail: return `SurvivalPolicy::default()` for an
+    /// unset variable in `survival_policy_from` (first assertion); map the
+    /// `NotUnicode` arm to `Ok(None)` (the unreadable assertion); delete the
+    /// `set_survival_policy` call's body in the kernel, or the call to it in
+    /// `apply_survival_policy_from` (the last assertion). The second of those
+    /// passed until the round-2 mutation pass: the test called the kernel
+    /// itself instead of the root's install.
+    #[test]
+    fn an_unset_survival_configuration_withholds_the_shipped_reserves_and_a_lowered_one_stops_the_process()
+     {
+        use qip_kernel::survival::{HEDGE_CAPACITY_VARIABLE, SurvivalPolicy};
+        let only_hedge = |value: &'static str| {
+            move |name: &str| {
+                if name == HEDGE_CAPACITY_VARIABLE {
+                    Ok(value.to_string())
+                } else {
+                    Err(std::env::VarError::NotPresent)
+                }
+            }
+        };
+        let unset = super::survival_policy_from(&|_| Err(std::env::VarError::NotPresent))
+            .expect("an unset configuration is the shipped policy");
+        assert_eq!(unset, SurvivalPolicy::shipped());
+        assert!(
+            unset.hedge_capacity_fraction().is_positive(),
+            "premise: the shipped policy withholds hedge capacity"
+        );
+        assert!(
+            super::survival_policy_from(&only_hedge("0")).is_err(),
+            "a hedge capacity below the shipped floor was admitted"
+        );
+        assert!(
+            super::survival_policy_from(&only_hedge("five percent")).is_err(),
+            "a hedge capacity that is not a number was admitted"
+        );
+        assert!(
+            super::survival_policy_from(&|_| Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from("x")
+            )))
+            .is_err(),
+            "an unreadable survival variable was read as unset"
+        );
+        let raised = super::survival_policy_from(&only_hedge("0.2"))
+            .expect("raising a reserve is always admitted");
+        assert!(raised.hedge_capacity_fraction() > unset.hedge_capacity_fraction());
+
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(
+            qip_core::Timestamp::from_secs(1_760_000_000),
+            config.seed,
+        );
+        let mut platform = qip_kernel::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .expect("a platform assembles");
+        assert_eq!(
+            platform.survival_policy(),
+            &SurvivalPolicy::default(),
+            "premise: before the root applies it, the library default withholds nothing"
+        );
+        super::apply_survival_policy_from(&mut platform, &|_| Err(std::env::VarError::NotPresent))
+            .expect("the root installs the shipped policy");
+        assert_eq!(platform.survival_policy(), &unset);
     }
 }

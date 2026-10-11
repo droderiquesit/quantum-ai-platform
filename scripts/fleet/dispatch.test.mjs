@@ -229,7 +229,10 @@ test("without --execute the commands are printed in a form a shell can run and t
   // The directory's name holds a space and an apostrophe; in single quotes
   // the apostrophe is written '\'' and the space needs nothing more.
   assert.ok(directory.includes("fleet's dispatch-"), directory);
-  const shown = `'${directory.replace("'", "'\\''")}`;
+  // Every apostrophe, not the first: a quoting helper that escapes one and
+  // leaves the next would pass on this directory and break on the next one,
+  // and the expectation is only as good as the quoting it models.
+  const shown = `'${directory.replace(/'/g, "'\\''")}`;
   assert.deepEqual(printed, [
     `gcloud storage cp --no-clobber ${shown}/a.json' gs://algorik-platform-dev-fleet/packets/run-1/0.json`,
     `gcloud storage cp --no-clobber ${shown}/b.json' gs://algorik-platform-dev-fleet/packets/run-1/1.json`,

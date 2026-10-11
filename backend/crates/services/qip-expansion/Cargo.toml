@@ -9,6 +9,9 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+# Dataset digests over a campaign's residuals (`executor.rs`): canonical
+# JSON is the only serialisation this workspace permits (ADR 0002, 0009).
+serde_json.workspace = true
 qip-core.workspace = true
 # GapSignal, GapClass and CurriculumItem (CONTRACT-031/032): the brains'
 # contract types this engine reads and writes.

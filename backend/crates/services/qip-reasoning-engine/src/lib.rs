@@ -31,6 +31,7 @@
 
 pub mod bayes;
 pub mod belief;
+pub mod compiler;
 pub mod constraint;
 pub mod contradiction;
 pub mod engine;

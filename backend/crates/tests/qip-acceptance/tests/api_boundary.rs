@@ -465,6 +465,7 @@ fn the_application_layer_signs_nothing_but_the_centres_policy_and_halt() {
         ("libs/qip-compliance/src/signing.rs", "pub fn sign("),
         ("edge/qip-edge/src/envelope.rs", "pub fn sign_payload("),
         ("libs/qip-contracts/src/policy.rs", "pub fn signed("),
+        ("libs/qip-contracts/src/policy.rs", "pub fn signed_by("),
         (
             "libs/qip-contracts/src/capital.rs",
             "pub fn signing_payload(",
@@ -502,7 +503,11 @@ fn the_application_layer_signs_nothing_but_the_centres_policy_and_halt() {
             if identifier == "sign" && preceded_by_dot && called {
                 offenders.push(format!("{}:{line} calls .sign(", path.display()));
             }
-            if identifier == "signed" && preceded_by_dot && called {
+            // `.signed_by(` is ADR 0110's asymmetric arm of the same
+            // operation, and is held to the same pins: a scan that read only
+            // `.signed(` would let a third artefact be signed under a KMS key
+            // while this test counted the shared-key arm and stayed green.
+            if (identifier == "signed" || identifier == "signed_by") && preceded_by_dot && called {
                 let line_text = text
                     .lines()
                     .nth(line - 1)
@@ -523,12 +528,33 @@ fn the_application_layer_signs_nothing_but_the_centres_policy_and_halt() {
     // expression. The centre signs its policy payload and its halt command
     // with the trust root, because a cell refuses an unsigned one and a halt
     // that anyone could forge is a denial-of-service lever. Neither is a
-    // transfer, a grant or an order. A third `.signed(` anywhere in the
-    // application layer fails here until it is named below with its reason.
+    // transfer, a grant or an order. A third `.signed(` or `.signed_by(`
+    // anywhere in the application layer fails here until it is named below
+    // with its reason.
+    //
+    // Round 2 (ADR 0110) split each into two arms: the per-class P-256 signer
+    // (`signed_by`, the `policy` key for the payload and the `halt` key for
+    // the halt) and the shared key it replaces for its last release
+    // (`signed`). Four expressions, still the same two artefacts — the
+    // payload the platform built in `pending_policy`, and the halt command
+    // bound just above its arms, which is pinned separately below because
+    // the arm now names the binding rather than the constructor.
     let permitted = [
-        "let signed = match payload.signed(&key) {",
-        "let command = match HaltCommand::new(cell.clone(), now, reason).signed(&key) {",
+        "Signing::Asymmetric(signer) => payload.signed_by(signer.as_ref()),",
+        "Signing::Shared(key) => payload.signed(key),",
+        "Signing::Asymmetric(signer) => unsigned.signed_by(signer.as_ref()),",
+        "Signing::Shared(key) => unsigned.signed(key),",
     ];
+    let mesh_path = repository_root().join("backend/crates/apps/qip-api/src/mesh.rs");
+    let mesh = std::fs::read_to_string(&mesh_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", mesh_path.display()));
+    assert_eq!(
+        mesh.matches("let unsigned = HaltCommand::new(cell.clone(), now, reason);")
+            .count(),
+        1,
+        "the `unsigned` the halt arms sign is no longer the halt command; the pins below \
+         would be reviewing a different artefact"
+    );
     let observed: Vec<String> = signed_calls
         .iter()
         .map(|(_, _, line)| line.clone())
@@ -1372,6 +1398,31 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // (`GatePassed`), and the route re-runs that gate through
         // `ApiFeed::readmit` rather than constructing one.
         "admit_source",
+        // The three below are start-up assembly from round 2, each called
+        // once in `main.rs` before anything is served, in the class of
+        // `set_central`. None takes a request body and each can only narrow.
+        //
+        // `install_envelope_signer` — ADR 0110: the platform's one-purpose
+        // seam onto `CentralPlane::install_envelope_signer`, which proves the
+        // signer against the verifier the cells hold and then signs capital
+        // envelopes the *plane* issues. The API mints no envelope with it.
+        // It replaced `central_mut().install_envelope_signer(..)` here:
+        // `central_mut` is deliberately NOT on this list, because it hands
+        // this layer every mutator the central plane has, capital issue
+        // included.
+        "install_envelope_signer",
+        // `set_survival_policy` — R12-CAPITAL-4089: the hedge capacity and
+        // emergency reserve every construction withholds. The value is read
+        // through `SurvivalPolicy::from_settings`, which refuses a figure
+        // below the shipped floor, so this can only withhold more capital,
+        // never release it.
+        "set_survival_policy",
+        // `admit_model_packs` — ADR 0110 / REFLEX-9011, reached from
+        // `signing::hold_models_to_release`: holds the `trained_models` slot
+        // to release packs that verified under the model-pack key, and to
+        // an empty release outside `local` when none are configured. It can
+        // only remove a distillate from what a cell is told to run.
+        "admit_model_packs",
     ]
     .into_iter()
     .collect();
@@ -1478,6 +1529,22 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
     //   actually admitted it. Nothing about an order, capital or autonomy;
     //   the decision it copies was minted by the licensing gate, which this
     //   route cannot construct one of (`GatePassed`).
+    // * `hold_models_to_release` — `signing::hold_models_to_release`, start-up
+    //   assembly (ADR 0110, REFLEX-9011). It reaches only
+    //   `Platform::admit_model_packs`, reviewed above: every pack is verified
+    //   against the trust bundle's model-pack key or the process stops, and
+    //   with no packs outside `local` the slot is held to an empty release.
+    //   The packs are a mounted file, never a request body.
+    // * `apply_survival_policy` — the root's own start-up step
+    //   (R12-CAPITAL-4089). It reaches only `Platform::set_survival_policy`,
+    //   reviewed above, with a policy `SurvivalPolicy::from_settings` refuses
+    //   below the shipped floor.
+    // * `apply_survival_policy_from` — the same step over an injected
+    //   lookup, which `apply_survival_policy` calls with `std::env::var` so
+    //   the root's tests can drive the refusals without touching the process
+    //   environment. One function split in two, not a second door: it reaches
+    //   only `Platform::set_survival_policy`, with what
+    //   `SurvivalPolicy::from_settings` admitted, and nothing a request sends.
     //
     // A new entry is a reviewed change: name it with its reason, and say
     // which platform mutator it reaches.
@@ -1490,6 +1557,9 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
         "load_wallet_statement",
         "load_fabric_declaration",
         "readmit_connector",
+        "hold_models_to_release",
+        "apply_survival_policy",
+        "apply_survival_policy_from",
     ]
     .into_iter()
     .collect();

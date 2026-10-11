@@ -192,6 +192,18 @@ impl RegimeTransitions {
         })
     }
 
+    /// The latest instant any remembered subject actually crossed a boundary
+    /// (a first sighting is not a crossing), for the verifier society's
+    /// structural-break critic: a model evaluated before it was evaluated in
+    /// a market that no longer exists.
+    pub fn latest_crossing(&self) -> Option<Timestamp> {
+        self.marks
+            .values()
+            .filter(|mark| mark.previous.is_some())
+            .map(|mark| mark.entered_at)
+            .max()
+    }
+
     /// The regime `subject` was last observed in, for a report.
     pub fn regime_of(&self, subject: &str) -> Option<&str> {
         self.marks.get(subject).map(|mark| mark.current.as_str())

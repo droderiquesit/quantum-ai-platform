@@ -255,6 +255,29 @@ impl PreTradeChecker {
         })
     }
 
+    /// Check an order against the state it would produce once every order
+    /// already working has filled as well.
+    ///
+    /// [`Self::check`] measures the book the caller hands it, and every caller
+    /// builds that book from fills. An order that rests — a limit order the
+    /// venue has accepted and not yet matched — is in nobody's book, so two
+    /// orders each inside the gross headroom were each approved against the
+    /// same headroom and could later fill past the ceiling together, the
+    /// survival ceiling included. `working` is the unfilled remainder of each
+    /// order already sent, signed as [`ProposedOrder::quantity`] is and priced
+    /// at what it may fill at; [`commit_working`] says how it is charged.
+    pub fn check_with_working(
+        &self,
+        order: &ProposedOrder,
+        current: &RiskState,
+        working: &[ProposedOrder],
+        at: Timestamp,
+    ) -> Result<PreTradeResult> {
+        order.validate()?;
+        let committed = commit_working(order, current, working)?;
+        self.check(order, &committed, at)
+    }
+
     /// The risk state the order would produce.
     ///
     /// Only the fields an order actually changes are projected. Volatility,
@@ -304,6 +327,11 @@ impl PreTradeChecker {
 
         projected.order_notional = Some(order.notional());
         projected.order_subject = Some(key);
+        // The gross the book held before this order, so a limit can tell an
+        // order that adds risk from one that sheds it. `MaxSurvivalGross`
+        // reads it: a survival ceiling the book already stands above must
+        // still admit the sale that brings it back down.
+        projected.gross_before_order = Some(current.gross_exposure);
         projected
     }
 
@@ -395,4 +423,99 @@ impl PreTradeChecker {
         }
         Some((low, limiting))
     }
+}
+
+/// `current` with the unfilled remainder of every working order charged as
+/// though it had filled, ready for `order` to be projected onto.
+///
+/// Charged per instrument and never netted across sides. A resting buy and a
+/// resting sale of the same instrument — at two venues, say — sum to nothing,
+/// and a book that charged their sum would report no exposure while either
+/// one alone can fill. So each instrument is charged the side that leaves it
+/// largest: all its working buys filling, or all its working sales. On the
+/// instrument `order` concerns the side is `order`'s own, because that is the
+/// scenario the order adds to; charging the other side there would hand a
+/// buy the headroom a resting sale has not yet released.
+///
+/// Gross, net, cash and the per-instrument notional move by the change in
+/// the charged position, exactly as [`PreTradeChecker::project`] moves them
+/// for an order. An axis bucket only ever grows here: the bucket holds the
+/// whole book's gross on that axis and nothing here knows which part of a
+/// held position sits in it, so a working order that would shrink a position
+/// is not credited against a bucket it may not have been counted in.
+///
+/// Refused rather than skipped when a working order is malformed or a sum
+/// overflows: a remainder this could not charge is exposure the check would
+/// otherwise silently not see.
+pub fn commit_working(
+    order: &ProposedOrder,
+    current: &RiskState,
+    working: &[ProposedOrder],
+) -> Result<RiskState> {
+    let overflow = || Error::numeric("the working orders' notional overflows");
+    // Per instrument: working buys, working sales (both as positive
+    // notionals) and the axes the instrument's orders are charged on.
+    let mut per_object: BTreeMap<String, (Decimal, Decimal, BTreeMap<String, String>)> =
+        BTreeMap::new();
+    for resting in working {
+        resting.validate()?;
+        let notional = resting
+            .quantity
+            .checked_mul(resting.reference_price)
+            .ok_or_else(overflow)?;
+        let entry = per_object
+            .entry(resting.object_id.as_str().to_string())
+            .or_insert_with(|| (Decimal::ZERO, Decimal::ZERO, BTreeMap::new()));
+        if notional.is_positive() {
+            entry.0 = entry.0.checked_add(notional).ok_or_else(overflow)?;
+        } else {
+            entry.1 = entry.1.checked_add(notional.abs()).ok_or_else(overflow)?;
+        }
+        for (axis, bucket) in &resting.axes {
+            entry.2.insert(axis.clone(), bucket.clone());
+        }
+    }
+
+    let buying = order.quantity.is_positive();
+    let mut state = current.clone();
+    for (key, (buys, sales, axes)) in per_object {
+        let held = state
+            .position_notionals
+            .get(&key)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        let long = held.checked_add(buys).ok_or_else(overflow)?;
+        let short = held.checked_sub(sales).ok_or_else(overflow)?;
+        let charged = if key == order.object_id.as_str() {
+            if buying { long } else { short }
+        } else if long.abs() >= short.abs() {
+            long
+        } else {
+            short
+        };
+        if charged == held {
+            continue;
+        }
+        let moved = charged.checked_sub(held).ok_or_else(overflow)?;
+        let grown = charged.abs().checked_sub(held.abs()).ok_or_else(overflow)?;
+        state.gross_exposure = state
+            .gross_exposure
+            .checked_add(grown)
+            .ok_or_else(overflow)?;
+        state.net_exposure = state.net_exposure.checked_add(moved).ok_or_else(overflow)?;
+        state.cash = state.cash.checked_sub(moved).ok_or_else(overflow)?;
+        state.position_notionals.insert(key, charged);
+        if grown.is_positive() {
+            for (axis, bucket) in axes {
+                let entry = state
+                    .axis_exposures
+                    .entry(axis)
+                    .or_default()
+                    .entry(bucket)
+                    .or_insert(Decimal::ZERO);
+                *entry = entry.checked_add(grown).ok_or_else(overflow)?;
+            }
+        }
+    }
+    Ok(state)
 }

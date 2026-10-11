@@ -16,14 +16,26 @@
 //!
 //! This is the in-process model: a registry, a lineage tree, calibration
 //! scores and a journal of [`Event`]s from which the lineage tree can be
-//! rebuilt. It is not yet appended to the central event log and no
-//! composition root builds a `Federation`; the register says so.
+//! rebuilt. `qip-kernel`'s `federation_stage` is the composition root that
+//! builds one, feeds it views every UNDERSTAND pass and appends what it
+//! decided to the hash-chained event log; it takes the journal with
+//! [`Federation::drain_journal`] once the log holds it, so the in-process
+//! copy stays bounded and the log is the record. Positions a
+//! [`ResearchTask`] cites are absolute — counted from the first event ever
+//! journaled — so a draining reader does not renumber the record it cites.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_contracts::expansion::EffectAttribution;
+use qip_contracts::forecast::{
+    Calibration as ForecastCalibration, Forecast, ForecastFields, OutcomeDistribution, OutcomeMass,
+    TailMass, TailSide, UncertaintyDecomposition,
+};
+use qip_contracts::validated::Contract;
+use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
+use serde::{Deserialize, Serialize};
 
 /// Spread (max minus min probability) at or under which views agree.
 pub const AGREEMENT_SPREAD: f64 = 0.05;
@@ -39,7 +51,7 @@ pub const CLEAR_LEADER_MARGIN: f64 = 0.1;
 pub const MATERIAL_DISAGREEMENT_SPREAD: f64 = 0.2;
 
 /// What a model is for, beyond what it is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ModelKind {
     Observational,
     Scenario,
@@ -47,7 +59,7 @@ pub enum ModelKind {
 }
 
 /// How far from raw observations a model reasons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Abstraction {
     Micro,
     Meso,
@@ -55,7 +67,7 @@ pub enum Abstraction {
 }
 
 /// The five axes along which the population is specialised.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
     pub domain: String,
     /// A region, or the explicit word `global`; never blank.
@@ -169,7 +181,7 @@ impl WorldModelSpec {
 }
 
 /// Where a node came from. A root model has no parents and no trigger.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lineage {
     pub parents: Vec<String>,
     pub trigger: Option<String>,
@@ -195,7 +207,7 @@ pub enum Status {
 /// One model's view on one proposition, with the three dimensions it can
 /// self-report. The fourth, predictive performance, is computed, never
 /// reported.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Assessment {
     pub proposition: String,
     pub probability: f64,
@@ -205,7 +217,7 @@ pub struct Assessment {
     pub at: Timestamp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Calibration {
     /// No forecast has resolved. Not zero, not a default.
     Unscored,
@@ -225,10 +237,14 @@ struct Node {
     last_state_at: Option<Timestamp>,
     briers: Vec<f64>,
     expiry_recorded: bool,
+    /// The §9.14 [`Forecast`] each current view was admitted as, by
+    /// proposition. Replaced with the view, so bounded by the propositions a
+    /// member holds views on.
+    forecasts: BTreeMap<String, Forecast>,
 }
 
 /// One live member's standing on all four dimensions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredView {
     pub model: String,
     pub probability: f64,
@@ -242,19 +258,19 @@ pub struct ScoredView {
 }
 
 /// Every live view, minority included, and how far apart they are.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Disagreement {
     pub views: Vec<ScoredView>,
     pub spread: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InformationRequest {
     pub proposition: String,
     pub models: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Decision {
     Branch,
     Merge,
@@ -262,7 +278,7 @@ pub enum Decision {
     RequestMoreInformation(InformationRequest),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Arbitration {
     pub proposition: String,
     pub at: Timestamp,
@@ -284,7 +300,7 @@ pub struct Arbitration {
 /// task is what turns "the models are far apart on this" into work, and it
 /// cites the record it came from rather than restating it, so a reader of
 /// the task reads the same views arbitration saw.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchTask {
     /// Position in the journal of the [`Event::Decided`] record cited.
     pub cites: usize,
@@ -295,7 +311,7 @@ pub struct ResearchTask {
     pub raised_at: Timestamp,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Declared {
         id: String,
@@ -345,6 +361,16 @@ pub enum Event {
         update_kind: String,
         at: Timestamp,
     },
+    /// Every view on a proposition withdrawn unscored, because reality will
+    /// never answer it — the subject stopped being observed. Journaled with
+    /// the count, so a forecast that vanished is distinguishable from one
+    /// that was resolved: without this the only way to bound the views a
+    /// population holds was to score them against an outcome nobody saw.
+    Abandoned {
+        proposition: String,
+        views: usize,
+        at: Timestamp,
+    },
 }
 
 /// The distinct values the live population takes on each axis.
@@ -362,6 +388,10 @@ pub struct Spanned {
 pub struct Federation {
     nodes: BTreeMap<String, Node>,
     journal: Vec<Event>,
+    /// Events already taken by [`Federation::drain_journal`]. Added to every
+    /// position so the record a [`ResearchTask`] cites keeps its number after
+    /// the events before it have moved to the durable log.
+    journal_base: usize,
     /// Propositions with a research task outstanding. One task per open
     /// question: a disagreement that persists is arbitrated every cycle, and
     /// raising it every cycle would bury the task under copies of itself.
@@ -384,8 +414,63 @@ impl Federation {
         Self::default()
     }
 
+    /// The events not yet drained, oldest first.
     pub fn journal(&self) -> &[Event] {
         &self.journal
+    }
+
+    /// The absolute position of [`Self::journal`]'s first event.
+    pub fn journal_base(&self) -> usize {
+        self.journal_base
+    }
+
+    /// Take every undrained event, oldest first, advancing the base.
+    ///
+    /// For a caller that has appended them to a durable log: the in-process
+    /// journal otherwise grows by one `Decided` per proposition per cycle for
+    /// as long as the process lives, which is an unbounded buffer in a
+    /// long-running kernel. A caller that drains and then fails to append has
+    /// lost the record, so append first, then drain.
+    pub fn drain_journal(&mut self) -> Vec<Event> {
+        let taken = std::mem::take(&mut self.journal);
+        self.journal_base += taken.len();
+        taken
+    }
+
+    /// Every live member whose expiry is after `now`, in id order.
+    ///
+    /// What a population check reads: a member past its expiry is excluded
+    /// from arbitration, so counting it as covering its scope would report a
+    /// coverage the arbitration does not have.
+    pub fn live_specs(&self, now: Timestamp) -> Vec<&WorldModelSpec> {
+        self.nodes
+            .values()
+            .filter(|n| n.status == Status::Live && now < n.spec.expires_at)
+            .map(|n| &n.spec)
+            .collect()
+    }
+
+    /// Withdraw every view on `proposition` without scoring it. Returns how
+    /// many views were withdrawn; journals nothing when there were none.
+    ///
+    /// Scoring a forecast against an outcome nobody observed would move a
+    /// model's calibration on a fact that does not exist, so a proposition
+    /// reality will not answer is abandoned instead, on the record.
+    pub fn abandon(&mut self, proposition: &str, at: Timestamp) -> usize {
+        self.open_research.remove(proposition);
+        let views = self
+            .nodes
+            .values_mut()
+            .filter_map(|node| node.views.remove(proposition))
+            .count();
+        if views > 0 {
+            self.journal.push(Event::Abandoned {
+                proposition: proposition.to_string(),
+                views,
+                at,
+            });
+        }
+        views
     }
 
     /// Every research task raised, oldest first, read from the journal.
@@ -435,6 +520,7 @@ impl Federation {
                 last_state_at: None,
                 briers: Vec::new(),
                 expiry_recorded: false,
+                forecasts: BTreeMap::new(),
             },
         );
         Ok(())
@@ -472,9 +558,21 @@ impl Federation {
             return Err(Error::invalid("an assessment names its proposition"));
         }
         let node = self.live_node_mut(id)?;
+        // R2.5: every member view is a §9.14 forecast or it is not admitted.
+        // A view the contract refuses — one whose expiry the member's own
+        // cadence cannot place after it, say — is refused here rather than
+        // admitted as a probability nobody could read as a forecast.
+        let forecast = view_forecast(&node.spec, &node.briers, &a)?;
         node.last_state_at = Some(a.at);
+        node.forecasts.insert(a.proposition.clone(), forecast);
         node.views.insert(a.proposition.clone(), a);
         Ok(())
+    }
+
+    /// The §9.14 forecast a member's current view on `proposition` was
+    /// admitted as.
+    pub fn forecast(&self, id: &str, proposition: &str) -> Result<Option<&Forecast>> {
+        Ok(self.node(id)?.forecasts.get(proposition))
     }
 
     /// Branch a live node into a competing hypothesis. The branch inherits
@@ -685,7 +783,7 @@ impl Federation {
         let spread = if views.is_empty() { 0.0 } else { hi - lo };
         let (decision, reason, arbitrated) = decide(proposition, &views, spread);
         let disagreement = Disagreement { views, spread };
-        let record = self.journal.len();
+        let record = self.journal_base + self.journal.len();
         self.journal.push(Event::Decided {
             proposition: proposition.to_string(),
             at: now,
@@ -832,6 +930,21 @@ fn decide(proposition: &str, views: &[ScoredView], spread: f64) -> (Decision, St
     )
 }
 
+/// The decision arbitration reaches on `disagreement`, recomputed from the
+/// recorded views alone.
+///
+/// What makes a journaled [`Arbitration`] replayable rather than merely
+/// readable: the decision, its reason and the merged probability are a pure
+/// function of the scored views the record carries, so a reader of the log
+/// can recompute them and refuse a record whose decision does not follow
+/// from its own views.
+pub fn decide_on(
+    proposition: &str,
+    disagreement: &Disagreement,
+) -> (Decision, String, Option<f64>) {
+    decide(proposition, &disagreement.views, disagreement.spread)
+}
+
 /// Rebuild the lineage tree from a journal alone.
 pub fn lineage_from_journal(journal: &[Event]) -> BTreeMap<String, Lineage> {
     let mut tree = BTreeMap::new();
@@ -854,4 +967,82 @@ pub fn lineage_from_journal(journal: &[Event]) -> BTreeMap<String, Lineage> {
         }
     }
     tree
+}
+
+/// A member's view as lane H's §9.14 [`Forecast`] (R2.5).
+///
+/// A view is a probability that its proposition holds, so the distribution is
+/// categorical over `holds`/`fails`. Its variance is the Bernoulli `p(1-p)`,
+/// split by the member's own stated uncertainty: that share is epistemic (the
+/// member's ignorance, worth buying data to reduce) and the rest aleatoric.
+/// The member's evidence fit is the confidence that the regime it assumes is
+/// in force — the one self-reported dimension about its premises — and its
+/// calibration is its measured Brier once anything has resolved. The
+/// forecast speaks to the member's declared horizon and expires one update
+/// cadence after the view, when the member is due to restate it. The
+/// expected impact is zero because nothing acts on a member view: the
+/// federation is advisory, and an impact figure here would be a claim about
+/// a position this crate cannot see.
+fn view_forecast(spec: &WorldModelSpec, briers: &[f64], a: &Assessment) -> Result<Forecast> {
+    let bp = |x: f64| -> u32 {
+        // Statistic to integer: a unit-interval fraction to basis points.
+        // `assess` has already refused anything outside [0, 1].
+        (x * 10_000.0).round() as u32
+    };
+    let holds = bp(a.probability);
+    let variance = a.probability * (1.0 - a.probability);
+    let decimal = |x: f64| {
+        Decimal::from_f64(x).ok_or_else(|| {
+            Error::numeric(format!(
+                "`{}` states a figure with no decimal form",
+                spec.id
+            ))
+        })
+    };
+    let calibration = if briers.is_empty() {
+        ForecastCalibration::Uncalibrated
+    } else {
+        ForecastCalibration::Measured {
+            method: "brier".to_string(),
+            score: decimal(briers.iter().sum::<f64>() / briers.len() as f64)?,
+            resolved: briers.len() as u64,
+            evaluated_at: a.at,
+        }
+    };
+    Forecast::new(ForecastFields {
+        schema_version: ForecastFields::SCHEMA_VERSION,
+        forecast_id: format!("{}/{}/{}", spec.id, a.proposition, a.at.as_nanos()),
+        model: spec.id.clone(),
+        target: a.proposition.clone(),
+        issued_at: a.at,
+        horizon: spec.scope.horizon,
+        distribution: OutcomeDistribution::Categorical {
+            outcomes: vec![
+                OutcomeMass {
+                    outcome: "holds".to_string(),
+                    probability_bp: holds,
+                },
+                OutcomeMass {
+                    outcome: "fails".to_string(),
+                    probability_bp: 10_000 - holds,
+                },
+            ],
+        },
+        uncertainty: UncertaintyDecomposition {
+            epistemic: decimal(variance * a.uncertainty)?,
+            aleatoric: decimal(variance * (1.0 - a.uncertainty))?,
+        },
+        tail: TailMass {
+            side: TailSide::Above,
+            threshold: decimal(0.5)?,
+            probability_bp: holds,
+        },
+        models_consulted: 1,
+        model_disagreement: Decimal::ZERO,
+        regime_confidence_bp: bp(a.evidence_fit),
+        expected_impact: Decimal::ZERO,
+        calibration,
+        evidence_lineage: spec.evidence_lineage.clone(),
+        expires_at: a.at.saturating_add(spec.update_cadence),
+    })
 }

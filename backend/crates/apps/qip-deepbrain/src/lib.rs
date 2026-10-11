@@ -49,8 +49,10 @@
 //! deterministic templates narrating — which is what every deployment does
 //! today.
 
+pub mod ambient_journal;
 pub mod artifacts;
 pub mod attestation;
+pub mod breadth;
 pub mod campaign;
 pub mod config;
 pub mod connectors;
@@ -61,10 +63,14 @@ pub mod health;
 pub mod language;
 pub mod learning;
 pub mod node;
+pub mod now;
 pub mod openobserve;
+pub mod operations;
 pub mod reference;
+pub mod research;
 pub mod roster;
 pub mod signal_mapper;
 pub mod status;
 pub mod succession;
+pub mod tick_desk;
 pub mod trust;

@@ -1032,6 +1032,19 @@ pub fn pending_policy(
     pending
 }
 
+/// The `policy` and `halt` signers a backbone dispatches under (ADR 0110).
+#[derive(Clone, Debug)]
+pub struct PolicySigners {
+    pub policy: Arc<dyn qip_contracts::trust::ArtefactSigner>,
+    pub halt: Arc<dyn qip_contracts::trust::ArtefactSigner>,
+}
+
+/// One dispatch's signer, chosen once per call.
+enum Signing {
+    Asymmetric(Arc<dyn qip_contracts::trust::ArtefactSigner>),
+    Shared(Vec<u8>),
+}
+
 /// The centre's half of the mesh, assembled and serving.
 pub struct MeshBackbone {
     receiver: CellDeltaReceiver,
@@ -1041,6 +1054,17 @@ pub struct MeshBackbone {
     /// be refused by every cell anyway, and signing with a made-up key would
     /// manufacture a second trust root.
     policy_key: Option<Vec<u8>>,
+    /// ADR 0110's `policy` and `halt` signers. When set they are the only
+    /// signers: `policy_key` is not consulted, because a fleet receiving
+    /// frames under two schemes would have to accept both, and a cell that
+    /// accepts both is as weak as the weaker.
+    signers: Option<PolicySigners>,
+    /// Whether `policy_key` is bound by
+    /// [`qip_transport::trust::SHARED_KEY_REMOVED_AFTER`] at every dispatch.
+    /// `true` unless the composition root says the deployment is `local`
+    /// ([`Self::bind_shared_key_to`]): a backbone nobody told about its
+    /// deployment is held to the date rather than exempted from it.
+    shared_key_removal_applies: bool,
     lanes: BTreeMap<String, CapitalLane>,
     listeners: Vec<MeshListener>,
     counters: BackboneCounters,
@@ -1065,6 +1089,7 @@ impl std::fmt::Debug for MeshBackbone {
                 "policy_key",
                 &self.policy_key.as_ref().map(|_| "<redacted>"),
             )
+            .field("signers", &self.signers.is_some())
             .field("cells", &self.lanes.len())
             .field("listeners", &self.listeners.len())
             .field("counters", &self.counters)
@@ -1181,6 +1206,8 @@ impl MeshBackbone {
         Ok(Self {
             receiver,
             policy_key,
+            signers: None,
+            shared_key_removal_applies: true,
             lanes,
             listeners,
             counters: BackboneCounters::default(),
@@ -1188,6 +1215,38 @@ impl MeshBackbone {
             last_undecodable: None,
             regions: settings.regions.clone(),
         })
+    }
+
+    /// Sign every payload and halt from now on under ADR 0110's class keys.
+    ///
+    /// Called once, by the composition root, with signers it has already
+    /// proven against the trust bundle the cells hold.
+    pub fn sign_with(&mut self, signers: PolicySigners) {
+        self.signers = Some(signers);
+    }
+
+    /// Hold the shared key to its removal date at every dispatch unless
+    /// `deployment` is `local` — the cut `signing::configure` makes at
+    /// start-up, carried to the seam that signs. The start-up refusal alone
+    /// let an API started on the last permitted day sign payloads and halts
+    /// under the shared key for as long as it stayed up.
+    pub fn bind_shared_key_to(&mut self, deployment: qip_core::deployment::Deployment) {
+        self.shared_key_removal_applies = !deployment.permits_reproducible_keys();
+    }
+
+    /// The shared key, unless its removal date binds this backbone and has
+    /// passed — in which case the refusal, for the summary to carry.
+    fn shared_key_at(&self, key: &[u8], now: Timestamp) -> std::result::Result<Vec<u8>, String> {
+        if self.shared_key_removal_applies {
+            qip_transport::trust::refuse_shared_key_after_removal(now)
+                .map_err(|error| error.message().to_string())?;
+        }
+        Ok(key.to_vec())
+    }
+
+    /// Whether payloads and halts go out under asymmetric signatures.
+    pub const fn signs_asymmetrically(&self) -> bool {
+        self.signers.is_some()
     }
 
     /// The cells this backbone serves, for building payloads.
@@ -1213,16 +1272,32 @@ impl MeshBackbone {
             dispositions: pending.dispositions,
             ..PolicySummary::default()
         };
-        let Some(key) = self.policy_key.clone() else {
-            summary.unsigned = pending.payloads.len();
-            return summary;
+        let signing = match (&self.signers, &self.policy_key) {
+            (Some(signers), _) => Signing::Asymmetric(Arc::clone(&signers.policy)),
+            (None, Some(key)) => match self.shared_key_at(key, now) {
+                Ok(key) => Signing::Shared(key),
+                // Nothing is signed: a payload under a key past its removal
+                // date would be refused by every cell, and signing it anyway
+                // would keep the key minting until each cell got the news.
+                Err(refusal) => {
+                    summary.errors.push(refusal);
+                    return summary;
+                }
+            },
+            (None, None) => {
+                summary.unsigned = pending.payloads.len();
+                return summary;
+            }
         };
         for (cell, payload) in pending.payloads {
             let Some(lane) = self.lanes.get_mut(&cell) else {
                 summary.unserved += 1;
                 continue;
             };
-            let signed = match payload.signed(&key) {
+            let signed = match match &signing {
+                Signing::Asymmetric(signer) => payload.signed_by(signer.as_ref()),
+                Signing::Shared(key) => payload.signed(key),
+            } {
                 Ok(signed) => signed,
                 Err(error) => {
                     summary.errors.push(format!("{cell}: {}", error.message()));
@@ -1245,12 +1320,32 @@ impl MeshBackbone {
     /// own halted flag re-carries the state for any cell that missed this.
     pub fn broadcast_halt(&mut self, reason: &str, now: Timestamp) -> PolicySummary {
         let mut summary = PolicySummary::default();
-        let Some(key) = self.policy_key.clone() else {
-            summary.unsigned = self.lanes.len();
-            return summary;
+        let signing = match (&self.signers, &self.policy_key) {
+            (Some(signers), _) => Signing::Asymmetric(Arc::clone(&signers.halt)),
+            // A halt is refused here too, deliberately: past the date every
+            // cell refuses a shared-key halt at `TrustRoot::check`, so
+            // signing one sends nothing a cell would act on, and the
+            // payload's own halted flag rides the same key. The refusal in
+            // the summary is what tells the operator to move to `kms`.
+            (None, Some(key)) => match self.shared_key_at(key, now) {
+                Ok(key) => Signing::Shared(key),
+                Err(refusal) => {
+                    summary.errors.push(refusal);
+                    return summary;
+                }
+            },
+            (None, None) => {
+                summary.unsigned = self.lanes.len();
+                return summary;
+            }
         };
         for (cell, lane) in &mut self.lanes {
-            let command = match HaltCommand::new(cell.clone(), now, reason).signed(&key) {
+            let unsigned = HaltCommand::new(cell.clone(), now, reason);
+            let command = match match &signing {
+                // One signer: a halt never waits on a second approver.
+                Signing::Asymmetric(signer) => unsigned.signed_by(signer.as_ref()),
+                Signing::Shared(key) => unsigned.signed(key),
+            } {
                 Ok(signed) => signed,
                 Err(error) => {
                     summary.errors.push(format!("{cell}: {}", error.message()));

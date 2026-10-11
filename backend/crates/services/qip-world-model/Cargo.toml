@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 qip-core.workspace = true
+qip-evidence.workspace = true
 qip-contracts.workspace = true
 qip-numerics.workspace = true
 qip-events.workspace = true
@@ -20,3 +21,6 @@ qip-entity-resolution.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

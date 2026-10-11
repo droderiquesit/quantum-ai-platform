@@ -115,6 +115,12 @@ pub struct CapitalRequest {
     pub expires_at: Timestamp,
     /// Who is asking. Never allowed to be the approver.
     pub requested_by: String,
+    /// The liquidity and leverage bounds the grant is asked under
+    /// (R12-CAPITAL-4088). Carried into the approved envelope's signed
+    /// payload, so an approval for a bounded grant cannot be read as an
+    /// approval for the same money unbounded — the issuing plane compares the
+    /// two payloads and refuses a difference.
+    pub exposure: Option<qip_contracts::ExposureBounds>,
 }
 
 impl CapitalRequest {
@@ -417,7 +423,7 @@ impl ApprovalChain {
         now: Timestamp,
         signature: String,
     ) -> Result<CapitalEnvelope> {
-        CapitalEnvelope::new(
+        let envelope = CapitalEnvelope::new(
             request.strategy.clone(),
             request.cell.clone(),
             request.gross_limit,
@@ -427,7 +433,12 @@ impl ApprovalChain {
             now,
             request.expires_at,
             approval.approver.clone(),
-            signature,
-        )
+            String::new(),
+        )?;
+        let envelope = match &request.exposure {
+            None => envelope,
+            Some(exposure) => envelope.with_exposure(exposure.clone())?,
+        };
+        Ok(envelope.signed(signature))
     }
 }

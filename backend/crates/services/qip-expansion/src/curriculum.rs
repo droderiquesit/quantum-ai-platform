@@ -106,7 +106,10 @@ impl Criteria {
     /// Novelty multiplies and never adds: a candidate with nothing but novelty
     /// has a priority of zero, below any candidate with economic value or
     /// information gain (EXPAND-042).
-    // ponytail: equal weights on the additive terms; fit a weights table once
+    ///
+    /// Economic value per unit of cost and uncertainty reduction multiply
+    /// (§9.10): a candidate with either at zero has a priority of zero.
+    // ponytail: equal weights on the `1 + x` boosts; fit a weights table once
     // closed items have outcomes to fit it to.
     pub fn score(&self) -> Result<Score> {
         let expected_economic_value =
@@ -145,15 +148,28 @@ impl Criteria {
         // Money meets statistics here. Value per unit of cost is a ratio used
         // only to order candidates; it never moves or accounts for money.
         let value_per_cost = expected_economic_value.to_f64() / compute_data_cost.to_f64();
-        let merit = value_per_cost
-            + uncertainty_reduction
-            + strategic_coverage
-            + risk_reduction
-            + information_gain
-            + reuse_across_domains
-            + failure_frequency
-            + urgency;
-        let priority = feasibility * merit * (1.0 + novelty);
+        // §9.10 (R12-AMBIENT-3106): economic significance and uncertainty
+        // reduction multiply, with cost as the divisor above. A sum let a
+        // question that would teach nothing rank on its economic value alone,
+        // and one worth nothing rank on how much it would teach — both are
+        // spending on a question whose answer cannot pay. The reduction term
+        // is the measured information gain plus the stated reduction share:
+        // the two inputs that say how much uncertainty the work removes.
+        //
+        // Urgency and the remaining terms boost rather than gate, each as
+        // `1 + x`. A zero urgency must not zero a task here: EXPAND-6063
+        // ranks a question with economic value and information gain and
+        // nothing else above pure novelty, and an unhurried, valuable
+        // question is still worth asking. The Curiosity Engine's own rank
+        // (`qip_contracts::ambient::AcquisitionCriteria::net_value_bp`) is
+        // where §9.10's urgency factor gates.
+        let curiosity = value_per_cost * (information_gain + uncertainty_reduction);
+        let boost = (1.0 + urgency)
+            * (1.0 + strategic_coverage)
+            * (1.0 + risk_reduction)
+            * (1.0 + reuse_across_domains)
+            * (1.0 + failure_frequency);
+        let priority = feasibility * curiosity * boost * (1.0 + novelty);
         if !priority.is_finite() {
             return Err(Error::numeric(
                 "the priority is not finite; restate the economic value and cost in the same currency",
@@ -431,6 +447,19 @@ impl ResearchQueue {
     /// Start the highest-ranked eligible items the budget covers and defer the
     /// rest by name. A blocked or already started item is not eligible.
     pub fn schedule(&mut self, budget: Budget) -> Result<Round> {
+        self.schedule_within(budget, None)
+    }
+
+    /// [`Self::schedule`], starting only items named in `allowed` when it is
+    /// given: the Meta-Intelligence market's grant (`meta.rs`). An eligible
+    /// item it did not grant is deferred with that reason rather than
+    /// started on the curriculum's rank alone, so the market's decision is
+    /// the one that holds and not a second opinion beside it.
+    pub fn schedule_within(
+        &mut self,
+        budget: Budget,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<Round> {
         if budget.compute.is_negative() || budget.capital.is_negative() {
             return Err(Error::invalid(
                 "an expansion budget cannot be negative; state zero to start nothing",
@@ -452,6 +481,13 @@ impl ResearchQueue {
             else {
                 continue;
             };
+            if allowed.is_some_and(|granted| !granted.contains(&question)) {
+                entry.state = State::Deferred {
+                    reason: "the compute market granted it no unit this round".to_string(),
+                };
+                round.deferred.push(question);
+                continue;
+            }
             let (cost, hold) = (entry.score.compute_data_cost, entry.item.budget);
             match (compute.checked_sub(cost), capital.checked_sub(hold)) {
                 (Some(c), Some(k)) if !c.is_negative() && !k.is_negative() => {
@@ -485,5 +521,35 @@ impl ResearchQueue {
             )));
         }
         Ok(self.entries.remove(at))
+    }
+
+    /// Remove an item that was never started — queued, deferred or blocked —
+    /// because what raised it has stopped being observed.
+    ///
+    /// Without this a queue fed every cycle fills with blocked items whose
+    /// tool nobody builds and questions nobody asks any more, and at
+    /// [`MAX_QUEUE`] it refuses the next real gap. A started item is refused
+    /// here: it has a result coming and leaves through [`Self::close`].
+    pub fn withdraw(&mut self, question: &str) -> Result<Entry> {
+        let at = self
+            .entries
+            .iter()
+            .position(|e| e.item.research_question.trim() == question.trim())
+            .ok_or_else(|| Error::not_found(format!("`{question}` is not in the queue")))?;
+        if self.entries[at].state == State::Started {
+            return Err(Error::invalid(format!(
+                "`{question}` was started; close it on its result rather than withdrawing it"
+            )));
+        }
+        Ok(self.entries.remove(at))
+    }
+
+    /// How many items the queue holds, in any state.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }

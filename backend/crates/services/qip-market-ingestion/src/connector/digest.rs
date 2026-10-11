@@ -46,6 +46,7 @@
 //! [`super::runtime::ConnectorRuntime::ingest`].
 
 use super::envelope::RawEvent;
+use super::evidence::ParserLineage;
 use super::manifest::{SchemaVersion, SourceManifest};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
@@ -90,6 +91,15 @@ pub struct FetchDigest {
     /// does not, and says so with `None` rather than guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     topic: Option<Topic>,
+    /// Which decoder extracted the events, at which version (R12-DATA-1034).
+    parser: ParserLineage,
+    /// The source's `etag` for this body, where it sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    etag: Option<String>,
+    /// The runtime's resume position after this fetch, so a watcher or a
+    /// re-fetch knows where the extent ended (R12-AMBIENT-1040).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor: Option<String>,
 }
 
 impl FetchDigest {
@@ -154,6 +164,9 @@ impl FetchDigest {
             subjects,
             schema_version: manifest.schema.version,
             topic: None,
+            parser: ParserLineage::of(manifest),
+            etag: None,
+            cursor: None,
         })
     }
 
@@ -161,6 +174,30 @@ impl FetchDigest {
     pub fn with_topic(mut self, topic: Topic) -> Self {
         self.topic = Some(topic);
         self
+    }
+
+    /// Attach the source's `etag` for the body.
+    pub fn with_etag(mut self, etag: Option<String>) -> Self {
+        self.etag = etag;
+        self
+    }
+
+    /// Attach the resume position the fetch left the runtime at.
+    pub fn with_cursor(mut self, cursor: impl Into<String>) -> Self {
+        self.cursor = Some(cursor.into());
+        self
+    }
+
+    pub const fn parser(&self) -> &ParserLineage {
+        &self.parser
+    }
+
+    pub fn etag(&self) -> Option<&str> {
+        self.etag.as_deref()
+    }
+
+    pub fn cursor(&self) -> Option<&str> {
+        self.cursor.as_deref()
     }
 
     pub fn source_id(&self) -> &str {

@@ -10,7 +10,9 @@
 //! checks against this cannot be handed an unapproved grant. Construction is
 //! not the control; verification is, and this is where it happens.
 
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{
+    CapitalAdmission, CapitalEnvelope, ExposureBounds, ExposureBreach, Utilisation,
+};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -52,6 +54,46 @@ impl VerifiedEnvelope {
                 envelope.strategy().as_str()
             )));
         }
+        if envelope.cell() != expected_cell {
+            return Err(Error::denied(format!(
+                "an envelope for cell {} was presented to cell {expected_cell}",
+                envelope.cell()
+            )));
+        }
+        if !envelope.is_live(now) {
+            return Err(Error::denied(format!(
+                "the capital envelope for {} is outside its validity window",
+                envelope.strategy().as_str()
+            )));
+        }
+        Ok(Self {
+            inner: envelope,
+            verified_at: now,
+        })
+    }
+
+    /// Verify an envelope against the cell's [`crate::trust::TrustRoot`],
+    /// under the `envelope` key — the same refusals as [`Self::verify`], in
+    /// the same order: signature, cell, validity window.
+    pub fn verify_with(
+        envelope: CapitalEnvelope,
+        root: &crate::trust::TrustRoot,
+        expected_cell: &str,
+        now: Timestamp,
+    ) -> Result<Self> {
+        root.check(
+            qip_contracts::trust::ArtefactClass::Envelope,
+            envelope.signing_payload().as_bytes(),
+            envelope.signature(),
+            now,
+        )
+        .map_err(|error| {
+            Error::denied(format!(
+                "the capital envelope for {} is refused: {}",
+                envelope.strategy().as_str(),
+                error.message()
+            ))
+        })?;
         if envelope.cell() != expected_cell {
             return Err(Error::denied(format!(
                 "an envelope for cell {} was presented to cell {expected_cell}",
@@ -122,8 +164,27 @@ impl VerifiedEnvelope {
         notional: Decimal,
         used: &Utilisation,
         now: Timestamp,
-    ) -> CapitalGrant {
+    ) -> CapitalAdmission {
         self.inner.admit(venue, notional, used, now)
+    }
+
+    /// The liquidity and leverage bounds the grant was signed with, if any
+    /// (R12-CAPITAL-4088).
+    pub fn exposure(&self) -> Option<&ExposureBounds> {
+        self.inner.exposure()
+    }
+
+    /// Check an order against those bounds; see
+    /// [`CapitalEnvelope::check_exposure`].
+    pub fn check_exposure(
+        &self,
+        quantity: Decimal,
+        visible_depth: Decimal,
+        notional: Decimal,
+        used: &Utilisation,
+    ) -> std::result::Result<(), ExposureBreach> {
+        self.inner
+            .check_exposure(quantity, visible_depth, notional, used)
     }
 }
 

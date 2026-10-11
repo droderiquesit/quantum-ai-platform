@@ -1,0 +1,3051 @@
+[
+ {
+  "id": "R12-MODEL-6001",
+  "domain": "MODEL",
+  "title": "Evaluation Brain independent of the Model Foundry",
+  "statement": "The component that judges a model or strategy (Evaluation Brain) is separate from the component that creates it (Strategy/Model Foundry), so the creator of an idea is never its sole judge.",
+  "rationale": "Self-graded ideas: the creator scoring its own candidates promotes overfit work.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Promotion decisions are taken by code with no dependency on the generator's scoring; a mutation that lets the generator's own score promote fails an architecture test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6002",
+  "domain": "MODEL",
+  "title": "Every path, including paths not taken, becomes training data",
+  "statement": "Every decision path, including declined, unfilled and alternative paths, is captured as a learning record.",
+  "rationale": "Learning only from executed paths biases the platform toward its own gates.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A cycle that declines an order produces a counterfactual learning record; deleting the declined capture makes the test fail."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6003",
+  "domain": "MODEL",
+  "title": "Outcome attribution by strategy, model, belief, source, policy, rule, path",
+  "statement": "Each outcome is attributed by strategy, model, belief, evidence source, capital policy, risk rule and execution path.",
+  "rationale": "An unattributed outcome cannot tell the platform which component to credit or blame.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "An attribution record carries all seven keys for a fill; dropping one key fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "'Live' outcome is paper-trading outcome under ADR 0003."
+ },
+ {
+  "id": "R12-MODEL-6004",
+  "domain": "MODEL",
+  "title": "Counterfactual replay for declined, partial, hedged and unwound paths",
+  "statement": "Counterfactual replay is run for declined, partially filled, hedged and unwound opportunities.",
+  "rationale": "A veto or partial fill whose alternative is never priced cannot be judged protective or merely expensive.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "For each of the four path kinds, LEARN produces a counterfactual set; removing one kind's queue fails its test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6005",
+  "domain": "MODEL",
+  "title": "Champion/challenger with regime-conditioned scorecards",
+  "statement": "Models and strategies are run as champion/challenger with scorecards conditioned on regime.",
+  "rationale": "A global score hides a challenger that wins in one regime and loses in another.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A challenger ahead in one regime and behind in another is reported split and registered only in the regime where it leads."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-6006",
+  "domain": "DATA",
+  "title": "Data-source alpha attribution after cost and delay",
+  "statement": "For each data source, measure whether it improved decisions after its cost and its delay.",
+  "rationale": "Paying for a source that duplicates another or arrives too late.",
+  "kind": "metric",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A duplicate source scores near-zero gain; a late source's contribution is discounted by its delay; a costly one by cost."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-6007",
+  "domain": "QUANT",
+  "title": "Quantum-vs-classical benchmark per workload family and instance size",
+  "statement": "Each quantum-vs-classical comparison is recorded keyed by workload family and instance size.",
+  "rationale": "A quantum claim not grouped by problem kind and size cannot be checked against its baseline (ADR 0006).",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A cycle that sizes a proposal publishes one SolverBenchmarked record keyed by family and size matching its journal entry."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6008",
+  "domain": "MODEL",
+  "title": "Automatic retirement of degraded models and strategies",
+  "statement": "Models and strategies that degrade are retired automatically, without a human call.",
+  "rationale": "A decayed strategy keeps trading because nobody got round to retiring it.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Sustained decay at the floor retires the strategy and journals its disposition; a drifted model is retired."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6009",
+  "domain": "MODEL",
+  "title": "Rollback to last known-good artifact",
+  "statement": "On retirement, the platform rolls back to the last known-good artifact.",
+  "rationale": "Retiring a degraded artifact with nothing to fall back to leaves the slot empty or worse.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A degraded model's predecessor returns at the digest that passed; a rollback with no known-good predecessor is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6010",
+  "domain": "EXPAND",
+  "title": "Research prompts from failure clusters and unexplained residuals",
+  "statement": "Closed-loop research prompts are generated from clusters of failures and from unexplained residuals.",
+  "rationale": "Repeated misses charged to a track record and forgotten.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A cluster of failed theses raises one prompt; an unexplained residual above threshold raises one too."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6011",
+  "domain": "EXPAND",
+  "title": "Novelty and knowledge-gap detection",
+  "statement": "Detect unexplained residuals, low-confidence regions, contradictory evidence, missing causal links, unsupported asset classes and capabilities with no competent specialist.",
+  "rationale": "Ignorance that is never named is never researched.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each of the six gap kinds is raised by a detector over platform state; deleting a detector fails its test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-6012",
+  "domain": "REFLEX",
+  "title": "Regional reflex episodes become globally shareable",
+  "statement": "Microstructure drift, local failures, missed fills, queue behaviour and venue anomalies at a regional cell become globally shareable episodes.",
+  "rationale": "Lessons trapped in one region.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "An episode recorded at a cell reaches the central learning store; a cell-only buffer fails the test."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-6013",
+  "domain": "WORLD",
+  "title": "Memory consolidation and compression keeps learning bounded",
+  "statement": "Preserve high-value episodes and abstractions while deduplicating stale detail so memory growth stays bounded.",
+  "rationale": "Unbounded memory becoming noise.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "At capacity, a high-grade episode survives and a stale duplicate is evicted; abstraction records are produced from clusters."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-TICK-6014",
+  "domain": "TICK",
+  "title": "Tick-learning loop reconciles live fills against replay assumptions",
+  "statement": "Fills, slippage, queue errors, missed/expired opportunities and book-regime changes are reconciled against replay assumptions and become microstructure retraining/evaluation data.",
+  "rationale": "A twin whose fill assumptions drift from reality without anyone noticing.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A fill whose price differs from the twin's assumption is charted and enters a retraining dataset."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-6015",
+  "domain": "WORLD",
+  "title": "World-market reaction loop over multiple horizons",
+  "statement": "Each material world event is paired with the observed multi-asset/tick response over multiple horizons, and these reaction episodes update causal propagation models.",
+  "rationale": "Not learning when markets ignore, anticipate or overreact.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22 Continuous Learning & Evaluation Brain"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An event yields reaction records at several horizons and a contradicting reaction lowers a causal edge's confidence."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6016",
+  "domain": "MODEL",
+  "title": "Every forecast and model is scored after resolution",
+  "statement": "Every forecast, world model, specialist and ensemble is scored after its outcome resolves.",
+  "rationale": "Forecasts never checked against outcomes cannot be trusted.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A resolved thesis is graded and charged to its component; an unresolved one is not."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6017",
+  "domain": "MODEL",
+  "title": "Probability calibration tracked per forecaster",
+  "statement": "The platform tracks probability calibration for each forecaster.",
+  "rationale": "Seventy-percent calls that come true half the time.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A resolving cycle moves the calibration series; mutation removing the call leaves it unchanged and fails."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6018",
+  "domain": "MODEL",
+  "title": "Directional and quantile accuracy tracked",
+  "statement": "Directional and quantile accuracy are tracked for each forecaster.",
+  "rationale": "A forecaster right on direction but wrong on spread is sized as if calibrated.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Quantile (pinball) loss is computed per forecaster on resolution."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6019",
+  "domain": "MODEL",
+  "title": "Forecast tail performance tracked",
+  "statement": "Tail performance of each forecaster is tracked.",
+  "rationale": "A forecaster good on average and catastrophic in the tails.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A forecaster that misses only tail outcomes scores worse on the tail metric than one that does not."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6020",
+  "domain": "MODEL",
+  "title": "Incremental information value per forecaster",
+  "statement": "The incremental information value each forecaster adds is tracked.",
+  "rationale": "Paying for forecasters that only repeat each other.",
+  "kind": "metric",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A forecaster duplicating another scores near-zero incremental value."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6021",
+  "domain": "MODEL",
+  "title": "Economic contribution and downstream capital impact per forecaster",
+  "statement": "Economic contribution and downstream capital impact are attributed to each forecaster.",
+  "rationale": "Accuracy that never translated to P&L is mistaken for value.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A forecaster's attributed P&L equals the sum over the positions it informed."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6022",
+  "domain": "MODEL",
+  "title": "Internal synthetic capital determines model influence and compute",
+  "statement": "An internal synthetic capital/reputation ledger (internal prediction market) determines each model's future influence and compute allocation.",
+  "rationale": "Influence and compute allocated by habit instead of earned track record.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§22.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A model whose synthetic capital falls loses weight in the next decision and compute share; a mutation fixing weights fails."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "FINOPS"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6023",
+  "domain": "EXPAND",
+  "title": "New capability evaluated, sandboxed, lineage-tracked, gate-promoted",
+  "statement": "Every new capability (knowledge, ontology, memory, specialist, tool, model, research) is evaluated, sandboxed, lineage-tracked and promoted only through explicit gates; no uncontrolled self-modification.",
+  "rationale": "Open-ended growth turning into uncontrolled self-modification.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "32",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each capability kind has a registry whose only widening path cites an evaluation."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6024",
+  "domain": "EXPAND",
+  "title": "Expansion engine sits above the brains, off the decision path",
+  "statement": "The expansion engine reads the brains and nothing below a composition root depends on it, so a stalled curriculum cannot stall a cycle.",
+  "rationale": "A research queue becoming a dependency of the thing that decides.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "An acceptance test fails if any non-app crate depends on qip-expansion."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6025",
+  "domain": "EXPAND",
+  "title": "Convert ignorance into research work and proven research into capability",
+  "statement": "The expansion engine converts ignorance, surprise and failure into structured research work, then converts proven research into deployable capability.",
+  "rationale": "Research that never closes onto capability; surprises that never become research.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A raised gap becomes a queued item, and a closed item produces a promoted capability record."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6026",
+  "domain": "EXPAND",
+  "title": "World-coverage expansion produces SourceSpec",
+  "statement": "World-coverage expansion: Scout agents continuously discover new countries, venues, APIs, registries, datasets, sensors, products, chains, languages and lawful information surfaces; the primary artifact is SourceSpec / FeedPack.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A SourceSpec / FeedPack record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "DATA"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6027",
+  "domain": "EXPAND",
+  "title": "Evidence-quality expansion produces EvidencePolicy",
+  "statement": "Evidence-quality expansion: Source reputation, provenance graphs, corroboration, contradiction resolution and adversarial detection improve as outcomes reveal reliable channels; the primary artifact is EvidencePolicy / SourceScore.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A EvidencePolicy / SourceScore record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "EVID"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6028",
+  "domain": "EXPAND",
+  "title": "Memory expansion + consolidation produces MemoryPack",
+  "statement": "Memory expansion + consolidation: Semantic, episodic, procedural, market and failure memories grow then consolidate, summarise and deduplicate; the primary artifact is MemoryPack / EpisodeCluster.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A MemoryPack / EpisodeCluster record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6029",
+  "domain": "EXPAND",
+  "title": "World-model + ontology expansion produces OntologyPatch",
+  "statement": "World-model + ontology expansion: Novel entities, relationships, causal drivers, asset classes, event types and processes extend the graph and ontology when schemas cannot explain observations; the primary artifact is OntologyPatch / GraphSchema.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A OntologyPatch / GraphSchema record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6030",
+  "domain": "EXPAND",
+  "title": "Specialist-brain creation produces BrainSpec",
+  "statement": "Specialist-brain creation: Repeatedly unresolved domain questions instantiate a new specialist with its own tools, corpus, evaluations and authority scope; the primary artifact is BrainSpec / SpecialistPack.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A BrainSpec / SpecialistPack record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AMBIENT"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6031",
+  "domain": "EXPAND",
+  "title": "Cross-domain synthesis produces CrossDomainHypothesis",
+  "statement": "Cross-domain synthesis: A synthesis layer searches causal and economic links across domains (weather -> shipping -> basis -> FX -> equities -> options -> event markets); the primary artifact is CrossDomainHypothesis.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A CrossDomainHypothesis record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6032",
+  "domain": "EXPAND",
+  "title": "Continuous training + active learning produces TrainingCampaign",
+  "statement": "Continuous training + active learning: Outcomes, drift, uncertainty and information value select what to label, simulate, collect or retrain next; the primary artifact is TrainingCampaign.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A TrainingCampaign record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6033",
+  "domain": "EXPAND",
+  "title": "Simulation + counterfactual expansion produces ScenarioPack",
+  "statement": "Simulation + counterfactual expansion: Digital twins, replay, scenario generation, agent simulations and counterfactual worlds create experience for rare regimes and paths not taken; the primary artifact is ScenarioPack / SyntheticEpisode.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ScenarioPack / SyntheticEpisode record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "TICK"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6034",
+  "domain": "EXPAND",
+  "title": "Model evolution + distillation produces ModelPack lineage",
+  "statement": "Model evolution + distillation: Champion/challenger, ensembles, new architectures and larger slow-lane models are tested; useful capability distilled into smaller warm/reflex artifacts; the primary artifact is ModelPack lineage.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ModelPack lineage record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6035",
+  "domain": "EXPAND",
+  "title": "Autonomous research agents produces ResearchCampaign",
+  "statement": "Autonomous research agents: Research agents form hypotheses, gather evidence, write experiments, build features, run backtests, inspect failures and propose strategies or models; the primary artifact is ResearchCampaign / ExperimentPack.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ResearchCampaign / ExperimentPack record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "REASON"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6036",
+  "domain": "EXPAND",
+  "title": "Quantum-assisted research produces QuantumExperiment",
+  "statement": "Quantum-assisted research: Quantum resources used for benchmarked optimisation, graph search, feature/ensemble selection, kernels/variational experiments where they add measurable value; the primary artifact is QuantumExperiment / Benchmark.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "33",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A QuantumExperiment / Benchmark record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "QUANT"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6037",
+  "domain": "EXPAND",
+  "title": "Tool and capability acquisition produces ToolSpec",
+  "statement": "Tool and capability acquisition: A Tool Registry; the system proposes connectors, parsers, solvers, simulators, code modules, adapters and model interfaces it lacks; the primary artifact is ToolSpec / CapabilityPack.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ToolSpec / CapabilityPack record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6038",
+  "domain": "EXPAND",
+  "title": "Reflex-node local learning produces RegionalEpisode",
+  "statement": "Reflex-node local learning: Each reflex cell records local microstructure, venue, latency, fill/slippage, anomaly and failure episodes; lessons propagate globally while latency-critical inference stays local; the primary artifact is RegionalEpisode / ReflexDelta.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A RegionalEpisode / ReflexDelta record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "REFLEX"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6039",
+  "domain": "EXPAND",
+  "title": "Collective/federated intelligence produces KnowledgeDelta",
+  "statement": "Collective/federated intelligence: Components and regional nodes share typed knowledge artifacts rather than chat/state; the primary artifact is KnowledgeDelta / SharedEpisode.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A KnowledgeDelta / SharedEpisode record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "FABRIC"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6040",
+  "domain": "EXPAND",
+  "title": "Self-evaluation + calibration produces Scorecard",
+  "statement": "Self-evaluation + calibration: Measures forecast accuracy, uncertainty calibration, P&L attribution, execution quality, model decay, source value, hallucination/error rates and unexplained residuals; the primary artifact is Scorecard / GapSignal.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A Scorecard / GapSignal record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6041",
+  "domain": "EXPAND",
+  "title": "Self-generated curriculum produces CurriculumItem",
+  "statement": "Self-generated curriculum: A Curriculum Engine ranks what to learn next on uncertainty, economic value, novelty, failure frequency, strategic importance and expected information gain; the primary artifact is CurriculumItem / ResearchQueue.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A CurriculumItem / ResearchQueue record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6042",
+  "domain": "EXPAND",
+  "title": "Market-microstructure expansion produces TickCampaign",
+  "statement": "Market-microstructure expansion: Learn venue mechanics, queue behaviour, liquidity regimes, lead/lag, execution dynamics from tick history and telemetry; generate replay/retraining tasks when residuals grow; the primary artifact is TickCampaign / MicrostructureDelta.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A TickCampaign / MicrostructureDelta record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "TICK"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6043",
+  "domain": "EXPAND",
+  "title": "World-model population expansion produces WorldModelSpec",
+  "statement": "World-model population expansion: When one representation is insufficient, spawn domain/regional/horizon/scenario/counterfactual world models and benchmark their incremental value; the primary artifact is WorldModelSpec / WorldModelBranch.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A WorldModelSpec / WorldModelBranch record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6044",
+  "domain": "EXPAND",
+  "title": "Symbolic theory growth produces RulePack",
+  "statement": "Symbolic theory growth: Validated patterns become ontology relations, rules, invariants, causal structures, constraints or proof procedures; contradictions generate theory-revision tasks; the primary artifact is RulePack / ConstraintPack / TheoryDelta.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A RulePack / ConstraintPack / TheoryDelta record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "REASON"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6045",
+  "domain": "EXPAND",
+  "title": "Ambient proactive expansion produces AmbientSignal",
+  "statement": "Ambient proactive expansion: Always-on models discover weak signals, precursors, assumption failures and high-value unknowns; useful signals wake specialists or create curriculum items without a human prompt; the primary artifact is AmbientSignal / AttentionEvent.",
+  "rationale": "Capability growth with no typed artifact cannot be evaluated, lineage-tracked or rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "34",
+    "section": "§23 Intelligence Expansion Engine - Open-Ended Learning"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A AmbientSignal / AttentionEvent record is produced by the mechanism, validated, and carries lineage; deleting the producing call fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AMBIENT"
+  ],
+  "notes": "One row of the §23 expansion-mechanism table."
+ },
+ {
+  "id": "R12-EXPAND-6046",
+  "domain": "EXPAND",
+  "title": "Observe novelty from seven triggers",
+  "statement": "Detect surprise, low confidence, contradictions, missed opportunity, unexplained P&L, model drift or a request no brain/tool can satisfy.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6047",
+  "domain": "EXPAND",
+  "title": "Classify the gap into nine classes",
+  "statement": "Classify each gap as data, ontology, causal, memory, model, tool, specialist, execution or compute/quantum research.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6048",
+  "domain": "EXPAND",
+  "title": "Generate and rank curriculum",
+  "statement": "Estimate economic value, risk, novelty, information gain, compute/data cost and urgency, and rank the research task.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6049",
+  "domain": "EXPAND",
+  "title": "Acquire capability for a gap",
+  "statement": "Discover lawful data, create a connector/tool, instantiate a specialist, select models/solvers or construct simulations to investigate the gap.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6050",
+  "domain": "EXPAND",
+  "title": "Reproducible research across historical, simulated, paper, shadow",
+  "statement": "Run reproducible campaigns across historical, simulated, paper and shadow environments with provenance and lineage.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6051",
+  "domain": "EXPAND",
+  "title": "Independent evaluation on nine criteria",
+  "statement": "Evaluate calibration, robustness, leakage, regime sensitivity, cost, latency, safety, legal eligibility and incremental value versus champions.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6052",
+  "domain": "EXPAND",
+  "title": "Promote by lane: research, warm service, or reflex artifact",
+  "statement": "Successful capability is promoted to remain slow-lane research, become a warm service, or be distilled into a bounded reflex artifact.",
+  "rationale": "A loop step that is skipped turns the expansion loop into unreviewed growth.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The step's record is produced and its absence refused; mutating the step's check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6053",
+  "domain": "EXPAND",
+  "title": "Promotion never goes directly from research to live money",
+  "statement": "No research output is promoted directly into live money movement.",
+  "rationale": "A research result trading real capital without the paper boundary.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "A configured live ceiling stops the process instead of being lowered; no type path exists from research to an order."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6054",
+  "domain": "EXPAND",
+  "title": "Production outcomes update memory, source scores, beliefs, curriculum",
+  "statement": "Outcomes, failures, vetoes, missed opportunities and local reflex episodes update memory, source scores, world-model beliefs and future curriculum.",
+  "rationale": "Production experience that never feeds back.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.1 Recursive Intelligence Expansion Loop"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A veto resolved in LEARN changes a belief, a memory entry and a curriculum entry."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6055",
+  "domain": "EXPAND",
+  "title": "Source Registry with declared fields",
+  "statement": "Maintain a Source Registry recording every feed, endpoint, document family, sensor, marketplace and discovery method with provenance, cost, licence, freshness and utility.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "DATA"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6056",
+  "domain": "EXPAND",
+  "title": "Ontology Registry with declared fields",
+  "statement": "Maintain a Ontology Registry recording versioned entity, event, relationship, market, asset, product, causal-driver and lifecycle types with governed schema extension.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6057",
+  "domain": "EXPAND",
+  "title": "Memory Registry with declared fields",
+  "statement": "Maintain a Memory Registry recording semantic knowledge, episodes, procedures, failures, simulations and abstractions with retention/value policy.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6058",
+  "domain": "EXPAND",
+  "title": "Brain Registry with declared fields",
+  "statement": "Maintain a Brain Registry recording generalist and specialist agents/models with competency domains, tools, evaluations, calibration, authority and version lineage.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AMBIENT"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6059",
+  "domain": "EXPAND",
+  "title": "Tool Registry with declared fields",
+  "statement": "Maintain a Tool Registry recording connectors, browsers, parsers, solvers, code runtimes, simulators, geospatial tools, venue adapters, model endpoints and quantum backends.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6060",
+  "domain": "EXPAND",
+  "title": "Model Registry with declared fields",
+  "statement": "Maintain a Model Registry recording foundation, specialist, ensemble, policy and reflex models plus datasets, features, calibration, benchmarks, resource budgets and rollback ancestry.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6061",
+  "domain": "EXPAND",
+  "title": "Research Registry with declared fields",
+  "statement": "Maintain a Research Registry recording hypotheses, experiments, null results, open questions, benchmark suites and unresolved contradictions, so failures are not rediscovered.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6062",
+  "domain": "EXPAND",
+  "title": "Capability Registry with declared fields",
+  "statement": "Maintain a Capability Registry recording what the platform can sense, reason about, simulate, trade, settle, hedge, transfer, purchase, create or operate, with a confidence/eligibility boundary.",
+  "rationale": "Intelligence becomes fixed when what exists is not registered.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.2 Registries That Prevent Intelligence From Becoming Fixed"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An entry missing a declared field is refused; the registry is consulted on a running path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "GOV"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6063",
+  "domain": "EXPAND",
+  "title": "Curriculum scored on eight criteria, never novelty alone",
+  "statement": "Each candidate research task is scored on expected economic value, uncertainty reduction, strategic coverage, risk reduction, information gain, cross-domain reuse, compute/data cost and legal/operational feasibility; novelty alone never wins.",
+  "rationale": "A curiosity engine optimising novelty for its own sake.",
+  "kind": "invariant",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "35",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "property",
+   "check": "A pure-novelty candidate never outranks one with economic value and information gain."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6064",
+  "domain": "EXPAND",
+  "title": "Unknown-unknown surfacing",
+  "statement": "Clusters of anomalies, residuals and contradictory beliefs create investigation tasks with no human question.",
+  "rationale": "Curiosity driven only by human questions misses what nobody thought to ask.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The trigger condition yields exactly one queued item naming its origin."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6065",
+  "domain": "EXPAND",
+  "title": "Coverage pressure",
+  "statement": "Asset classes, geographies, languages, venues or causal drivers with weak evidence/model coverage automatically generate acquisition and research work.",
+  "rationale": "Curiosity driven only by human questions misses what nobody thought to ask.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The trigger condition yields exactly one queued item naming its origin."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6066",
+  "domain": "EXPAND",
+  "title": "Failure-driven curriculum",
+  "statement": "Repeated vetoes, adverse selection, failed arbitrage sagas, reconciliation breaks and incorrect forecasts become explicit learning objectives.",
+  "rationale": "Curiosity driven only by human questions misses what nobody thought to ask.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The trigger condition yields exactly one queued item naming its origin."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6067",
+  "domain": "EXPAND",
+  "title": "Opportunity-driven curriculum",
+  "statement": "Persistent price/belief discrepancies trigger a specialist, simulator, feed or model family to test whether the discrepancy is real.",
+  "rationale": "Curiosity driven only by human questions misses what nobody thought to ask.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The trigger condition yields exactly one queued item naming its origin."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6068",
+  "domain": "EXPAND",
+  "title": "Capability-gap curriculum",
+  "statement": "A missing parser, API, simulator, model interface or solver becomes a build/research task itself.",
+  "rationale": "Curiosity driven only by human questions misses what nobody thought to ask.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The trigger condition yields exactly one queued item naming its origin."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6069",
+  "domain": "EXPAND",
+  "title": "Market-learning curriculum",
+  "statement": "Unexplained slippage, fill/queue errors, new venue mechanics, abnormal lead/lag or reaction residuals create tick-replay and microstructure campaigns.",
+  "rationale": "Curiosity driven only by human questions misses what nobody thought to ask.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.3 Self-Generated Curriculum and Curiosity"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The trigger condition yields exactly one queued item naming its origin."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6070",
+  "domain": "EXPAND",
+  "title": "Self-improvement never mutates production control or money path in place",
+  "statement": "Proposed code, tools, agents, features, schemas and models move through isolated branch/sandbox, reproducible tests, security and data-policy checks, simulation/replay, independent evaluation, shadow/paper operation and signed promotion; nothing mutates the production control plane or money-moving path in place.",
+  "rationale": "An agent editing the live path in place with no review.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Deployed images are only those signed/attested by CI; models reach production only through registry stages."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "CICD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6071",
+  "domain": "EXPAND",
+  "title": "Evidence and rollback requirements scale with authority",
+  "statement": "The more authority a capability receives, the stronger its evidence and rollback requirements.",
+  "rationale": "Broad authority granted on thin evidence.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Widening authority without the stronger evidence is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6072",
+  "domain": "EXPAND",
+  "title": "New tools default to read-only, sandboxed permissions",
+  "statement": "New tools start read-only/sandboxed until their behaviour and data handling are understood.",
+  "rationale": "A new tool with write or network authority from day one.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A newly registered tool holds only Read; LeaveSandbox requires a promotion citing an evaluation."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6073",
+  "domain": "EXPAND",
+  "title": "New specialists declare competency boundaries and abstain outside them",
+  "statement": "Each new specialist declares its competency boundary and abstains outside it.",
+  "rationale": "A specialist answering confidently outside its domain.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A manifest without a competency boundary is refused; a question outside it yields a Deferred finding that downstream does not weight."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-6074",
+  "domain": "MODEL",
+  "title": "New model must beat a named baseline and stay calibrated under stress",
+  "statement": "A new model must beat a named baseline on a declared benchmark and remain calibrated under stress/regime shift.",
+  "rationale": "Promoting a model that only looks good in one regime.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A candidate without a calibrated baseline on record is refused; one miscalibrated under a stressed regime is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-6075",
+  "domain": "REFLEX",
+  "title": "Reflex artifacts meet deterministic resource, latency, failure budgets",
+  "statement": "A new reflex artifact must meet deterministic resource, latency and failure-mode budgets before regional deployment.",
+  "rationale": "A reflex artifact that blows the cell's latency or memory budget in production.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A student whose step cost, memory or failure-mode budget is exceeded is refused before it can be shipped to a cell."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6076",
+  "domain": "EXPAND",
+  "title": "Promoted capability keeps full lineage and rollback parent",
+  "statement": "Every promoted capability keeps lineage to its research campaign, datasets, code, model, evaluations and rollback parent.",
+  "rationale": "An artifact nobody can trace or undo.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.4 Controlled Self-Improvement and Promotion"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A promotion without any lineage field is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-EXPAND-6077",
+  "domain": "EXPAND",
+  "title": "Capability receives authority only after measurable value",
+  "statement": "New capability must demonstrate measurable value before receiving authority; expansion stays bounded by capital, compute, data rights, regulation and security.",
+  "rationale": "Authority granted on promise rather than measurement.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§23.5 What \"Open-Ended\" Means"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each authority-widening path requires a measured-value record."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6078",
+  "domain": "AGENCY",
+  "title": "Agency engine between cognition and tool execution",
+  "statement": "The Causal Agency & Intervention Engine sits between cognition and tool execution, turning desired outcomes into testable, policy-constrained causal action plans and turning action results back into learned causal structure.",
+  "rationale": "Prediction treated as agency, or actions with no causal learning.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "36",
+    "section": "§24 Causal Agency & Intervention Intelligence"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A request flows goal -> plan -> gate -> shadow, and an attributed result updates the causal structure."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6079",
+  "domain": "AGENCY",
+  "title": "Desired outcome is a typed GoalSpec with all declarations",
+  "statement": "A desired outcome is a typed GoalSpec declaring target state/distribution, entities affected, time horizon, success metric, acceptable uncertainty, budget, risk envelope, legal/jurisdictional boundary, acting identity, prohibited side effects and stop/rollback conditions.",
+  "rationale": "A free-form goal carries no budget, envelope or identity to stay inside.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.1 Desired Outcomes, Utility and Constraints"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A goal missing any one declaration is refused naming that field; a document missing a field is refused on deserialisation, not defaulted."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6080",
+  "domain": "AGENCY",
+  "title": "Goals cover eight objective classes",
+  "statement": "Goals may be financial, operational, research, product, liquidity, risk-reduction, information-acquisition or communications objectives.",
+  "rationale": "An objective class with no representation is forced into the wrong one.",
+  "kind": "contract",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.1 Desired Outcomes, Utility and Constraints"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A goal of each of the eight classes round-trips through serde unchanged."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6081",
+  "domain": "AGENCY",
+  "title": "Outcome preference never implies action permission",
+  "statement": "Wanting an outcome never implies permission to use every causal lever that might achieve it; each lever requires authority the acting identity independently holds.",
+  "rationale": "A planner treating a goal's utility as licence.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.1 Desired Outcomes, Utility and Constraints"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A plan using a lever whose authority the identity lacks is refused whatever its effect."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6082",
+  "domain": "AGENCY",
+  "title": "Action-affordance graph extends the world model federation",
+  "statement": "The World Model Federation is extended with an action-affordance graph recording which variables can be observed and controlled, which tools affect them, expected latency/cost, causal paths, side effects, dependencies and authority requirements.",
+  "rationale": "A planner picking a lever nobody can pull from an observational graph.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.2 Action-Affordance & Causal Lever Graph"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A tool edge missing a declaration or on an observable-only variable is refused; levers are only controllable variables with a tool edge."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6083",
+  "domain": "AGENCY",
+  "title": "Symbolic hard constraints; learned models estimate effect sizes",
+  "statement": "Symbolic reasoning enforces hard constraints while learned causal models estimate uncertain effect sizes; no estimate outweighs a constraint.",
+  "rationale": "A large expected effect buying its way past a constraint.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.2 Action-Affordance & Causal Lever Graph"
+   }
+  ],
+  "verification": {
+   "method": "property",
+   "check": "No learned effect estimate however large gets a plan past a hard constraint."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6084",
+  "domain": "AGENCY",
+  "title": "Interventions modelled as do(action) with counterfactual branches",
+  "statement": "Interventions are represented with structural causal models and counterfactual branches: do(action) -> intermediate states -> target outcome.",
+  "rationale": "Correlation mistaken for control.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.2 Action-Affordance & Causal Lever Graph"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An intervention's effect is computed by graph surgery, distinct from the observational association."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6085",
+  "domain": "AGENCY",
+  "title": "Weak identification leads to abstain, gather evidence or experiment",
+  "statement": "When causal identification is weak, the engine abstains, gathers more evidence or proposes an experiment rather than acting.",
+  "rationale": "Pretending correlation is control.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.2 Action-Affordance & Causal Lever Graph"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A plan pulling a weakly identified lever is never returned for execution."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6086",
+  "domain": "AGENCY",
+  "title": "Candidate set always includes a no-action baseline",
+  "statement": "Every candidate set includes exactly one no-action baseline against which actions are judged.",
+  "rationale": "Acting when doing nothing was better.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.3 Intervention Planner"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A candidate set without exactly one baseline and one alternative is refused; an effect not strictly positive loses to no action."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6087",
+  "domain": "AGENCY",
+  "title": "Planner generates multiple candidate action sequences",
+  "statement": "The planner itself generates multiple candidate action sequences for a goal.",
+  "rationale": "A planner that only evaluates what an operator thought of.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.3 Intervention Planner"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Given a goal and graph with no proposals, the planner produces at least two admissible candidates."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6088",
+  "domain": "AGENCY",
+  "title": "Simulate candidates across world models, twins and scenarios",
+  "statement": "Each candidate is simulated across competing world models, market/tick digital twins and scenario branches.",
+  "rationale": "A plan judged against a single assumed world.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.3 Intervention Planner"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A candidate's simulation produces one result per world model and twin scenario."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "TICK",
+   "WORLD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6089",
+  "domain": "AGENCY",
+  "title": "Candidates compared on nine declared axes",
+  "statement": "Candidates are compared on expected causal effect, confidence, cost, capital usage, time-to-effect, reversibility, legal eligibility, conduct risk and downside.",
+  "rationale": "Ranking that silently omits downside or conduct risk.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.3 Intervention Planner"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A comparison missing any axis is refused; changing conduct risk or downside changes the ranking."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6090",
+  "domain": "AGENCY",
+  "title": "Plans may be parallel, sequential, conditional or adaptive",
+  "statement": "Candidate interventions can be parallel, sequential, conditional or adaptive, with bounds held against every branch.",
+  "rationale": "A conditional branch that would breach the budget hidden by checking only the branch that fires.",
+  "kind": "contract",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.3 Intervention Planner"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A conditional runs only when its condition holds; an adaptive switches; a bound is checked against every branch."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6091",
+  "domain": "AGENCY",
+  "title": "Action only through registered tools with identity, permission, audit",
+  "statement": "The platform acts only through registered tools with explicit identities, permissions and audit.",
+  "rationale": "An adapter invoked before anyone declared who it acts as.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An unregistered tool or one without identity is refused and every decision audited; the only adapter caller checks the registry."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6092",
+  "domain": "AGENCY",
+  "title": "Truthful publishing and communications surface",
+  "statement": "Attributable articles, research notes, disclosures, reports or posts through authorised channels with source lineage, factuality checks, disclosure policy and immutable audit.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6093",
+  "domain": "AGENCY",
+  "title": "Authorised stakeholder outreach surface",
+  "statement": "Messages, requests for information, customer/vendor/partner engagement or negotiation through approved identities and channels.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6094",
+  "domain": "AGENCY",
+  "title": "Research action surface",
+  "statement": "Acquire lawful data, run surveys/experiments where permitted, request additional evidence, launch simulations or commission a specialist research campaign.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6095",
+  "domain": "AGENCY",
+  "title": "Product and pricing action surface",
+  "statement": "Adjust Algorik-controlled product configuration, pricing, availability or service behaviour where governance permits.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6096",
+  "domain": "AGENCY",
+  "title": "Operational action surface",
+  "statement": "Routing, logistics, inventory, compute, deployment, scheduling, sourcing and other owned-system changes.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6097",
+  "domain": "AGENCY",
+  "title": "Capital and risk action surface",
+  "statement": "Allocate, hedge, rebalance, reserve liquidity, move collateral or reduce exposure within signed authority envelopes.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "LIVE_CAPITAL",
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6098",
+  "domain": "AGENCY",
+  "title": "Market and product action surface",
+  "statement": "Quote, provide liquidity, create/list/seed markets or instruments, or execute commerce/trading actions subject to venue, jurisdiction and conduct controls.",
+  "rationale": "An action surface used without registered identity, permission and audit.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "37",
+    "section": "§24.4 Authorized Action Surfaces"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The surface's adapter exists only behind registered tool identity, permission, audit and the paper boundary."
+  },
+  "policy_flags": [
+   "LIVE_CAPITAL",
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": "One bullet of §24.4's action-surface list. Platform rules refuse external action; scored accordingly."
+ },
+ {
+  "id": "R12-AGENCY-6099",
+  "domain": "AGENCY",
+  "title": "Communications & Conduct Brain checks seven dimensions",
+  "statement": "Before any external communication, check factual support, provenance, identity, required disclosures, audience/channel permissions, jurisdiction and whether the pattern could constitute deceptive coordination or manipulation.",
+  "rationale": "Communication used as an exemption from evidence and conduct rules.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A draft failing any one check is blocked; each check independently enforced."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [
+   "GOV"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6100",
+  "domain": "AGENCY",
+  "title": "Deceptive and manipulative techniques are never used",
+  "statement": "The platform never uses fabricated identities, sockpuppets, bots posing as people, fake consensus, false/misleading claims, undisclosed paid promotion, rumour manufacture, wash trading, spoofing, pump-and-dump or other deceptive techniques to move prices or beliefs.",
+  "rationale": "Market manipulation and deceptive coordination.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"
+   }
+  ],
+  "verification": {
+   "method": "property",
+   "check": "No tool edge of a deceptive method reaches a plan; the order path refuses a self-trade."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "GOV",
+   "EXEC"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6101",
+  "domain": "AGENCY",
+  "title": "A plan that depends on deception is infeasible",
+  "statement": "If a causal plan depends on deception, the plan is infeasible whatever its expected effect.",
+  "rationale": "A large expected effect justifying a deceptive step.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.5 Communications Integrity & Anti-Manipulation Boundary"
+   }
+  ],
+  "verification": {
+   "method": "property",
+   "check": "A plan with a deceptive step anywhere in it is refused for every generated effect estimate."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6102",
+  "domain": "AGENCY",
+  "title": "Post-intervention causal effect estimated by identified methods",
+  "statement": "After an intervention the Evaluation Brain estimates the caused change using randomised/staged experiments where feasible, else matched/synthetic controls, difference-in-differences, instrumental/structural methods, Bayesian causal models, counterfactual branches and no-action baselines.",
+  "rationale": "Crediting an action with what would have happened anyway.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.6 Experimentation and Causal Effect Attribution"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each method produces an estimate with an identification label; none exists without one."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6103",
+  "domain": "AGENCY",
+  "title": "Correlation never upgraded to causal certainty",
+  "statement": "The platform records uncertainty and never upgrades correlation into causal certainty without evidence.",
+  "rationale": "Authority widened on a forecast that merely came true.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.6 Experimentation and Causal Effect Attribution"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A NotIdentified attribution never widens a policy."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6104",
+  "domain": "AGENCY",
+  "title": "Effect attribution multi-horizon with chain and rivals",
+  "statement": "Effects are measured at multiple horizons, and the attribution preserves the causal chain, confounders, competing explanations and confidence rather than a final KPI.",
+  "rationale": "A bare KPI change that cannot be audited.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.6 Experimentation and Causal Effect Attribution"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An attribution without chain, confounders, rivals, confidence or horizon observations is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6105",
+  "domain": "AGENCY",
+  "title": "Ambient signals reach agency only via Attention Router and gates",
+  "statement": "Ambient models may surface a DesiredOutcome or ActionOpportunity, which never directly causes action: the Attention Router sends it to the Agency Brain, which builds a GoalSpec and candidates, runs simulation and policy/conduct gates and obtains the required authority.",
+  "rationale": "An ambient signal acting on the world unreviewed.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.7 Ambient Agency Loop"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "An ambient opportunity produces a GoalSpec and a gated, shadowed plan and no adapter call."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AMBIENT"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6106",
+  "domain": "AGENCY",
+  "title": "Agency loop runs in declared order end to end",
+  "statement": "The loop is observe -> predict -> specify desired state -> identify levers -> generate -> simulate -> verify authority/conduct -> act -> observe -> attribute -> update world models, policies and priors.",
+  "rationale": "An action before simulation, or an attribution before its action.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.7 Ambient Agency Loop"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A stage is admitted only in order and never after a failure; the full eleven stages complete on one pass."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6107",
+  "domain": "AGENCY",
+  "title": "Action Outcome Memory records nine fields",
+  "statement": "An Action Outcome Memory records intervention context, audience/environment state, action sequence, causal hypothesis, predicted effect, actual observations, attribution confidence, side effects and no-action counterfactual.",
+  "rationale": "Learning to repeat whatever coincided with a KPI rise.",
+  "kind": "contract",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.8 What the System Learns About Agency"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A record missing any of the nine is refused and not remembered."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-6108",
+  "domain": "AGENCY",
+  "title": "Learn which actions work, for whom, when, with what delay",
+  "statement": "From the memory the platform learns which actions work, for whom, under which regimes, with what delay, and when not acting is better.",
+  "rationale": "Repeating an action that only worked elsewhere.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.8 What the System Learns About Agency"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "recommend picks an action where it measurably worked and none where it did not, per environment state."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6109",
+  "domain": "CONTRACT",
+  "title": "ForecastState contract: typed multi-horizon prediction",
+  "statement": "A typed ForecastState contract (typed multi-horizon prediction) carries target, horizon, distribution, confidence, epistemic/aleatoric uncertainty, expiry, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ForecastState missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6110",
+  "domain": "CONTRACT",
+  "title": "WorldBranch contract: one plausible future",
+  "statement": "A typed WorldBranch contract (one plausible future) carries parent branch, assumptions, probability, causal deltas, unresolved evidence, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A WorldBranch missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "WORLD"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6111",
+  "domain": "CONTRACT",
+  "title": "InformationRequest contract: active sensing request",
+  "statement": "A typed InformationRequest contract (active sensing request) carries question, expected information value, deadline, allowed sources, budget, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A InformationRequest missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AMBIENT"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6112",
+  "domain": "CONTRACT",
+  "title": "ModelVote contract: model-tournament prediction",
+  "statement": "A typed ModelVote contract (model-tournament prediction) carries model/version, probability, regime, score history, compute cost, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ModelVote missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "MODEL"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6113",
+  "domain": "CONTRACT",
+  "title": "ComputePlan contract: hybrid compute routing",
+  "statement": "A typed ComputePlan contract (hybrid compute routing) carries task, classical baseline, CPU/GPU/TPU/QPU candidates, budget, verifier, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ComputePlan missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "QUANT"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6114",
+  "domain": "CONTRACT",
+  "title": "HedgePlan contract: portfolio protection plan",
+  "statement": "A typed HedgePlan contract (portfolio protection plan) carries exposures, scenarios protected, instruments, cost, liquidity, rollback, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "38",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A HedgePlan missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "RISK"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-6115",
+  "domain": "CONTRACT",
+  "title": "CapitalGrant contract: bounded deployable authority",
+  "statement": "A typed CapitalGrant contract (bounded deployable authority) carries amount, strategy, region, venue, risk budget, liquidity reserve, expiry, refusing a record missing any field.",
+  "rationale": "Brains exchanging untyped state cannot be audited or replayed.",
+  "kind": "contract",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§24.9 Superintelligence Control Contracts"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A CapitalGrant missing any of its fields is refused on decode; a round-trip is byte-identical."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "CAPITAL"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6116",
+  "domain": "GOV",
+  "title": "Eligibility metadata on venue, product, user, jurisdiction, strategy",
+  "statement": "Technical capability and legal permission are separate dimensions: every venue, product, user/entity, jurisdiction and strategy carries eligibility metadata.",
+  "rationale": "Assuming one legal entity may do everything it can technically do.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each of the five subject kinds has an eligibility record and an absent record refuses."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6117",
+  "domain": "GOV",
+  "title": "Cognition may analyse what execution may not do",
+  "statement": "The cognitive core may evaluate an opportunity or intervention that the execution layer, acting identity, entity, channel or jurisdiction is not permitted to perform.",
+  "rationale": "Either refusing to think about forbidden actions or letting analysis imply permission.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "An out-of-scope opportunity routes to a shadow record with no path to an intent; an unauthorised intervention is analysed and reported refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6118",
+  "domain": "GOV",
+  "title": "Jurisdiction/product eligibility gate before deployment and new venue",
+  "statement": "A jurisdiction/product eligibility gate runs before strategy deployment and before every new venue or instrument becomes executable.",
+  "rationale": "Trading a product or venue the entity is not permitted to.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Deploying a strategy or enabling a venue/instrument without an eligible record is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6119",
+  "domain": "GOV",
+  "title": "Separate identities and credentials per regulated function",
+  "statement": "Trading, custody/transfer, market creation, banking/financing and commerce purchasing each use separate identities and credentials.",
+  "rationale": "One credential compromise spanning every regulated function.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each function's credential is a distinct secret readable only by the process using it."
+  },
+  "policy_flags": [
+   "LIVE_CAPITAL",
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6120",
+  "domain": "GOV",
+  "title": "Signed authority envelopes for destinations, leverage, products, functions",
+  "statement": "Human-signed or governance-signed authority envelopes govern destinations, leverage, product classes and regulated functions.",
+  "rationale": "Authority taken rather than granted.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An envelope without a valid signature over every bound is refused; widening requires a new signed envelope."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "CAPITAL"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6121",
+  "domain": "GOV",
+  "title": "Immutable audit of model, data, policy, code and control versions",
+  "statement": "Each decision has an immutable audit of the model, data, policy, code and control versions involved.",
+  "rationale": "A decision that cannot be reproduced because nobody recorded what produced it.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A decision record carries all five version identifiers and sits in the hash-chained log; dropping one fails a replay test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "EVID"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6122",
+  "domain": "GOV",
+  "title": "Unsupported opportunities remain shadow-only",
+  "statement": "Research/simulation may be broader than executable scope, and unsupported opportunities remain shadow-only however they are rescored.",
+  "rationale": "A rescore promoting an out-of-scope opportunity to an action.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "An opportunity outside the scope stays shadow however it is rescored."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6123",
+  "domain": "GOV",
+  "title": "Action tool registration declares six attributes and revocation",
+  "statement": "Every action tool has a registered acting identity, permission scope, disclosure policy, audience/channel rules, rate/budget limits and revocation path.",
+  "rationale": "A tool that can act before anyone said how to stop it.",
+  "kind": "contract",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A registration missing any field is refused; after revocation the next call is refused and audited."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6124",
+  "domain": "GOV",
+  "title": "Goal approval, plan approval and execution separately auditable",
+  "statement": "Goal approval, plan approval and action execution are three separately auditable records.",
+  "rationale": "An approval that cannot be attributed to the person who gave it.",
+  "kind": "contract",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "One intervention leaves three linked records each with its own actor and time; out-of-order timestamps are refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6125",
+  "domain": "GOV",
+  "title": "Sensitive intervention classes require stronger approval",
+  "statement": "Sensitive intervention classes can require stronger approval than ordinary research.",
+  "rationale": "A communication or capital action approved at research authority.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A capital-class intent with only operational authority is refused; with capital authority admitted."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6126",
+  "domain": "GOV",
+  "title": "Market-facing actions cross-checked for manipulation risk",
+  "statement": "Public communications and market-facing actions are cross-checked for market-conduct/manipulation risk.",
+  "rationale": "Manipulation through a channel nobody reviewed.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A market-facing action matching a manipulation pattern is refused before any adapter."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY",
+   "EXEC"
+  ],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-6127",
+  "domain": "GOV",
+  "title": "Profit or price impact alone never justifies an action",
+  "statement": "Public communications and market-facing actions cannot be justified solely by expected profit or desired price impact.",
+  "rationale": "Price impact as a motive becoming manipulation.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "M",
+    "page": "39",
+    "section": "§25 Governance, Legal Isolation & Authority"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A justification of only profit and/or price impact is refused; one with an evidence ground is admitted."
+  },
+  "policy_flags": [],
+  "secondary_domains": [
+   "AGENCY"
+  ],
+  "notes": ""
+ }
+]

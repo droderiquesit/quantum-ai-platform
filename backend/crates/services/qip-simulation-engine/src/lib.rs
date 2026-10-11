@@ -67,6 +67,7 @@ pub mod harness;
 pub mod market;
 pub mod montecarlo;
 pub mod scenario;
+pub mod tick_replay;
 pub mod validation;
 pub mod venue;
 

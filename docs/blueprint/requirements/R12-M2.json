@@ -1,0 +1,2164 @@
+[
+  {
+    "id": "R12-DATA-2001",
+    "domain": "DATA",
+    "title": "Scout discovers new lawful sources without a human adding them",
+    "statement": "The Scout Fabric runs continuously and finds new candidate sources on its own; it does not depend on a human adding each feed.",
+    "rationale": "A platform that only looks where a person already thought to look never learns of the source that would have corrected its blind spot.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6 Global Scout & Data Acquisition Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A discovery pass with an empty operator list still produces new candidate sources from discovery targets; fails if candidates come only from a committed list."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "'Lawful' is carried by the law/terms inspection requirement in §6.2 step 3."
+  },
+  {
+    "id": "R12-DATA-2002",
+    "domain": "DATA",
+    "title": "Scout creates or proposes an adapter for an approved source",
+    "statement": "For a source it approves, the Scout creates, or proposes for review, a feed adapter that can ingest it.",
+    "rationale": "An approval that never becomes an adapter is a report nobody can act on.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6 Global Scout & Data Acquisition Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A registered source yields an ingestion descriptor/adapter plan matching its access mechanism; fails if registration produces no plan."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2003",
+    "domain": "DATA",
+    "title": "Access and terms of registered sources are re-checked continuously",
+    "statement": "The Scout re-reads access method and legal terms of every registered source on each pass and stops using a source whose terms or access no longer permit it.",
+    "rationale": "A source registered Monday whose publisher forbade the path Tuesday stays 'currently collected' if re-assessment only looks at new candidates.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6 Global Scout & Data Acquisition Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Re-assessing a registered source whose robots/terms turned against it quarantines it and removes it from the catalogue; fails if it stays registered."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2004",
+    "domain": "DATA",
+    "title": "Raw market events feed reflex path and tick fabric",
+    "statement": "Raw market events feed both the live reflex path and the historical Tick Learning Fabric, subject to venue entitlements and retention rules.",
+    "rationale": "A tick fabric fed separately from the reflex path learns from a different market than the one the cell traded.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "One decoded market event reaches both the cell's pass and the tick lake with its entitlement; fails if either sink is not reached."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2005",
+    "domain": "DATA",
+    "title": "Exchange and market-structure sources are acquirable",
+    "statement": "The source universe includes exchange feeds, order books, trades, quotes, options surfaces, funding, borrow, rates and venue status.",
+    "rationale": "A source class the fabric cannot acquire is a blind spot; one acquired without its licensing posture is a compliance breach.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named source class has at least one admitted connector or a documented refusal; fails if a class has neither."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2006",
+    "domain": "DATA",
+    "title": "Filings, regulatory and official-statistics sources are acquirable",
+    "statement": "The source universe includes filings, earnings, regulatory portals, court/docket data, procurement, patents, corporate registries, government statistics and central-bank releases.",
+    "rationale": "A source class the fabric cannot acquire is a blind spot; one acquired without its licensing posture is a compliance breach.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named source class has at least one admitted connector or a documented refusal; fails if a class has neither."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2007",
+    "domain": "DATA",
+    "title": "News, public web and public social sources are acquirable",
+    "statement": "The source universe includes news, press releases, expert publications, public web, deep-web databases, public social signals and public discussion communities.",
+    "rationale": "A source class the fabric cannot acquire is a blind spot; one acquired without its licensing posture is a compliance breach.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named source class has at least one admitted connector or a documented refusal; fails if a class has neither."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2008",
+    "domain": "DATA",
+    "title": "Blockchain, mempool and protocol sources are acquirable",
+    "statement": "The source universe includes blockchain state, mempools, token flows, smart-contract events and protocol governance.",
+    "rationale": "A source class the fabric cannot acquire is a blind spot; one acquired without its licensing posture is a compliance breach.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named source class has at least one admitted connector or a documented refusal; fails if a class has neither."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2009",
+    "domain": "DATA",
+    "title": "Geospatial, weather, shipping and physical-flow sources are acquirable",
+    "statement": "The source universe includes geospatial/satellite, weather, shipping/AIS, flight, port, traffic, commodity flows, energy grids and public IoT where licensed/available.",
+    "rationale": "A source class the fabric cannot acquire is a blind spot; one acquired without its licensing posture is a compliance breach.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named source class has at least one admitted connector or a documented refusal; fails if a class has neither."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2010",
+    "domain": "DATA",
+    "title": "Product, SKU and marketplace sources are acquirable",
+    "statement": "The source universe includes product/SKU listings, inventories, prices, shipping estimates, marketplace fees, auction data and resale markets.",
+    "rationale": "A source class the fabric cannot acquire is a blind spot; one acquired without its licensing posture is a compliance breach.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named source class has at least one admitted connector or a documented refusal; fails if a class has neither."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2011",
+    "domain": "DATA",
+    "title": "Private and user-authorised datasets only under explicit entitlement",
+    "statement": "Private, alternative, licensed and user-authorised datasets are acquired only under an explicit entitlement recorded with the source.",
+    "rationale": "Data used outside its licence is a regulatory and contractual breach that the event log would faithfully record.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.1 Source Universe"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing an event or registration without an entitlement is refused; fails if a default grant is substituted."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One row per §6.1 bullet."
+  },
+  {
+    "id": "R12-DATA-2012",
+    "domain": "DATA",
+    "title": "Acquisition runs fetch-parse-evidence-extract-delta-world model",
+    "statement": "Acquisition proceeds SOURCE -> transient fetch -> parse/extract -> evidence check -> entity/event/fact/feature -> knowledge delta -> world models/memory.",
+    "rationale": "A fetched document that skips the evidence check reaches the world model as a fact.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.3 Pass-Through Acquisition and Knowledge Distillation"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A connector poll produces records that pass schema/event gates, become typed records and update the world model; fails if a gate can be bypassed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2013",
+    "domain": "DATA",
+    "title": "Every acquisition records source manifest, content hash and cursor",
+    "statement": "Each acquisition records a source manifest, a hash of exactly the bytes read, and the cursor/position reached.",
+    "rationale": "Without the hash a backtest whose source silently revised its history cannot be flagged; without the cursor a restart re-reads or skips.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.3 Pass-Through Acquisition and Knowledge Distillation"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A poll yields a digest whose hash matches the fetched bytes and a checkpoint that resumes to the same cursor; fails if the hash covers mapped records instead of bytes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2014",
+    "domain": "DATA",
+    "title": "Raw external content is discarded after extraction",
+    "statement": "External source payloads exist only long enough to parse, validate, extract and reason; raw external content is then discarded and durable storage begins at the knowledge boundary.",
+    "rationale": "A hoard of vendor documents is a licensing liability and an unbounded store.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.3 Pass-Through Acquisition and Knowledge Distillation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A canary string in a fetched body appears in no journal, released record or digest after a poll; fails if any durable artefact holds the body."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2015",
+    "domain": "DATA",
+    "title": "Discovery starts from world-model gaps and forecast errors",
+    "statement": "The discovery loop observes gaps in the world model, strategies and forecast errors and turns them into discovery targets.",
+    "rationale": "Discovery driven by an operator list never reads the platform's own forecast errors, the cheapest evidence that a source is missing.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A forecast-error spike on an uncovered entity yields a target naming it and the covering candidate is assessed first; fails if target order ignores the spike."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2016",
+    "domain": "DATA",
+    "title": "Discovery generates queries by geography, entity, domain and language",
+    "statement": "From each target the loop generates source-discovery queries and candidate locations across geography, entity, domain and language.",
+    "rationale": "A query without a language or geography cannot be sent, and guessing one searches the wrong corpus.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "queries_for yields one query per geography x domain x language and refuses a profile missing a dimension; fails if a dimension is defaulted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2017",
+    "domain": "DATA",
+    "title": "Law and terms are inspected before a source is used",
+    "statement": "Before registration each candidate's law/terms (licence, robots, jurisdiction) are inspected; unknown or forbidden legality is never collected regardless of score.",
+    "rationale": "A high-scoring source with a forbidden licence that is collected anyway is a compliance breach recorded in the log.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A candidate scoring 1.0 everywhere with a forbidden or unknown licence is Rejected; fails if Routing can be built from score alone."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Also the §6 intro's 'lawful' and the rule 'licensing posture evaluated before a source is used'."
+  },
+  {
+    "id": "R12-DATA-2018",
+    "domain": "DATA",
+    "title": "Candidate access, schema, freshness and cost are inspected",
+    "statement": "Each candidate's access method, schema, freshness and cost are inspected from probe evidence before registration.",
+    "rationale": "Registering on the candidate's own description of itself is registering on hearsay.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A registered source's trail records a finding for each inspection attribute; fails if any attribute is unrecorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2019",
+    "domain": "DATA",
+    "title": "Candidate uniqueness and manipulation risk are inspected",
+    "statement": "Each candidate's expected uniqueness and manipulation risk are assessed, and a source showing manipulation evidence is not registered.",
+    "rationale": "A source serving records dated after they were fetched admits point-in-time leakage through the front door.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A candidate whose records are dated after the probe is refused on manipulation risk; fails if freshness rewards the future-dated payload."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2020",
+    "domain": "DATA",
+    "title": "Approved source metadata is registered with a named operator",
+    "statement": "Approved source metadata is registered in a catalogue; the registration carries the legality assessment and a named operator.",
+    "rationale": "An anonymous or assessment-free registration cannot be audited.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Registration without a legal assessment or with a blank operator is refused; fails if a catalogue entry exists without either."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2021",
+    "domain": "DATA",
+    "title": "A new source's adapter runs in a sandbox before promotion",
+    "statement": "A newly registered source's feed/adapter is instantiated in a sandbox, and its output reaches knowledge stores only after a recorded promotion.",
+    "rationale": "An unproven adapter writing straight into the world model contaminates every belief it touches.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A sandboxed source's records do not reach the world model until a promotion event; fails if sandbox output is ingested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2022",
+    "domain": "DATA",
+    "title": "Source scored on incremental information gain",
+    "statement": "A source is scored on incremental information gain over the sources already held.",
+    "rationale": "A source kept on reputation rather than measured value is a cost with no edge.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named score changes in the expected direction for a duplicate vs informative (or late vs early, flaky vs stable) source; fails if the score ignores its input."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2023",
+    "domain": "DATA",
+    "title": "Source scored on timeliness",
+    "statement": "A source is scored on timeliness, measured as how far its facts lead the same fact elsewhere.",
+    "rationale": "A source kept on reputation rather than measured value is a cost with no edge.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named score changes in the expected direction for a duplicate vs informative (or late vs early, flaky vs stable) source; fails if the score ignores its input."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2024",
+    "domain": "DATA",
+    "title": "Source scored on reliability",
+    "statement": "A source is scored on reliability from observed availability, errors and latency.",
+    "rationale": "A source kept on reputation rather than measured value is a cost with no edge.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named score changes in the expected direction for a duplicate vs informative (or late vs early, flaky vs stable) source; fails if the score ignores its input."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2025",
+    "domain": "DATA",
+    "title": "Source scored on realised strategy contribution",
+    "statement": "A source is scored on its realised contribution to strategy outcomes once used.",
+    "rationale": "A source kept on reputation rather than measured value is a cost with no edge.",
+    "kind": "metric",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named score changes in the expected direction for a duplicate vs informative (or late vs early, flaky vs stable) source; fails if the score ignores its input."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-2026",
+    "domain": "DATA",
+    "title": "Sources promoted automatically under policy",
+    "statement": "Policy automatically promotes a registered source on re-assessment evidence, with no operator step, and journals the transition.",
+    "rationale": "A lifecycle that needs a person to act is a lifecycle that does not happen at 3 a.m.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A re-assessment pass whose evidence warrants it yields a promote transition journaled in the event log; fails if the registry is unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§6.2 step 6 split per action; §6 intro 'retires low-value sources' folded into the retire row."
+  },
+  {
+    "id": "R12-DATA-2027",
+    "domain": "DATA",
+    "title": "Sources throttled automatically under policy",
+    "statement": "Policy automatically throttles a registered source on re-assessment evidence, with no operator step, and journals the transition.",
+    "rationale": "A lifecycle that needs a person to act is a lifecycle that does not happen at 3 a.m.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A re-assessment pass whose evidence warrants it yields a throttle transition journaled in the event log; fails if the registry is unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§6.2 step 6 split per action; §6 intro 'retires low-value sources' folded into the retire row."
+  },
+  {
+    "id": "R12-DATA-2028",
+    "domain": "DATA",
+    "title": "Sources quarantined automatically under policy",
+    "statement": "Policy automatically quarantines a registered source on re-assessment evidence, with no operator step, and journals the transition.",
+    "rationale": "A lifecycle that needs a person to act is a lifecycle that does not happen at 3 a.m.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A re-assessment pass whose evidence warrants it yields a quarantine transition journaled in the event log; fails if the registry is unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§6.2 step 6 split per action; §6 intro 'retires low-value sources' folded into the retire row."
+  },
+  {
+    "id": "R12-DATA-2029",
+    "domain": "DATA",
+    "title": "Sources retired automatically under policy",
+    "statement": "Policy automatically retires a registered source on re-assessment evidence, with no operator step, and journals the transition.",
+    "rationale": "A lifecycle that needs a person to act is a lifecycle that does not happen at 3 a.m.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§6.2 Discovery Agent Loop"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A re-assessment pass whose evidence warrants it yields a retire transition journaled in the event log; fails if the registry is unchanged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§6.2 step 6 split per action; §6 intro 'retires low-value sources' folded into the retire row."
+  },
+  {
+    "id": "R12-EVID-2030",
+    "domain": "EVID",
+    "title": "No single source is truth; beliefs update from evidence",
+    "statement": "Extracted claims update beliefs through evidence weighting; no single source and no scraped text is converted directly into a fact.",
+    "rationale": "Scraped text promoted straight to fact makes one wrong article a world-model truth.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "No finite evidence drives a belief to certainty and contradicting evidence lowers it; fails if a single item sets the belief to 1."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2031",
+    "domain": "EVID",
+    "title": "Every extracted claim becomes an Evidence object with full provenance",
+    "statement": "Every extracted claim becomes an Evidence object carrying source identity, timestamp, location, extraction method, authenticity signals, license and confidence.",
+    "rationale": "A claim without provenance cannot be re-checked or retracted.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing evidence without source, extraction method or license is refused, and every ingested world claim is wrapped; fails if a claim reaches the world model without one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2032",
+    "domain": "EVID",
+    "title": "Evidence links to corroborating and contradicting evidence",
+    "statement": "Each Evidence object carries links to the evidence that corroborates or contradicts it.",
+    "rationale": "Without links a contradiction cannot be traced back to the claims it involves.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Linking two evidence items records the relation on both sides and survives replay; fails if links are dropped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2033",
+    "domain": "EVID",
+    "title": "A provenance graph of evidence is built",
+    "statement": "The system builds a provenance graph linking claims to sources and to each other.",
+    "rationale": "A belief whose evidence chain cannot be walked cannot be audited.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "From a belief, walking the graph reaches every source document hash it rests on; fails if any edge is missing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2034",
+    "domain": "EVID",
+    "title": "Authenticity signals are recorded and checked",
+    "statement": "Authenticity is assessed from TLS/domain identity, signed releases where available, document hashes, chain proofs, known issuer identity and source history.",
+    "rationale": "A spoofed release from a look-alike domain is otherwise indistinguishable from the real one.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Evidence from a verified-hash, registered-issuer source outranks an unsigned copy; fails if authenticity has no effect on weight."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2035",
+    "domain": "EVID",
+    "title": "Corroboration discounts common-source dependence",
+    "statement": "Corroboration is weighted by independent-source agreement so that copies of one origin (ten copies of one press release) count as one source.",
+    "rationale": "Ten syndicated copies counted as ten confirmations manufacture certainty from one claim.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Adding copies of an existing origin leaves supporting weight unchanged while a new origin raises it; fails if a per-copy increment is reintroduced."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2036",
+    "domain": "EVID",
+    "title": "Claims are checked for temporal consistency",
+    "statement": "Each claim is checked against prior state, event ordering and physically possible timelines, and the result is recorded.",
+    "rationale": "A claim ingested before its source published it, or an effect dated before its cause, is a fabrication or a leak.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A claim dated after its publication or before its declared cause is marked inconsistent; fails if marked Consistent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2037",
+    "domain": "EVID",
+    "title": "Claims are checked for geospatial consistency",
+    "statement": "Location, routing, shipping, weather and jurisdiction evidence must agree where relevant, and disagreement is recorded.",
+    "rationale": "A shipment reported in two ports at once is a data error that would otherwise drive a trade.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Two claims placing one entity in incompatible locations are marked inconsistent; fails if no check runs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2038",
+    "domain": "EVID",
+    "title": "Contradictions kept as competing hypotheses until resolved",
+    "statement": "Conflicting evidence is not deleted; competing hypotheses are maintained and the later evidence that resolves them is tracked.",
+    "rationale": "Deleting the losing side of a conflict makes the belief unauditable and unrevisable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A contradiction is recorded with both sides retained and later resolved with the resolving evidence named; fails if either side is removed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2039",
+    "domain": "EVID",
+    "title": "Adversarial and poisoned sources are detected",
+    "statement": "The fabric detects spam, coordinated manipulation, synthetic content, poisoned feeds, spoofing and anomalous source behaviour.",
+    "rationale": "A coordinated campaign across outlets is invisible to any per-item check.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A planted coordinated campaign (same timing, near-identical text across origins) is flagged; fails if the detector returns no finding."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-2040",
+    "domain": "EVID",
+    "title": "Quantum methods never confer authenticity or truth",
+    "statement": "Quantum optimisation/clustering on evidence graphs is optional and experimental, and no quantum output may set authenticity or truth.",
+    "rationale": "'We used a quantum computer' is not evidence of anything.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§7 Evidence, Provenance & Truth Fabric"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No path from a quantum result type to an authenticity or belief field; fails if one compiles."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2041",
+    "domain": "TICK",
+    "title": "Raw tick storage is separated from the cognitive context",
+    "statement": "Raw market-event storage is separate from the cognitive layer, which consumes time-aligned states, embeddings, regimes, reaction summaries and exception episodes rather than raw ticks.",
+    "rationale": "Feeding billions of raw ticks to a generalist model is cost without information.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§8 Market Intelligence & Tick Learning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Replay/training crates are absent from the reflex binary and the cognitive layer has no raw-tick input type; fails if it gains one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2042",
+    "domain": "TICK",
+    "title": "Every raw tick is retained for exact replay where licensed",
+    "statement": "Every raw tick remains available for exact replay and retraining, subject to entitlement.",
+    "rationale": "A tick not retained is a backtest that can never be reproduced.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "13",
+        "section": "§8 Market Intelligence & Tick Learning Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A captured session can be re-materialised byte-for-byte from the lake; fails if any captured tick is missing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2043",
+    "domain": "TICK",
+    "title": "Trades, quotes, top-of-book and L1-L3 depth are captured",
+    "statement": "The tick universe includes trades, bid/ask quotes, NBBO or venue top-of-book, L1/L2 depth and L3 order-level data where licensed and economically justified.",
+    "rationale": "A market fact the fabric never captured is a reaction the platform cannot learn.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.1 Tick and Market-Event Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named event type has a typed record and a capture path; fails if a type is absent."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2044",
+    "domain": "TICK",
+    "title": "Auctions, halts, status, rejects, cancels and acks are captured",
+    "statement": "The tick universe includes auction/open/close/imbalance events, halts, circuit breakers, venue status, rejects, cancels and order acknowledgements.",
+    "rationale": "A market fact the fabric never captured is a reaction the platform cannot learn.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.1 Tick and Market-Event Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named event type has a typed record and a capture path; fails if a type is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2045",
+    "domain": "TICK",
+    "title": "Options, vol surfaces, futures curves, borrow and funding are captured",
+    "statement": "The tick universe includes options chains, implied-volatility surfaces, Greeks, futures curves, basis, borrow, funding and financing state.",
+    "rationale": "A market fact the fabric never captured is a reaction the platform cannot learn.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.1 Tick and Market-Event Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named event type has a typed record and a capture path; fails if a type is absent."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2046",
+    "domain": "TICK",
+    "title": "FX, rates, crypto books, perp funding and on-chain state are captured",
+    "statement": "The tick universe includes FX and rates quotes, crypto order books, perpetual funding, liquidations, mempool/on-chain signals and decentralised venue state.",
+    "rationale": "A market fact the fabric never captured is a reaction the platform cannot learn.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.1 Tick and Market-Event Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named event type has a typed record and a capture path; fails if a type is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2047",
+    "domain": "TICK",
+    "title": "Internal order telemetry is captured as tick data",
+    "statement": "The tick universe includes the platform's own submitted orders, timestamps, routing decisions, fills, partial fills, slippage, queue estimates, cancels, rejects, hedges and risk vetoes.",
+    "rationale": "The platform's own executions are the only ground truth for fill and slippage models; not capturing them means calibrating to fiction.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.1 Tick and Market-Event Universe"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every order lifecycle event, slippage and veto appears in the captured record with a trace id; fails if one is dropped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2048",
+    "domain": "TICK",
+    "title": "Cross-asset and cross-region synchronisation metadata is kept",
+    "statement": "Captured events carry cross-asset and cross-region synchronisation metadata so reactions can be learned across instruments and venues.",
+    "rationale": "A market fact the fabric never captured is a reaction the platform cannot learn.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.1 Tick and Market-Event Universe"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named event type has a typed record and a capture path; fails if a type is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2049",
+    "domain": "TICK",
+    "title": "Capture keeps source sequence, exchange time and receive time",
+    "statement": "Venue capture adapters decode native feeds preserving source sequence numbers, exchange timestamps and receive timestamps.",
+    "rationale": "Without the venue sequence a gap is invisible; without both clocks a backlog is invisible.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A decoded event exposes venue sequence, exchange time and receive time as distinct values; fails if any is collapsed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2050",
+    "domain": "TICK",
+    "title": "Raw venue messages preserved where rights allow",
+    "statement": "Capture preserves raw venue messages where rights allow, and keeps the payload hash where they do not.",
+    "rationale": "Without raw bytes a decoder bug can never be re-run against the original.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A permitting entitlement stores raw bytes and a non-permitting one stores only the hash; fails if bytes are stored without rights."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2051",
+    "domain": "TICK",
+    "title": "Event, receive and normalized time and uncertainty stay distinct",
+    "statement": "Normalisation preserves event time, receive time, sequence, venue and clock uncertainty as distinct fields rather than collapsing them to one timestamp.",
+    "rationale": "A collapsed timestamp hides queueing and makes leakage undetectable.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Round-tripping a canonical event preserves all three times and the uncertainty; fails if any is overwritten."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§8.5 'No timestamp laundering' restates this and adds lineage of clock corrections; that half is its own requirement."
+  },
+  {
+    "id": "R12-TICK-2052",
+    "domain": "TICK",
+    "title": "PTP/GPS-grade clock discipline where justified",
+    "statement": "Capture nodes use PTP/GPS-grade clock discipline where the strategy justifies it, and publish the resulting uncertainty.",
+    "rationale": "An unknown clock offset is a fake lead/lag signal.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A disciplined node's published uncertainty bounds its measured offset against a reference; fails if offset exceeds the bound."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2053",
+    "domain": "TICK",
+    "title": "Canonical typed market-event schema for all event kinds",
+    "statement": "Trades, quotes, depth updates, auctions, status and lifecycle events normalise into typed canonical records.",
+    "rationale": "Untyped records let a field change meaning silently.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each event kind decodes to its typed variant; fails if any kind lands in a generic bucket."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2054",
+    "domain": "TICK",
+    "title": "Canonical records retain source payload hash and lineage",
+    "statement": "Every canonical record retains the source-native payload hash and lineage.",
+    "rationale": "A canonical record whose source bytes cannot be identified cannot be re-derived after a decoder fix.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a MarketEvent with a hash for a different payload is refused; fails if the hash is trusted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2055",
+    "domain": "TICK",
+    "title": "Immutable, checksummed, partitioned Tick Lake with manifests",
+    "statement": "The Tick Lake stores partitioned historical raw/canonical events immutably, with checksums and reproducible manifests.",
+    "rationale": "A rewritable history is a backtest that can be made to say anything.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A sealed segment cannot be overwritten and a manifest re-materialises to matching checksums; fails on any accepted overwrite or unflagged corrupt byte."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2056",
+    "domain": "TICK",
+    "title": "Tick Lake partitions enforce entitlement and retention",
+    "statement": "Lake partitions carry their entitlement and retention class, and a job reads only partitions it is entitled to.",
+    "rationale": "A training job that can read every partition trains on data it may not use.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A job granted one entitlement materialises only that partition; market-class objects have a delete lifecycle and internal-class never deletes; fails otherwise."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2057",
+    "domain": "TICK",
+    "title": "Tick Lake compresses segments",
+    "statement": "Lake segments are compressed.",
+    "rationale": "Uncompressed tick history multiplies storage cost.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A written segment is smaller than its input and round-trips exactly; fails if stored uncompressed."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": "A codec conflicts with ADR 0002/0009 (two dependencies) unless written in-tree."
+  },
+  {
+    "id": "R12-TICK-2058",
+    "domain": "TICK",
+    "title": "Hot replay indexes separated from cold archive",
+    "statement": "Hot replay indexes are kept separate from the cold archive so replay can seek without scanning archives.",
+    "rationale": "A replay that scans the archive for every seek is too slow to use.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Reading record N uses the manifest's index and fetches only its byte range; fails if the whole object is read."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2059",
+    "domain": "TICK",
+    "title": "Order books rebuild deterministically with checkpoints",
+    "statement": "Venue books are rebuilt deterministically from canonical events, with snapshots/checkpoints.",
+    "rationale": "A non-deterministic rebuild makes every replay a different market.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Replaying one session twice and from a checkpoint yields identical books, fills and flags; fails on any divergence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2060",
+    "domain": "TICK",
+    "title": "Reconstruction detects gaps and out-of-order events",
+    "statement": "Book reconstruction detects sequence gaps and out-of-order events.",
+    "rationale": "A book built over a missing increment is wrong from then on and nothing says so.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Removing one message or reordering one beyond the window is detected; fails if the book is published."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2061",
+    "domain": "TICK",
+    "title": "Unreliable reconstruction periods are marked on output",
+    "statement": "Periods where reconstruction is unreliable are marked on the replay output.",
+    "rationale": "A training job that reads a flagged span as ground truth learns from a fabricated book.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A gap yields an UnreliablePeriod on the output until the next Reset; fails if the span is unflagged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2062",
+    "domain": "TICK",
+    "title": "Cross-venue alignment preserves uncertainty without artificial simultaneity",
+    "statement": "Asynchronous instruments are aligned by event time and information arrival, preserving uncertainty and never asserting an order the clocks cannot support.",
+    "rationale": "Sorting two venues on a timestamp column manufactures lead/lag that does not exist.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Events within combined uncertainty are reported unordered; fails if the aligner orders them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2063",
+    "domain": "TICK",
+    "title": "Microstructure feature engine computes the named feature families",
+    "statement": "The feature engine generates spread, depth, imbalance, queue, flow, toxicity, volatility, liquidity, lead/lag and cross-venue features.",
+    "rationale": "A model starved of microstructure features cannot learn execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each named family has a feature with a hand-computed test; fails if any family is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2064",
+    "domain": "TICK",
+    "title": "Learned embedding representations of market state",
+    "statement": "The representation engine produces learned embeddings of market state.",
+    "rationale": "Hand-crafted features cap what the cognitive layer can see.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An embedding model is trained, versioned and evaluated against a baseline; fails if no artefact."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2065",
+    "domain": "TICK",
+    "title": "Outcome labels built for fill, return, selection, impact, vol and decay",
+    "statement": "The label builder creates fill-probability, future-return, adverse-selection, market-impact, realised-volatility, opportunity-decay and multi-horizon outcome labels.",
+    "rationale": "Without labels no execution model can be trained or scored.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each label matches a hand computation; fails on a sign or window error."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2066",
+    "domain": "TICK",
+    "title": "Labels are built without future leakage",
+    "statement": "Labels are never available as inputs at or before the instant they describe, and a window the series does not cover is refused rather than shortened.",
+    "rationale": "A label that leaks into its own features produces a model that is perfect in backtest and useless live.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A horizon past the series end is refused; a dataset whose feature timestamp exceeds its label anchor is refused; fails if accepted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2067",
+    "domain": "TICK",
+    "title": "Replay engine replays history and decisions with execution realism",
+    "statement": "The replay/simulation engine replays canonical historical markets and the platform's decisions with latency, queue, fees, rejects, partial fills, impact and multi-leg execution semantics.",
+    "rationale": "A replay that ignores latency, queue and impact credits strategies with fills that never existed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A decision replayed against history incurs latency, fees, partial fill and impact; fails if any is zeroed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2068",
+    "domain": "TICK",
+    "title": "Microstructure models are trained and calibrated",
+    "statement": "A training service trains/calibrates specialist, execution, liquidity, slippage, fill, regime and short-horizon models.",
+    "rationale": "Execution models never trained on microstructure are guesses.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fill-probability model trained on labelled ticks beats its baseline on holdout; fails if no such model is produced."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2069",
+    "domain": "TICK",
+    "title": "Microstructure models benchmarked by venue, asset, regime and horizon",
+    "statement": "Microstructure models are benchmarked separately by venue, asset, regime and horizon.",
+    "rationale": "An average across venues hides the venue where the model is wrong.",
+    "kind": "metric",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An evaluation report has one row per venue x asset x regime x horizon; fails if aggregated."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2070",
+    "domain": "TICK",
+    "title": "Slow intelligence distilled into bounded reflex artefacts",
+    "statement": "Slow/warm intelligence is distilled into bounded features, models or lookup structures that reflex nodes evaluate within their latency budgets.",
+    "rationale": "A model the hot path cannot bound in time is a model that blows the latency budget under load.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A distilled student has a stated worst-case cost and fidelity to its teacher and loads in the edge cell; fails if unbounded or unfaithful."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2071",
+    "domain": "TICK",
+    "title": "Online drift measures residuals, fill error and venue change",
+    "statement": "Live residuals, fill/slippage error, regime drift and venue changes are measured continuously.",
+    "rationale": "A model drifting silently trades on yesterday's market.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A shifted feature distribution raises the drift score and the model card becomes ineligible; fails if the score stays zero."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2072",
+    "domain": "TICK",
+    "title": "Drift feeds retraining, never silent adaptation of money-moving logic",
+    "statement": "Drift and feedback feed retraining and curriculum tasks; money-moving logic is never silently adapted.",
+    "rationale": "A model that rewrites its own structure at millisecond cadence is a model no human reviewed trading capital.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.2 Tick Data Pipeline and Storage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An update outside its cadence's permitted scope is refused; fails if a fast update changes model structure."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2073",
+    "domain": "TICK",
+    "title": "Strategies evaluated against the market that existed",
+    "statement": "A strategy is evaluated against the recorded market that existed, never against bars constructed after the fact.",
+    "rationale": "Bars built afterwards embed information no trader had at the time.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A decision view cannot read a bar before its close time; fails if a same-day bar is visible intraday."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2074",
+    "domain": "TICK",
+    "title": "Replay models data arrival and decision latency",
+    "statement": "The simulator models what the platform could have known at each instant, including data arrival delays and decision latency.",
+    "rationale": "Assuming instant arrival and decision credits strategies with a speed nobody has.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Delayed-feed and latency conditions push the execution later and worsen fills; fails if they have no effect."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2075",
+    "domain": "TICK",
+    "title": "Replay models venue rate limits",
+    "statement": "The simulator enforces venue rate limits on replayed order flow.",
+    "rationale": "A replay that ignores rate limits fills orders the venue would have rejected.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "14",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Orders beyond the venue's message budget are refused in replay; fails if they fill."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2076",
+    "domain": "TICK",
+    "title": "Exact historical replay with checkpoints and integrity flags",
+    "statement": "Exact historical replay sequences events deterministically from venue-native/canonical records with book checkpoints and integrity flags.",
+    "rationale": "A replay that is not exact cannot be used to reproduce a decision.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Same session replayed twice and from a checkpoint gives identical event order, books, fills and flags; fails on any difference."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Overlaps §8.2 'Order-book reconstruction'; kept because §8.3 states it as the replay product."
+  },
+  {
+    "id": "R12-TICK-2077",
+    "domain": "TICK",
+    "title": "Counterfactual replay of taken, vetoed and missed actions",
+    "statement": "Actions taken, vetoed or missed are compared against feasible alternatives using only the information set available at that time.",
+    "rationale": "A system that only records its trades cannot tell a calibrated gate from a shut one.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A refused order is priced once its horizon passes against a view fixed at decision time; fails if the alternative reads later data."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2078",
+    "domain": "TICK",
+    "title": "Multi-leg arbitrage replay of 2-20 legs",
+    "statement": "Replay models 2-20-leg opportunity discovery, reservation, legging risk, path decay, partial execution, hedge/unwind and capital consumption across regions.",
+    "rationale": "A multi-leg opportunity that disappears mid-execution leaves an unhedged leg; a replay that assumes atomic completion hides that.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A replayed 3-leg cycle whose second venue fails mid-execution yields a hedge/unwind with its cost; fails if completion is assumed."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2079",
+    "domain": "TICK",
+    "title": "Agent/market simulation generates rare regimes and stress",
+    "statement": "Agent/market simulation generates synthetic rare regimes, liquidity droughts, manipulation patterns, venue outages and stress events.",
+    "rationale": "Real history has too few crises to learn from.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each named stress class can be generated deterministically from a seed; fails if a class is unavailable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2080",
+    "domain": "TICK",
+    "title": "Execution digital twin continuously calibrated to live telemetry",
+    "statement": "Fill, queue, impact and latency models of the execution twin are continuously calibrated to the platform's own telemetry.",
+    "rationale": "Paper and replay assumptions that never meet reality drift into fiction.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.3 Market Replay, Counterfactual Execution and Synthetic Experience"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "After fills with systematic error the twin's model parameters move toward the observed fills; fails if parameters are static."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "'Live telemetry' here can only be paper/simulated fills under ADR 0003."
+  },
+  {
+    "id": "R12-TICK-2081",
+    "domain": "TICK",
+    "title": "Time-aligned fusion layer joins world and market intelligence",
+    "statement": "A time-aligned fusion layer combines world intelligence (events, entities, beliefs, propagation paths) with market intelligence (reaction, regime, liquidity, flow, dislocation, feasibility).",
+    "rationale": "Knowing an event happened without knowing whether a tradable reaction still exists is not actionable.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.4 World + Market Intelligence Fusion"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The named input produces the named output on a recorded episode; fails if the output is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2082",
+    "domain": "TICK",
+    "title": "World events map to impacted assets, venues and priors",
+    "statement": "A world event yields expected impacted entities, assets and venues, a watch graph and hypothesis priors.",
+    "rationale": "Knowing an event happened without knowing whether a tradable reaction still exists is not actionable.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.4 World + Market Intelligence Fusion"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The named input produces the named output on a recorded episode; fails if the output is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2083",
+    "domain": "TICK",
+    "title": "Measured tick reaction updates beliefs",
+    "statement": "Tick reaction (measured propagation, liquidity response, cross-asset timing, opportunity decay) updates beliefs.",
+    "rationale": "Knowing an event happened without knowing whether a tradable reaction still exists is not actionable.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.4 World + Market Intelligence Fusion"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The named input produces the named output on a recorded episode; fails if the output is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2084",
+    "domain": "TICK",
+    "title": "World-market mismatch triggers investigation",
+    "statement": "A mismatch between world belief and market behaviour raises an investigation, an arbitrage/relative-value hypothesis or an evidence-quality challenge.",
+    "rationale": "Knowing an event happened without knowing whether a tradable reaction still exists is not actionable.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.4 World + Market Intelligence Fusion"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The named input produces the named output on a recorded episode; fails if the output is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2085",
+    "domain": "TICK",
+    "title": "Fused state feeds foundry and asset/capital/risk brains",
+    "statement": "The fused state is consumed by the strategy/model foundry, the Asset, Capital and Risk brains and specialist brains.",
+    "rationale": "Knowing an event happened without knowing whether a tradable reaction still exists is not actionable.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.4 World + Market Intelligence Fusion"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The named input produces the named output on a recorded episode; fails if the output is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2086",
+    "domain": "TICK",
+    "title": "Distilled fused state reaches regional reflex models",
+    "statement": "A distilled form of the fused state reaches regional reflex models and compact opportunity maps.",
+    "rationale": "Knowing an event happened without knowing whether a tradable reaction still exists is not actionable.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.4 World + Market Intelligence Fusion"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The named input produces the named output on a recorded episode; fails if the output is absent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2087",
+    "domain": "TICK",
+    "title": "No look-ahead: only data observable by the decision instant",
+    "statement": "Training and replay use only data observable by the decision timestamp, including realistic publication and feed-arrival delays.",
+    "rationale": "Look-ahead produces a backtest that measures the leak.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.5 Data Correctness and Training Guardrails"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Any read at decision time t returns only records with known_at <= t (with delay); fails if a later record is visible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2088",
+    "domain": "TICK",
+    "title": "No impossible fills in replay",
+    "statement": "A replayed trade respects available depth, queue/priority, rate limits, latency, partial fills, venue rules and price impact.",
+    "rationale": "A fill larger than the book is profit that never existed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.5 Data Correctness and Training Guardrails"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "No replayed fill exceeds resting depth; an alternative beyond calibrated participation is unfillable; fails if either fills."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2089",
+    "domain": "TICK",
+    "title": "Clock corrections are lineage-tracked",
+    "statement": "Source, receive and normalized time and their uncertainty remain distinct, and every clock correction is recorded in lineage.",
+    "rationale": "An undocumented clock correction is a laundered timestamp.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.5 Data Correctness and Training Guardrails"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A corrected timestamp carries a ClockCorrection record that survives into the stored event; fails if the correction is lost."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2090",
+    "domain": "TICK",
+    "title": "No hidden survivorship in historical universes",
+    "statement": "Delisted instruments, venue outages, symbol changes, corporate actions and failed products remain represented in historical universes.",
+    "rationale": "A backtest over survivors only overstates every strategy.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.5 Data Correctness and Training Guardrails"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "members_as_of a past date includes an instrument delisted later; a replay across an outage reports it; fails otherwise."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2091",
+    "domain": "TICK",
+    "title": "Model artefacts record training-data entitlements and permitted use",
+    "statement": "Model artefacts record which licensed market data trained them and where the artefact and its outputs are permitted to run or be used.",
+    "rationale": "A model trained on data licensed for one region and run in another breaches the licence invisibly.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.5 Data Correctness and Training Guardrails"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A model card carries its training entitlements and permitted locations, and deployment to a non-permitted location is refused; fails if accepted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL",
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-2092",
+    "domain": "TICK",
+    "title": "Tick models must prove value over simpler baselines",
+    "statement": "Models and the Evaluation Brain must prove incremental predictive or execution value versus simpler baselines; raw tick volume is not credited by itself.",
+    "rationale": "Complexity that cannot beat a baseline is cost and overfitting.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "15",
+        "section": "§8.5 Data Correctness and Training Guardrails"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A model whose holdout skill does not beat the baseline is refused registration as skilled; fails if registered."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  }
+]

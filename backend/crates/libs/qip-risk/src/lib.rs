@@ -2,7 +2,10 @@
 //!
 //! Three parts. [`metrics`] and [`factor`] measure risk; [`limits`] decides
 //! what is allowed; [`hedge`] proposes — never submits — orders that reduce a
-//! named exposure toward a declared target.
+//! named exposure toward a declared target. [`hedge_search`] is the Hedge
+//! Brain's search: the cheapest executable plan, across instrument classes and
+//! forecast worlds, that keeps the book above its survival floor — a plan, never
+//! an order and never a veto.
 //!
 //! The measurement half is deliberately explicit about its assumptions. There
 //! are two ways to compute value at risk from the same return series and they
@@ -29,6 +32,7 @@
 pub mod aggregate;
 pub mod factor;
 pub mod hedge;
+pub mod hedge_search;
 pub mod limits;
 pub mod market_factor;
 pub mod metrics;

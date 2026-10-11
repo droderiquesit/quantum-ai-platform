@@ -181,6 +181,44 @@ run "the_public_internet_is_refused_even_beside_a_legitimate_member" {
   expect_failures = [var.iap_members]
 }
 
+# Workforce access is a managed Cloud Identity user or group (R12-SEC-10002).
+# A domain grant admits every account the domain will ever mint, and a
+# service account is a workload, not a person reading the book.
+run "a_domain_wide_grant_is_refused_on_the_access_list" {
+  command = plan
+
+  variables {
+    iap_members = ["domain:example.com"]
+  }
+
+  expect_failures = [var.iap_members]
+}
+
+run "a_service_account_is_refused_on_a_workforce_access_list" {
+  command = plan
+
+  variables {
+    iap_members = ["serviceAccount:qip-dev-api@iap-run-plan-harness.iam.gserviceaccount.com"]
+  }
+
+  expect_failures = [var.iap_members]
+}
+
+# The admitting half for the other prefix: a named managed user plans and is
+# bound, so the refusal above is not a rule that refuses every member.
+run "a_named_managed_user_is_admitted_on_the_access_list" {
+  command = plan
+
+  variables {
+    iap_members = ["user:operator@example.com"]
+  }
+
+  assert {
+    condition     = length(google_iap_web_cloud_run_service_iam_member.console) == 1
+    error_message = "a user: principal was not bound; the managed-principal rule refuses the very members it exists to admit"
+  }
+}
+
 # --- the trust zone ------------------------------------------------------------
 
 run "a_door_in_front_of_a_trading_zone_is_refused" {

@@ -282,7 +282,7 @@ variable "execution_nodes" {
       * `subnet_cidr` must overlap neither another node's nor any trust
         zone's. Overlapping ranges route to whichever subnet was created
         first, silently.
-      * `machine_type` is one of the C3/C3D high-CPU shapes §41.4 permits;
+      * `machine_type` is one of the C4/C4D high-CPU shapes R12-REFLEX-8002 permits;
         the module refuses anything else.
       * `boot_image` is one image by self-link, never a family. The image is
         the other half of the node — modules/execution-node/README.md.
@@ -300,7 +300,12 @@ variable "execution_nodes" {
     zone         = string
     subnet_cidr  = string
     machine_type = string
-    boot_image   = string
+    # Optional so that an entry can be committed before its image exists
+    # (W4.3): null is "not baked yet", and `execution_nodes_enabled` refuses
+    # to plan a node while it is null. When set it must name an image
+    # `.github/workflows/image.yml` baked for this entry's own
+    # `machine_type` — see the validation below.
+    boot_image = optional(string)
     venues = map(object({
       cidr = string
       port = number
@@ -310,8 +315,10 @@ variable "execution_nodes" {
     # decimal string. Required per entry and never defaulted: `qip-edge-node`
     # refuses to start without QIP_REGION_ALLOCATION, and a value that
     # appeared from nowhere would be the one number in a cell's envelope no
-    # reviewer had read.
-    region_allocation = string
+    # reviewer had read. Optional only in the type: null is "nobody has
+    # chosen it yet", and `execution_nodes_enabled` refuses to plan a node
+    # while it is null. It is never defaulted to a number.
+    region_allocation = optional(string)
     # How the node prices the intents of every strategy it deploys, and where
     # it reads the compiled plan from. Empty is "deploy nothing", which is
     # what the node does with them unset; they are written into `node.env`
@@ -333,6 +340,26 @@ variable "execution_nodes" {
   validation {
     condition     = length(distinct([for node in values(var.execution_nodes) : node.subnet_cidr])) == length(var.execution_nodes)
     error_message = "Two execution nodes share a subnet range. Overlapping ranges route to whichever subnet was created first."
+  }
+
+  # The image is baked for one machine shape: `image.yml` writes the
+  # isolated-core range for `machine_type` into the kernel command line and
+  # names the image `qip-execution-node-<machine_type>-<commit12>-r<run>`. A
+  # node booting an image baked for another shape boots, finds `isolcpus`
+  # disagreeing with its own core count, and declines to trade — after the
+  # subnet, the identity and four IAM bindings already exist. This moves that
+  # refusal to plan time. It also refuses any image the bake did not name,
+  # because nothing else in this repository produces an image carrying the
+  # binary the startup script checks for.
+  validation {
+    condition = alltrue([
+      for node in values(var.execution_nodes) :
+      node.boot_image == null ? true : can(regex(
+        "^(https://www\\.googleapis\\.com/compute/v1/)?projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/qip-execution-node-${node.machine_type}-[0-9a-f]{12}-r[0-9]+$",
+        node.boot_image
+      ))
+    ])
+    error_message = "An execution node's boot_image must be an image .github/workflows/image.yml baked for that node's own machine_type: projects/<project>/global/images/qip-execution-node-<machine_type>-<commit12>-r<run>. An image baked for another shape carries another isolated-core range, and the node declines to trade on it."
   }
 }
 
@@ -758,6 +785,50 @@ variable "deepbrain_discover_every" {
   }
 }
 
+variable "deepbrain_quantum_provider" {
+  description = <<-EOT
+    The quantum provider the deep brain attaches to its compute router, read
+    as `QIP_QUANTUM_PROVIDER`, or null to leave the binary's own default of
+    off — the classical router every deployment ran before — in force.
+
+    "simulated" attaches the in-tree statevector simulator behind the
+    asynchronous gateway, so the dispatch gate, the gateway and the classical
+    verification of a returned candidate run in the deployed process. A
+    classical baseline is solved first on every problem regardless (ADR 0006)
+    and a simulated answer is never evidence of advantage. "hosted" is not
+    accepted here because no composition root wires the IBM Quantum adapter;
+    the binary refuses it by name too. Set in dev and test, null in stage and
+    prod.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_quantum_provider == null ? true : can(regex("^(off|simulated)$", var.deepbrain_quantum_provider))
+    error_message = "The deep brain's quantum provider is off or simulated; the hosted adapter is not wired into any composition root."
+  }
+}
+
+variable "deepbrain_quantum_inspired" {
+  description = <<-EOT
+    Whether the deep brain's compute router runs the quantum-inspired rung
+    (path-integral annealing through the solver registry), read as
+    `QIP_QUANTUM_INSPIRED`, or null for the binary's default of off. A
+    classical algorithm on the same CPU, verified classically and adopted
+    only by the router's margin rule. Set in dev and test, null in stage and
+    prod.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_quantum_inspired == null ? true : can(regex("^(off|on)$", var.deepbrain_quantum_inspired))
+    error_message = "The quantum-inspired rung is on or off."
+  }
+}
+
 variable "region_dark_after" {
   description = <<-EOT
     How many seconds every cell of a region may be silent before the centre
@@ -838,6 +909,18 @@ variable "project_number" {
   EOT
   type        = number
   default     = null
+
+  # 0 is the value a tfvars carries while its project does not exist yet, or
+  # before `scripts/bootstrap-foundation.sh` has recorded the number Google
+  # assigned (ADR 0118). Planned through, it names `service-0@…` as every
+  # service agent and `…-0.<region>.run.app` as every service URL: grants to
+  # principals that do not exist, failing one by one partway through an apply.
+  # Refused here instead, naming the act that is missing. Null — look it up —
+  # is still admitted.
+  validation {
+    condition     = var.project_number == null || try(var.project_number > 0 && floor(var.project_number) == var.project_number, false)
+    error_message = "project_number is 0 or not a whole positive number: the project's number has not been recorded. Run scripts/bootstrap-foundation.sh (or read it with `gcloud projects describe <project_id> --format='value(projectNumber)'`) and record it in infrastructure/environments/<env>/terraform.tfvars — or set it null to have it looked up."
+  }
 }
 
 # --- Managed data services --------------------------------------------------
@@ -1299,9 +1382,15 @@ variable "identity_authorized_domains" {
 }
 
 variable "identity_mfa_state" {
-  description = "Customer MFA posture: OFF, ENABLED (optional), or MANDATORY. MANDATORY locks out every unenrolled account when it applies."
+  description = "Customer MFA posture. MANDATORY only (W4.6): OFF and ENABLED (optional) are refused at plan, here and in modules/identity. Applying it where the posture was ENABLED locks out every account not yet enrolled."
   type        = string
-  default     = "ENABLED"
+  default     = "MANDATORY"
+  nullable    = false
+
+  validation {
+    condition     = var.identity_mfa_state == "MANDATORY"
+    error_message = "identity_mfa_state must be MANDATORY. Optional MFA leaves an account protected by a password alone; lowering it is an edit to modules/identity, reviewed, not a tfvars value."
+  }
 }
 
 variable "console_egress_cidr" {
@@ -1524,6 +1613,20 @@ variable "gitops_iap_members" {
     never defaulted to something convenient.
   EOT
   default     = []
+
+  # Workforce access is a Cloud Identity user or group, and nothing else
+  # (R12-SEC-10002). `domain:` admits every account a domain will ever mint,
+  # `serviceAccount:` is a workload rather than a person, and a bare address
+  # is a member IAM would read as whatever it guessed. The prefix is checked
+  # rather than the account because the account is a managed identity this
+  # repository never carries.
+  validation {
+    condition = alltrue([
+      for member in var.gitops_iap_members :
+      can(regex("^(user|group):[^@:[:space:]]+@[^@:[:space:]]+$", member))
+    ])
+    error_message = "gitops_iap_members admits only Cloud Identity principals written user:<address> or group:<address>; a domain:, serviceAccount:, allUsers or bare address is refused at the root, before the module is reached."
+  }
 }
 
 # --- The domain ---------------------------------------------------------------
@@ -1600,4 +1703,256 @@ variable "dns_record_ttl_seconds" {
     condition     = var.dns_record_ttl_seconds >= 60 && var.dns_record_ttl_seconds <= 86400
     error_message = "dns_record_ttl_seconds must be between 60 and 86400. Under a minute most resolvers floor it, so the number describes nothing; over a day a wrong record — and a certificate waiting on it — stays wrong for a day."
   }
+}
+
+variable "event_fabric_broker" {
+  description = <<-EOT
+    The event-fabric broker, `qip-fabricd` (ADR 0100), or null for none.
+
+    Null in every environment: no boot image carrying the broker has been
+    baked, and the module refuses anything but a self-link to one image.
+    When set, `fabric.tf` creates the broker's identity, a private DNS zone
+    on the Fabric network for its SRV record (FABRIC-087), and one machine
+    on `internal_address` in the `control-fabric` trust zone with its own
+    journal disk. One address: the first build is RF1 (ADR 0100 §3).
+  EOT
+
+  type = object({
+    zone                 = string
+    boot_image           = string
+    internal_address     = string
+    dns_domain           = string
+    machine_type         = optional(string, "c3-standard-4")
+    journal_disk_size_gb = optional(number, 100)
+    # ADR 0111: up to two more instances in the region, which the module
+    # admits only beside `managed_log` — the Spanner lease that makes three
+    # machines one leader and its followers rather than three writers.
+    additional_addresses = optional(list(string), [])
+    managed_log = optional(object({
+      spanner_database = string
+      lease_ttl_ms     = optional(number, 10000)
+    }))
+  })
+  default = null
+
+  validation {
+    condition     = var.event_fabric_broker == null || can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)*\\.internal$", var.event_fabric_broker.dns_domain))
+    error_message = "event_fabric_broker.dns_domain is a private name ending in `.internal`, such as fabric.qip-dev.internal. A public domain here would publish an internal address."
+  }
+}
+
+variable "ledgerd" {
+  description = <<-EOT
+    The ledger writer, `qip-ledgerd` (ADR 0100 §2), or null for none.
+
+    Null in every environment: no boot image carrying the ledger has been
+    baked. When set, `modules/ledgerd` creates its identity, its archive
+    disk, a stable internal address and one machine in the `ledger` trust
+    zone. `account_id` is an internal book name, never a venue or bank
+    account number; the module refuses anything else.
+  EOT
+
+  type = object({
+    zone                  = string
+    boot_image            = string
+    internal_address      = string
+    account_id            = string
+    machine_type          = optional(string, "e2-standard-2")
+    archive_disk_size_gb  = optional(number, 50)
+    fabric_consumer_group = optional(string, "qip-ledgerd")
+  })
+  default = null
+}
+
+# --- §15's security services (W4.6), every one off by default ----------------
+
+variable "pam_entitlements" {
+  description = <<-EOT
+    Privileged Access Manager entitlements (SEC-9123), keyed by a short name.
+    Each grants `roles` on this project for at most `max_request_duration`,
+    to one of `requesters`, after one of `approvers` approves with a
+    justification. Empty everywhere: no entitlement, no standing grant
+    either — the operator roles this platform has are the pipeline's.
+  EOT
+
+  type = map(object({
+    roles                = set(string)
+    requesters           = set(string)
+    approvers            = set(string)
+    max_request_duration = optional(string, "3600s")
+  }))
+  default  = {}
+  nullable = false
+
+  validation {
+    condition     = alltrue([for name, _ in var.pam_entitlements : can(regex("^[a-z][a-z0-9-]{0,40}$", name))])
+    error_message = "An entitlement's key is lowercase letters, digits and '-', at most 41 characters (it becomes part of the entitlement id)."
+  }
+
+  validation {
+    condition     = alltrue([for e in values(var.pam_entitlements) : length(e.approvers) > 0 && length(e.requesters) > 0 && length(e.roles) > 0])
+    error_message = "Every entitlement names at least one role, one requester and one approver. An entitlement nobody approves is a standing grant that takes an extra click."
+  }
+
+  validation {
+    condition     = alltrue([for e in values(var.pam_entitlements) : length(setintersection(e.requesters, e.approvers)) == 0])
+    error_message = "A principal may not both request and approve one entitlement; that is self-approval."
+  }
+
+  validation {
+    condition = alltrue([
+      for e in values(var.pam_entitlements) :
+      can(regex("^[0-9]+s$", e.max_request_duration)) && try(tonumber(trimsuffix(e.max_request_duration, "s")) <= 28800, false) && try(tonumber(trimsuffix(e.max_request_duration, "s")) >= 300, false)
+    ])
+    error_message = "max_request_duration is whole seconds such as \"3600s\", between 300s and 28800s (eight hours). Longer is a standing grant by another name."
+  }
+
+  validation {
+    condition     = alltrue([for e in values(var.pam_entitlements) : length(setintersection(e.roles, ["roles/owner", "roles/editor", "roles/viewer"])) == 0])
+    error_message = "A basic role (owner, editor, viewer) is refused: an elevation names the one role the task needs."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for e in values(var.pam_entitlements) : [
+        for p in setunion(e.requesters, e.approvers) :
+        can(regex("^(user|group|serviceAccount):[^,\\s]+@[^,\\s]+$", p))
+      ]
+    ]))
+    error_message = "Requesters and approvers are IAM principals written user:, group: or serviceAccount:. allUsers, allAuthenticatedUsers and domains are refused."
+  }
+}
+
+variable "certificate_authority" {
+  description = <<-EOT
+    A private Certificate Authority Service pool and root (SEC-9128, ADR 0112
+    §2), or null for none. The pool issues leaf certificates only, for client
+    and server auth, for `max_certificate_lifetime_hours` at most — hours, not
+    months, and never more than 24. Who may request one is not an input: it is
+    derived in security.tf from the identities of the three Compute Engine
+    binaries that own their sockets (qip-fabricd, qip-ledgerd, qip-edge-node),
+    each bound to the workload template and to a SAN naming itself. Null
+    everywhere.
+  EOT
+
+  type = object({
+    location                       = string
+    organization                   = string
+    max_certificate_lifetime_hours = optional(number, 24)
+    # Retired: requesters are derived, never listed. Kept only so that a
+    # tfvars still naming one is refused by name below rather than having the
+    # field silently dropped by type conversion — which would read, in a
+    # review, as a grant that exists.
+    requesters = optional(set(string))
+  })
+  default = null
+
+  validation {
+    condition     = var.certificate_authority == null || can(regex("^[a-z]+-[a-z]+[0-9]+$", var.certificate_authority.location))
+    error_message = "certificate_authority.location is a region such as us-east4."
+  }
+
+  validation {
+    condition     = var.certificate_authority == null || try(length(var.certificate_authority.requesters) == 0, true)
+    error_message = "certificate_authority.requesters is no longer an input. The requesters are exactly the service accounts of qip-fabricd, qip-ledgerd and each execution node, derived in security.tf and each conditioned on the workload template and its own SAN (ADR 0112 §2); a listed requester is an unconditioned grant that could request any name."
+  }
+
+  # ADR 0112 §2: "a short-lived certificate (hours, not months)". A stolen
+  # workload key dies with its certificate, so the bound is the exposure.
+  validation {
+    condition = var.certificate_authority == null || try(
+      var.certificate_authority.max_certificate_lifetime_hours >= 1
+      && var.certificate_authority.max_certificate_lifetime_hours <= 24
+      && floor(var.certificate_authority.max_certificate_lifetime_hours) == var.certificate_authority.max_certificate_lifetime_hours,
+    false)
+    error_message = "certificate_authority.max_certificate_lifetime_hours is a whole number of hours from 1 to 24. ADR 0112 §2 issues workload certificates for hours, not months: a key stolen from memory is usable for as long as its certificate lives."
+  }
+}
+
+variable "vpc_service_controls" {
+  description = <<-EOT
+    A VPC Service Controls perimeter around this project (SEC-9129), or null
+    for none. `access_policy` is the organisation's access policy number —
+    organisation-scoped, so not created here. Enforced unless `enforced` is
+    false (dry run). `ingress_identities` are the service accounts allowed
+    in from outside (the pipeline's), by identity and nothing broader.
+    Null everywhere: the configuration has no organisation.
+  EOT
+
+  type = object({
+    access_policy = string
+    enforced      = optional(bool, true)
+    restricted_services = optional(set(string), [
+      "aiplatform.googleapis.com",
+      "bigquery.googleapis.com",
+      "bigtable.googleapis.com",
+      "secretmanager.googleapis.com",
+      "spanner.googleapis.com",
+      "storage.googleapis.com",
+    ])
+    ingress_identities = optional(set(string), [])
+  })
+  default = null
+
+  validation {
+    condition     = var.vpc_service_controls == null || can(regex("^[0-9]+$", var.vpc_service_controls.access_policy))
+    error_message = "vpc_service_controls.access_policy is the access policy's number."
+  }
+
+  validation {
+    condition     = var.vpc_service_controls == null || length(try(var.vpc_service_controls.restricted_services, [])) > 0
+    error_message = "A perimeter that restricts no service protects nothing and reads as protection. Name the services, or leave vpc_service_controls null."
+  }
+
+  validation {
+    condition = var.vpc_service_controls == null || alltrue([
+      for identity in try(var.vpc_service_controls.ingress_identities, []) :
+      can(regex("^serviceAccount:[a-z0-9-]+@[a-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", identity))
+    ])
+    error_message = "Perimeter ingress is granted to service accounts by identity only. A user, group, domain or `*` would make the perimeter a door."
+  }
+}
+
+variable "sensitive_data_protection" {
+  description = <<-EOT
+    Sensitive Data Protection discovery over BigQuery and Cloud Storage
+    (SEC-9134), with an inspect template for `info_types` and a redaction
+    template, or null for none. Null everywhere.
+  EOT
+
+  type = object({
+    info_types = optional(set(string), [
+      "CREDIT_CARD_NUMBER",
+      "EMAIL_ADDRESS",
+      "IBAN_CODE",
+      "PERSON_NAME",
+      "PHONE_NUMBER",
+      "STREET_ADDRESS",
+      "SWIFT_CODE",
+    ])
+  })
+  default = null
+
+  validation {
+    condition     = var.sensitive_data_protection == null || length(try(var.sensitive_data_protection.info_types, [])) > 0
+    error_message = "A discovery scan that looks for no info type finds nothing and reads as a clean lake. Name the info types, or leave sensitive_data_protection null."
+  }
+}
+
+variable "registry_promotion_readers" {
+  description = <<-EOT
+    Service accounts in later environments that read this environment's image
+    registry, as IAM members (`serviceAccount:…`). Meaningful only in the
+    build environment (`dev`), whose registry every platform image is built
+    into once and promoted from (R12 CICD-9112): each later environment's CI
+    account scans and attests the digest here, and its Cloud Run service
+    agent pulls it. `modules/registry` grants `artifactregistry.reader` and
+    nothing that writes, and refuses anything but a service account.
+
+    Empty everywhere today: no environment after dev is provisioned, and IAM
+    refuses a grant to an account that does not exist.
+  EOT
+  type        = set(string)
+  default     = []
+  nullable    = false
 }

@@ -67,13 +67,17 @@ Rules: `.claude/rules/domains/infrastructure.md`.
 | `terraform/` | Root module: `main.tf`, `catalogue.tf` (one entry per warm binary — the source of truth for both the identity Terraform creates and the manifest Argo CD applies), `variables.tf`, `outputs.tf` |
 | `terraform/modules/cloudrun` | Each workload's identity, its secret grants and the buckets its files are published to. The service itself left for a manifest under ADR 0036; the root's `removed` blocks release it from state without destroying it |
 | `terraform/modules/gitops-control-plane` | The GKE Autopilot cluster per environment that runs Config Connector, Argo CD and Kargo and no trading binary; private endpoint, Binary Authorization on, etcd under the ring's key; the three controller identities (ADR 0036) |
-| `terraform/modules/execution-node` | One Compute Engine machine per region under systemd — no external address, no container runtime, shadow mode by default |
+| `terraform/modules/execution-node` | One Compute Engine machine per region under systemd — no external address, no container runtime, shadow mode by default. Instantiated only while `execution_nodes_enabled` (`terraform/execution-nodes-enabled.tf`) is true; dev *declares* ADR 0035's node with the flag false and its image and allocation null, and the root refuses the flag true until both are set (`docs/ops/runbooks/owner-switches.md`) |
+| `terraform/modules/build-pool`, `cloudbuild/` | The Cloud Build private pool images are built in when `cloud_build_private_pool_enabled` is true (dev only, off everywhere): peered into the Engineering VPC, a build identity that writes only `out/` in its staging bucket. `cloudbuild/build-image.yaml` is `deploy.yml`'s build and reproducibility rebuild, moved; the runner still pushes, scans, signs and attests (R12 CICD-9097) |
+| `terraform/modules/event-fabric-broker`, `terraform/modules/ledgerd` | `qip-fabricd` and `qip-ledgerd` (ADR 0100), one machine each with its own journal or archive disk, never an instance group (each is a sole writer). Instantiated by the root's `fabric.tf` behind `event_fabric_broker` and `ledgerd`, null in every environment until a boot image carrying the binary exists |
+| `terraform/security.tf` | The security services of §15 (R12 SEC-9123, 9128, 9129, 9134): PAM entitlements, a CA Service pool, a VPC Service Controls perimeter, Sensitive Data Protection discovery — each behind its own variable, off everywhere |
 | `terraform/modules/egress-proxy` | The TLS-terminating proxy, rendered from `egress/envoy.yaml` as a loopback sidecar and as the node's unit |
 | `terraform/modules/trust-zones` | The thirteen zones, default deny in both directions; the management zone may reach GitHub and nothing else outside the VPC |
 | `terraform/modules/public-edge` | Cloud Armor, the global HTTPS load balancer, Cloud CDN (§40.5, §40.14). Creates nothing in any environment — `hostnames` is empty in all four. Its content is refusals: a backend may front only `public-edge` or `application-identity`, and there is no listener on port 80. `README.md` beside it says what it does not hold |
 | `terraform/modules/iap-run` | The console's front door: Identity-Aware Proxy on the Cloud Run service itself, at the Google-issued `run.app` URL — no load balancer, no address, no certificate, no DNS (ADR 0095). Holds the per-service access list, empty everywhere; the enable bit is `infra.yml`'s `apps` stage, because Config Connector's `RunService` has no `iapEnabled` field |
 | `terraform/modules/iap-edge` | The console's *custom-domain* door (ADR 0094), narrowed by ADR 0095 and off in every environment: `gitops_portal_hostname` is empty, Google refuses IAP on both a load balancer and a service, and run 71 proved the project has no Cloud Armor quota (`Limit: 0.0 globally`) |
 | `terraform/modules/dns-zone` | The `algorik.ai` zone and its A records. `dns_zone_domain` is empty everywhere since ADR 0095, so it creates nothing; no front door waits on a nameserver delegation any more |
+| `foundation/` | The tenant (ADR 0118): the platform folder, the seed project holding this root's own state, one labelled, budgeted project per enabled environment (dev on; test, stage, prod declared and off), and the folder's organisation policies. A separate root applied once by the owner through `scripts/bootstrap-foundation.sh` — never by a workflow — because its rights are the organisation's. `ORG_ID`, `BILLING_ACCOUNT_ID` and the prefix are runtime inputs and are in no file. `docs/ops/runbooks/new-project-from-scratch.md` is the sequence |
 | `environments/<env>/terraform.tfvars` | dev, test, stage, prod — the only per-environment inputs. There is no `images.tfvars` any more: what an environment serves is `gitops/envs/<env>/kustomization.yaml` |
 | `gitops/` | ADR 0036's delivery path: vendored controller manifests under `bootstrap/`, one `RunService` per catalogue workload under `envs/<env>/`, the Argo CD project and Applications, the Kargo chain — `gitops/README.md` |
 | `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — ten images now, eight of them the control plane's |
@@ -110,7 +114,8 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   the workflow's own identity, an empty VPC and two subnets Google's
   `serverless-ipv4-*` addresses still hold — and nine KMS keys, five
   `force_destroy = false` buckets and the state bucket stand outside state.
-  The register in `docs/DELIVERY-STATUS.md` lists them.
+  They are listed here because the register that held them was removed
+  on 2026-10-11 (it is in history at `f65c2c48`).
   **Re-applied 2026-09-20**, and the two halves of that sentence do not
   agree the way a reader expects, so both are said: `infra.yml` run 52
   reports `Apply complete! Resources: 0 added, 1 changed, 0 destroyed` over
@@ -131,9 +136,9 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   ADR 0093 says what it would take to make the flag able to close.
   What is still
   true is the rule: an agent shows the plan and a person applies, and
-  `docs/DELIVERY-STATUS.md` records what each plan and each observation
-  found. It absorbed the missing-infrastructure register on 2026-09-07,
-  and this line pointed at the deleted path until 2026-09-08.
+  each plan and each observation is recorded in the commit or run that
+  produced it. `docs/DELIVERY-STATUS.md`, which held them until
+  2026-10-11, is in history at `f65c2c48`.
 - **Standing it back up is not a plain apply, and `infra.yml` now knows
   that.** Everything the teardown left in the project it also took out of
   state, so run 44 (`plan`, `dev`, 2026-09-15) returned `Plan: 184 to add, 0

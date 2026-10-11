@@ -1,221 +1,265 @@
-//! Event Fabric stream class policies: P0/P1/P2/P3/P4 (FABRIC-028 through FABRIC-035).
+//! Event Fabric stream classes P0–P4 (FABRIC-028 through FABRIC-035), driven
+//! through `qip_events::event_fabric::policy` — the one place a stream's class
+//! contract is decided.
 //!
-//! Each topic class carries explicit delivery semantics and retention policies
-//! that cannot be overridden: P0 Critical Control (quorum, persistent, long retention);
-//! P1 Financial Outcomes (quorum, persistent, indexed); P2 Market Journal (quorum but no
-//! retention guarantee); P3 Intelligence/Research (best effort); P4 Telemetry (best effort,
-//! lossy).
+//! The previous version of this file declared its own `QosClass`,
+//! `Mirroring`, `OverloadPolicy` and `StreamPolicy` types, filled them with the
+//! values the requirement names, and asserted those values back. It imported
+//! nothing from the platform, so it passed with `policy.rs` deleted. Every
+//! test here calls production code, and two are pins of production gaps,
+//! named as such.
+//!
+//! The acknowledgement profiles are compared through `QosClass::ack_floor`
+//! and `AckProfile`'s order rather than by naming the strongest variant, so a
+//! rename of that variant (W0.6) does not touch these tests.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QosClass {
-    P0CriticalControl,
-    P1FinancialOutcomes,
-    P2MarketJournal,
-    P3IntelligenceResearch,
-    P4Telemetry,
-}
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mirroring {
-    None,
-    Local,
-    SelectiveByPartition,
-}
+use qip_events::event_fabric::policy::{
+    AckProfile, Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy,
+    StreamPolicySpec,
+};
+use qip_events::retention::RetentionClass;
+use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverloadPolicy {
-    Backpressure,
-    DropOldest,
-    DropNewest,
-}
-
-#[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-#[derive(Debug, Clone)]
-struct StreamPolicy {
-    class: QosClass,
-    mirroring: Mirroring,
-    ack_profile: Option<String>,
-    retain_ms: Option<i64>,
-    archive_required: bool,
-    overload: OverloadPolicy,
-}
-
-#[test]
-fn p0_critical_control_is_quorum_persistent_long_retention() {
-    // FABRIC-028: P0 Critical Control class carries quorum acknowledgement and persistent
-    // write-ahead log.
-    let policy = StreamPolicy {
-        class: QosClass::P0CriticalControl,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(90 * 24 * 3600 * 1000), // 90 days
-        archive_required: true,
-        overload: OverloadPolicy::Backpressure,
-    };
-
-    assert_eq!(policy.class, QosClass::P0CriticalControl);
-    assert!(policy.archive_required);
-    assert_eq!(policy.ack_profile, Some("quorum".to_string()));
-}
-
-#[test]
-fn p1_financial_outcomes_is_quorum_persistent_indexed() {
-    // FABRIC-029: P1 Financial Outcomes records fills, cancels and outcomes with
-    // quorum durability and indexed access.
-    let policy = StreamPolicy {
-        class: QosClass::P1FinancialOutcomes,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(30 * 24 * 3600 * 1000), // 30 days
-        archive_required: true,
-        overload: OverloadPolicy::Backpressure,
-    };
-
-    assert_eq!(policy.class, QosClass::P1FinancialOutcomes);
-    assert!(policy.archive_required);
-}
-
-#[test]
-fn p2_market_journal_is_quorum_no_retention_guarantee() {
-    // FABRIC-030: P2 Market Journal gets quorum ack but no guaranteed retention;
-    // may be dropped on disk pressure.
-    let policy = StreamPolicy {
-        class: QosClass::P2MarketJournal,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(24 * 3600 * 1000), // 1 day, not guaranteed
-        archive_required: false,
-        overload: OverloadPolicy::DropOldest,
-    };
-
-    assert_eq!(policy.class, QosClass::P2MarketJournal);
-    assert!(!policy.archive_required);
-}
-
-#[test]
-fn p3_intelligence_research_is_best_effort() {
-    // FABRIC-031: P3 Intelligence/Research carries agent research, world model updates
-    // and learning events with best-effort delivery only.
-    let policy = StreamPolicy {
-        class: QosClass::P3IntelligenceResearch,
-        mirroring: Mirroring::Local,
-        ack_profile: Some("leader".to_string()),
-        retain_ms: Some(7 * 24 * 3600 * 1000), // 7 days
-        archive_required: false,
-        overload: OverloadPolicy::DropOldest,
-    };
-
-    assert_eq!(policy.class, QosClass::P3IntelligenceResearch);
-    assert_eq!(policy.ack_profile, Some("leader".to_string()));
-}
-
-#[test]
-fn p4_telemetry_is_lossy_datagram() {
-    // FABRIC-032: P4 Telemetry carries metrics and traces only, may drop entirely,
-    // and only P4 may use unreliable datagrams.
-    let policy = StreamPolicy {
-        class: QosClass::P4Telemetry,
+fn spec(class: QosClass) -> StreamPolicySpec {
+    StreamPolicySpec {
+        qos_class: class,
+        partition_key: "instrument".to_string(),
+        ordering: Ordering::PerPartition,
+        retention: RetentionClass::Irreplaceable,
+        replication_factor: 1,
         mirroring: Mirroring::None,
-        ack_profile: Some("none".to_string()),
-        retain_ms: Some(3600 * 1000), // 1 hour
-        archive_required: false,
-        overload: OverloadPolicy::DropNewest,
-    };
-
-    assert_eq!(policy.class, QosClass::P4Telemetry);
-    assert_eq!(policy.ack_profile, Some("none".to_string()));
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile: class.ack_floor(),
+        byte_quota_per_producer: 1 << 20,
+        message_quota_per_producer: 1_000,
+        lag_limit: 10_000,
+        entitlement: Entitlement::new("market-data", "research").expect("a valid entitlement"),
+        seal_age_ms: 60_000,
+        peak_bytes_per_second: 1 << 16,
+    }
 }
 
+const ALL_ACKS: [AckProfile; 3] = [
+    AckProfile::None,
+    AckProfile::LeaderOnly,
+    AckProfile::Archived,
+];
+
+/// FABRIC-028/029/067. Every class refuses every acknowledgement weaker than
+/// its floor and admits its floor; P0 and P1 therefore admit only the
+/// strongest profile.
+///
+/// Mutation: delete the `if spec.ack_profile < floor` refusal in
+/// `StreamPolicy::new` — a P0 policy declaring `AckProfile::None` is admitted
+/// and the refusal assertion fires.
 #[test]
-fn stream_class_policies_are_immutable() {
-    // FABRIC-033: No topic's stream class policy may be changed once declared;
-    // the class is immutable and defines the stream's contract with producers
-    // and consumers.
-
-    // Policy should be part of the stream metadata and versioned, not mutable.
-    let p0_policy = StreamPolicy {
-        class: QosClass::P0CriticalControl,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(90 * 24 * 3600 * 1000),
-        archive_required: true,
-        overload: OverloadPolicy::Backpressure,
-    };
-
-    // Attempting to change class should be impossible at the type level.
-    // This property is enforced by the metadata quorum refusing class changes.
-    assert_eq!(p0_policy.class, QosClass::P0CriticalControl);
+fn every_class_refuses_an_acknowledgement_weaker_than_its_floor_and_admits_the_floor() {
+    for class in QosClass::ALL {
+        let floor = class.ack_floor();
+        // Premise: the floor itself is admitted, so the refusals below are
+        // about weakness and not a constructor that refuses everything.
+        assert!(
+            StreamPolicy::new(spec(class)).is_ok(),
+            "{} floor refused",
+            class.as_str()
+        );
+        for ack in ALL_ACKS {
+            let result = StreamPolicy::new(StreamPolicySpec {
+                ack_profile: ack,
+                ..spec(class)
+            });
+            if ack < floor {
+                let error = result.expect_err("a weaker acknowledgement was admitted");
+                assert!(
+                    error.to_string().contains(class.as_str()),
+                    "the refusal names the class: {error}"
+                );
+            } else {
+                assert!(result.is_ok(), "{} refused {ack:?}", class.as_str());
+            }
+        }
+    }
+    // P0 and P1 admit exactly one profile: the strongest there is.
+    for class in [QosClass::P0Control, QosClass::P1Outcomes] {
+        assert_eq!(
+            class.ack_floor(),
+            *ALL_ACKS.iter().max().expect("non-empty")
+        );
+    }
 }
 
+/// FABRIC-030/031/032. The floor weakens in class order, P0 = P1 > P2 = P3 >
+/// P4, and only telemetry may run with no acknowledgement at all.
+///
+/// Mutation: change `QosClass::ack_floor`'s P4 arm to `LeaderOnly`, or its
+/// P2/P3 arm to `None` — the matching equality fires.
 #[test]
-fn overload_policy_respects_class_requirements() {
-    // FABRIC-034: Each class's overload policy reflects its semantics:
-    // P0/P1 backpressure (never drop); P2 drop oldest; P3/P4 drop any.
-
-    let p0 = StreamPolicy {
-        class: QosClass::P0CriticalControl,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(90 * 24 * 3600 * 1000),
-        archive_required: true,
-        overload: OverloadPolicy::Backpressure,
-    };
-
-    let p1 = StreamPolicy {
-        class: QosClass::P1FinancialOutcomes,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(30 * 24 * 3600 * 1000),
-        archive_required: true,
-        overload: OverloadPolicy::Backpressure,
-    };
-
-    let p4 = StreamPolicy {
-        class: QosClass::P4Telemetry,
-        mirroring: Mirroring::None,
-        ack_profile: Some("none".to_string()),
-        retain_ms: Some(3600 * 1000),
-        archive_required: false,
-        overload: OverloadPolicy::DropNewest,
-    };
-
-    // P0 and P1 must backpressure
-    assert_eq!(p0.overload, OverloadPolicy::Backpressure);
-    assert_eq!(p1.overload, OverloadPolicy::Backpressure);
-
-    // P4 may drop
-    assert_eq!(p4.overload, OverloadPolicy::DropNewest);
+fn the_acknowledgement_floor_weakens_in_class_order_and_only_telemetry_may_have_none() {
+    let floors: Vec<AckProfile> = QosClass::ALL.iter().map(QosClass::ack_floor).collect();
+    assert_eq!(floors.len(), 5, "premise: five classes");
+    assert!(
+        floors.windows(2).all(|pair| pair[0] >= pair[1]),
+        "{floors:?}"
+    );
+    assert_eq!(floors[0], floors[1], "P0 and P1 share the floor");
+    assert!(floors[1] > floors[2], "P2 is weaker than P1");
+    assert_eq!(floors[2], AckProfile::LeaderOnly);
+    assert_eq!(floors[3], AckProfile::LeaderOnly);
+    assert_eq!(floors[4], AckProfile::None);
+    let without: Vec<&str> = QosClass::ALL
+        .iter()
+        .filter(|class| class.ack_floor() == AckProfile::None)
+        .map(QosClass::as_str)
+        .collect();
+    assert_eq!(without, ["p4_telemetry"]);
 }
 
+/// FABRIC-031/032/035. A lossy-tolerable topic (raw ticks) may reach only a
+/// research or telemetry stream.
+///
+/// Mutation: add `Self::P2MarketJournal` to
+/// `QosClass::admits_lossy_tolerable_topics` — the set equality fires.
 #[test]
-fn mirroring_configuration_per_class() {
-    // FABRIC-035: Only P0 and P1 classes are candidates for cross-region mirroring;
-    // P2/P3/P4 stay local. Mirroring is selective by partition and configured explicitly.
+fn only_research_and_telemetry_streams_admit_lossy_tolerable_topics() {
+    let admitting: BTreeSet<&str> = QosClass::ALL
+        .iter()
+        .filter(|class| class.admits_lossy_tolerable_topics())
+        .map(QosClass::as_str)
+        .collect();
+    assert_eq!(admitting, BTreeSet::from(["p3_research", "p4_telemetry"]));
+}
 
-    let p0_selectively_mirrored = StreamPolicy {
-        class: QosClass::P0CriticalControl,
-        mirroring: Mirroring::SelectiveByPartition,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(90 * 24 * 3600 * 1000),
-        archive_required: true,
-        overload: OverloadPolicy::Backpressure,
-    };
+/// Each class stamps its own batch schema id; two classes sharing one would
+/// let the broker file a P4 batch under a P0 stream's registration.
+///
+/// Mutation: make `batch_schema_id`'s P4 arm return `3` — the distinctness
+/// assertion fires.
+#[test]
+fn every_class_stamps_a_distinct_batch_schema_id() {
+    let ids: BTreeSet<u32> = QosClass::ALL
+        .iter()
+        .map(QosClass::batch_schema_id)
+        .collect();
+    assert_eq!(ids.len(), QosClass::ALL.len());
+}
 
-    let p2_local_only = StreamPolicy {
-        class: QosClass::P2MarketJournal,
-        mirroring: Mirroring::Local,
-        ack_profile: Some("quorum".to_string()),
-        retain_ms: Some(24 * 3600 * 1000),
-        archive_required: false,
-        overload: OverloadPolicy::DropOldest,
-    };
-
-    // P0 may be mirrored
-    assert!(matches!(
-        p0_selectively_mirrored.mirroring,
-        Mirroring::SelectiveByPartition
+/// FABRIC-033: a declared policy cannot be changed. The type has private
+/// fields and the only constructor validates; what would break that is a
+/// `&mut self` method on `StreamPolicy`, so the test reads `policy.rs`'s
+/// production text and asserts the `impl StreamPolicy` block has none.
+///
+/// Mutation: add `pub fn set_ack_profile(&mut self, ack: AckProfile)` to
+/// `impl StreamPolicy` — the scan finds it and fires.
+#[test]
+fn a_stream_policy_offers_no_way_to_change_a_declared_value() {
+    let source = qip_acceptance::production_text(&qip_acceptance::read(
+        "backend/crates/libs/qip-events/src/event_fabric/policy.rs",
     ));
+    let start = source
+        .find("impl StreamPolicy {")
+        .expect("premise: the impl block exists in production text");
+    // The block ends at the first line that is exactly a closing brace.
+    let block: Vec<&str> = source[start..]
+        .lines()
+        .take_while(|line| *line != "}")
+        .collect();
+    assert!(
+        block
+            .iter()
+            .any(|line| line.contains("pub fn qos_class(&self)")),
+        "premise: the scan reached the accessors"
+    );
+    let mutators: Vec<&&str> = block
+        .iter()
+        .filter(|line| line.contains("&mut self"))
+        .collect();
+    assert!(
+        mutators.is_empty(),
+        "a declared policy can be changed: {mutators:?}"
+    );
+    // And the built value reports exactly what was declared.
+    let built = StreamPolicy::new(spec(QosClass::P1Outcomes)).expect("admitted");
+    assert_eq!(built.qos_class(), QosClass::P1Outcomes);
+    assert_eq!(built.overload_policy(), OverloadPolicy::RefuseProducer);
+}
 
-    // P2 stays local
-    assert_eq!(p2_local_only.mirroring, Mirroring::Local);
+/// FABRIC-034: mirroring is refused by name until fabric-mirror (C8) is
+/// built; only `None` is admitted.
+///
+/// Mutation: delete the `spec.mirroring != Mirroring::None` refusal —
+/// `Selective` is admitted and the assertion fires.
+#[test]
+fn every_mirroring_policy_but_none_is_refused_until_the_mirror_exists() {
+    assert!(
+        StreamPolicy::new(spec(QosClass::P2MarketJournal)).is_ok(),
+        "premise"
+    );
+    for mirroring in [Mirroring::Selective, Mirroring::Full] {
+        let error = StreamPolicy::new(StreamPolicySpec {
+            mirroring,
+            ..spec(QosClass::P2MarketJournal)
+        })
+        .expect_err("a mirror that does not exist was admitted");
+        assert!(error.to_string().contains("(C8)"), "{error}");
+    }
+}
+
+/// Whether a stream must reach the archive before its spool may release it is
+/// decided by its retention class, not its QoS class.
+///
+/// Mutation: move `Self::Transient` into the `true` arm of
+/// `RetentionClass::archive_required` — the second assertion fires.
+#[test]
+fn archive_requirement_follows_the_retention_class() {
+    let irreplaceable = StreamPolicy::new(spec(QosClass::P4Telemetry)).expect("admitted");
+    assert!(irreplaceable.archive_required());
+    let transient = StreamPolicy::new(StreamPolicySpec {
+        retention: RetentionClass::Transient,
+        ..spec(QosClass::P0Control)
+    })
+    .expect("admitted");
+    assert!(!transient.archive_required());
+}
+
+/// FABRIC-049/050. ADR 0100 §5 says P0 and P1 are never dropped, and
+/// `OverloadPolicy` documents `RefuseProducer` as theirs.
+///
+/// This was a gap pin, `gap_a_p0_control_stream_declaring_shed_first_overload_is_admitted`,
+/// which asserted that `StreamPolicy::new` admitted a P0 control stream
+/// declaring `SampleOrShed` — the gap as evidence rather than a sentence. The
+/// constructor now checks the declared overload policy against the class
+/// (`QosClass::permits_overload_policy`), so the pin is inverted as it said
+/// it would be: both never-dropped classes refuse every overload policy but
+/// `RefuseProducer`, by a refusal naming the policy, and still admit
+/// `RefuseProducer` — without that half a constructor refusing every P0
+/// stream would pass.
+///
+/// Mutation: make `permits_overload_policy` return `true` unconditionally —
+/// the `SampleOrShed` refusal assertion fires for P0.
+#[test]
+fn a_never_dropped_stream_declaring_any_overload_but_refuse_producer_is_refused() {
+    for class in [QosClass::P0Control, QosClass::P1Outcomes] {
+        let admitted = StreamPolicy::new(spec(class)).expect("RefuseProducer is admitted");
+        assert_eq!(admitted.overload_policy(), OverloadPolicy::RefuseProducer);
+
+        for overload in [
+            OverloadPolicy::SampleOrShed,
+            OverloadPolicy::ThrottleWithGap,
+            OverloadPolicy::AllowBacklog,
+        ] {
+            let error = StreamPolicy::new(StreamPolicySpec {
+                overload_policy: overload,
+                ..spec(class)
+            })
+            .expect_err("a never-dropped stream declaring a lossy overload policy was admitted");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("overload policy {overload:?} is refused")),
+                "{class:?} {overload:?}: {error}"
+            );
+        }
+    }
 }

@@ -569,6 +569,33 @@ fn variable_literals(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The variables `qip_transport::tls::link_source` reads: the `pub const`
+/// names `qip-tls`'s `lib.rs` and `cas.rs` declare, and only those — a doc
+/// comment that mentions a variable is not a read.
+///
+/// `qip_transport::tls` is a re-export of the `qip-tls` crate since `b0141f2d`
+/// cut the TLS policy out of the transport, so the declarations live there;
+/// this scan read the transport's old `tls.rs` until 2026-10-11 and every
+/// test that leans on it panicked on a missing file rather than a variable.
+fn variables_read_through_link_source() -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for file in [
+        "backend/crates/libs/qip-tls/src/lib.rs",
+        "backend/crates/libs/qip-tls/src/cas.rs",
+    ] {
+        for line in read(file).lines() {
+            if line.starts_with("pub const ") && line.contains(": &str = \"QIP_") {
+                names.extend(variable_literals(line));
+            }
+        }
+    }
+    assert!(
+        names.contains("QIP_TLS_MODE") && names.contains("QIP_CAS_CA_POOL"),
+        "the link's variables are no longer declared where this scan looks: {names:?}"
+    );
+    names
+}
+
 /// Every `.rs` file under one crate's `src`, as text.
 fn sources_under(relative: &str) -> Vec<String> {
     files_with_extension(relative, "rs")
@@ -579,8 +606,89 @@ fn sources_under(relative: &str) -> Vec<String> {
 
 /// Every `const NAME: &str = "QIP_…";` in the workspace, by identifier.
 fn variables_by_constant() -> BTreeMap<String, BTreeSet<String>> {
+    let declarations = constants_declared_under("backend/crates");
+    assert!(
+        declarations.len() >= 10,
+        "only {} environment-variable constants were found; the declaration \
+         walk has stopped matching the form these are written in",
+        declarations.len()
+    );
+    declarations
+}
+
+/// `text` with the contents of every string and char literal blanked.
+///
+/// For the delegation rule's identifier test, which asks whether a source
+/// *uses* a constant. A word inside a message is not a use: round 2's
+/// `qip-api/src/signing.rs` says "SHARED HMAC KEY" in a banner, `KEY` is the
+/// fast brain's constant for `QIP_MARKET_DATA_KEY`, and the API was reported
+/// as reading a vendor key it has never heard of.
+fn without_string_literals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                out.push('"');
+                let mut escaped = false;
+                for inner in chars.by_ref() {
+                    if escaped {
+                        escaped = false;
+                    } else if inner == '\\' {
+                        escaped = true;
+                    } else if inner == '"' {
+                        break;
+                    }
+                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                }
+                out.push('"');
+            }
+            // `'"'` — the one char literal that would open a phantom string.
+            '\'' if chars.peek() == Some(&'"') => {
+                out.push('\'');
+                chars.next();
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The crate directory (`backend/crates/<group>/<crate>`) a path is in.
+fn crate_directory_of(path: &str) -> Option<String> {
+    let start = path.find("backend/crates/")?;
+    let rest = &path[start..];
+    let parts: Vec<&str> = rest.splitn(5, '/').collect();
+    (parts.len() >= 4).then(|| parts[..4].join("/"))
+}
+
+/// [`constants_declared_under`] one crate directory, walked once per test
+/// binary: the delegation rule asks it for every delegate of every
+/// deployment, and this suite was already the slowest in the crate.
+fn constants_declared_in_crate(directory: &str) -> BTreeMap<String, BTreeSet<String>> {
+    type Cache = std::sync::Mutex<BTreeMap<String, BTreeMap<String, BTreeSet<String>>>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Some(found) = cache
+        .lock()
+        .expect("the cache lock is not poisoned")
+        .get(directory)
+    {
+        return found.clone();
+    }
+    let found = constants_declared_under(directory);
+    cache
+        .lock()
+        .expect("the cache lock is not poisoned")
+        .insert(directory.to_string(), found.clone());
+    found
+}
+
+/// The `const NAME: &str = "QIP_…";` declarations under one directory.
+fn constants_declared_under(directory: &str) -> BTreeMap<String, BTreeSet<String>> {
     let mut declarations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for path in files_with_extension("backend/crates", "rs") {
+    for path in files_with_extension(directory, "rs") {
         if !path.to_string_lossy().contains("/src/") {
             continue;
         }
@@ -603,12 +711,6 @@ fn variables_by_constant() -> BTreeMap<String, BTreeSet<String>> {
             }
         }
     }
-    assert!(
-        declarations.len() >= 10,
-        "only {} environment-variable constants were found; the declaration \
-         walk has stopped matching the form these are written in",
-        declarations.len()
-    );
     declarations
 }
 
@@ -711,6 +813,15 @@ fn variables_read_by(
         if mentions_identifier(source, "ConnectorFeed") {
             by_connector.extend(variables_named_by_connector_manifests());
         }
+        // A binary that decides its link through `qip_transport::tls::
+        // link_source` reads the link's variables through the lookup it hands
+        // in, and names none of them itself: the mode, the hand-placed files
+        // and, under `cas`, the CA Service settings (ADR 0112 §2). Without
+        // this a deployment wiring `QIP_TLS_MODE=cas` would read as setting
+        // variables nothing reads.
+        if mentions_identifier(source, "link_source") {
+            by_delegation.extend(variables_read_through_link_source());
+        }
         literal.extend(variable_literals(source));
         for (identifier, variables) in constants {
             if mentions_identifier(source, identifier) {
@@ -746,11 +857,26 @@ fn variables_read_by(
             .copied()
             .collect();
         let chosen = if own.is_empty() { defining } else { own };
-        for (_, content) in chosen {
+        for (path, content) in chosen {
             by_delegation.extend(variable_literals(content));
+            // A constant is resolved the way rustc resolves it, as far as a
+            // text scan can: a name the delegate's own crate declares means
+            // that crate's declaration, not every same-named constant in the
+            // workspace. Round 2's deep brain declared a second
+            // `PLAN_VARIABLE` (`QIP_DEEPBRAIN_BREADTH_PLAN`), and the edge
+            // node — whose `main.rs` uses its own `PLAN_VARIABLE`,
+            // `QIP_STRATEGY_PLAN_PATH` — was reported as reading the deep
+            // brain's breadth plan. A name declared nowhere in the crate
+            // still resolves workspace-wide, so an imported constant is not
+            // lost. And only a use in code counts, not a word in a message.
+            let local = crate_directory_of(path)
+                .map(|directory| constants_declared_in_crate(&directory))
+                .unwrap_or_default();
+            let code = without_string_literals(content);
             for (identifier, variables) in constants {
-                if mentions_identifier(content, identifier) {
-                    by_delegation.extend(variables.iter().cloned());
+                if mentions_identifier(&code, identifier) {
+                    let resolved = local.get(identifier).unwrap_or(variables);
+                    by_delegation.extend(resolved.iter().cloned());
                 }
             }
         }
@@ -1045,6 +1171,41 @@ const NO_VOLUME_TO_ROOT_IT_IN: &str = "A storage root only means something on \
      disk. The entry ends when a central workload gets a volume, which is a \
      decision of its own.";
 
+/// The ambient journal's own path, which unset already places correctly.
+const THE_AMBIENT_JOURNAL_FOLLOWS_THE_EVENT_LOG: &str = "Unset, the ambient \
+     journal is exactly as durable as the platform's event log \
+     (`JournalDestination::resolve`): beside it when the log is a file, in \
+     memory when the log is, so an attention record never outlives or \
+     undershoots the decisions it explains. A separate path only means \
+     something on a workload with a volume to put it on, and a Cloud Run \
+     instance has none — a value here would name a file that vanishes with \
+     the instance while the log it annotates does not, which is the split \
+     the default exists to prevent. The entry ends when the deep brain gets \
+     a volume, which is a decision of its own.";
+
+/// Discovery profiles, which only shape a pass no environment runs.
+const PROFILES_FEED_A_DISCOVERY_PASS_NO_ENVIRONMENT_RUNS: &str = "The entity \
+     profiles turn each discovery target into tagged queries for the \
+     source-discovery pass (R12-DATA-2016), and that pass is off in every \
+     environment: `deepbrain_discover_every` and `source_candidates_file` are \
+     null in all four tfvars, and `variables.tf` calls turning either on alone \
+     a knob with no effect. A mount offered here would be a third such knob — \
+     profiles loaded, validated and never asked a question — reading in the \
+     banner as a capability the node does not exercise. Wiring it is a \
+     `config_files` arm from a `data/`-path root variable, made in the same \
+     reviewed change that turns discovery on, with the cadence and the \
+     candidate list it serves.";
+
+/// The knowledge-pack store, which keeps what a connector poll produces.
+const PACKS_COME_FROM_A_CONNECTOR_NO_ENVIRONMENT_POLLS: &str = "Knowledge \
+     packs are derived from connector polls, and the deep brain opens the \
+     pack store only inside its connector arm: with `deepbrain_connector` null \
+     in every environment there is no poll to derive one from, so `store` \
+     would be a durable store nothing writes, said in the banner as if it \
+     kept something. Unset is `off`, which is the true state. Turning it on \
+     is a retention decision about a bucket namespace that belongs in the \
+     reviewed change that first gives an environment a connector.";
+
 /// A bounded run, which is the opposite of what a service wants.
 const A_BOUNDED_RUN_IS_A_CRASH_LOOP: &str = "These stop the process on their \
      own — a bounded run is how the binary is exercised by hand and in CI. \
@@ -1240,7 +1401,66 @@ const NO_TERMS_HAVE_BEEN_READ_SO_THERE_IS_NOTHING_TO_ATTEST: &str = "The deep \
      it unset is not a capability withheld from an operator but the absence of \
      a claim nobody is yet entitled to make.";
 
+/// The edge node's fabric partition, which has no broker to name.
+const NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE: &str = "The node's spool drains to a \
+     `qip-fabricd` partition when one is named, and no environment runs a \
+     fabric broker an execution node can reach: there is no fabricd in the \
+     catalogue and no token for one in Secret Manager. Absent, the node says \
+     so at start, its spool drains to the tick lake alone and its journal \
+     reaches the store through the relay, so nothing is lost by the gap — the \
+     outcomes simply have no fabric partition yet. The entry ends when a \
+     fabric broker is deployed beside the nodes, and its token is mounted as \
+     a file like the envelope key.";
+
+/// ADR 0110's signing and trust-bundle variables, before the keys exist.
+const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
+     work puts the Cloud KMS keys, the publish workflow and the committed trust \
+     bundle in Terraform after the code (step 3: plan shown, the owner \
+     applies), and none is applied. Until then there is no key version to \
+     name, no bundle to mount and no signed release pack to load, and each \
+     binary's absent value is its stated interim posture rather than a \
+     fallback: the API signs under the operator's shared key from Secret \
+     Manager and says so in its banner, refused outside `local` from \
+     `qip_transport::trust::SHARED_KEY_REMOVED_AFTER`; and with no release packs the \
+     API names no distillate to any cell outside `local`, which is the \
+     fail-closed reading of REFLEX-9011. `local` signing keys are refused \
+     outside a local deployment by the binary itself. The entry ends when the \
+     key ring's class keys and the bundle are applied and mounted.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    // QIP_ARTEFACT_SIGNER, QIP_TRUST_BUNDLE_PATH, QIP_KMS_KEY_VERSIONS_PATH
+    // and QIP_GOOGLE_TLS_ROOTS_PATH on qip-api, and QIP_TRUST_BUNDLE_PATH on
+    // qip-edge-node, were argued here until the KMS keys and the committed
+    // bundle became Terraform (infrastructure/terraform/artefact-signing.tf).
+    // The catalogue now sets the API's four from `artefact_trust_bundle_file`
+    // (a `== null ? {} : {` arm, so each RunService omits them until its
+    // environment commits a bundle) and node.env sets the node's bundle path
+    // unconditionally, so the general rule covers all five.
+    (
+        "qip-api",
+        "QIP_LOCAL_SIGNING_KEYS_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_MODEL_PACKS_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_URL",
+        NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_TOKEN",
+        NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_PARTITION",
+        NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
     (
         "qip-deepbrain",
         "QIP_MODEL_PROVIDER_ATTESTATION_PATH",
@@ -1359,6 +1579,21 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ("qip-api", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),
     ("qip-deepbrain", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),
     ("qip-fastbrain", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_AMBIENT_JOURNAL",
+        THE_AMBIENT_JOURNAL_FOLLOWS_THE_EVENT_LOG,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH",
+        PROFILES_FEED_A_DISCOVERY_PASS_NO_ENVIRONMENT_RUNS,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_KNOWLEDGE_PACKS",
+        PACKS_COME_FROM_A_CONNECTOR_NO_ENVIRONMENT_POLLS,
+    ),
     (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_MAX_CYCLES",
@@ -1600,19 +1835,241 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "Unset, the discovery desk's eligible set is its one-jurisdiction \
          default. A set value replaces that default, and a value that parses \
          to nothing is refused at start-up rather than read as everywhere, so \
-         leaving it unset never admits more than setting it would. More to \
-         the point, nothing in this binary reads the set. \
-         `DiscoveryDesk::eligible_jurisdictions` is reached only from \
-         `EvolutionEngine::discovery_desk`, which nothing calls, and \
-         `ResearchQueue::admit`, the consumer EXPAND-060 names, is \
-         constructed by no composition root. A deployment that set the \
-         variable would configure a value no code path consults: a dial \
-         wired to nothing, which reads as a jurisdiction policy and is not \
-         one. It becomes the deployment's decision the day admit is reached \
-         from this root, and the value set then is a desk's jurisdiction \
-         decision, not a default.",
+         leaving it unset never admits more than setting it would. Since \
+         2026-10-11 the set is consulted: the run loop hands it to the \
+         research loop (`qip_deepbrain::research`), whose desk refuses at \
+         `ResearchQueue::admit` any research filed under a jurisdiction \
+         outside it. Unset, that is the default's one jurisdiction, which is \
+         also the research loop's default jurisdiction, so an unset pair \
+         admits research and never admits more than a set pair would. \
+         Setting it is a desk's jurisdiction decision a deployment has not \
+         made.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_EVERY",
+        "Unset, the research loop sweeps every cycle. It reads `&Platform` \
+         and never `&mut`, so it cannot place, size or cancel anything, and \
+         its outputs are advisory records; a deployment that set it would \
+         choose only how often the curriculum is refreshed. Zero disables \
+         it, which is a decision for an operator shedding load, not a \
+         default.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_JURISDICTION",
+        "Unset, research is filed under the same one jurisdiction the \
+         discovery desk's eligible set defaults to. Admission checks it \
+         against that set and refuses rather than assumes, so no value set \
+         here can admit research the eligible set does not allow.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_BREADTH_PLAN",
+        "Unset, no breadth plan is installed and the node runs exactly as it \
+         did before the plane existed: no market is created on the simulated \
+         venue, no event-market or commerce source is polled, and every \
+         breadth hook in the cycle returns at its first line. Each section a \
+         plan carries commits the platform to something — a seeded market, \
+         paper event positions, paper purchases — so the absent value is the \
+         restrictive one, and a deployment sets it when the desk has written \
+         a plan, not before. A plan that cannot be read, parsed or honoured \
+         stops the process with exit 78 (`qip_deepbrain::breadth`).",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_COMPUTE",
+        "Unset, a sweep may start ten compute units of research. The units \
+         are the desk's declared cost model, not money and not a cloud \
+         quota: a started item is a record that it may run, and nothing in \
+         this binary spends against it yet. A value is refused if it is not \
+         a non-negative number.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_ACQUISITION_BP",
+        "Unset, a sweep may launch 20000 bp of information acquisitions — \
+         two at a decision's full value — in the Curiosity Engine's rank \
+         order. An acquisition is a record that a re-sweep or a class's \
+         declared acquisition is owed, not a fetch and not money; a smaller \
+         value only launches fewer, and a non-integer is refused at start-up.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_QPU",
+        "Unset, the compute market grants no QPU unit, so quantum research \
+         is off until a deployment budgets it. Every QPU grant also charges \
+         its classical baseline to the CPU budget (ADR 0006), so setting it \
+         can never buy a quantum result with nothing to compare it to. \
+         Leaving it unset is the fail-closed posture; a negative value is \
+         refused.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_LAKE_RETENTION",
+        "Unset, no connector arm captures into the tick lake. A value is a \
+         reading of a vendor's retention terms per licensing class, and \
+         nobody has read the shipped connectors' terms for retention yet; \
+         a default here would be rights nobody evaluated. No deployment \
+         polls a connector from this binary today in any case.",
+    ),
+    // Round 2's tick learning desk (R12-TICK; `qip-deepbrain/src/tick_desk.rs`).
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_EVERY",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_ENTITLEMENTS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_ENTITLEMENT_REGIONS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_MAP_REGIONS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_LOOKBACK_DAYS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_LATENCY_MS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_FEE_BPS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_IMPACT_BPS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_MEASURE_CODEC",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    // Round 2's node-local settings, each read by `qip-edge-node` and set by
+    // no `node.env`. No execution node is deployed (`execution_nodes = {}`
+    // in every environment), so each is argued on what its absence does.
+    (
+        "qip-edge-node",
+        "QIP_CELL_RISK_LIMITS",
+        "Unset, the cell's Risk Gate runs the shipped limit set \
+         (`qip-edge-node/src/risk.rs`), which is the restrictive default and \
+         not an absence. A value is a per-desk document that may move a bound \
+         and may not remove a shipped limit; nobody has written one, and an \
+         environment-wide default would be a limit nobody calibrated.",
+    ),
+    // ADR 0110: the node verifies against the trust bundle the attested
+    // image carries, and the template no longer fetches the shared key.
+    // ADR 0112 §2: a deployed node's certificate is issued by CA Service
+    // (`QIP_TLS_MODE=cas`, which the template sets) over a key generated in
+    // memory; the hand-placed files are the workstation's path.
+    (
+        "qip-edge-node",
+        "QIP_TLS_CERTIFICATE_CHAIN_PATH",
+        HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TLS_PRIVATE_KEY_PATH",
+        HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_CAPITAL_ENVELOPE_KEY",
+        "The shared HMAC key the node read before ADR 0110. Unset, the node \
+         verifies policy, halts and grants against QIP_TRUST_BUNDLE_PATH, \
+         which the template sets; set, a node's disk would again hold a key \
+         that mints what it verifies, the risk ADR 0110 exists to remove. The \
+         binary keeps reading it only until SHARED_KEY_REMOVED_AFTER \
+         (`qip-transport/src/trust.rs`), after which it is refused.",
+    ),
+    (
+        "qip-edge-node",
+        "QIP_PEER_MESH_LISTEN",
+        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_PEER_MESH_PEERS",
+        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_PEER_MESH_CLOCK_BOUND_MS",
+        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_SPOOL_WRITER_CPU",
+        "Unset, the spool writer is left to the scheduler and its placement \
+         is read from the kernel and announced at start \
+         (`event_fabric/placement.rs`). A value names one core of one machine \
+         shape and stops the process if the kernel will not honour it, so it \
+         belongs to a node whose shape and isolated cores someone has \
+         measured — and no node is deployed.",
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TICK_LAKE_CODEC",
+        "Unset is `identity`. ADR 0113 §3 keeps zstd off the sealing path \
+         until a measurement on a deployed node says the saving is worth the \
+         CPU beside the decision thread; the deep brain's tick desk measures \
+         it without writing a byte. Setting it everywhere would be the \
+         decision the ADR deferred.",
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TICK_RETENTION",
+        "Unset, the lake keeps the simulator's own canonical depth and \
+         nothing else (`event_fabric/drain.rs`): the simulated dataset is \
+         generated in-process and breaches no venue's terms. A value names \
+         what a licensed dataset's terms allow to be kept, which is a reading \
+         of a contract nobody has made; a default here would be rights nobody \
+         evaluated.",
     ),
 ];
+
+/// Round 2's tick learning desk, all nine of its variables.
+const THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED: &str = "`QIP_DEEPBRAIN_TICK_EVERY` \
+     unset or 0 leaves the desk off, and every other variable of the desk is \
+     read only once it is on. Turning it on requires \
+     `QIP_DEEPBRAIN_TICK_ENTITLEMENTS` — which licensed datasets the desk may \
+     replay — and an entitlement with no regions leaves its card unissued \
+     and its map unshipped. Those are licensing decisions per dataset, and \
+     nobody has made one for a deployment: a default here would let the \
+     desk read data under terms nobody granted it.";
+
+/// The workload certificate as files rather than issued.
+const HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH: &str = "Unset because \
+     the node runs `QIP_TLS_MODE=cas`: its certificate is issued by CA \
+     Service over a key generated in memory and renewed in place (ADR 0112 \
+     §2), and `qip_transport::tls::link_source` refuses these files beside \
+     `cas`. Set, a private key would sit on the node's disk for as long as the \
+     file lived, which is what short-lived workload certificates exist to \
+     avoid.";
+
+/// The node-to-node coordination mesh.
+const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
+     mutual TLS off-host (ADR 0112) and plaintext only on loopback in a \
+     `local` deployment (`qip-peer-link/src/wire.rs`, `PeerSettings::validate`). \
+     A deployed node's peers are other execution nodes, and none exists: \
+     `execution_nodes = {}` in every environment, so there is no peer \
+     address to name and no peer workload certificate issued to admit. \
+     Unset, the node announces that it coordinates with no other cell \
+     directly; the clock bound is read only once a mesh is configured.";
 
 #[test]
 fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_be_unset() {
@@ -2583,21 +3040,52 @@ fn the_node_takes_its_values_from_a_file_and_its_secrets_from_files_never_from_t
     // key is a key in /proc/<pid>/environ and in every crash dump.
     let startup = read(NODE_STARTUP);
     let set = variables_the_node_sets();
+    // ADR 0110: the node verifies the centre against the committed trust
+    // bundle baked into its image, and holds no shared key at all —
+    // `qip-edge-node` refuses to start with both, because the key can mint
+    // what the bundle verifies. This test required the envelope key's mount
+    // until the bundle existed; it now requires the bundle and refuses the
+    // key, by name and by path.
     assert!(
-        set.contains("QIP_CAPITAL_ENVELOPE_KEY_FILE"),
-        "node.env no longer names the envelope key by path"
+        set.contains("QIP_TRUST_BUNDLE_PATH"),
+        "node.env does not name the trust bundle the node verifies against"
     );
+    assert!(
+        startup.contains("QIP_TRUST_BUNDLE_PATH=${trust_bundle_path}\n"),
+        "node.env takes the trust bundle's path from somewhere other than the module's validated input"
+    );
+    assert!(
+        !set.contains("QIP_CAPITAL_ENVELOPE_KEY_FILE")
+            && !startup.contains("capital-envelope-key")
+            && !startup.contains("capital_envelope_secret_id"),
+        "the node still fetches or names the shared capital-envelope key beside the trust bundle"
+    );
+    // ADR 0112: every link the node owns is mutual TLS on a CA Service
+    // workload certificate; there is no plaintext mode to select.
+    assert!(
+        startup.contains("\nQIP_TLS_MODE=cas\n"),
+        "node.env does not put the node's links on CA Service workload certificates"
+    );
+    for variable in [
+        "QIP_CAS_CA_POOL",
+        "QIP_CAS_CERTIFICATE_TEMPLATE",
+        "QIP_TLS_TRUST_ROOTS_PATH",
+        "QIP_GOOGLE_TLS_ROOTS_PATH",
+    ] {
+        assert!(
+            set.contains(variable),
+            "node.env does not set {variable}, which the node's workload certificate needs"
+        );
+    }
     assert!(
         !set.contains("QIP_CAPITAL_ENVELOPE_KEY") && !set.contains("QIP_VENUE_CREDENTIAL"),
         "node.env carries a credential as a value"
     );
-    assert!(
-        startup.contains("/usr/local/bin/qip-fetch-secret \"${project_id}\" \"${capital_envelope_secret_id}\" \"$RUN_DIR/capital-envelope-key\""),
-        "the startup script no longer fetches the envelope key to the secrets tmpfs"
-    );
+    // The one secret a node may still hold, the venue credential, reaches a
+    // tmpfs at mode 0400 — and only where the module bound it.
     assert!(
         startup.contains("mount -t tmpfs -o size=8m,mode=0700,noswap tmpfs \"$RUN_DIR\"")
-            && startup.contains("chmod 0400 \"$RUN_DIR/capital-envelope-key\""),
+            && startup.contains("chmod 0400 \"$RUN_DIR/venue-credential\""),
         "the node's secrets are not on a tmpfs at mode 0400"
     );
     // And the ceiling is not set on the node: a cell's ceiling is structural,
@@ -2952,10 +3440,17 @@ const TERRAFORM_MODULES: &str = "infrastructure/terraform/modules";
 /// runtime is added here in the change that introduces it, and until it is,
 /// the root-level check below is what keeps one from arriving unregistered
 /// by the side door.
-const WORKLOAD_RESOURCES: [&str; 5] = [
+///
+/// The two single-machine types joined in W4.2, when the event-fabric broker
+/// gained a machine and `modules/ledgerd` arrived: both are sole writers of a
+/// chain and deliberately not instance groups, so a list that knew only
+/// templates and groups would have let a single machine arrive unregistered.
+const WORKLOAD_RESOURCES: [&str; 7] = [
     "google_cloud_run_v2_service",
     "google_compute_instance_template",
     "google_compute_instance_group_manager",
+    "google_compute_instance",
+    "google_compute_instance_from_template",
     "google_container_cluster",
     "google_vertex_ai_endpoint",
 ];

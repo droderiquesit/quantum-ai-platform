@@ -79,3 +79,19 @@ pub fn pass(
     telemetry.archive_lag(unarchived);
     outcome
 }
+
+/// Trim every partition to its hot window once its older segments are
+/// archived and indexed (FABRIC-8079), when a window is configured. `None`
+/// keeps every segment on disk, which is today's behaviour and the default.
+pub fn retain(
+    broker: &Broker,
+    hot_batches: Option<u64>,
+    telemetry: &FabricdTelemetry,
+) -> Result<u64> {
+    let Some(keep) = hot_batches else {
+        return Ok(0);
+    };
+    let deleted = broker.retain_hot(keep)?;
+    telemetry.segments_retained(deleted);
+    Ok(deleted)
+}

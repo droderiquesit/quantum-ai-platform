@@ -36,20 +36,86 @@ use std::sync::{Arc, Mutex};
 
 use qip_core::Clock;
 use qip_core::error::{Error, Result};
-use qip_storage::segment::archive::Archiver;
+use qip_storage::BlobStore;
+use qip_storage::segment::archive::{ArchiveReader, Archiver};
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_storage::{DurableStore, EngineConfig, KeyValueStore};
 use serde::{Deserialize, Serialize};
 
-use qip_events::event_fabric::codec::{Batch, ContentHash, LogicalTimestamp, stamp_broker};
+use qip_events::event_fabric::codec::{
+    Batch, ContentHash, DecodeOutcome, LogicalTimestamp, stamp_broker,
+};
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
-use qip_events::event_fabric::policy::{OverloadPolicy, StreamPolicy};
+use qip_events::event_fabric::policy::{QosClass, StreamPolicy};
 use qip_events::event_fabric::schema_id::{Shape, check_compatible};
 
 use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck, Refusal};
 
+use super::managed::{
+    CommitOutcome, CommittedBatch, Lease, LeaseOutcome, ManagedLog, PartitionRef,
+};
 use super::partition::{self, PartitionLog};
 use super::producer::{Admission, ProducerTable, WINDOW_SIZE};
+
+/// How many committed rows one catch-up read asks the managed log for.
+const CATCH_UP_PAGE: u32 = 256;
+
+/// Hex of a content hash this build produces. `None` for the Blake3 tag the
+/// codec refuses everywhere, which never reaches a managed row.
+fn content_hash_hex(hash: &ContentHash) -> Option<String> {
+    match hash {
+        ContentHash::Sha256(digest) => Some(qip_core::hash::to_hex(digest)),
+        ContentHash::Blake3(_) => None,
+    }
+}
+
+/// This instance's seat at the managed consensus (ADR 0111 §1): the port,
+/// the identity it holds leases under, and the leases it holds now.
+///
+/// `holder` is the instance's name joined to its local leader epoch, so a
+/// restarted process never believes it still holds the lease its previous
+/// incarnation held: the database sees a different holder and either hands
+/// it a fresh epoch after expiry or tells it somebody else leads.
+#[derive(Debug)]
+struct ManagedSeat {
+    log: Arc<dyn ManagedLog>,
+    holder: String,
+    leases: Mutex<BTreeMap<(String, u32), Lease>>,
+}
+
+impl ManagedSeat {
+    fn lease(&self, stream: &str, partition: u32) -> Option<Lease> {
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(stream.to_string(), partition))
+            .cloned()
+    }
+
+    fn set_lease(&self, stream: &str, partition: u32, lease: Option<Lease>) {
+        let mut leases = self.leases.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (stream.to_string(), partition);
+        match lease {
+            Some(lease) => {
+                leases.insert(key, lease);
+            }
+            None => {
+                leases.remove(&key);
+            }
+        }
+    }
+}
+
+/// What one [`Broker::tend_leases`] pass did, per managed partition.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LeaseReport {
+    /// Partitions this instance leads, with the epoch it leads them at.
+    pub leading: BTreeMap<(String, u32), u64>,
+    /// Partitions another instance leads; this one followed their log.
+    pub following: BTreeMap<(String, u32), String>,
+    /// Partitions whose lease or log could not be read this pass, and why.
+    pub failed: BTreeMap<(String, u32), String>,
+}
 
 /// The one key this broker's metadata store holds. A `DurableStore` rooted
 /// at its own directory, separate from every partition's data (FABRIC-065):
@@ -123,6 +189,11 @@ struct ProduceCursor {
     /// When the active segment took its first batch, or `None` while it is
     /// empty: what [`Broker::seal_aged`] measures a stream's seal age from.
     active_since: Option<qip_core::Timestamp>,
+    /// For a managed partition, the lease epoch at which this log was last
+    /// proven to hold every committed row. `None` forces a catch-up from the
+    /// managed log before the next commit: after a new lease, a lost commit
+    /// answer, or a conflict.
+    caught_up_epoch: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -261,6 +332,51 @@ impl ProduceRefusal {
 /// acknowledgement, or the named refusal.
 pub type Produced = std::result::Result<ProduceAck, ProduceRefusal>;
 
+/// The protocol refusal for an admission that did not append, shared by the
+/// local and the managed produce paths so the two cannot answer the same
+/// sequence fault differently.
+fn refused_admission(admission: Admission, batch: &Batch, label: &str) -> Result<Produced> {
+    let refusal = match admission {
+        Admission::Conflict => ProduceRefusal::new(
+            Refusal::SequenceConflict,
+            Error::denied(format!(
+                "producer '{}' sequence {} at {label} conflicts with a batch this broker \
+                 already accepted under the same epoch and sequence but a different payload",
+                batch.producer_id, batch.base_sequence
+            )),
+        ),
+        Admission::FencedEpoch { current_epoch } => ProduceRefusal::new(
+            Refusal::Fenced,
+            Error::denied(format!(
+                "producer '{}' epoch {} at {label} is fenced by epoch {current_epoch}",
+                batch.producer_id, batch.producer_epoch
+            )),
+        ),
+        Admission::OutsideWindow => ProduceRefusal::new(
+            Refusal::SequenceBelowWindow,
+            Error::denied(format!(
+                "producer '{}' sequence {} at {label} is behind this broker's bounded dedup \
+                 window and cannot be verified as a duplicate",
+                batch.producer_id, batch.base_sequence
+            )),
+        ),
+        Admission::OutOfOrder { expected } => ProduceRefusal::new(
+            Refusal::OutOfOrderSequence { expected },
+            Error::invalid(format!(
+                "producer '{}' sequence {} at {label} is ahead of the dense stream; the next \
+                 sequence this partition accepts is {expected}",
+                batch.producer_id, batch.base_sequence
+            )),
+        ),
+        Admission::Appended { .. } | Admission::Duplicate => {
+            return Err(Error::io(format!(
+                "{label}: an admission that appended was routed to the refusal path"
+            )));
+        }
+    };
+    Ok(Err(refusal))
+}
+
 /// A bounded, per-`(producer_id, partition label)` window of recently
 /// assigned offsets, keyed the same way as
 /// [`super::producer::ProducerTable`]'s own internal table. Named as a type
@@ -301,6 +417,15 @@ pub struct Broker {
     /// Entries from an older window are dropped whenever a new window
     /// opens, so the map is bounded by the producers active in one window.
     quota_spent: Mutex<QuotaSpend>,
+    /// ADR 0111's managed consensus, when the composition root configured
+    /// one. `None` is the local single-broker fabric — dev, test and every
+    /// environment that has not configured Spanner — in which a stream
+    /// declared `managed_majority` is refused at declaration.
+    managed: Option<ManagedSeat>,
+    /// The archive, read back (FABRIC-8079): what [`Self::fetch`] hydrates
+    /// an offset from once its local segment has been retained away, and
+    /// what [`Self::retain_hot`] requires before it deletes anything.
+    archive: Option<ArchiveReader>,
 }
 
 /// `(stream, producer)` to `(window_start_ns, bytes, messages)`.
@@ -335,13 +460,57 @@ impl Broker {
             checkpoints,
             metadata: epoch_store,
             quota_spent: Mutex::new(BTreeMap::new()),
+            managed: None,
+            archive: None,
         })
+    }
+
+    /// Seat this broker at ADR 0111's managed consensus as `instance`.
+    ///
+    /// From here a P0 or P1 stream must be declared `managed_majority`, and
+    /// its produces are acknowledged only once [`ManagedLog::commit`] has
+    /// committed them under a lease this instance holds. The holder name is
+    /// `instance` joined to this process's leader epoch — see
+    /// [`ManagedSeat`] for why the epoch is part of it.
+    pub fn with_managed_log(mut self, log: Arc<dyn ManagedLog>, instance: &str) -> Result<Self> {
+        if instance.trim().is_empty() || instance.contains('#') {
+            return Err(Error::invalid(
+                "a managed-log instance name must be non-empty and contain no '#', which \
+                 separates it from the process's leader epoch in the lease holder",
+            ));
+        }
+        self.managed = Some(ManagedSeat {
+            log,
+            holder: format!("{instance}#{}", self.leader_epoch),
+            leases: Mutex::new(BTreeMap::new()),
+        });
+        Ok(self)
+    }
+
+    /// Read archived segments back from `store` when their local copy is
+    /// gone (FABRIC-8079). The same store the archiver writes to, with the
+    /// manifest index on (`Archiver::with_manifest_index`).
+    pub fn with_archive_reader(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.archive = Some(ArchiveReader::new(store));
+        self
+    }
+
+    /// The lease-holder name this broker commits under, when it is seated.
+    pub fn managed_holder(&self) -> Option<&str> {
+        self.managed.as_ref().map(|seat| seat.holder.as_str())
     }
 
     /// This broker's leader epoch: bumped and persisted once, in
     /// [`Broker::open`], for the lifetime of this instance.
     pub fn leader_epoch(&self) -> u64 {
         self.leader_epoch
+    }
+
+    /// The broker clock's reading, in nanoseconds: what consumer-group leases
+    /// are measured against, so a test advancing a manual clock expires a
+    /// member the same way wall time would.
+    pub fn now_ns(&self) -> i64 {
+        self.clock.now().as_nanos()
     }
 
     /// Fix a stream's partition count and segment log configuration.
@@ -374,6 +543,36 @@ impl Broker {
             return Err(Error::invalid(
                 "a declared stream must have at least one partition",
             ));
+        }
+        // ADR 0111 §1: a `managed_majority` answer means "survives a zone".
+        // Given on one broker's disk it would be FABRIC-8086's INCORRECT
+        // verdict with a new name, so a broker with no managed log refuses
+        // the stream rather than serving it at a weaker durability.
+        if policy.is_managed() && self.managed.is_none() {
+            return Err(Error::denied(format!(
+                "stream '{stream}' is declared managed_majority (ADR 0111) and this broker has no \
+                 managed log configured; configure the Spanner commit path, or declare the \
+                 stream 'archived' at replication factor one for a single-broker fabric"
+            )));
+        }
+        // And the converse: with the managed consensus configured, a P0 or P1
+        // stream left on the local path would be the one control or outcome
+        // stream that does not survive a zone while the configuration says
+        // the fabric does.
+        if self.managed.is_some()
+            && matches!(
+                policy.qos_class(),
+                QosClass::P0Control | QosClass::P1Outcomes
+            )
+            && !policy.is_managed()
+        {
+            return Err(Error::denied(format!(
+                "stream '{stream}' is {} and declared {:?} while this broker is seated at the \
+                 managed consensus; every P0 and P1 stream must then be declared \
+                 managed_majority at replication factor 3 (ADR 0111 §1)",
+                policy.qos_class().as_str(),
+                policy.ack_profile()
+            )));
         }
         let mut declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = declared.get(stream)
@@ -532,6 +731,9 @@ impl Broker {
         if let Err(refused) = self.charge_quota(stream, &batch)? {
             return Ok(Err(refused));
         }
+        if self.stream_policy(stream)?.is_managed() {
+            return self.produce_managed(stream, partition, batch);
+        }
 
         let record_count = u64::try_from(batch.records.len()).map_err(|_| {
             Error::invalid("a batch carries more records than a u64 count can represent")
@@ -630,38 +832,367 @@ impl Broker {
                 )
                 .map(Ok)
             }
-            Admission::Conflict => Ok(Err(ProduceRefusal::new(
-                Refusal::SequenceConflict,
-                Error::denied(format!(
-                    "producer '{}' sequence {} at {label} conflicts with a batch this broker \
-                     already accepted under the same epoch and sequence but a different payload",
-                    batch.producer_id, batch.base_sequence
-                )),
-            ))),
-            Admission::FencedEpoch { current_epoch } => Ok(Err(ProduceRefusal::new(
-                Refusal::Fenced,
-                Error::denied(format!(
-                    "producer '{}' epoch {} at {label} is fenced by epoch {current_epoch}",
-                    batch.producer_id, batch.producer_epoch
-                )),
-            ))),
-            Admission::OutsideWindow => Ok(Err(ProduceRefusal::new(
-                Refusal::SequenceBelowWindow,
-                Error::denied(format!(
-                    "producer '{}' sequence {} at {label} is behind this broker's bounded dedup \
-                     window and cannot be verified as a duplicate",
-                    batch.producer_id, batch.base_sequence
-                )),
-            ))),
-            Admission::OutOfOrder { expected } => Ok(Err(ProduceRefusal::new(
-                Refusal::OutOfOrderSequence { expected },
-                Error::invalid(format!(
-                    "producer '{}' sequence {} at {label} is ahead of the dense stream; the next \
-                     sequence this partition accepts is {expected}",
-                    batch.producer_id, batch.base_sequence
-                )),
-            ))),
+            refused => refused_admission(refused, &batch, &label),
         }
+    }
+
+    /// [`Self::produce_to`] for a stream declared `managed_majority`
+    /// (ADR 0111 §1): the batch is committed to the managed log under this
+    /// instance's lease **before** it is appended locally, and the producer
+    /// is answered only after the commit.
+    ///
+    /// Commit-first is what keeps the local log a prefix of the managed one.
+    /// Appending first would leave a deposed leader's disk holding a batch
+    /// the managed log refused, at an offset the new leader then fills with
+    /// a different batch. The whole path runs under the partition's produce
+    /// lock, so the producer table can be rewound if the commit does not
+    /// happen: a table that believed a refused batch appended would answer
+    /// its retry as a verified duplicate, an acknowledgement for a record no
+    /// store holds.
+    ///
+    /// A commit whose answer is lost is treated as possibly committed: the
+    /// table is rewound, the partition is marked for catch-up, and the next
+    /// produce reads the managed log first — finding the batch if it landed,
+    /// so the producer's retry is answered as the duplicate it is.
+    fn produce_managed(&self, stream: &str, partition: u32, mut batch: Batch) -> Result<Produced> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::denied(format!(
+                "stream '{stream}' is managed and this broker has no managed log; it should never \
+                 have been declared here"
+            ))
+        })?;
+        let record_count = u64::try_from(batch.records.len()).map_err(|_| {
+            Error::invalid("a batch carries more records than a u64 count can represent")
+        })?;
+        let payload_hash = payload_fingerprint(&batch);
+        let label = partition_label(stream, partition);
+        let state = self.partition_state(stream, partition)?;
+        let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
+
+        let Some(lease) = seat.lease(stream, partition) else {
+            return Err(Error::unavailable(format!(
+                "{label} is a managed partition and this fabricd instance ('{}') holds no lease \
+                 on it, so it cannot commit; another instance leads it or none does yet. The \
+                 producer backs off and retries against the leader (ADR 0111 §1)",
+                seat.holder
+            )));
+        };
+        if cursor.caught_up_epoch != Some(lease.epoch) {
+            self.catch_up(seat, stream, partition, &state, &mut cursor)?;
+            cursor.caught_up_epoch = Some(lease.epoch);
+        }
+
+        let (checkpoint, admission) = {
+            let mut producers = self.producers.lock().unwrap_or_else(|e| e.into_inner());
+            let checkpoint = producers.checkpoint(&batch.producer_id, &label);
+            let admission = producers.admit(
+                &batch.producer_id,
+                &label,
+                batch.producer_epoch,
+                batch.base_sequence,
+                record_count,
+                payload_hash,
+            )?;
+            (checkpoint, admission)
+        };
+        let producer_id = batch.producer_id.clone();
+        let rewind = |checkpoint| {
+            self.producers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .rewind(&producer_id, &label, checkpoint);
+        };
+
+        match admission {
+            Admission::Appended { .. } => {}
+            Admission::Duplicate => {
+                // Every batch in a managed partition's local log is committed
+                // (the log is a prefix of the managed one), so a verified
+                // duplicate was committed under some lease of this partition.
+                let base_offset = self
+                    .recall_offset(&batch.producer_id, &label, batch.base_sequence)
+                    .ok_or_else(|| {
+                        Error::io(format!(
+                            "producer '{}' sequence {} at {label} was verified as a duplicate \
+                             but this broker holds no record of the offset it received",
+                            batch.producer_id, batch.base_sequence
+                        ))
+                    })?;
+                let high_watermark = state.log.high_water();
+                return ProduceAck::new(
+                    stream,
+                    partition,
+                    base_offset,
+                    high_watermark,
+                    state.log.archived_through()?,
+                )
+                .map(|ack| Ok(ack.with_managed_commit(lease.epoch)));
+            }
+            refused => return refused_admission(refused, &batch, &label),
+        }
+
+        let predicted_offset = state.log.high_water();
+        let now = self.clock.now();
+        let logical_timestamp = to_logical_timestamp(cursor.clock.tick(now)?)?;
+        let previous_hash = cursor.last_batch_hash.clone();
+        // A managed batch carries the lease epoch, not this process's local
+        // leader epoch: the lease is what fences, and two instances' local
+        // epochs are unrelated numbers.
+        stamp_broker(
+            &mut batch,
+            predicted_offset,
+            lease.epoch,
+            logical_timestamp,
+            previous_hash.clone(),
+        );
+        let encoded = batch.encode()?;
+        let row = CommittedBatch {
+            partition: PartitionRef::new(stream, partition),
+            offset: predicted_offset,
+            lease_epoch: lease.epoch,
+            batch_hash: qip_core::hash::sha256_hex(&encoded),
+            previous_batch_hash: previous_hash.as_ref().and_then(content_hash_hex),
+            bytes: encoded.clone(),
+        };
+        match seat.log.commit(&lease, &row) {
+            Ok(CommitOutcome::Committed) => {}
+            Ok(CommitOutcome::Fenced { current_epoch }) => {
+                rewind(checkpoint);
+                seat.set_lease(stream, partition, None);
+                cursor.caught_up_epoch = None;
+                return Err(Error::unavailable(format!(
+                    "{label}: this instance's lease at epoch {} was superseded by epoch \
+                     {current_epoch} before the commit; it no longer leads the partition and \
+                     acknowledged nothing. The producer retries against the leader",
+                    lease.epoch
+                )));
+            }
+            Ok(CommitOutcome::Conflict { committed_through }) => {
+                rewind(checkpoint);
+                cursor.caught_up_epoch = None;
+                return Err(Error::unavailable(format!(
+                    "{label}: the managed log is committed through offset {committed_through} \
+                     and this instance's log is at {predicted_offset}; it will catch up before \
+                     the next commit. Nothing was acknowledged"
+                )));
+            }
+            Err(error) => {
+                rewind(checkpoint);
+                cursor.caught_up_epoch = None;
+                let message = format!(
+                    "{label}: the managed commit's outcome is unknown ({}); nothing is \
+                     acknowledged, and the next produce reads the managed log first so a retry \
+                     of this batch is answered as the duplicate it is if the commit landed",
+                    error.message()
+                );
+                return Err(error.relabelled(message));
+            }
+        }
+
+        // Committed. From here the record exists; a local failure leaves this
+        // disk behind the managed log, which the next catch-up repairs, and
+        // the producer table keeps the batch because the batch is real.
+        let appended_offset = match state.log.append(&batch) {
+            Ok(offset) => offset,
+            Err(error) => {
+                cursor.caught_up_epoch = None;
+                return Err(error);
+            }
+        };
+        if appended_offset != predicted_offset {
+            cursor.caught_up_epoch = None;
+            return Err(Error::io(format!(
+                "partition {label} assigned offset {appended_offset} after the managed log \
+                 committed {predicted_offset}; something else is appending to this partition"
+            )));
+        }
+        cursor.last_batch_hash = Some(ContentHash::sha256_of(&encoded));
+        cursor.active_since = if state.log.active_batches() == 0 {
+            None
+        } else {
+            cursor.active_since.or(Some(now))
+        };
+        drop(cursor);
+        self.remember_offset(
+            &batch.producer_id,
+            &label,
+            batch.base_sequence,
+            appended_offset,
+        );
+        ProduceAck::new(
+            stream,
+            partition,
+            appended_offset,
+            state.log.high_water(),
+            state.log.archived_through()?,
+        )
+        .map(|ack| Ok(ack.with_managed_commit(lease.epoch)))
+    }
+
+    /// Append to `state`'s log every row the managed log has committed past
+    /// it, verifying each row's hash, density and chain link, and teach the
+    /// producer table about each one.
+    ///
+    /// Refuses a local log that is *ahead* of the managed one: with
+    /// commit-first that can only mean this disk holds batches the managed
+    /// log never committed (a wrong database, or a restore from the wrong
+    /// place), and serving them would serve history that does not exist.
+    fn catch_up(
+        &self,
+        seat: &ManagedSeat,
+        stream: &str,
+        partition: u32,
+        state: &PartitionState,
+        cursor: &mut ProduceCursor,
+    ) -> Result<u64> {
+        let reference = PartitionRef::new(stream, partition);
+        let label = partition_label(stream, partition);
+        let committed_through = seat.log.committed_through(&reference)?;
+        let local = state.log.high_water();
+        if local > committed_through {
+            return Err(Error::io(format!(
+                "{label}: this broker's disk holds offsets up to {local} and the managed log has \
+                 committed only {committed_through}; refusing to serve or extend batches the \
+                 managed consensus never committed. Check the instance points at the right \
+                 database before clearing its data directory"
+            )));
+        }
+        let mut appended = 0u64;
+        while state.log.high_water() < committed_through {
+            let from = state.log.high_water();
+            let rows = seat.log.read(&reference, from, CATCH_UP_PAGE)?;
+            if rows.is_empty() {
+                return Err(Error::io(format!(
+                    "{label}: the managed log reports offsets committed through \
+                     {committed_through} but returned none from {from}"
+                )));
+            }
+            for row in rows {
+                row.verify()?;
+                let expected = state.log.high_water();
+                if row.offset != expected {
+                    return Err(Error::io(format!(
+                        "{label}: the managed log returned offset {} where {expected} was next; \
+                         its rows are not dense",
+                        row.offset
+                    )));
+                }
+                let chained = cursor.last_batch_hash.as_ref().and_then(content_hash_hex);
+                if row.previous_batch_hash != chained {
+                    return Err(Error::invalid(format!(
+                        "{label}: committed offset {} does not chain to the batch before it; \
+                         refusing to hydrate a broken chain (ADR 0104)",
+                        row.offset
+                    )));
+                }
+                let batch = match Batch::decode(&row.bytes)? {
+                    DecodeOutcome::Complete(batch) => batch,
+                    DecodeOutcome::Torn => {
+                        return Err(Error::io(format!(
+                            "{label}: committed offset {} does not decode complete",
+                            row.offset
+                        )));
+                    }
+                };
+                if batch.base_offset != row.offset {
+                    return Err(Error::invalid(format!(
+                        "{label}: the row at offset {} holds a batch stamped for offset {}",
+                        row.offset, batch.base_offset
+                    )));
+                }
+                let offset = state.log.append(&batch)?;
+                cursor.last_batch_hash = Some(ContentHash::sha256_of(&row.bytes));
+                cursor.active_since = if state.log.active_batches() == 0 {
+                    None
+                } else {
+                    cursor.active_since.or(Some(self.clock.now()))
+                };
+                if let Ok(record_count) = u64::try_from(batch.records.len())
+                    && record_count > 0
+                    && !batch.producer_id.is_empty()
+                {
+                    self.producers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .restore(
+                            &batch.producer_id,
+                            &label,
+                            batch.producer_epoch,
+                            batch.base_sequence,
+                            record_count,
+                            payload_fingerprint(&batch),
+                        )?;
+                    self.remember_offset(&batch.producer_id, &label, batch.base_sequence, offset);
+                }
+                appended += 1;
+            }
+        }
+        Ok(appended)
+    }
+
+    /// Every declared managed stream's partitions.
+    pub fn managed_partitions(&self) -> Vec<(String, u32)> {
+        let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
+        declared
+            .iter()
+            .filter(|(_, d)| d.policy.is_managed())
+            .flat_map(|(name, d)| (0..d.partition_count).map(move |p| (name.clone(), p)))
+            .collect()
+    }
+
+    /// One pass of ADR 0111's lease loop over every managed partition: take
+    /// or renew the lease for `ttl_ms`, and either lead the partition or
+    /// follow its leader's committed log into this instance's own.
+    ///
+    /// Following is what makes a standby a follower (FABRIC-7035): its disk
+    /// holds the committed log up to the last pass, so taking over after the
+    /// leader dies costs a short catch-up, not a full hydrate. A partition
+    /// whose lease or log cannot be read is reported and left as it was;
+    /// its held lease, if any, is kept, because the database — not this
+    /// process's view of the time — decides when it has lapsed.
+    pub fn tend_leases(&self, ttl_ms: u64) -> Result<LeaseReport> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("tend_leases was called on a broker with no managed log")
+        })?;
+        let mut report = LeaseReport::default();
+        for (stream, partition) in self.managed_partitions() {
+            let key = (stream.clone(), partition);
+            let reference = PartitionRef::new(stream.clone(), partition);
+            let outcome = seat
+                .log
+                .acquire(&reference, &seat.holder, ttl_ms)
+                .and_then(|outcome| {
+                    let state = self.partition_state(&stream, partition)?;
+                    let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
+                    match &outcome {
+                        LeaseOutcome::Held(lease) => {
+                            seat.set_lease(&stream, partition, Some(lease.clone()));
+                            if cursor.caught_up_epoch != Some(lease.epoch) {
+                                self.catch_up(seat, &stream, partition, &state, &mut cursor)?;
+                                cursor.caught_up_epoch = Some(lease.epoch);
+                            }
+                        }
+                        LeaseOutcome::HeldByOther { .. } => {
+                            seat.set_lease(&stream, partition, None);
+                            cursor.caught_up_epoch = None;
+                            self.catch_up(seat, &stream, partition, &state, &mut cursor)?;
+                        }
+                    }
+                    Ok(outcome)
+                });
+            match outcome {
+                Ok(LeaseOutcome::Held(lease)) => {
+                    report.leading.insert(key, lease.epoch);
+                }
+                Ok(LeaseOutcome::HeldByOther { holder, .. }) => {
+                    report.following.insert(key, holder);
+                }
+                Err(error) => {
+                    report.failed.insert(key, error.to_string());
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// The sequence `producer_id`'s dense stream at `(stream, partition)`
@@ -952,7 +1483,7 @@ impl Broker {
         let mut encoded = Vec::new();
         let mut cursor = offset;
         while cursor < high_watermark {
-            let Some(batch) = state.log.read(cursor)? else {
+            let Some(batch) = self.read_batch(&state, stream, partition, cursor)? else {
                 break;
             };
             let bytes = batch.encode()?;
@@ -968,6 +1499,94 @@ impl Broker {
 
         let hex = qip_core::hash::to_hex(&encoded);
         FetchResponse::new(stream, partition, high_watermark, archived_through, hex)
+    }
+
+    /// The batch at `offset`: from this broker's disk, or — when the local
+    /// segment holding it has been retained away and an archive reader is
+    /// installed — hydrated from the archive, verified against its manifest
+    /// (FABRIC-8079). Only an offset below the high watermark is ever
+    /// hydrated, so the archive can never make an unwritten offset readable.
+    fn read_batch(
+        &self,
+        state: &PartitionState,
+        stream: &str,
+        partition: u32,
+        offset: u64,
+    ) -> Result<Option<Batch>> {
+        if let Some(batch) = state.log.read(offset)? {
+            return Ok(Some(batch));
+        }
+        match &self.archive {
+            Some(reader) if offset < state.log.high_water() => {
+                let hydrated = reader.read_indexed(stream, partition, offset)?;
+                if let Some(batch) = &hydrated
+                    && batch.base_offset != offset
+                {
+                    return Err(Error::invalid(format!(
+                        "{stream}:{partition}: the archive answered offset {offset} with a batch \
+                         stamped for offset {}; refusing to serve it",
+                        batch.base_offset
+                    )));
+                }
+                Ok(hydrated)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Delete the local copy of every archived, indexed sealed segment that
+    /// lies wholly more than `keep_batches` behind its partition's high
+    /// watermark, returning how many segments were deleted.
+    ///
+    /// This is what makes the archive the history and the broker's disk a
+    /// bounded hot window ("bounded retention", product direction): without
+    /// it a broker's disk is the only bound on how much it keeps. It refuses
+    /// to run without an archive reader, because a deleted segment nobody can
+    /// hydrate is history lost; and it stops each partition's boundary at the
+    /// first segment that is not both archived and indexed, so a segment
+    /// archived before the index existed is kept rather than orphaned.
+    /// Streams whose retention class is replaceable are trimmed by the same
+    /// window, which is what their class declares.
+    pub fn retain_hot(&self, keep_batches: u64) -> Result<u64> {
+        let reader = self.archive.as_ref().ok_or_else(|| {
+            Error::invalid(
+                "retain_hot was called on a broker with no archive reader; without one a \
+                 deleted segment could never be read again",
+            )
+        })?;
+        if keep_batches == 0 {
+            return Err(Error::invalid(
+                "a hot window of zero batches would delete the segment the next produce chains \
+                 to; keep at least one",
+            ));
+        }
+        let declared: Vec<(String, u32, bool)> = {
+            let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
+            declared
+                .iter()
+                .map(|(name, d)| (name.clone(), d.partition_count, d.policy.archive_required()))
+                .collect()
+        };
+        let mut deleted = 0u64;
+        for (stream, partition_count, archive_required) in declared {
+            for partition in 0..partition_count {
+                let state = self.partition_state(&stream, partition)?;
+                let mut boundary = state.log.high_water().saturating_sub(keep_batches);
+                if archive_required {
+                    for (start, end, archived) in state.log.sealed_segments()? {
+                        if end > boundary {
+                            break;
+                        }
+                        if !archived || !reader.is_indexed(&stream, partition, start)? {
+                            boundary = start;
+                            break;
+                        }
+                    }
+                }
+                deleted += state.log.retain_before(boundary)?;
+            }
+        }
+        Ok(deleted)
     }
 
     /// This partition's metadata: leader epoch, high watermark and
@@ -1022,8 +1641,28 @@ impl Broker {
                  {held} to {offset}; seek a fresh consumer instead of rewinding the group"
             )));
         }
+        // A managed partition's checkpoint lives in the managed store first,
+        // so a consumer resumes from it whichever instance leads after a
+        // failover (RES-7112); the local copy is what the lag check reads.
+        if let Some(seat) = self.managed_seat_for(stream) {
+            seat.log
+                .commit_offset(group, &PartitionRef::new(stream, partition), offset)?;
+        }
         self.checkpoints.put(&key, serde_json::to_value(offset)?)?;
         Ok(offset)
+    }
+
+    /// The managed seat, when `stream` is a declared managed stream on a
+    /// seated broker. An undeclared stream answers `None` here and is refused
+    /// wherever it is refused today, so this adds no new error to any path.
+    fn managed_seat_for(&self, stream: &str) -> Option<&ManagedSeat> {
+        let managed = self
+            .declared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(stream)
+            .is_some_and(|d| d.policy.is_managed());
+        if managed { self.managed.as_ref() } else { None }
     }
 
     /// `group`'s last committed offset for `(stream, partition)`, or `None`
@@ -1036,12 +1675,23 @@ impl Broker {
         partition: u32,
     ) -> Result<Option<u64>> {
         let key = checkpoint_key(group, stream, partition)?;
-        match self.checkpoints.get(&key)? {
-            Some(value) => serde_json::from_value::<u64>(value).map(Some).map_err(|e| {
+        let local = match self.checkpoints.get(&key)? {
+            Some(value) => Some(serde_json::from_value::<u64>(value).map_err(|e| {
                 Error::schema(format!("stored checkpoint {key} is not an integer: {e}"))
-            }),
-            None => Ok(None),
+            })?),
+            None => None,
+        };
+        // For a managed partition the managed checkpoint is the record: a
+        // group that committed through the previous leader has nothing on
+        // this instance's disk. The larger of the two is answered, because a
+        // checkpoint only ever moves forward.
+        if let Some(seat) = self.managed_seat_for(stream) {
+            let managed = seat
+                .log
+                .committed_offset(group, &PartitionRef::new(stream, partition))?;
+            return Ok(local.max(managed));
         }
+        Ok(local)
     }
 
     /// Record that the sealed segment starting at `start_offset` of
@@ -1073,7 +1723,7 @@ impl Broker {
     /// broker); index groups by partition if that count ever grows large.
     fn refuse_when_a_group_lags(&self, stream: &str, partition: u32) -> Result<()> {
         let policy = self.stream_policy(stream)?;
-        if policy.overload_policy() != OverloadPolicy::RefuseProducer {
+        if !super::admission::refuses_for_lag(&policy) {
             return Ok(());
         }
         let high_watermark = self.partition_state(stream, partition)?.log.high_water();
@@ -1088,7 +1738,8 @@ impl Broker {
             let lag = high_watermark.saturating_sub(committed.saturating_add(1));
             if lag > policy.lag_limit() {
                 return Err(Error::denied(format!(
-                    "group '{group}' trails {stream}:{partition} by {lag} batches, past the                      stream's lag limit of {}; the producer is refused until the group catches up",
+                    "group '{group}' trails {stream}:{partition} by {lag} batches, past the \
+                     stream's lag limit of {}; the producer is refused until the group catches up",
                     policy.lag_limit()
                 )));
             }
@@ -1127,19 +1778,21 @@ impl Broker {
         if over_bytes || over_messages {
             let retry_after_ms = (window_start + QUOTA_WINDOW_NS - now) / 1_000_000;
             let error = Error::denied(format!(
-                "producer '{}' is over its quota on stream '{stream}' ({} of {} bytes, {} of {}                  messages this second, this batch adds {bytes} and {messages}); retry after                  {retry_after_ms} ms",
+                "producer '{}' is over its quota on stream '{stream}' ({} of {} bytes, {} of {} \
+                 messages this second, this batch adds {bytes} and {messages}); retry after \
+                 {retry_after_ms} ms",
                 batch.producer_id,
                 entry.1,
                 policy.byte_quota_per_producer(),
                 entry.2,
                 policy.message_quota_per_producer(),
             ));
-            return Ok(Err(ProduceRefusal::new(
-                Refusal::Quota {
-                    retry_after_ms: u64::try_from(retry_after_ms).unwrap_or(0),
-                },
-                error,
-            )));
+            // What "over quota" means is the class's decision, not this
+            // function's: a wait for everything that may not lose a record,
+            // a shed only for telemetry (FABRIC-7056).
+            let refusal =
+                super::admission::over_quota(&policy, u64::try_from(retry_after_ms).unwrap_or(0));
+            return Ok(Err(ProduceRefusal::new(refusal, error)));
         }
         entry.1 += bytes;
         entry.2 += messages;
@@ -1210,6 +1863,7 @@ impl Broker {
                 clock: PartitionClock::new(self.clock.now()),
                 last_batch_hash,
                 active_since,
+                caught_up_epoch: None,
             }),
         });
         let mut partitions = self.partitions.lock().unwrap_or_else(|e| e.into_inner());

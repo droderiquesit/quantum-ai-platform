@@ -330,64 +330,74 @@ fn fabric_062_fabricd_directed_onto_tokio_async_runtime() {
 }
 
 #[test]
-fn fabric_063_broker_memory_is_bounded_pooled_buffers_and_bounded_queues() {
-    // FABRIC-063: fabricd must allocate from bounded memory pools and hold every
-    // in-flight queue to a fixed bound, so overload produces backpressure or refusal
-    // rather than unbounded memory growth.
-
-    #[derive(Debug)]
-    struct BufferPool {
-        total_allocated: u64,
-        max_memory_bytes: u64,
-    }
-
-    impl BufferPool {
-        fn allocate(&mut self, size: u64) -> Result<(), String> {
-            if self.total_allocated + size <= self.max_memory_bytes {
-                self.total_allocated += size;
-                Ok(())
-            } else {
-                Err("memory pool exhausted".to_string())
-            }
-        }
-    }
-
-    let mut pool = BufferPool {
-        total_allocated: 0,
-        max_memory_bytes: 1_000_000_000, // 1 GB max
+fn fabric_063_an_oversized_batch_or_request_is_refused_before_anything_is_allocated_for_it() {
+    // FABRIC-063, the parts that exist. The previous test defined a
+    // `BufferPool` and an `InFlightQueue` in its own body and checked their
+    // arithmetic. The broker's actual memory bounds are two refusals made
+    // *before* an allocation sized by the peer: `Batch::decode` refuses a
+    // declared body over `MAX_BATCH_LEN` from the 14-byte prefix alone, and
+    // the transport server refuses a `content-length` over `max_body` before
+    // reading the body. Both are exercised here. **Gap:** there is no pooled
+    // buffer allocator in `qip-fabricd`; memory is bounded per request, not by
+    // a pool.
+    //
+    // Mutation: delete the `declared_len > MAX_BATCH_LEN` refusal in
+    // `Batch::decode` — the oversized prefix then reads as `Torn` (the buffer
+    // is shorter than it claims) and the `is_err` assertion fires.
+    use qip_events::event_fabric::codec::{
+        Batch, DecodeOutcome, MAX_BATCH_LEN, MessageType, PayloadCodec, Record,
     };
+    use qip_events::event_fabric::crc32c::crc32c;
 
-    // Allocation within budget succeeds
-    assert!(pool.allocate(100_000_000).is_ok());
-    assert_eq!(pool.total_allocated, 100_000_000);
+    let batch = Batch::new(
+        MessageType::Data,
+        1,
+        1,
+        PayloadCodec::CanonicalJson,
+        vec![Record {
+            event_id: "evt-1".to_string(),
+            trace_id: None,
+            source_timestamp_ns: 1,
+            payload: b"{}".to_vec(),
+        }],
+    )
+    .expect("a batch");
+    let encoded = batch.encode().expect("encodes");
+    // Premise: the untouched bytes decode, so the refusal below is about the
+    // length we write and not a frame that never decoded.
+    assert!(matches!(
+        Batch::decode(&encoded).expect("decodes"),
+        DecodeOutcome::Complete(_)
+    ));
 
-    // Allocation exceeding budget is refused
-    let too_large = pool.max_memory_bytes + 1;
-    assert!(pool.allocate(too_large).is_err());
+    // Declare one byte over the ceiling, with a valid prefix CRC, so only the
+    // ceiling can refuse it.
+    let mut oversized = encoded.clone();
+    let declared = u32::try_from(MAX_BATCH_LEN + 1).expect("fits a u32");
+    oversized[6..10].copy_from_slice(&declared.to_le_bytes());
+    let crc = crc32c(&oversized[..10]);
+    oversized[10..14].copy_from_slice(&crc.to_le_bytes());
+    let refused = Batch::decode(&oversized);
+    assert!(
+        refused.is_err(),
+        "an oversized declared body was not refused: {refused:?}"
+    );
 
-    // In-flight queues are bounded
-    #[derive(Debug)]
-    struct InFlightQueue {
-        max_messages: u64,
-        current_messages: u64,
-    }
+    // And one byte *under* the ceiling, same buffer: not refused, merely torn
+    // — the buffer does not hold it — which shows the ceiling, not the
+    // buffer length, is what refused the first.
+    let mut large = encoded;
+    let declared = u32::try_from(MAX_BATCH_LEN - 1).expect("fits a u32");
+    large[6..10].copy_from_slice(&declared.to_le_bytes());
+    let crc = crc32c(&large[..10]);
+    large[10..14].copy_from_slice(&crc.to_le_bytes());
+    assert!(matches!(Batch::decode(&large), Ok(DecodeOutcome::Torn)));
 
-    let mut queue = InFlightQueue {
-        max_messages: 100_000,
-        current_messages: 0,
-    };
-
-    // Enqueue within bound succeeds
-    if queue.current_messages < queue.max_messages {
-        queue.current_messages += 1;
-    }
-
-    // Fill to max
-    queue.current_messages = queue.max_messages;
-
-    // Enqueue beyond bound is refused (backpressure)
-    let can_enqueue = queue.current_messages < queue.max_messages;
-    assert!(!can_enqueue);
+    // The server's default body ceiling is finite and no larger than the
+    // batch ceiling, and its concurrency is bounded.
+    let limits = qip_transport::server::ServerLimits::default();
+    assert!(limits.max_body > 0 && limits.max_body <= MAX_BATCH_LEN);
+    assert!(limits.max_concurrent > 0);
 }
 
 #[test]

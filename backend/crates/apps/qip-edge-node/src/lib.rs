@@ -27,14 +27,21 @@ pub mod control;
 pub mod cross_region;
 /// The polled region-availability wire: which peers have gone dark (§36.3).
 pub mod dark;
+/// What this cell offers its peers: the touch of each book it holds, as
+/// plain data for `qip_peer_link::boundary::ReflexPort` (ADR 0116).
+pub mod edge_quotes;
 pub mod event_fabric;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
 pub mod gateway;
 /// The second halt wire: a flag on the node's own filesystem, polled.
 pub mod halt;
+/// The health and scrape surface, on a thread of its own.
+pub mod health;
 pub mod mesh;
 pub mod mirror;
+/// The outbox's configuration: spool, budgets, cadence, fabric endpoint.
+pub mod outbox;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
 /// Each venue's own message limits, as the deployment states them.
@@ -43,14 +50,24 @@ pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
 pub mod reprice;
+/// The cell's deterministic Risk Gate: the limits it evaluates, and the one
+/// way this node obtains them.
+pub mod risk;
+/// The operator's rollback request: return to the previous policy payload
+/// without a fetch (REFLEX-8071).
+pub mod rollback;
 pub mod scheduler;
 /// The cell's share of its region's grant, as the health body reports it.
 pub mod share;
+/// The warm standby and the fencing lease that keeps it from being a second
+/// owner of the venue session.
+pub mod standby;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
 pub mod tape;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;
+pub mod trust;
 pub mod venue;
 
 use allocation::RegionCapital;
@@ -67,6 +84,7 @@ use qip_observability::Telemetry;
 use qip_observability::metrics::Metrics;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::ir::Type;
+use risk::CellRiskLimits;
 use std::sync::Arc;
 use telemetry::MeshSeries;
 
@@ -138,12 +156,42 @@ impl NodeAssembly {
 /// body says so, and the cost — a fresh node sends nothing until the centre
 /// ships it a share — is the ADR's stated price.
 pub fn assemble(
-    mut config: CellConfig,
+    config: CellConfig,
     features: FeatureEngine,
     clock: Arc<dyn Clock>,
     allocation: RegionCapital,
     mirror: Option<CrossRegionMirror>,
 ) -> Result<NodeAssembly> {
+    assemble_with_risk(
+        config,
+        features,
+        clock,
+        allocation,
+        mirror,
+        &CellRiskLimits::shipped(),
+    )
+}
+
+/// [`assemble`], under the Risk Gate limits the deployment named.
+///
+/// The fifth instance of the pattern [`assemble`]'s documentation lists:
+/// `Cell::with_risk_gate` existed, was tested, and no composition root called
+/// it, so every order a deployed cell sent skipped the deterministic gate
+/// (R12-RISK-4093, R12-RISK-7205). The limits are a parameter, and
+/// [`assemble`] passes the shipped set rather than nothing, so there is no
+/// path through this crate that builds a cell without a gate. The gate
+/// measures its ratios against the region allocation: the most the
+/// deployment says the whole cell may commit, and the only capital figure
+/// the cell holds before the centre has granted it anything.
+pub fn assemble_with_risk(
+    mut config: CellConfig,
+    features: FeatureEngine,
+    clock: Arc<dyn Clock>,
+    allocation: RegionCapital,
+    mirror: Option<CrossRegionMirror>,
+    risk: &CellRiskLimits,
+) -> Result<NodeAssembly> {
+    let risk_gate = risk.gate(allocation.amount())?;
     let cell_id = config.cell_id.clone();
     let region = config.region.clone();
     // Both halves of §31.1 go in here, for the third time the same reason
@@ -165,6 +213,12 @@ pub fn assemble(
     // defaults, so a deployed cell stops sending to a venue rejecting a
     // fifth of at least ten orders and tries it again five minutes later.
     config = config.with_venue_health(qip_routing::health::HealthPolicy::default());
+    // R12-CAPITAL-4088: a deployed cell refuses every order against an
+    // envelope without liquidity and leverage bounds. The centre's issuer
+    // signs both into every grant, so on this path an unbounded envelope is
+    // one the centre did not issue, and reading its silence as "unbounded"
+    // is how a disconnected cell builds the position the bounds exist for.
+    config = config.with_exposure_bounds_required();
     // EXEC-020: the node enables only the two modes its paper path actually
     // performs, order taking and routing, and only at the venues the cell may
     // trade. The other six modes (quoting, liquidity provision, derivatives,
@@ -190,6 +244,7 @@ pub fn assemble(
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let mut cell = Cell::new(config, features)?
         .with_mode_gate(mode_gate)
+        .with_risk_gate(risk_gate)
         .with_metrics(Arc::clone(&metrics))
         .with_unfunded_region(allocation.amount())?;
     if let Some(mirror) = mirror {

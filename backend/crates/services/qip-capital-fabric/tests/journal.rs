@@ -1938,3 +1938,68 @@ fn a_record_that_does_not_chain_to_its_retained_predecessor_is_refused_even_acro
     );
     Ok(())
 }
+
+#[test]
+fn a_journal_resumed_on_the_same_seed_never_re_mints_an_id_the_log_already_holds() -> Result<()> {
+    // Round 2 found the kernel advancing its id stream one raw draw per
+    // inherited record while each record consumes more than one draw, so a
+    // restarted platform re-minted an event id. The fabric's `resume` made
+    // the same count: one draw per record against two per id. An id is the
+    // instant plus entropy, so the resumed run's first id is the id of the
+    // record whose entropy it lands on whenever it is stamped with that
+    // record's instant — and the log refuses the append, so the fabric
+    // stops writing. Every written instant is tried, so the test does not
+    // depend on which record the arithmetic lands on.
+    let written = || -> Result<EventLog> {
+        let mut journal = FabricJournal::new(7, correlation());
+        for command in mixed_sequence()? {
+            journal.decide(command)?;
+        }
+        Ok(journal.into_log())
+    };
+    let log = written()?;
+    let instants: Vec<Timestamp> = log
+        .records()
+        .iter()
+        .map(|record| record.event.occurred_at)
+        .collect();
+    let held: Vec<String> = log
+        .records()
+        .iter()
+        .map(|record| record.event.event_id.as_str().to_string())
+        .collect();
+    assert!(
+        instants.len() > 2,
+        "premise: the log holds enough records for an undershoot to land inside it"
+    );
+
+    for at in instants {
+        let mut resumed = FabricJournal::resume(written()?, 7, correlation())?;
+        let decided = resumed.decide(step(
+            &corridor_id()?,
+            CorridorStep::Revoke {
+                by: alice()?,
+                reason: "closing the corridor".to_string(),
+                at,
+            },
+        ));
+        assert!(
+            decided.is_ok(),
+            "a journal resumed on the same seed could not write a record stamped {at:?}: {}",
+            decided
+                .err()
+                .map(|e| e.message().to_string())
+                .unwrap_or_default()
+        );
+        let minted = resumed
+            .records()
+            .last()
+            .map(|record| record.event.event_id.as_str().to_string())
+            .unwrap_or_default();
+        assert!(
+            !held.contains(&minted),
+            "the resumed journal re-minted {minted}, an id the log already held"
+        );
+    }
+    Ok(())
+}

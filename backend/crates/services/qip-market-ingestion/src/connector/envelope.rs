@@ -81,6 +81,35 @@ impl RawEvent {
     }
 }
 
+/// The largest raw event payload an envelope keeps the bytes of. Above it
+/// only the hash survives: a capture path that copied whatever a source
+/// sent would be an unbounded buffer with a lake behind it.
+pub const MAX_RAW_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// One event's payload as the source sent it, for the Tick Lake
+/// (R12-DATA-1039): its SHA-256 always, its bytes up to
+/// [`MAX_RAW_PAYLOAD_BYTES`].
+///
+/// The bytes are the event's JSON as decoded from the fetched body and
+/// re-encoded — the per-event slice of the document; the document's own
+/// bytes are hashed separately in the fetch digest. Whether the lake keeps
+/// the bytes is the partition's entitlement, decided there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawPayload {
+    pub sha256: String,
+    pub bytes: Option<Vec<u8>>,
+}
+
+impl RawPayload {
+    pub fn of(body: &serde_json::Value) -> Result<Self> {
+        let bytes = serde_json::to_vec(body)?;
+        Ok(Self {
+            sha256: qip_core::sha256_hex(&bytes),
+            bytes: (bytes.len() <= MAX_RAW_PAYLOAD_BYTES).then_some(bytes),
+        })
+    }
+}
+
 /// A record, plus everything needed to decide whether to believe it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MarketEventEnvelope {
@@ -95,6 +124,10 @@ pub struct MarketEventEnvelope {
     knowable_at: Timestamp,
     provenance: Provenance,
     quality: DataQuality,
+    /// Never serialised: raw bytes reach the lake under its entitlement
+    /// rules and nowhere else, never the journal.
+    #[serde(skip)]
+    raw_payload: Option<RawPayload>,
 }
 
 impl MarketEventEnvelope {
@@ -141,6 +174,7 @@ impl MarketEventEnvelope {
             knowable_at,
             provenance,
             quality,
+            raw_payload: Some(RawPayload::of(&raw.body)?),
         })
     }
 
@@ -162,6 +196,12 @@ impl MarketEventEnvelope {
 
     pub const fn record(&self) -> &SensedRecord {
         &self.record
+    }
+
+    /// The event's raw payload, for the Tick Lake; `None` only for an
+    /// envelope decoded from a serialised form, which never carries it.
+    pub const fn raw_payload(&self) -> Option<&RawPayload> {
+        self.raw_payload.as_ref()
     }
 
     pub fn into_record(self) -> SensedRecord {

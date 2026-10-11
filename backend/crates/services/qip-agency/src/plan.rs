@@ -272,12 +272,16 @@ pub struct Selection {
 }
 
 /// Rank the proposals that survive every hard constraint against the
-/// no-action baseline, and choose the largest expected causal effect.
+/// no-action baseline, weighing all nine comparison axes.
 ///
 /// A proposal is refused, whatever its estimate, when its plan breaks a bound
 /// [`InterventionPlan::plan`] holds, uses a variable that is not one of the
-/// goal's `levers`, or is not legally eligible. Doing nothing is worth zero
-/// by definition, so an effect that is not strictly positive loses to it.
+/// goal's `levers`, or fails one of the hard axes
+/// [`Comparison::refusal`] reads (eligibility, downside against the
+/// envelope, time to effect against the horizon). The survivors are scored by
+/// [`Comparison::score`] and ordered by [`Comparison::rank`]; doing nothing
+/// scores zero by definition, so a score that is not strictly positive loses
+/// to it.
 pub fn select(
     goal: &GoalSpec,
     graph: &AffordanceGraph,
@@ -286,7 +290,7 @@ pub fn select(
     proposals: Vec<Proposal>,
 ) -> Result<Selection, Error> {
     let mut refused = Vec::new();
-    let mut admitted: Vec<(Decimal, InterventionPlan)> = Vec::new();
+    let mut admitted: Vec<(Decimal, Comparison, InterventionPlan)> = Vec::new();
     for (index, proposal) in proposals.into_iter().enumerate() {
         let mut steps = Vec::new();
         proposal.root.all_steps(&mut steps);
@@ -296,30 +300,44 @@ pub fn select(
                 "`{}` is not a lever for this goal's targets",
                 step.variable
             )))
-        } else if !proposal.comparison.legally_eligible {
-            Err(Error::denied("the proposal is not legally eligible"))
+        } else if let Some(hard) = proposal.comparison.refusal(goal) {
+            Err(hard)
         } else {
             InterventionPlan::plan(goal, graph, who, proposal.root)
+                .and_then(|plan| proposal.comparison.score().map(|score| (score, plan)))
         };
         match verdict {
-            Ok(plan) => admitted.push((proposal.comparison.expected_causal_effect, plan)),
+            Ok((score, plan)) => admitted.push((score, proposal.comparison, plan)),
             Err(refusal) => refused.push((index, refusal)),
         }
     }
-    let mut best: Option<&(Decimal, InterventionPlan)> = None;
+    let mut best: Option<&(Decimal, Comparison, InterventionPlan)> = None;
     for entry in &admitted {
-        if entry.0 > best.map_or(Decimal::ZERO, |(effect, _)| *effect) {
+        if !entry.0.is_positive() {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some((score, comparison, _)) => {
+                entry.1.rank(entry.0, comparison, *score) == std::cmp::Ordering::Greater
+            }
+        };
+        if better {
             best = Some(entry);
         }
     }
-    let chosen = best.map_or(Candidate::NoAction, |(_, plan)| {
+    let chosen = best.map_or(Candidate::NoAction, |(_, _, plan)| {
         Candidate::Plan(plan.clone())
     });
     // Routed through `CandidateSet` so the baseline is present by the same
     // rule everywhere, not by this function remembering to add it.
     if !admitted.is_empty() {
         let mut all = vec![Candidate::NoAction];
-        all.extend(admitted.into_iter().map(|(_, plan)| Candidate::Plan(plan)));
+        all.extend(
+            admitted
+                .into_iter()
+                .map(|(_, _, plan)| Candidate::Plan(plan)),
+        );
         CandidateSet::new(all)?;
     }
     Ok(Selection { chosen, refused })

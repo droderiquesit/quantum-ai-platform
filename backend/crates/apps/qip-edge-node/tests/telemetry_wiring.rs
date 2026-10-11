@@ -115,8 +115,11 @@ fn main_builds_no_registry_of_its_own() {
             "main.rs calls {constructor} itself, beside the registry the assembly serves"
         );
     }
+    // `assemble_with_risk` since the Risk Gate became a parameter of the
+    // assembly (R12-RISK-4093): the binary passes the limits it read, and
+    // `assemble` is the same function with the shipped set.
     assert_eq!(
-        whole_occurrences(&source, "assemble("),
+        whole_occurrences(&source, "assemble_with_risk("),
         1,
         "main.rs does not take its cell and registry from the one assembly"
     );

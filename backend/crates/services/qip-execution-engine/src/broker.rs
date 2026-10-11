@@ -83,6 +83,40 @@ pub trait Broker: Send + Sync + fmt::Debug {
     fn observation(&self) -> Option<VenueObservation> {
         None
     }
+
+    /// The venue's listing surface, where a market can be listed, seeded and
+    /// withdrawn (the Market Factory, R12-EXEC-5080).
+    ///
+    /// **[`None`] by default, and [`SimulatedBroker`] is the only
+    /// implementor that answers.** A venue that cannot have a market brought
+    /// into existence on it — every real venue, under ADR 0003 and ADR
+    /// 0021 — says so by not overriding this, and the factory, which reaches
+    /// a venue only through this method, then has nothing to list on. The
+    /// factory also refuses a surface whose [`ListingVenue::is_simulated`]
+    /// is false, so an adapter that overrode this without being a simulator
+    /// would still be refused, by name, rather than listed on.
+    fn listing_venue(&mut self) -> Option<&mut dyn ListingVenue> {
+        None
+    }
+}
+
+/// Where the Market Factory lists, seeds and withdraws a market.
+///
+/// A port rather than the simulator's concrete type, so the kernel that
+/// composes the factory names no venue (EXEC-010) and the factory's refusal
+/// of a non-simulated venue is a check on this surface rather than a type
+/// nobody else could ever satisfy by accident.
+pub trait ListingVenue: fmt::Debug {
+    /// The venue's name, as [`Broker::name`] reports it.
+    fn venue_name(&self) -> &str;
+    /// Whether the venue is simulated. The factory refuses one that is not.
+    fn is_simulated(&self) -> bool;
+    /// The book resting for an instrument, if one is listed.
+    fn listed_book(&self, object_id: &str) -> Option<&OrderBook>;
+    /// List or replace the book for an instrument.
+    fn list_book(&mut self, book: OrderBook);
+    /// Withdraw an instrument's book, returning what rested.
+    fn withdraw_book(&mut self, object_id: &str) -> Option<OrderBook>;
 }
 
 /// How the simulated venue fills orders.
@@ -426,7 +460,33 @@ impl SimulatedBroker {
     }
 }
 
+impl ListingVenue for SimulatedBroker {
+    fn venue_name(&self) -> &str {
+        Broker::name(self)
+    }
+
+    fn is_simulated(&self) -> bool {
+        Broker::is_simulated(self)
+    }
+
+    fn listed_book(&self, object_id: &str) -> Option<&OrderBook> {
+        self.books.get(object_id)
+    }
+
+    fn list_book(&mut self, book: OrderBook) {
+        self.set_book(book);
+    }
+
+    fn withdraw_book(&mut self, object_id: &str) -> Option<OrderBook> {
+        self.books.remove(object_id)
+    }
+}
+
 impl Broker for SimulatedBroker {
+    fn listing_venue(&mut self) -> Option<&mut dyn ListingVenue> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         "simulated-venue"
     }

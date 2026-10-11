@@ -1,98 +1,212 @@
-//! EXEC-027: Market creation is a governed workflow, never an unrestricted model action.
+//! EXEC-027: Market creation is a governed workflow, never an unrestricted
+//! model action — and, since R12-EXEC-5080, one that actually creates
+//! something, on the simulated venue only.
 //!
-//! Verification: The type system enforces that create, list and seed operations
-//! are reachable only through OriginationMandate::admit. No direct path exists
-//! from a model or agent into creation itself.
+//! This suite used to build `ApprovedMarketCreation` directly from a struct
+//! literal, in a test whose comment said the struct could not be built that
+//! way, and assert that three functions which returned `Ok(())` without
+//! doing anything returned `Ok(())`. Every one of its assertions passed with
+//! the governance removed. The approval struct and the no-op functions are
+//! gone; what replaces them is `CreationPermissions::admit` — the only mint
+//! of a `CreationAdmission`, which has private fields and no `Deserialize` —
+//! and `MarketFactory`, whose every step demands one. These tests drive both
+//! and assert what is refused, not only what passes.
 
-use qip_execution_engine::market_creation::{
-    ApprovedMarketCreation, create_simulated_market, list_simulated_market, seed_simulated_market,
+#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
+use qip_core::Timestamp;
+use qip_core::error::Result;
+use qip_core::{Decimal, dec};
+use qip_execution_engine::broker::{ListingVenue, SimulatedBroker, SimulationSettings};
+use qip_execution_engine::creation::{
+    CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
 };
+use qip_execution_engine::market_creation::{MarketFactory, PricingRule};
+use qip_market::book::OrderBook;
 
-#[test]
-fn market_creation_requires_origination_mandate() {
-    // The market_creation module is private to the governed workflow and
-    // requires an ApprovedMarketCreation proof. This test asserts that
-    // the type structure enforces the governance: a model cannot create a
-    // market without passing through OriginationMandate::admit.
+const VENUE: &str = "simulated-venue";
+const PRODUCT: &str = "TEST/USD";
 
-    // The ApprovedMarketCreation type is the only way to call create_simulated_market,
-    // and ApprovedMarketCreation can only be constructed by the governed workflow
-    // (it is not #[derive(Deserialize)] and has no from_config constructor).
-
-    // This would be caught at compile time if a model tried to construct
-    // ApprovedMarketCreation directly:
-    // let approval = ApprovedMarketCreation { ... };  // ERROR: private fields
-
-    // The only path is through OriginationMandate::admit, which returns
-    // an ApprovedMarketCreation proof if all gates pass.
-
-    let approval = ApprovedMarketCreation {
-        market_key: "TEST/USD".to_string(),
-        seed_reserve: 100_000,
-        approver: "operator@test".to_string(),
-        approval_digest: "sha256:abc123".to_string(),
-    };
-
-    assert!(create_simulated_market(approval).is_ok());
+fn at() -> Timestamp {
+    Timestamp::from_secs(1_760_000_000)
 }
 
-#[test]
-fn all_three_market_operations_accept_approved_creation() {
-    // The three market operations (create, list, seed) all accept
-    // ApprovedMarketCreation and process it without error when the
-    // approval proof is valid.
-
-    let approval = ApprovedMarketCreation {
-        market_key: "MULTI/USD".to_string(),
-        seed_reserve: 50_000,
-        approver: "operator@test".to_string(),
-        approval_digest: "sha256:def456".to_string(),
-    };
-
-    // All three operations succeed with the approval
-    assert!(create_simulated_market(approval.clone()).is_ok());
-    assert!(list_simulated_market(approval.clone()).is_ok());
-    assert!(seed_simulated_market(approval).is_ok());
+fn rule() -> Result<PricingRule> {
+    PricingRule::new(
+        dec!("100"),
+        dec!("0.5"),
+        dec!("0.25"),
+        dec!("10"),
+        3,
+        dec!("0.05"),
+    )
 }
 
-#[test]
-fn market_creation_is_not_reachable_without_governance() {
-    // This test documents (by example) that the code paths for creation
-    // must go through OriginationMandate. The type system makes a direct
-    // creation impossible.
-    //
-    // A model or agent that tries to call create_simulated_market directly
-    // would fail at compile time because:
-    // 1. ApprovedMarketCreation has private fields
-    // 2. There is no From impl that would let an agent build it from config
-    // 3. The only public constructor is OriginationMandate::admit
-    //
-    // This code would not compile:
-    // let approval = ApprovedMarketCreation::from_config(...);  // ERROR
-    // let approval = ApprovedMarketCreation {                   // ERROR: private fields
-    //     market_key: ...,
-    //     ...,
-    // };
-    //
-    // Governance is enforced by the type system, not by runtime checks.
+fn request(action: CreationAction, venue: &str) -> CreationRequest {
+    CreationRequest::new(action, venue, PRODUCT, "GB")
 }
 
+fn permit_all(permissions: &mut CreationPermissions, venue: &str) -> Result<()> {
+    for action in CreationAction::ALL {
+        for authority in CreationAuthority::ALL {
+            permissions.record(authority, &request(action, venue), "recorded evidence")?;
+        }
+    }
+    Ok(())
+}
+
+/// With nothing recorded there is no admission, so no step of the factory
+/// can be reached; with all three authorities recorded the same request
+/// creates a market. Mutation: make `CreationPermissions::admit` skip its
+/// missing-authority check and the first assertion fails.
 #[test]
-fn approved_market_creation_succeeds_with_valid_approval() {
-    // When a market creation is approved and executed, it must succeed.
-    // This test documents that requirement.
+fn a_market_is_created_only_with_an_admission_from_all_three_authorities() -> Result<()> {
+    let empty = CreationPermissions::new();
+    assert!(
+        empty
+            .admit(&request(CreationAction::Create, VENUE))
+            .is_err()
+    );
 
-    let approval = ApprovedMarketCreation {
-        market_key: "LOGGED/USD".to_string(),
-        seed_reserve: 50_000,
-        approver: "risk-officer@platform".to_string(),
-        approval_digest: "sha256:xyz789".to_string(),
-    };
+    let mut permissions = CreationPermissions::new();
+    permit_all(&mut permissions, VENUE)?;
+    let broker = SimulatedBroker::new(SimulationSettings::frictionless(), 1);
+    let mut factory = MarketFactory::for_venue(&broker)?;
+    factory.create(
+        &permissions.admit(&request(CreationAction::Create, VENUE))?,
+        rule()?,
+        at(),
+    )?;
+    assert!(factory.market(PRODUCT).is_some());
+    Ok(())
+}
 
-    // The market creation must succeed with a valid approval proof.
-    // Against a real venue, the actual creation would also record the approval
-    // to the event-log before any venue call (EXEC-027's requirement).
+/// Permission to create is not permission to list or seed. Mutation: drop
+/// the action check in `MarketFactory::admitted_for` and the create
+/// admission lists the market.
+#[test]
+fn each_step_needs_an_admission_for_that_step() -> Result<()> {
+    let mut permissions = CreationPermissions::new();
+    permit_all(&mut permissions, VENUE)?;
+    let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 1);
+    let mut factory = MarketFactory::for_venue(&broker)?;
+    let create = permissions.admit(&request(CreationAction::Create, VENUE))?;
+    factory.create(&create, rule()?, at())?;
+    let refused = factory
+        .list(&create, &mut broker, at())
+        .expect_err("a create admission listed the market");
+    assert!(
+        refused
+            .message()
+            .contains("each step needs its own admission")
+    );
+    assert!(broker.listed_book(PRODUCT).is_none());
+    Ok(())
+}
 
-    let result = create_simulated_market(approval);
-    assert!(result.is_ok(), "creation should succeed with approval");
+/// No market is created on a real venue: an admission for one is refused by
+/// the factory, and a listing surface that is not simulated cannot have a
+/// factory at all. Mutation: drop `refuse_live` from `for_venue` and the
+/// live surface gets a factory.
+#[test]
+fn no_market_is_created_on_a_venue_that_is_not_the_simulated_one() -> Result<()> {
+    let mut permissions = CreationPermissions::new();
+    permit_all(&mut permissions, "XNYS")?;
+    let broker = SimulatedBroker::new(SimulationSettings::frictionless(), 1);
+    let mut factory = MarketFactory::for_venue(&broker)?;
+    let refused = factory
+        .create(
+            &permissions.admit(&request(CreationAction::Create, "XNYS"))?,
+            rule()?,
+            at(),
+        )
+        .expect_err("a market admitted for a real venue was created");
+    assert!(refused.message().contains("only at the simulated venue"));
+
+    #[derive(Debug)]
+    struct LiveSurface;
+    impl ListingVenue for LiveSurface {
+        fn venue_name(&self) -> &str {
+            "XNYS"
+        }
+        fn is_simulated(&self) -> bool {
+            false
+        }
+        fn listed_book(&self, _object_id: &str) -> Option<&OrderBook> {
+            None
+        }
+        fn list_book(&mut self, _book: OrderBook) {}
+        fn withdraw_book(&mut self, _object_id: &str) -> Option<OrderBook> {
+            None
+        }
+    }
+    let refused =
+        MarketFactory::for_venue(&LiveSurface).expect_err("a factory was built over a live venue");
+    assert!(refused.message().contains("is not simulated"));
+    Ok(())
+}
+
+/// The desk's broker is the only listing venue the port hands out. A
+/// mutation that made `Broker::listing_venue`'s default answer would let any
+/// broker be listed on; this asserts the simulator answers and keeps the
+/// seeded book the factory rests. Mutation: drop `venue.list_book(book)`
+/// from `seed` and the depth is zero.
+#[test]
+fn a_seeded_market_rests_its_rule_at_the_simulated_venue() -> Result<()> {
+    use qip_execution_engine::broker::Broker;
+    let mut permissions = CreationPermissions::new();
+    permit_all(&mut permissions, VENUE)?;
+    let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 1);
+    let mut factory = MarketFactory::for_venue(&broker)?;
+    factory.create(
+        &permissions.admit(&request(CreationAction::Create, VENUE))?,
+        rule()?,
+        at(),
+    )?;
+    let venue = broker
+        .listing_venue()
+        .expect("the simulated broker offers a listing venue");
+    factory.list(
+        &permissions.admit(&request(CreationAction::List, VENUE))?,
+        venue,
+        at(),
+    )?;
+    // The ladder's risk verdict, from the only mint there is: the desk's
+    // order manager, here under a 2x leverage limit over a book of a million
+    // that the ladder is far inside (R12-RISK-4093).
+    let mut orders = qip_execution_engine::oms::OrderManager::new(
+        qip_risk_engine::pretrade::PreTradeChecker::new(
+            qip_risk::limits::LimitSet::new("governance").with(qip_risk::limits::Limit::new(
+                "leverage",
+                qip_risk::limits::LimitKind::MaxLeverage { limit: 2.0 },
+            )),
+        ),
+    );
+    let ladder = orders.admit_ladder(
+        PRODUCT,
+        VENUE,
+        &rule()?,
+        "market-factory",
+        &qip_risk_engine::autonomy::AutonomyController::new(),
+        &qip_risk::limits::RiskState {
+            equity: dec!("1000000"),
+            cash: dec!("1000000"),
+            ..qip_risk::limits::RiskState::default()
+        },
+        at(),
+    )?;
+    let venue = broker.listing_venue().expect("still offered");
+    factory.seed(
+        &permissions.admit(&request(CreationAction::Seed, VENUE))?,
+        &ladder,
+        dec!("30"),
+        venue,
+        at(),
+    )?;
+    let depth = broker
+        .listed_book(PRODUCT)
+        .map_or(Decimal::ZERO, OrderBook::total_depth);
+    assert_eq!(depth, dec!("60"));
+    Ok(())
 }

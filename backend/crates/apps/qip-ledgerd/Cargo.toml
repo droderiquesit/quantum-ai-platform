@@ -16,10 +16,15 @@ qip-events.workspace = true
 qip-storage.workspace = true
 qip-transport.workspace = true
 qip-portfolio.workspace = true
+qip-capital.workspace = true
 qip-observability.workspace = true
 
 [dev-dependencies]
 qip-streaming.workspace = true
+# No `ring` here, although the read API's mutual-TLS test mints certificates
+# with it through `qip-transport/tests/support/certs.rs`: that file names it
+# as `qip_transport::ring`, the re-export of the one pin in `qip-tls`, and
+# `cargo deny`'s workspace-duplicate check refuses a second pin.
 
 [lints]
 workspace = true

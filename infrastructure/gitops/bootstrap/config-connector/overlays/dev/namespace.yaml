@@ -6,7 +6,7 @@ kind: Namespace
 metadata:
   name: qip-run
   annotations:
-    cnrm.cloud.google.com/project-id: algorik-platform-dev
+    cnrm.cloud.google.com/project-id: algorik-qip-dev
   labels:
     platform: qip
     environment: dev

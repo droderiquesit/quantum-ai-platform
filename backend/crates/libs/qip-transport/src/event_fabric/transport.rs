@@ -33,11 +33,13 @@
 //! request this seam builds. The producer and consumer therefore ran over
 //! an HTTP transport that no broker would ever authenticate.
 
+use qip_tls::rustls;
 use std::time::Duration;
 
 use qip_core::error::{Error, Result};
 
-use crate::http::{ClientLimits, HttpClient, HttpRequest, Method};
+use crate::http::{ClientLimits, HttpClient, HttpRequest, Method, TlsHttpClient};
+use crate::tls::LinkSecurity;
 
 use super::auth::{self, BearerToken};
 use super::protocol::{Direction, Request, Response, decode_response, encode_request};
@@ -105,6 +107,11 @@ pub struct HttpTransport {
     base_url: String,
     /// Sent as `Authorization: Bearer <token>` on every call.
     identity: BearerToken,
+    /// `Some` for a mutual-TLS link (ADR 0112): every call goes through
+    /// [`TlsHttpClient`] presenting the workload certificate this config
+    /// carries, and `base_url` is `https`. `None` is plaintext, which the
+    /// composition root admits only in a `local` deployment.
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
 }
 
 impl HttpTransport {
@@ -117,7 +124,34 @@ impl HttpTransport {
         Self {
             base_url: base_url.into(),
             identity,
+            tls: None,
         }
+    }
+
+    /// A transport for one broker `authority` (`host:port`) over the link the
+    /// composition root configured: `https` with the workload certificate
+    /// when the link is mutual TLS, `http` only when it is the plaintext a
+    /// `local` deployment may choose. The scheme follows the link, so a
+    /// configured TLS link cannot be handed a plaintext URL by a caller.
+    pub fn over(link: &LinkSecurity, authority: &str, identity: BearerToken) -> Result<Self> {
+        let authority = authority
+            .trim()
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/');
+        match link {
+            LinkSecurity::Plaintext => Ok(Self::new(format!("http://{authority}"), identity)),
+            LinkSecurity::MutualTls(workload) => Ok(Self {
+                base_url: format!("https://{authority}"),
+                identity,
+                tls: Some(workload.client_config()?),
+            }),
+        }
+    }
+
+    /// Whether calls go out over mutual TLS.
+    pub const fn is_mutual_tls(&self) -> bool {
+        self.tls.is_some()
     }
 }
 
@@ -127,7 +161,12 @@ impl FabricTransport for HttpTransport {
         let url = format!("{}{}", self.base_url, route.path());
         let body = encode_request(&request)?;
 
-        let http_request = HttpRequest::json(Method::Post, &url, body)
+        let build = if self.tls.is_some() {
+            HttpRequest::json_tls(Method::Post, &url, body)
+        } else {
+            HttpRequest::json(Method::Post, &url, body)
+        };
+        let http_request = build
             .map_err(|error| {
                 let message = format!("cannot build the event-fabric {route:?} request: {error}");
                 Error::from(error).relabelled(message)
@@ -147,12 +186,16 @@ impl FabricTransport for HttpTransport {
             ..ClientLimits::default()
         };
 
-        let response = HttpClient::new(limits)
-            .send(&http_request)
-            .map_err(|error| {
-                let message = format!("the event-fabric {route:?} call to {url} failed: {error}");
-                Error::from(error).relabelled(message)
-            })?;
+        let sent = match &self.tls {
+            Some(config) => {
+                TlsHttpClient::new(limits, std::sync::Arc::clone(config)).send(&http_request)
+            }
+            None => HttpClient::new(limits).send(&http_request),
+        };
+        let response = sent.map_err(|error| {
+            let message = format!("the event-fabric {route:?} call to {url} failed: {error}");
+            Error::from(error).relabelled(message)
+        })?;
 
         if !response.is_success() {
             return Err(Error::io(format!(

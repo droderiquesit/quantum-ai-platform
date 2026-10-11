@@ -21,6 +21,7 @@
 use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use crate::connector::checkpoint::Checkpoint;
 use crate::connector::digest::FetchDigest;
+use crate::connector::evidence::CheckedEvidence;
 use crate::connector::journal::{StreamJournal, StreamLedger};
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
@@ -33,7 +34,7 @@ use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::{ObjectId, Timestamp};
 use qip_events::Topic;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 /// The sources this build can open by name.
@@ -163,7 +164,38 @@ pub struct ConnectorFeed {
     /// process — the correct shape for a contract test driving an emulator,
     /// and the wrong one for anything measuring a source *sustained*.
     journal: Option<StreamJournal>,
+    /// Evidence for records this feed has released and nobody has yet
+    /// collected, oldest first, bounded at [`PENDING_EVIDENCE_CAPACITY`].
+    pending_evidence: VecDeque<CheckedEvidence>,
+    /// Evidence dropped because nobody collected it before the bound.
+    evidence_dropped: u64,
+    /// Where released ticks, quotes and trades are sealed, when the
+    /// composition root opened a lake for them (R12-DATA-2004).
+    tick_lake: Option<qip_storage::tick_capture::TickLakeWriter>,
+    /// Captures the lake writer refused or failed, and the last reason.
+    tick_lake_failures: u64,
+    tick_lake_last_failure: Option<String>,
+    /// Knowledge packs released polls produced and nobody has yet collected,
+    /// each beside its `(pack bytes, body bytes)` footprint, oldest first,
+    /// bounded at [`PENDING_PACK_CAPACITY`] (R12-DATA-1041).
+    pending_packs: VecDeque<PendingPack>,
 }
+
+/// A knowledge pack a released poll produced, with the encoded size of the
+/// pack and of the body it was derived from, where the pack encoded.
+pub type PendingPack = (
+    qip_contracts::knowledge_pack::KnowledgePack,
+    Option<(u64, u64)>,
+);
+
+/// Knowledge packs a feed holds for its caller before dropping the oldest.
+pub const PENDING_PACK_CAPACITY: usize = 1_024;
+
+/// Checked evidence a feed holds for its caller before dropping the oldest.
+/// One poll's worth at the largest shipped batch cap, several times over: a
+/// root that collects every cycle never reaches it, and one that never
+/// collects cannot grow this without bound.
+pub const PENDING_EVIDENCE_CAPACITY: usize = 4_096;
 
 impl ConnectorFeed {
     /// Open a named source through the egress proxy at `base_url`.
@@ -272,6 +304,12 @@ impl ConnectorFeed {
             runtime,
             descriptor,
             journal: None,
+            pending_evidence: VecDeque::new(),
+            evidence_dropped: 0,
+            tick_lake: None,
+            tick_lake_failures: 0,
+            tick_lake_last_failure: None,
+            pending_packs: VecDeque::new(),
         })
     }
 
@@ -471,11 +509,108 @@ impl ConnectorFeed {
             self.runtime.unwind(before);
             return Err(failure);
         }
+        // The evidence travels with the records it describes, released only
+        // when they are: a refused or unrecorded poll above returned before
+        // this line, so the evidence for records nobody received is never
+        // handed up.
+        // Released market records go to the lake after the journal has
+        // committed them and before they are handed up. A capture that fails
+        // does not fail the poll — the records are committed and the loop is
+        // owed them — but it is counted and its reason kept, so a lake that
+        // stopped receiving is a number on the feed and not a silence.
+        if let Some(lake) = self.tick_lake.as_mut() {
+            let entitlement = format!("{:?}", self.descriptor.licensing).to_ascii_lowercase();
+            for envelope in &report.admitted {
+                let captured = crate::connector::evidence::captured_of(
+                    envelope.record(),
+                    &self.descriptor.name,
+                    &entitlement,
+                    envelope.raw_payload(),
+                );
+                let outcome = match captured {
+                    Ok(Some(event)) => lake.capture(event).map(|_| ()),
+                    Ok(None) => Ok(()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = outcome {
+                    self.tick_lake_failures = self.tick_lake_failures.saturating_add(1);
+                    self.tick_lake_last_failure = Some(error.message().to_string());
+                }
+            }
+        }
+        // The pack travels like the evidence: only once the poll that
+        // produced it has been referenced and committed, so a pack never
+        // describes records nobody received.
+        if let Some(pack) = report.knowledge_pack.take() {
+            push_bounded(
+                &mut self.pending_packs,
+                (pack, report.knowledge_footprint),
+                PENDING_PACK_CAPACITY,
+            );
+        }
+        // Refused evidence goes up with the released: its records stay in
+        // quarantine, but the world fabric's detectors read the claims.
+        for checked in report.evidence.into_iter().chain(report.refused_evidence) {
+            if push_bounded(
+                &mut self.pending_evidence,
+                checked,
+                PENDING_EVIDENCE_CAPACITY,
+            ) {
+                self.evidence_dropped = self.evidence_dropped.saturating_add(1);
+            }
+        }
         Ok(report
             .admitted
             .into_iter()
             .map(|envelope| envelope.into_record())
             .collect())
+    }
+
+    /// Take the checked evidence for every record released since the last
+    /// call, oldest first, for the world model's
+    /// `WorldModel::absorb_evidence` (R12-EVID-2031). The poll path cannot
+    /// return it — `DataAdapter` speaks only in records — so it waits here,
+    /// bounded, for the composition root to collect.
+    pub fn drain_evidence(&mut self) -> Vec<CheckedEvidence> {
+        self.pending_evidence.drain(..).collect()
+    }
+
+    /// Take the knowledge packs every poll released since the last call
+    /// produced, oldest first, each with its measured footprint, for the
+    /// composition root to persist (R12-DATA-1041). Before this the pack was
+    /// built and measured on every poll and dropped with the report.
+    pub fn drain_knowledge_packs(&mut self) -> Vec<PendingPack> {
+        self.pending_packs.drain(..).collect()
+    }
+
+    /// Seal the ticks, quotes and trades this feed releases into the lake
+    /// `writer` holds. Entitlement is the source's licensing class, which
+    /// the writer's retention policy must name.
+    pub fn with_tick_lake(mut self, writer: qip_storage::tick_capture::TickLakeWriter) -> Self {
+        self.tick_lake = Some(writer);
+        self
+    }
+
+    /// Seal whatever the lake writer still buffers — at shutdown, or on a
+    /// cadence the root chooses.
+    pub fn flush_tick_lake(&mut self) -> Result<Vec<qip_storage::lake::SegmentRecord>> {
+        match self.tick_lake.as_mut() {
+            Some(lake) => lake.flush(),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Captures the lake writer refused or failed, and the last reason.
+    pub fn tick_lake_failures(&self) -> (u64, Option<&str>) {
+        (
+            self.tick_lake_failures,
+            self.tick_lake_last_failure.as_deref(),
+        )
+    }
+
+    /// Evidence dropped at the bound because nobody collected it.
+    pub const fn evidence_dropped(&self) -> u64 {
+        self.evidence_dropped
     }
 }
 
@@ -508,6 +643,16 @@ impl DataAdapter for ConnectorFeed {
     // caller's clock for its final checkpoint, and the adapter contract does
     // not carry one; the root that owns the clock calls
     // [`ConnectorFeed::shutdown`], which this type exposes for exactly that.
+}
+
+/// Append `item`, dropping the oldest entry first when `queue` is at
+/// `capacity`; true when one was dropped. One seam for both bounded queues,
+/// so CodeQL's generated model, which reads `VecDeque::push_back` on a feed
+/// holding a credential as a log write, has one site to report, not two.
+fn push_bounded<T>(queue: &mut VecDeque<T>, item: T, capacity: usize) -> bool {
+    let dropped = queue.len() >= capacity && queue.pop_front().is_some();
+    queue.push_back(item);
+    dropped
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! CICD-036: architecture memory index — ADRs, requirements, traceability matrix,
+//! CICD-036: architecture memory index — ADRs, the blueprint of record,
 //! service catalogue, and runbooks are discoverable and indexed as described to
 //! agents in CLAUDE.md and .claude/agents/*.md.
 //!
@@ -57,65 +57,75 @@ fn architecture_decision_records_are_numbered_and_indexed() {
     }
 }
 
+/// The blueprint is held in the repository so that a requirement can be
+/// traced to a page somebody else can open. A README that lists a hash the
+/// file no longer has reads as a verified source while pointing at different
+/// bytes, and a README that still lists a file somebody deleted sends the
+/// next reader to nothing — both happened in this directory's history, when
+/// the v11.6 and v2.1 sources were removed on 2026-10-11 and the table had
+/// to be rewritten by hand in the same commit. So every `source/` row is
+/// held to the bytes it names, and every file under `source/` must have a
+/// row: a source nobody listed is a blueprint nobody knows is in force.
 #[test]
-fn blueprint_requirements_are_machine_readable_and_indexed() {
+fn every_blueprint_source_is_listed_once_and_has_the_hash_the_readme_records() {
     let root = qip_acceptance::repository_root();
-    let req_dir = root.join("docs/blueprint/requirements");
+    let readme = qip_acceptance::read("docs/blueprint/README.md");
 
-    // Premise: the requirements directory exists.
-    assert!(
-        req_dir.is_dir(),
-        "docs/blueprint/requirements/ contains requirements files"
-    );
+    let mut listed: BTreeSet<String> = BTreeSet::new();
+    for line in readme.lines() {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        // `| `source/<file>` | what | pages | `<sha>` |` splits into six
+        // cells, the first and last empty.
+        if cells.len() != 6 {
+            continue;
+        }
+        let Some(file) = cells[1]
+            .strip_prefix("`source/")
+            .and_then(|rest| rest.strip_suffix('`'))
+        else {
+            continue;
+        };
+        let recorded = cells[4].trim_matches('`');
+        let bytes =
+            std::fs::read(root.join("docs/blueprint/source").join(file)).unwrap_or_else(|error| {
+                panic!("the README lists source/{file}, which is not there: {error}")
+            });
+        assert_eq!(
+            qip_core::hash::sha256_hex(&bytes),
+            recorded,
+            "source/{file} does not have the SHA-256 the README records"
+        );
+        assert!(
+            listed.insert(file.to_string()),
+            "source/{file} is listed twice"
+        );
+    }
 
-    // Enumerate JSON files: each domain has its own requirements file.
-    let json_files: Vec<_> = std::fs::read_dir(&req_dir)
-        .expect("requirements directory is readable")
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                Some(path)
-            } else {
-                None
-            }
+    // Premise: the table was read, and it is the v12.0 / v3.0 pair. A README
+    // whose table changed shape would otherwise leave this checking nothing.
+    for edition in [
+        "algorik-master-blueprint-v12.0.pdf",
+        "algorik-gcp-platform-blueprint-v3.0.pdf",
+    ] {
+        assert!(
+            listed.contains(edition),
+            "the README's source table does not list {edition}; read: {listed:?}"
+        );
+    }
+
+    let on_disk: BTreeSet<String> = std::fs::read_dir(root.join("docs/blueprint/source"))
+        .expect("docs/blueprint/source is readable")
+        .map(|entry| {
+            entry
+                .expect("a source entry is readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
         })
         .collect();
-
-    assert!(
-        !json_files.is_empty(),
-        "at least one requirements JSON file exists"
-    );
-
-    // Each file should parse as valid JSON.
-    for path in json_files {
-        let text = std::fs::read_to_string(&path).expect("requirements file is readable");
-        serde_json::from_str::<serde_json::Value>(&text).expect("requirements file is valid JSON");
-    }
-}
-
-#[test]
-fn traceability_matrix_maps_requirements_to_tests() {
-    let root = qip_acceptance::repository_root();
-    let matrix = root.join("docs/blueprint/traceability-matrix.md");
-
-    assert!(
-        matrix.exists(),
-        "docs/blueprint/traceability-matrix.md exists and maps requirements to test evidence"
-    );
-
-    let text = std::fs::read_to_string(&matrix).expect("traceability matrix is readable");
-
-    // Sanity: the matrix should have substantial content.
-    assert!(
-        text.len() > 1000,
-        "traceability matrix has substantive content"
-    );
-
-    // Spot-check: matrix should reference some requirements and test evidence.
-    assert!(
-        text.contains("CICD-") || text.contains("ARCH-"),
-        "matrix references requirement IDs"
+    assert_eq!(
+        on_disk, listed,
+        "docs/blueprint/source/ and the README's source table disagree about which files exist"
     );
 }
 
@@ -207,12 +217,12 @@ fn no_document_class_claimed_by_claude_md_is_missing() {
         "CLAUDE.md names the promised document classes"
     );
 
-    // Verify the key claims: docs/adr, docs/blueprint/requirements,
+    // Verify the key claims: docs/adr, the blueprint of record,
     // infrastructure/terraform/catalogue.tf, docs/ops all exist.
     let paths = [
         "docs/adr/README.md",
-        "docs/blueprint/requirements",
-        "docs/blueprint/traceability-matrix.md",
+        "docs/blueprint/source/algorik-master-blueprint-v12.0.txt",
+        "docs/blueprint/source/algorik-gcp-platform-blueprint-v3.0.txt",
         "infrastructure/terraform/catalogue.tf",
         "docs/ops",
     ];

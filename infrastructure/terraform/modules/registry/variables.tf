@@ -83,3 +83,20 @@ variable "kms_protection_level" {
     error_message = "kms_protection_level must be exactly \"SOFTWARE\" or \"HSM\"."
   }
 }
+
+# Later environments' principals, read-only on the image repository (R12
+# CICD-9112); the grant and the reasoning are in promotion.tf.
+variable "promotion_readers" {
+  description = "Principals in later environments granted roles/artifactregistry.reader on the image repository, as IAM members (`serviceAccount:…`). Read only, never writer."
+  type        = set(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition = alltrue([
+      for member in var.promotion_readers :
+      can(regex("^serviceAccount:[a-z0-9-]+@[a-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", member))
+    ])
+    error_message = "Every promotion reader is one service account, written `serviceAccount:<name>@<domain>.iam.gserviceaccount.com`. A user, a group, a domain, allUsers or allAuthenticatedUsers is refused: the build registry is read by pipelines and service agents, not by people."
+  }
+}

@@ -262,6 +262,26 @@ fn the_artifact_registry_declares_all_three_repositories() {
     );
 }
 
+/// CodeQL is configured, gates ci, and still scans `main`.
+///
+/// **What changed (`d2e79d3e`, R12 CICD-9105), and why this test changed.**
+/// CodeQL used to trigger itself on push and pull request as a workflow
+/// beside ci, and this test asserted those triggers. But `deploy.yml` waited
+/// only on ci, so a CodeQL finding stopped nothing. The workflow is now
+/// `workflow_call`ed by ci as its `sast` job, which runs on every push to
+/// `main` and every pull request into it because ci does, and deploy reads
+/// the `sast / …` jobs of the run it trusts by name. Its own push and
+/// pull_request triggers were removed on purpose: a second independent run is
+/// a second result nobody gates on. So "scans main" is now asserted where it
+/// is true — ci's triggers and ci's `sast` job — and the daily schedule, for
+/// advisories against code that has not changed, is asserted on the workflow.
+/// The old assertion was `contains("branches:") && contains("main")`, which
+/// any comment mentioning `main` satisfied; these read the trigger lines.
+///
+/// Mutation: delete ci's `uses: ./.github/workflows/codeql-analysis.yml` —
+/// the gate assertion fires. Drop `"main"` from ci's push branches — the
+/// main-branch assertion fires. Delete the workflow's `schedule:` — the
+/// schedule assertion fires.
 #[test]
 fn codeql_analysis_is_configured_for_security_scanning() {
     let workflows = workflows();
@@ -285,13 +305,67 @@ fn codeql_analysis_is_configured_for_security_scanning() {
         content.contains("rust") || content.contains("Rust"),
         "CodeQL analysis must include Rust language for code scanning"
     );
+
+    // The workflow's own triggers: callable by ci, and on a daily schedule.
+    let triggers = top_level_block(&content, "on:");
     assert!(
-        content.contains("branches:")
-            && (content.contains("main") || content.contains("\\\"main\\\"")),
-        "CodeQL workflow must run on the main branch for continuous security scanning"
+        triggers.iter().any(|line| line.trim() == "workflow_call:"),
+        "CodeQL must be callable as ci's sast job: {triggers:?}"
     );
     assert!(
-        content.contains("pull_request") || content.contains("pull-request"),
-        "CodeQL workflow must run on pull requests to catch security issues before merge"
+        triggers.iter().any(|line| line.trim() == "schedule:")
+            && triggers
+                .iter()
+                .any(|line| line.trim_start().starts_with("- cron:")),
+        "CodeQL must keep its daily schedule, for advisories against unchanged code: {triggers:?}"
     );
+
+    // ci calls it, as a job of its own, so ci cannot succeed unless it does.
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.lines()
+            .any(|line| line.trim() == "uses: ./.github/workflows/codeql-analysis.yml"),
+        "ci.yml does not call codeql-analysis.yml, so nothing gates on CodeQL and, with its push \
+         and pull_request triggers gone, nothing runs it on main"
+    );
+    let ci_triggers = top_level_block(&ci, "on:");
+    let branches_of = |event: &str| -> String {
+        ci_triggers
+            .iter()
+            .skip_while(|line| line.trim() != event)
+            .skip(1)
+            .take_while(|line| line.starts_with("    "))
+            .find(|line| line.trim_start().starts_with("branches:"))
+            .map(|line| line.to_string())
+            .unwrap_or_default()
+    };
+    assert!(
+        branches_of("push:").contains("\"main\""),
+        "CodeQL must run on the main branch for continuous security scanning: ci, which runs \
+         it, does not trigger on pushes to main: {ci_triggers:?}"
+    );
+    assert!(
+        branches_of("pull_request:").contains("\"main\""),
+        "CodeQL must run on pull requests to catch security issues before merge: ci, which \
+         runs it, does not trigger on pull requests into main: {ci_triggers:?}"
+    );
+
+    // And deploy trusts a ci run only if that run's sast jobs ran.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        deploy.contains("startswith(\"sast / \")"),
+        "deploy.yml no longer reads the sast jobs of the ci run it trusts"
+    );
+}
+
+/// The lines of a top-level YAML key's block: the key's own line excluded,
+/// every following line up to the next line at column zero that is not blank
+/// or a comment.
+fn top_level_block<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
+    text.lines()
+        .skip_while(|line| *line != key)
+        .skip(1)
+        .take_while(|line| line.is_empty() || line.starts_with(' ') || line.starts_with('#'))
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .collect()
 }

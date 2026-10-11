@@ -553,6 +553,9 @@ pub struct MarketSimulator {
     flow: Vec<FlowRecord>,
     /// Indices into `flow` keyed `instrument@venue`, then instant.
     flow_index: BTreeMap<String, BTreeMap<Timestamp, Vec<usize>>>,
+    /// The platform's own filled flow per instrument, signed and keyed by
+    /// arrival, which the agents respond to (R12-TICK-3101).
+    own_flow: BTreeMap<String, BTreeMap<Timestamp, Decimal>>,
 }
 
 impl MarketSimulator {
@@ -633,6 +636,7 @@ impl MarketSimulator {
             agents: BTreeMap::new(),
             flow: Vec::new(),
             flow_index: BTreeMap::new(),
+            own_flow: BTreeMap::new(),
         })
     }
 
@@ -711,6 +715,7 @@ impl MarketSimulator {
             agents: BTreeMap::new(),
             flow: Vec::new(),
             flow_index: BTreeMap::new(),
+            own_flow: BTreeMap::new(),
         })
     }
 
@@ -758,6 +763,41 @@ impl MarketSimulator {
         &self.flow
     }
 
+    /// Book one of the platform's own fills as flow the agents respond to,
+    /// and regenerate their flow (R12-TICK-3101).
+    ///
+    /// The fill is settled against makers' inventory at the observation it
+    /// arrived by, so it moves the quotes of later steps and never the book
+    /// it filled against. Nothing to do for a fill of nothing, or for a
+    /// simulator with no agents attached, whose books are the path's alone.
+    pub fn respond_to_fill(&mut self, report: &ExecutionReport) -> Result<()> {
+        if !report.filled.is_positive() || self.agents.is_empty() {
+            return Ok(());
+        }
+        let signed = match report.side {
+            Side::Buy => report.filled,
+            Side::Sell => -report.filled,
+        };
+        let at = self
+            .own_flow
+            .entry(report.object_id.clone())
+            .or_default()
+            .entry(report.arrived_at)
+            .or_insert(Decimal::ZERO);
+        *at = at.checked_add(signed).ok_or_else(|| {
+            Error::numeric(format!(
+                "the platform's own flow on {} at {} is not representable",
+                report.object_id, report.arrived_at
+            ))
+        })?;
+        self.regenerate_flow()
+    }
+
+    /// The platform's own filled flow the agents have responded to.
+    pub fn own_flow(&self) -> &BTreeMap<String, BTreeMap<Timestamp, Decimal>> {
+        &self.own_flow
+    }
+
     /// Generate the agents' flow from the seed, the paths and the schedule.
     ///
     /// Called from every mutation that changes what an agent would see, so
@@ -782,6 +822,7 @@ impl MarketSimulator {
                 prices: &prices,
                 calm_half_spread_bps: spec.half_spread_bps,
                 venues: &self.venues,
+                own_flow: self.own_flow.get(object_id),
             };
             let schedule = &self.schedule;
             let seed = self.seed;
@@ -1205,7 +1246,16 @@ impl MarketSimulator {
     }
 
     /// Walk every step, asking the strategy for orders and executing them.
+    ///
+    /// On a copy of this simulator that responds to the run's own fills
+    /// ([`Self::respond_to_fill`]), so the agents see the strategy's orders
+    /// and `self` stays the market as it was before the strategy traded.
     pub fn run<S: SimStrategy>(&self, strategy: &mut S) -> Result<SimulationRun> {
+        let mut market = self.clone();
+        market.run_responding(strategy)
+    }
+
+    fn run_responding<S: SimStrategy>(&mut self, strategy: &mut S) -> Result<SimulationRun> {
         let mut reports: Vec<ExecutionReport> = Vec::new();
         let mut positions: BTreeMap<String, Decimal> = BTreeMap::new();
         let mut cash = Decimal::ZERO;
@@ -1214,7 +1264,8 @@ impl MarketSimulator {
         let mut stale_mark_steps = 0usize;
         let mut crossed_market_steps = 0usize;
 
-        for at in &self.steps {
+        let steps = self.steps.clone();
+        for at in &steps {
             let marks = self.marks_at(*at);
             if marks.values().any(Mark::is_stale) {
                 stale_mark_steps += 1;
@@ -1231,6 +1282,7 @@ impl MarketSimulator {
             };
             for order in orders {
                 let report = self.execute(&order, *at)?;
+                self.respond_to_fill(&report)?;
                 if report.status == FillStatus::VenueUnreachable {
                     unreachable_orders += 1;
                 }

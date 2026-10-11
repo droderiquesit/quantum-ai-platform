@@ -20,17 +20,31 @@
 //! else produces grants no cell accepts — so one variable, one trust root,
 //! and a rotation is one secret rolled in one place.
 //!
-//! The refusal is the part that must hold: a platform whose autonomy ceiling
-//! permits live trading while its envelope key is still seed-derived must not
-//! start. A warning would be read once and scrolled away; a process that is
-//! not running is the only message that reliably arrives.
+//! The refusal is the part that must hold, and since ADR 0110 decision 5 it
+//! holds in **every deployment that is not `local`**, not only on a
+//! live-capable one — which no deployment ever is, so the old rule refused
+//! nothing anywhere it ran. The deployment is named by `QIP_DEPLOYMENT` and
+//! an absent name is refused rather than read as `local`
+//! ([`qip_core::deployment::Deployment::parse_observed`]): the guard a developer's
+//! machine relaxes must not be relaxed by an omission. A warning would be
+//! read once and scrolled away; a process that is not running is the only
+//! message that reliably arrives.
+//!
+//! The operator key this accepts in the interim is still a symmetric HMAC
+//! key from Secret Manager, and ADR 0110 says so: it is guessable by nobody,
+//! and it is held by every process that verifies with it.
 
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_kernel::central::CentralPlane;
 use qip_kernel::platform::Platform;
 
 /// The variable both ends of the mesh read. One name, one trust root.
 pub const ENVELOPE_KEY_VARIABLE: &str = "QIP_CAPITAL_ENVELOPE_KEY";
+
+/// The variable naming the deployment this process runs in (ADR 0110
+/// decision 5). Required: [`Deployment::parse_observed`] refuses it absent.
+pub const DEPLOYMENT_VARIABLE: &str = "QIP_DEPLOYMENT";
 
 /// Where this process's envelope-signing key came from. Printed in the
 /// banner, because an operator deciding whether a cluster may trade needs
@@ -51,7 +65,7 @@ impl KeyProvenance {
             Self::Operator => "operator-supplied via QIP_CAPITAL_ENVELOPE_KEY",
             Self::SeedDerived => {
                 "SEED-DERIVED — reproducible, so anyone who knows the seed can mint a grant; \
-                 live trading is refused under this key"
+                 admitted only where QIP_DEPLOYMENT=local, and never on a live-capable ceiling"
             }
         }
     }
@@ -69,9 +83,15 @@ impl KeyProvenance {
 /// weaker than the seed-derived default it replaces never installs. That
 /// check is deliberately not duplicated here: one authority on key strength,
 /// and this module would drift from it.
+///
+/// `deployment` decides whether the seed-derived key may stand at all: only
+/// in [`Deployment::Local`]. Everywhere else — the Terraform `test`
+/// environment included, which is a deployment and not a test harness — a
+/// process that reaches this point without an operator key stops.
 pub fn harden_central(
     platform: &mut Platform,
     configured_key: Option<&str>,
+    deployment: Deployment,
 ) -> Result<KeyProvenance> {
     let provenance = match configured_key {
         Some(key) if key.trim().is_empty() => {
@@ -89,6 +109,16 @@ pub fn harden_central(
         }
         None => KeyProvenance::SeedDerived,
     };
+
+    if !deployment.permits_reproducible_keys() && platform.central().signing_key_is_reproducible() {
+        return Err(Error::denied(format!(
+            "{DEPLOYMENT_VARIABLE}={deployment} and the central signing key is derived from the \
+             configured seed, which is committed configuration — anyone who can read it can mint \
+             a policy frame or a capital grant this deployment's cells accept (ADR 0110 decision \
+             5). Mount the operator key as {ENVELOPE_KEY_VARIABLE}_FILE from Secret Manager; \
+             the seed-derived key is admitted only where {DEPLOYMENT_VARIABLE}=local"
+        )));
+    }
 
     if platform.is_live_capable() && platform.central().signing_key_is_reproducible() {
         return Err(Error::denied(format!(
@@ -138,12 +168,16 @@ mod tests {
              exist has changed and its docs are now wrong"
         );
         assert_eq!(
-            harden_central(&mut platform, None)?,
+            harden_central(&mut platform, None, Deployment::Local)?,
             KeyProvenance::SeedDerived
         );
 
         assert_eq!(
-            harden_central(&mut platform, Some("a-real-key-from-the-secret-store"))?,
+            harden_central(
+                &mut platform,
+                Some("a-real-key-from-the-secret-store"),
+                Deployment::Local
+            )?,
             KeyProvenance::Operator
         );
         assert!(
@@ -160,8 +194,12 @@ mod tests {
         // this test pins that the refusal actually propagates rather than
         // being swallowed by the swap.
         let mut platform = platform()?;
-        let error = harden_central(&mut platform, Some("test-rotation-key-1"))
-            .expect_err("a 19-byte envelope key was installed");
+        let error = harden_central(
+            &mut platform,
+            Some("test-rotation-key-1"),
+            Deployment::Local,
+        )
+        .expect_err("a 19-byte envelope key was installed");
         assert!(
             error.message().contains("32"),
             "the refusal does not name the floor: {}",
@@ -174,12 +212,60 @@ mod tests {
     #[test]
     fn an_empty_key_is_refused_rather_than_signing_with_nothing() -> Result<()> {
         let mut platform = platform()?;
-        let error = harden_central(&mut platform, Some("   "))
+        let error = harden_central(&mut platform, Some("   "), Deployment::Local)
             .expect_err("an empty envelope key was accepted");
         assert!(error.message().contains(ENVELOPE_KEY_VARIABLE));
         // And the plane is untouched: a refused hardening must not leave a
         // half-swapped trust root behind it.
         assert!(platform.central().signing_key_is_reproducible());
+        Ok(())
+    }
+
+    /// ADR 0110 decision 5. Mutation: restore the old guard (refuse only when
+    /// `is_live_capable()`) and every non-local arm here starts on the
+    /// seed-derived key; this fails.
+    #[test]
+    fn a_seed_derived_key_is_refused_in_every_deployment_but_local() -> Result<()> {
+        // Premise: the platform under test is paper, so the live-capable
+        // guard cannot be the one that fires below.
+        assert!(!platform()?.is_live_capable());
+        assert_eq!(
+            harden_central(&mut platform()?, None, Deployment::Local)?,
+            KeyProvenance::SeedDerived
+        );
+        for deployment in [
+            Deployment::Dev,
+            Deployment::Test,
+            Deployment::Stage,
+            Deployment::Prod,
+        ] {
+            let error = harden_central(&mut platform()?, None, deployment)
+                .expect_err("a seed-derived key started outside a local deployment");
+            assert!(
+                error.message().contains(DEPLOYMENT_VARIABLE)
+                    && error.message().contains(ENVELOPE_KEY_VARIABLE),
+                "the refusal does not name what to set: {}",
+                error.message()
+            );
+        }
+        Ok(())
+    }
+
+    /// The admitting half: an operator key starts in a deployment.
+    /// Mutation: make the new guard refuse regardless of the key and this
+    /// fails.
+    #[test]
+    fn an_operator_key_starts_in_a_deployed_environment() -> Result<()> {
+        let mut platform = platform()?;
+        assert_eq!(
+            harden_central(
+                &mut platform,
+                Some("a-real-key-from-the-secret-store"),
+                Deployment::Prod
+            )?,
+            KeyProvenance::Operator
+        );
+        assert!(!platform.central().signing_key_is_reproducible());
         Ok(())
     }
 }

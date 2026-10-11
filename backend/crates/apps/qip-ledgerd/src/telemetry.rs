@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// performs no I/O or allocation of unbounded size. Labels are bounded by
 /// enums or source literals: never a partition key, strategy id, order id
 /// or other runtime data.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LedgerTelemetry {
     metrics: Arc<Metrics>,
 }

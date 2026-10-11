@@ -399,6 +399,7 @@ pub struct ProduceAck {
     base_offset: u64,
     high_watermark: u64,
     archived_through: u64,
+    managed_commit_epoch: Option<u64>,
 }
 
 impl ProduceAck {
@@ -416,7 +417,26 @@ impl ProduceAck {
             base_offset,
             high_watermark,
             archived_through,
+            managed_commit_epoch: None,
         })
+    }
+
+    /// Mark this acknowledgement as given after the managed consensus
+    /// committed the batch under lease `epoch` (ADR 0111 §1).
+    ///
+    /// Carried on the wire so a producer that asked for
+    /// `AckProfile::ManagedMajority` can tell that answer from a single
+    /// broker's: without it, a producer pointed at a broker running the
+    /// stream locally would read an fsync as "survives a zone".
+    pub fn with_managed_commit(mut self, epoch: u64) -> Self {
+        self.managed_commit_epoch = Some(epoch);
+        self
+    }
+
+    /// The lease epoch the managed consensus committed this batch under, or
+    /// `None` when the broker acknowledged on its own disk.
+    pub fn managed_commit_epoch(&self) -> Option<u64> {
+        self.managed_commit_epoch
     }
 
     pub fn stream(&self) -> &str {
@@ -443,6 +463,8 @@ struct ProduceAckWire {
     base_offset: u64,
     high_watermark: u64,
     archived_through: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_commit_epoch: Option<u64>,
 }
 
 impl From<ProduceAck> for ProduceAckWire {
@@ -453,6 +475,7 @@ impl From<ProduceAck> for ProduceAckWire {
             base_offset: value.base_offset,
             high_watermark: value.high_watermark,
             archived_through: value.archived_through,
+            managed_commit_epoch: value.managed_commit_epoch,
         }
     }
 }
@@ -461,13 +484,17 @@ impl TryFrom<ProduceAckWire> for ProduceAck {
     type Error = Error;
 
     fn try_from(wire: ProduceAckWire) -> Result<Self> {
-        ProduceAck::new(
+        let ack = ProduceAck::new(
             wire.stream,
             wire.partition,
             wire.base_offset,
             wire.high_watermark,
             wire.archived_through,
-        )
+        )?;
+        Ok(match wire.managed_commit_epoch {
+            Some(epoch) => ack.with_managed_commit(epoch),
+            None => ack,
+        })
     }
 }
 

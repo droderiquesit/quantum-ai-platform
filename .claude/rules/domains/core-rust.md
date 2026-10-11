@@ -5,8 +5,10 @@
 
 ## Approved
 
-- Rust 2024. Blocking I/O with an explicit timeout on every call that leaves
-  the process.
+- Rust 2024. An explicit timeout on every call that leaves the process.
+  Blocking I/O by default; `tokio` where an item is better served by it
+  (ADR 0109), never on the decision core or the cell's pass without a
+  committed measurement.
 - `Result` everywhere fallible, with `qip_core::error::Error` and a constructor
   naming the class (`invalid`, `denied`, `io`, `numeric`).
 - Errors are refusals whose message names what to do instead.
@@ -22,7 +24,7 @@
 - `unwrap()`/`expect()` outside `#[cfg(test)]` and `tests/`.
 - `std::env` outside `backend/crates/apps/**` — a service that reads the environment
   cannot be tested and cannot be deployed twice with different settings.
-- Any new dependency without an ADR.
+- Any crate not on `scripts/dependency-allowlist.txt` with its admitting ADR (ADR 0109).
 - Clamping an invalid input instead of refusing it.
 
 ## Required evidence

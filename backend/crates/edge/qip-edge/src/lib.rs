@@ -41,6 +41,8 @@ pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;
 pub mod feasibility;
+/// The fencing epoch a cell places under beside a standby (R12-REFLEX-8069).
+pub mod fencing;
 /// Funding rates and borrow availability per instrument (REFLEX-021).
 pub mod funding;
 pub mod journal;
@@ -63,18 +65,21 @@ pub mod region;
 pub mod reservation;
 /// What a cell must be shown before it resumes after a crash (§36.3).
 pub mod resume;
+pub mod risk_gate;
 pub mod seam;
 /// §56.2 rule 21: whether a leg's funding is usable when the leg fires.
 pub mod settlement;
 pub mod telemetry;
+pub mod trust;
 
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
     Cell, CellConfig, ConfirmedFill, CrossingInterval, DispositionLine, DispositionVerdict,
     ExecutionReport, GATE_AWAITING_RECONCILIATION, GATE_CYCLE_RESTING, GATE_DARK_REGION,
-    GATE_DISPOSITION, GATE_FILL_DISPERSION, GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION,
-    GATE_PATH_ROUTER, GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer,
-    PolledHalt, PricingPolicy, RoutedCycle, WorkReport,
+    GATE_DISPOSITION, GATE_ENVELOPE_LEVERAGE, GATE_ENVELOPE_LIQUIDITY, GATE_ENVELOPE_UNBOUNDED,
+    GATE_FILL_DISPERSION, GATE_LIVE_VENUE, GATE_MASS_CANCEL, GATE_PATH_EXTENSION, GATE_PATH_ROUTER,
+    GATE_QUOTE_BUDGET, MAX_OPEN_ORDERS, OpenOrder, PlacedOrder, Placer, PolledHalt, PricingPolicy,
+    RoutedCycle, WorkReport,
 };
 pub use decomposition::{
     Completion, DEFAULT_MINIMUM_VIABLE_FRACTION, Decomposition, DecompositionPolicy, LegSize,
@@ -83,6 +88,7 @@ pub use dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, VenueFillTi
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use feasibility::{Granularity, Infeasible, VenueModel};
+pub use fencing::{Fence, FenceStatus, GATE_FENCED};
 pub use funding::{BorrowAvailability, FundingRate, FundingState};
 pub use journal::{Decision, FileMirror, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch};
 pub use mesh::{
@@ -101,6 +107,8 @@ pub use quoting::{
 pub use region::{DarkSource, RegionOutlook};
 pub use reservation::{Rebase, RegionAllocation, RegionTable};
 pub use resume::{ResumeDiscipline, VenueAccount};
+pub use risk_gate::{CellRiskGate, GATE_RISK};
 pub use seam::{CellLiquidity, value_kind, value_type};
 pub use settlement::{GATE_SETTLEMENT, SettlementConvention, SettlementTerms};
 pub use telemetry::CellMetrics;
+pub use trust::TrustRoot;

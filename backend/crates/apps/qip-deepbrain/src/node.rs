@@ -121,6 +121,20 @@ pub struct StepOutcome {
     /// pass answer different questions and a cycle line that merged them
     /// would not say which one ran.
     pub discovery: Option<qip_kernel::SourceAssessment>,
+    /// What the research loop's sweep did, on the cycles where one ran
+    /// (`research.rs`). A fourth cadence beside the three above.
+    pub research: Option<crate::research::ResearchRound>,
+    /// What the operations loop observed of this iteration (`operations.rs`).
+    pub operations: Option<crate::operations::OperationsRound>,
+    /// What the tick desk's round did, on the cycles where one ran
+    /// (`tick_desk.rs`): the replay of recorded market history and every
+    /// label, model, fusion and future grown from it.
+    pub tick: Option<crate::tick_desk::TickRound>,
+    /// A research sweep or operations pass that failed. Reported on the cycle
+    /// line rather than stopping the node: both loops are advisory, and a
+    /// node that stopped researching because a detector refused a reading
+    /// would stop deciding for a reason that has nothing to do with deciding.
+    pub side_failures: Vec<String>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase an overrun.
     pub elapsed: Duration,
@@ -147,6 +161,35 @@ impl StepOutcome {
     }
 }
 
+/// Tell the forecast lattice whether the strategic service is up, from the
+/// deep brain's own health surface (WORLD-9025).
+///
+/// The deep brain is where the weeks-to-years lane is answered, and until
+/// 2026-10-11 the lattice's "strategic service" was a flag only tests set.
+/// It was always up in every binary, so the backlog that an outage is meant
+/// to accumulate could never accumulate in a running node. The service is
+/// now down whenever the node's `/ready` would say it is: stalled, failing
+/// cycle after cycle, halted by the kill switch, or stopping. Strategic
+/// questions then wait in the lattice's bounded backlog while every stage
+/// still runs, and they are answered when the node recovers. *Warming*,
+/// meaning no cycle has completed yet, does not count as an outage. Every
+/// node warms, and holding its first strategic answers back a cycle would be
+/// a backlog nothing went wrong to cause.
+///
+/// Returns what it set.
+pub fn gate_strategic_service(
+    platform: &mut Platform,
+    status: &NodeStatus,
+    now: Timestamp,
+) -> bool {
+    let available = matches!(
+        status.unready(now),
+        None | Some(crate::status::Unready::Warming)
+    );
+    platform.lattice_mut().set_strategic_available(available);
+    available
+}
+
 /// One pass: run a cycle and time it.
 ///
 /// `now` is passed in rather than read here because everything downstream takes
@@ -166,6 +209,10 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         evolution: None,
         learning: None,
         discovery: None,
+        research: None,
+        operations: None,
+        tick: None,
+        side_failures: Vec::new(),
     }
 }
 
@@ -275,6 +322,29 @@ pub fn should_stop(
 ///
 /// The stop flag is read between cycles and again inside [`wait`], so a quiesce
 /// takes effect within one cycle plus a poll interval and never mid-cycle.
+/// The loops run in the gap after each cycle beside evolution: research and
+/// operations. Both optional, so a test that drives the cycle alone passes
+/// [`Loops::default`] and gets the node it always had.
+#[derive(Debug, Default)]
+pub struct Loops<'a> {
+    pub research: Option<&'a mut crate::research::ResearchLoop>,
+    pub operations: Option<&'a mut crate::operations::Operations>,
+    /// The tick desk (`tick_desk.rs`). Advisory like research: a round that
+    /// fails is a side failure on the cycle line, never a stopped node.
+    pub tick: Option<&'a mut crate::tick_desk::TickDesk>,
+    /// The breadth plan's permission register, re-read before each cycle so
+    /// a revocation withdraws a created market at that cycle's review
+    /// (`breadth.rs`, R12-EXEC-5081). A refused register is a side failure
+    /// on the cycle line — after it has revoked every permission.
+    pub permissions: Option<&'a mut crate::breadth::PermissionWatch>,
+    /// Where each research sweep's signals and attention events are
+    /// journaled (`ambient_journal.rs`). A sweep whose record cannot be
+    /// written is a side failure on the cycle line, never a stopped node.
+    pub ambient: Option<&'a mut crate::ambient_journal::AmbientJournal>,
+}
+
+/// [`run_with`] and no research or operations loop.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     platform: &mut Platform,
     archive: &ChainArchive,
@@ -283,7 +353,35 @@ pub fn run(
     stop: &Arc<AtomicBool>,
     clock: &Arc<dyn qip_core::Clock>,
     restored_through: u64,
+    evolution: Option<&mut crate::evolution::EvolutionEngine>,
+    on_cycle: impl FnMut(&StepOutcome),
+) -> Result<RunSummary> {
+    run_with(
+        platform,
+        archive,
+        config,
+        status,
+        stop,
+        clock,
+        restored_through,
+        evolution,
+        Loops::default(),
+        on_cycle,
+    )
+}
+
+/// The run loop, with the research and operations loops attached.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with(
+    platform: &mut Platform,
+    archive: &ChainArchive,
+    config: &DeepBrainConfig,
+    status: &Arc<Mutex<NodeStatus>>,
+    stop: &Arc<AtomicBool>,
+    clock: &Arc<dyn qip_core::Clock>,
+    restored_through: u64,
     mut evolution: Option<&mut crate::evolution::EvolutionEngine>,
+    mut loops: Loops<'_>,
     mut on_cycle: impl FnMut(&StepOutcome),
 ) -> Result<RunSummary> {
     let started = clock.now();
@@ -321,6 +419,11 @@ pub fn run(
             _ => clock.now(),
         };
         set_status(status, |status| status.cycle_started(now));
+        // The operations loop's series is the whole iteration — the cycle and
+        // everything run in the gap after it — because the remediation it can
+        // apply sheds gap work, and a shift the cycle alone caused would be
+        // one shedding could not touch.
+        let iteration_began = std::time::Instant::now();
 
         // Sense before thinking: the engine's adapter feeds the platform the
         // records this cycle will reason over, and tees bars for the search.
@@ -329,8 +432,22 @@ pub fn run(
             None => 0,
         };
 
+        if let Ok(guard) = status.lock() {
+            gate_strategic_service(platform, &guard, now);
+        }
+
+        let revised = loops
+            .permissions
+            .as_deref_mut()
+            .map(|watch| watch.refresh(platform));
+
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
+        if let Some(Err(error)) = revised {
+            outcome
+                .side_failures
+                .push(format!("breadth permissions: {}", error.message()));
+        }
 
         // A failed cycle is the one this loop already counts as failed: a
         // stage that did not run. An overrun is not one — on this node it is
@@ -367,6 +484,76 @@ pub fn run(
             // either would make "no candidates are configured" and "the
             // search happened not to run" read alike.
             outcome.discovery = engine.maybe_discover(platform, cycles, now)?;
+        }
+        // Research after discovery, so a source catalogued this cycle is
+        // licensed for this sweep's admissions. The bounds are the discovery
+        // desk's; with no desk there are no licensed sources and no eligible
+        // jurisdiction, so every admission is refused by name — fail closed
+        // rather than research under a jurisdiction nobody stated.
+        let shed = loops
+            .operations
+            .as_deref()
+            .is_some_and(|ops| ops.is_disabled("research"));
+        if let Some(research) = loops.research.as_deref_mut()
+            && !shed
+        {
+            let (licensed, eligible) = evolution
+                .as_deref()
+                .and_then(|engine| engine.discovery_desk())
+                .map(|desk| {
+                    (
+                        desk.licensed_sources().clone(),
+                        desk.eligible_jurisdictions().clone(),
+                    )
+                })
+                .unwrap_or_default();
+            match research.maybe_sweep(platform, cycles, now, &licensed, &eligible) {
+                Ok(round) => outcome.research = round,
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("research: {}", error.message())),
+            }
+            if let (Some(round), Some(journal)) =
+                (outcome.research.as_ref(), loops.ambient.as_deref_mut())
+                && let Err(error) = journal.record(cycles, round, now)
+            {
+                outcome
+                    .side_failures
+                    .push(format!("ambient journal: {}", error.message()));
+            }
+        }
+        if let Some(desk) = loops.tick.as_deref_mut() {
+            let world = platform.world();
+            match desk.maybe_round(world.graph(), cycles, now) {
+                Ok(round) => outcome.tick = round,
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("tick desk: {}", error.message())),
+            }
+        }
+        if let Some(operations) = loops.operations.as_deref_mut() {
+            let drifted: Vec<String> = outcome
+                .learning
+                .iter()
+                .flat_map(|round| round.drift.iter())
+                .filter(|d| d.above_threshold)
+                .map(|d| d.reference.clone())
+                .collect();
+            let facts = crate::operations::IterationFacts {
+                at: now,
+                cycle: outcome.report.cycle,
+                cycle_started_at: outcome.report.started_at,
+                iteration_ms: monotonic(iteration_began).as_secs_f64() * 1000.0,
+                problems: outcome.report.problems().len(),
+                anomalies: outcome.research.as_ref().map(|r| r.anomalies),
+                drifted: &drifted,
+            };
+            match operations.observe(platform, &facts) {
+                Ok(round) => outcome.operations = Some(round),
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("operations: {}", error.message())),
+            }
         }
         if !outcome.report.traversed_every_stage() {
             failed += 1;
@@ -615,6 +802,47 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// WORLD-9025 on the binary's path: a node whose kill switch is tripped
+    /// reports unready, so the lattice holds its strategic questions, and
+    /// the cycle still traverses every stage. Execution is never what an
+    /// outage stops. Recovered, the service is up again.
+    ///
+    /// Mutation: have `gate_strategic_service` always set `true`, and the
+    /// halted node still answers strategic questions.
+    #[test]
+    fn a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs() {
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock);
+        let status = shared(&brisk());
+        let mut status = status.lock().expect("a fresh lock");
+        assert!(
+            gate_strategic_service(&mut platform, &status, start()),
+            "premise: a warming node is not an outage"
+        );
+
+        let record = |halted: bool| CycleRecord {
+            started_at: start(),
+            finished_at: start(),
+            elapsed: Duration::ZERO,
+            traversed_every_stage: true,
+            problems: Vec::new(),
+            archived: 0,
+            halted,
+        };
+        status.cycle_finished(&record(true));
+        assert!(!gate_strategic_service(&mut platform, &status, start()));
+        assert!(!platform.lattice().strategic_available());
+        let outcome = step(&mut platform, start(), Duration::from_secs(300));
+        assert!(
+            outcome.report.traversed_every_stage(),
+            "a strategic outage stopped the cycle"
+        );
+
+        status.cycle_finished(&record(false));
+        assert!(gate_strategic_service(&mut platform, &status, start()));
+        assert!(platform.lattice().strategic_available());
     }
 
     #[test]

@@ -452,6 +452,17 @@ impl RegistrationDecision {
         }
         Ok(registration)
     }
+
+    /// The mesh catalogue entry, owned by a named, accountable operator
+    /// (R12-DATA-2020) rather than by whatever string a configuration
+    /// defaulted to. The legality assessment travels as the entry's verified
+    /// quality checks, exactly as [`Self::catalogue_entry`] records it.
+    pub fn catalogue_entry_attributed(
+        &self,
+        operator: &crate::operator::NamedOperator,
+    ) -> Result<DatasetRegistration> {
+        self.catalogue_entry(operator.as_str())
+    }
 }
 
 /// The five things the Source Registry holds about a source (EXPAND-033),

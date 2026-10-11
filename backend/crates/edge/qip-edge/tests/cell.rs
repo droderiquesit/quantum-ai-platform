@@ -10,7 +10,7 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
@@ -165,7 +165,7 @@ fn a_verified_envelope_admits_then_refuses_whole_as_capital_is_used() -> Result<
     let fresh = Utilisation::default();
     assert!(matches!(
         verified.admit(&venue, dec!("300"), &fresh, t(10)),
-        CapitalGrant::Full
+        CapitalAdmission::Full
     ));
 
     let mostly_used = Utilisation {
@@ -177,19 +177,19 @@ fn a_verified_envelope_admits_then_refuses_whole_as_capital_is_used() -> Result<
     // be what stops it.
     let over_headroom = verified.admit(&venue, dec!("400"), &mostly_used, t(10));
     assert!(
-        matches!(over_headroom, CapitalGrant::Refused(_)),
+        matches!(over_headroom, CapitalAdmission::Refused(_)),
         "400 against 200 of headroom must be refused whole, got {over_headroom:?}"
     );
     assert_eq!(
         over_headroom,
-        CapitalGrant::Refused(
+        CapitalAdmission::Refused(
             "order notional 400 exceeds the 200 of the 1000 gross limit left".into()
         )
     );
     // What still fits is still taken whole.
     assert!(matches!(
         verified.admit(&venue, dec!("200"), &mostly_used, t(10)),
-        CapitalGrant::Full
+        CapitalAdmission::Full
     ));
 
     let exhausted = Utilisation {

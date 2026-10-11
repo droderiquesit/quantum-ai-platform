@@ -25,7 +25,8 @@ fn quote(bid: &str, ask: &str, bid_size: i64, ask_size: i64) -> Quote {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
         at: now(),
-        capture_time: None,
+        capture_time: now(),
+        sequence: None,
         bid: Decimal::parse(bid).unwrap(),
         ask: Decimal::parse(ask).unwrap(),
         bid_size: Decimal::from_int(bid_size),
@@ -90,7 +91,8 @@ fn trade_aggressor_is_inferred_from_the_prevailing_quote() {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
         at: now(),
-        capture_time: None,
+        capture_time: now(),
+        sequence: None,
         price: dec!("100.08"),
         size: Decimal::from_int(100),
         aggressor: None,
@@ -175,11 +177,18 @@ fn a_market_record_that_states_no_quality_does_not_decode() {
     );
 
     // Every market record type carries one, and every one of them refuses.
+    // `capture_time` is stated so that the only thing missing is the
+    // quality block: since `capture_time` became required, a quote without
+    // it fails to decode for that reason alone, and this assertion would
+    // pass whatever happened to quality. The error must name `quality`.
     let quote_json = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+        "capture_time":"2026-08-22T00:00:00Z",
         "bid":"10.00","ask":"10.02","bid_size":"100","ask_size":"100"}"#;
+    let error = serde_json::from_str::<Quote>(quote_json)
+        .expect_err("a quote with no quality block decoded as a perfect measurement");
     assert!(
-        serde_json::from_str::<Quote>(quote_json).is_err(),
-        "a quote with no quality block decoded as a perfect measurement"
+        error.to_string().contains("quality"),
+        "the failure has to name the missing quality block: {error}"
     );
     assert!(
         serde_json::from_str::<Trade>(&TRADE_JSON.replace(QUALITY_JSON, "null")).is_err(),
@@ -201,8 +210,11 @@ fn a_market_record_that_states_no_quality_does_not_decode() {
 const QUALITY_JSON: &str =
     r#"{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}"#;
 
-/// A trade as it is actually written, with every field the decoder requires.
+/// A trade as it is actually written, with every field the decoder requires —
+/// including `capture_time`, required since the capture instant stopped being
+/// an `Option` the kernel read as `unwrap_or(at)`.
 const TRADE_JSON: &str = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+    "capture_time":"2026-08-22T00:00:00.250Z",
     "price":"10.01","size":"100","condition":"regular","quality":{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}}"#;
 
 // --- order book -------------------------------------------------------------
@@ -1248,7 +1260,8 @@ fn microstructure_metrics_decompose_the_spread() {
             object_id: id("obj-aapl"),
             venue: "XNYS".into(),
             at: now().saturating_add(Duration::from_secs(i)),
-            capture_time: None,
+            capture_time: now().saturating_add(Duration::from_secs(i)),
+            sequence: None,
             price: dec!("100.10"),
             size: Decimal::from_int(100),
             aggressor: Some(Side::Buy),
@@ -1291,7 +1304,8 @@ fn non_price_forming_trades_are_excluded() {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
         at: now(),
-        capture_time: None,
+        capture_time: now(),
+        sequence: None,
         price: dec!("95.00"),
         size: Decimal::from_int(100_000),
         aggressor: Some(Side::Sell),
@@ -1344,7 +1358,8 @@ fn the_snapshot_tracks_the_latest_state_and_advances_its_clock() {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
         at: later,
-        capture_time: None,
+        capture_time: later,
+        sequence: None,
         price: dec!("100.05"),
         size: Decimal::from_int(250),
         aggressor: None,
@@ -1386,7 +1401,8 @@ fn rolling_the_session_clears_volume_but_keeps_prices() {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
         at: now(),
-        capture_time: None,
+        capture_time: now(),
+        sequence: None,
         price: dec!("100"),
         size: Decimal::from_int(1000),
         aggressor: None,

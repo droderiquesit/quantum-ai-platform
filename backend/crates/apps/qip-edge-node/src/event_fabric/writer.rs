@@ -176,6 +176,31 @@ pub struct HandoffReceiver {
     inner: Receiver<Handoff>,
 }
 
+/// What [`HandoffReceiver::receive`] found within its wait.
+#[derive(Debug)]
+pub enum Received {
+    Handoff(Handoff),
+    /// Nothing arrived within the wait.
+    Idle,
+    /// Every sender has gone and the channel is empty.
+    Closed,
+}
+
+impl HandoffReceiver {
+    /// Wait at most `wait` for one handoff.
+    ///
+    /// For a stage between the decision thread and the spool writer — the
+    /// journal relay — which must notice a stop request at a bounded
+    /// cadence rather than park in a receive nobody can interrupt.
+    pub fn receive(&self, wait: std::time::Duration) -> Received {
+        match self.inner.recv_timeout(wait) {
+            Ok(handoff) => Received::Handoff(handoff),
+            Err(RecvTimeoutError::Timeout) => Received::Idle,
+            Err(RecvTimeoutError::Disconnected) => Received::Closed,
+        }
+    }
+}
+
 /// A bounded handoff channel holding at most `capacity` values.
 ///
 /// Refuses a capacity of zero: a zero-capacity channel is a rendezvous, on
@@ -400,6 +425,28 @@ impl Spool for SegmentLog {
             }
         }
         Ok(SpoolSizes { used, unarchived })
+    }
+
+    fn manifest_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        SegmentLog::manifest_get(self, key)
+    }
+
+    fn manifest_put(&mut self, key: &str, bytes: &[u8]) -> Result<()> {
+        SegmentLog::manifest_put(self, key, bytes)
+    }
+}
+
+/// The spool shared with the drain. [`SegmentLog`] serialises every call
+/// behind its own lock, so the writer appending and the drain reading and
+/// retiring segments are two holders of one log rather than two logs — a
+/// second `SegmentLog::open` on the directory is refused by its guard.
+impl Spool for Arc<SegmentLog> {
+    fn append(&mut self, batch: &Batch) -> Result<u64> {
+        SegmentLog::append(self, batch)
+    }
+
+    fn sizes(&self) -> Result<SpoolSizes> {
+        Spool::sizes(&**self)
     }
 
     fn manifest_get(&self, key: &str) -> Result<Option<Vec<u8>>> {

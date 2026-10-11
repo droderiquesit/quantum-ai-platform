@@ -11,10 +11,10 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use qip_contracts::fabric_envelope::QoSClass;
 use qip_contracts::policy::{PolicyFrame, RegimeChange, RiskGate};
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
+use qip_events::event_fabric::policy::{AckProfile, OverloadPolicy, QosClass};
 use serde_json::json;
 
 fn t(secs: i64) -> Timestamp {
@@ -455,11 +455,23 @@ fn regime_change_signatures_are_deterministic_per_signer() -> Result<()> {
 
 // --- Paper Trading Boundary Verification ------------------------------------
 
-/// Verify P0CriticalControl is the correct QoS class for policy frames.
+/// Policy frames travel on the P0 control class, which waits for the
+/// strongest acknowledgement the fabric gives and is never shed.
+///
+/// This asserted, until W0.4, that a second `QoSClass` in `qip-contracts`
+/// declared replication factor three and a quorum acknowledgement for P0 —
+/// numbers no broker enforced, on a type nothing outside this test used,
+/// beside the `qip-events` class the broker does enforce. The duplicate is
+/// gone and this reads the one the broker reads.
 #[test]
 fn policy_frames_are_p0_critical_control_priority() {
-    // This is a compile-time check that the type exists and is accessible
-    assert_eq!(QoSClass::P0CriticalControl.as_str(), "p0_critical_control");
-    assert!(QoSClass::P0CriticalControl.requires_quorum_ack());
-    assert_eq!(QoSClass::P0CriticalControl.replication_factor(), 3);
+    let class = QosClass::P0Control;
+    assert_eq!(class.as_str(), "p0_control");
+    assert_eq!(class.ack_floor(), AckProfile::Archived);
+    assert_eq!(class.batch_schema_id(), 0);
+    assert!(!class.admits_lossy_tolerable_topics());
+    assert_eq!(
+        class.required_overload_policy(),
+        Some(OverloadPolicy::RefuseProducer)
+    );
 }

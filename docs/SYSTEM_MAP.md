@@ -60,7 +60,7 @@ every standing decision a v12 item contradicts (conflicts C1 to C8) keeps its fo
   a trading venue, a general-purpose ML platform (`CLAUDE.md`).
 - **Delivered state.** `execution_nodes = {}` in every environment; no process of the platform is running
   anywhere; the dev project has billing disabled (`docs/ops/hermes-baseline-2026-10-04.md` s3); the GitOps
-  plane is suspended (ADR 0093); `docs/architecture/current-state.md` ("No process of this platform is running in any environment today").
+  plane is suspended (ADR 0093); `execution_nodes = {}` in every `infrastructure/environments/*/terraform.tfvars`: no process of this platform is running in any environment today.
 - **The tension between the two, kept visible.** v12 describes live trading, market creation, purchasing and
   public communication as product capabilities; the repo's non-goals and ADR 0021 refuse them. The map treats
   the v12 product as the target and the paper-only form as the only buildable one (see section 7, T1).
@@ -70,7 +70,7 @@ every standing decision a v12 item contradicts (conflicts C1 to C8) keeps its fo
 | User | Source | What they do |
 |---|---|---|
 | Research and risk desk (the only stated intended user) | `CLAUDE.md` "Intended users are the research and risk desk running it, not external customers" | Run the loop, read the book, halt it, sign recalibrations |
-| Operator with a named identity (four API roles: Monitor, Viewer, Analyst, Operator) | `docs/architecture/current-state.md` (qip-api::auth); ADR 0038 (passkeys), ADR 0041 (venue registration is one operator's attributed click), ADR 0076 (per-person operator identity) | Registers venues, signs reinstatements and recalibrations, trips the kill switch |
+| Operator with a named identity (four API roles: Monitor, Viewer, Analyst, Operator) | `qip-api::auth`; ADR 0038 (passkeys), ADR 0041 (venue registration is one operator's attributed click), ADR 0076 (per-person operator identity) | Registers venues, signs reinstatements and recalibrations, trips the kill switch |
 | Customer, mandate owner, "user/mandate ownership" | `v12 p28 s15` (subledger), `GCP3 p14 s12` (Identity Platform for customer identities); portal has sign-up, marketing and legal pages (`frontend/portal/src/app/(auth)`, `(marketing)`) | **Unresolved**: see section 7, U22 |
 | Engineering agents (Hermes agency, Claude agents) | `GCP3 p14-15 s13`, `HERMES_MISSION.md s4`, `docs/adr/` ADR 0098 | Change code and infrastructure through the normal pipeline only |
 | Counterparties: venues, custodians, data vendors, IBM Quantum | `v12 p6-7 s3`; `infrastructure/egress/vendored-images.txt` | Not users; the platform's external dependencies |
@@ -109,7 +109,7 @@ therefore not counted (see `docs/MASTER_ROADMAP.md` "In-flight work").
 | ID | Blueprint component (cite) | Real crate/path, or "not built" | Status | Owner (proposed) |
 |---|---|---|---|---|
 | S01 | Global Scout Fabric: discovery, access, licensing, source scoring (`v12 p12-13 s6`; `p35 s23`) | `services/qip-data-finder` (catalogue, licensing, robots, freshness, registration); `apps/qip-deepbrain/src/{discovery,connectors,campaign}.rs` | partial | D / DAI |
-| S02 | Evidence, Provenance and Truth Fabric (`v12 p13 s7`) | `services/qip-reasoning-engine/src/{evidence,hypothesis,redteam}.rs`; `services/qip-streaming/src/provenance.rs`; `libs/qip-contracts/src/governance.rs` (`Provenance`, `Entitlement`) | partial; no `EvidencePacket` type | D / DAI |
+| S02 | Evidence, Provenance and Truth Fabric (`v12 p13 s7`) | `services/qip-reasoning-engine/src/{evidence,hypothesis,redteam}.rs`; `services/qip-streaming/src/provenance.rs`; `libs/qip-contracts/src/governance.rs` (`Provenance`, `Entitlement`) | partial; the `EvidencePacket` contract is typed in `libs/qip-contracts/src/evidence_packet.rs` (`05f596a4`) and nothing yet produces one | D / DAI |
 | S03 | Market Intelligence and Tick Learning Fabric (`v12 p13-15 s8`) | `services/qip-market-ingestion/src/{tape,replay,depth}.rs`; `services/{qip-learning-engine,qip-training}`; `edge/qip-feature-dag` | partial | D / DAI |
 | S04 | Tick capture, clock/sequence normalisation, book reconstruction (`v12 p14 s8.2`) | `edge/{qip-protocols,qip-sequencing,qip-orderbook}`; `libs/qip-contracts/src/{message,market_event,time}.rs` | built (simulated feed only) | C / BE |
 | S05 | Immutable Tick Lake (`v12 p14 s8.2`; `GCP3 p10 s9.2` tier T) | `apps/qip-fabricd/src/archiver.rs` and `libs/qip-storage/src/segment/archive.rs` exist; the archiver is a stub in this tree per `RM-P2-06` | not built | C / DAI, BE |
@@ -454,7 +454,7 @@ Sources: `CLAUDE.md`, `.claude/rules/**`, the ADRs they cite.
 | RP-09 | No UI control could submit an order | exists in part: `no_signing_or_withdrawal_path_appears_in_the_venue_tooling_or_the_portal` (`security.rs`); Playwright test names not read | test, portal | P |
 | RP-10 | Autonomy changes only through `AutonomyController::request_change` with an authenticated operator identity; the CLI cannot raise autonomy | `every_operatoridentity_is_built_from_the_principals_durable_subject_not_a_session_value` (`security.rs`); `the_application_layer_signs_nothing_but_the_centres_policy_and_halt` (`api_boundary.rs`) | test | Y |
 | RP-11 | The kill switch's release is as permanent as its engagement; the console cannot clear one | `the_kill_switchs_release_is_as_permanent_as_its_engagement` (`qip-events/tests/backbone.rs`); `a_tripped_kill_switch_stops_the_assembled_platform` (`qip-kernel/tests/kernel.rs`) | test | Y |
-| RP-12 | Two dependencies only: `serde`, `serde_json` (ADR 0002, 0009) | `no_crate_declares_a_third_party_dependency_beyond_the_two_permitted`, `the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two` (`architecture.rs`); `scripts/check-dependencies.sh`; `cargo deny check` | test, dependency policy, cargo-deny | Y |
+| RP-12 | Decision core holds two (`serde`, `serde_json`, ADR 0002, 0009); every other crate only from the committed allow-list (ADR 0109) | `no_crate_declares_a_third_party_dependency_the_allow_list_does_not_admit`, `the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two` (`architecture.rs`); `scripts/check-dependencies.sh`; `cargo deny check` | test, dependency policy, cargo-deny | Y |
 | RP-13 | No async runtime (ADR 0001, 0011) | exists in part: made impossible by RP-12 (no `tokio` in the allowlist); no test names an async runtime | dependency policy, cargo-deny | P |
 | RP-14 | Dependencies point inward only: lib not on service, service not on runtime, nothing on an app | `a_library_never_depends_on_a_service_or_an_application`, `the_dependency_graph_is_acyclic`, `only_the_composition_root_assembles_the_platform` (`architecture.rs`). Service to runtime and "nothing depends on an app" are not asserted; `qip-cli` depends on `qip-api` and `qip-api` on `qip-web` (U19) | test | P |
 | RP-15 | No library, service, runtime or edge crate reads the process environment | `no_library_service_runtime_or_edge_crate_reads_the_process_environment` (`architecture.rs`) | test | Y |
@@ -486,7 +486,7 @@ Sources: `CLAUDE.md`, `.claude/rules/**`, the ADRs they cite.
 | RP-41 | The egress proxy offers no route to a venue and carries no credential | `the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order`, `the_proxy_holds_no_credential_and_no_identity_of_its_own` (`egress.rs`) | test | Y |
 | RP-42 | Every ADR number claimed in the index has a body | exists in part: `every_decision_record_is_listed_in_the_index` (`documentation.rs`) checks files into the index only; 0097 and 0101 are claimed with no body (`RM-P0-12`); PROPOSED `every_index_row_links_an_existing_body` would fail today | test | P |
 | RP-43 | Every new test is mutation-verified | PROPOSED process gate: PR template field plus a reviewer check; nothing automated exists | none | N |
-| RP-44 | Tests run with `--no-fail-fast` | `ci.yml` `test` job passes the flag; `docs/architecture/current-state.md` says the Makefile `test` target omits it (not re-verified here) | test | P |
+| RP-44 | Tests run with `--no-fail-fast` | `ci.yml` `test` job passes the flag; the Makefile `test` target: check with `grep -n 'cargo test' Makefile` | test | P |
 | RP-45 | The backend is Rust; non-Rust tooling is an accepted set (ADR 0001) | `every_source_file_in_the_backend_workspace_is_written_in_rust`, `the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set` (`blueprint_rules.rs`) | test | Y |
 | RP-46 | Capability-gated agents: a deep-brain agent holds no market-touching capability; the fast brain refuses a hosted agent that could call a model | `a_research_agent_cannot_be_granted_a_market_touching_capability`, `an_agent_that_holds_a_language_model_cannot_touch_the_market` (`security.rs`, `architecture.rs`) | test | Y |
 | RP-47 | Every mutating API route raises a typed intent and requires its role | `every_mutating_route_is_reviewed_here_and_each_raises_a_typed_intent` (`api_boundary.rs`); `an_unauthenticated_caller_cannot_reach_a_privileged_route`, `a_caller_with_the_wrong_role_cannot_reach_a_privileged_route` (`security.rs`) | test | Y |
@@ -503,7 +503,7 @@ section 5 as a whole and RP-26; item 7 is HM-04.
 | HM-01 | Never force-push `main`; never delete the repo, a release tag, a backup or an unmerged branch (s10.2) | PROPOSED `main_branch_protection_refuses_force_pushes_and_deletion` (scheduled `gh api` check; branch protection is GitHub configuration, not in the tree) | scheduled workflow (to be created) | N |
 | HM-02 | Never destroy a database or environment holding data not backed up and restore-tested (s10.3) | exists in part: `every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed` (`infrastructure.rs`); no restore proof exists | infrastructure | P |
 | HM-03 | Never exceed 25 USD/day; never leave a free tier without a directive (s10.4, s9) | PROPOSED `every_environment_declares_a_budget_with_alerts_at_50_70_and_90_percent` (**no billing budget resource exists**) | infrastructure | N |
-| HM-04 | Nothing fabricated; nothing claimed that was not measured (s10.7) | exists in part: `scripts/audit-register.py` re-runs a register's cited commands (not wired into `ci.yml` per `current-state.md`); `no_scored_plan_document_calls_a_search_empty_that_is_not` (`documentation.rs`) | test | P |
+| HM-04 | Nothing fabricated; nothing claimed that was not measured (s10.7) | exists in part: `no_scored_plan_document_calls_a_search_empty_that_is_not` (`documentation.rs`) | test | P |
 
 ## 6. Acceptance criteria: v12 s31 as named tests
 

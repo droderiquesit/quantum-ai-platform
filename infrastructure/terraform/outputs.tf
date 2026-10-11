@@ -539,3 +539,51 @@ output "dns_zone" {
     ds_record      = module.dns_zone[0].ds_record
   }
 }
+
+# --- ADR 0110's artefact signing (artefact-signing.tf) ------------------------
+
+output "artefact_trust_bundle" {
+  description = <<-EOT
+    The trust bundle for this environment's keys, in
+    `qip_contracts::trust::TrustBundle`'s committed shape, or null where
+    `artefact_signing` is. Rendered from the public keys Cloud KMS returns for
+    the versions the signers use — read, never pasted, so the bundle and the
+    keys cannot be two different facts. Commit it under `infrastructure/trust/`
+    (`terraform output -json artefact_trust_bundle | jq . > infrastructure/trust/<env>.json`)
+    and name it in `artefact_trust_bundle_file`; the plan then refuses it the
+    moment it stops matching. Public keys only: nothing here signs.
+  EOT
+
+  value = local.artefact_trust_bundle
+}
+
+output "artefact_signing_identities" {
+  description = <<-EOT
+    Who may sign under which key, read off the planned bindings rather than
+    rebuilt from the sets that drive them, so a harness asserting on it is
+    false the moment a binding names someone else. Null where artefact signing
+    is off.
+  EOT
+
+  value = local.artefact_signing_on ? {
+    for class, binding in google_kms_crypto_key_iam_binding.artefact_signer :
+    class => binding.members
+  } : null
+}
+
+output "model_pack_publish_identity" {
+  description = <<-EOT
+    What `.github/workflows/model-pack-publish.yml` federates to: the
+    publisher's service account, its pool's provider, the CEL condition the
+    provider is planned with and the one principal that may impersonate the
+    account. The workflow constructs the same names from the committed tfvars;
+    this is what a person compares them against.
+  EOT
+
+  value = local.artefact_signing_on ? {
+    service_account     = trimprefix(local.artefact_publisher_signer, "serviceAccount:")
+    provider            = "${local.model_pack_publish_pool}/providers/${google_iam_workload_identity_pool_provider.model_pack_publish[0].workload_identity_pool_provider_id}"
+    attribute_condition = google_iam_workload_identity_pool_provider.model_pack_publish[0].attribute_condition
+    impersonator        = google_service_account_iam_member.model_pack_publisher_impersonation[0].member
+  } : null
+}

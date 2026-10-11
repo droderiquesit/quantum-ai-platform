@@ -60,6 +60,7 @@ fn cell() -> Result<Cell> {
 fn live_peer_endpoint() -> PeerEndpoint {
     let leg = |id: &str, node: &str| EpochLeg {
         leg: id.into(),
+        execution: None,
         node: node.into(),
         size: Decimal::from_int(100),
         unwind_loss: Decimal::from_int(2),
@@ -306,7 +307,16 @@ fn nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_gra
             .filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
+        //
+        // ADR 0110 gave each type a second door, `verify_with`, which checks
+        // the signature against the cell's `TrustRoot` (the P-256 bundle, or
+        // the shared key for its last release) rather than a bare key. That
+        // is a verification, so it is counted as one — but only after the
+        // body is shown to ask the root before it constructs, because a
+        // `verify_with` that skipped the check would otherwise be admitted
+        // by its name alone.
         let verifies = code.matches("pub fn verify(").count();
+        let root_verifies = code.matches("pub fn verify_with(").count();
         let constructions = code.matches("Self {").count();
         assert_eq!(
             verifies,
@@ -314,9 +324,28 @@ fn nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_gra
             "premise: {path} declares one `verify` per verified type"
         );
         assert_eq!(
-            constructions, verifies,
-            "{path} constructs a verified value {constructions} times for {verifies} `verify` \
-             functions; the extra one is a way in that checks no signature"
+            root_verifies,
+            names.len(),
+            "premise: {path} declares one ADR 0110 `verify_with` per verified type"
+        );
+        for (index, _) in code.match_indices("pub fn verify_with(") {
+            let body = &code[index..];
+            let construct = body.find("Ok(Self {").unwrap_or_else(|| {
+                panic!("{path}: a `verify_with` constructs nothing the scan can find")
+            });
+            let before = &body[..construct];
+            assert!(
+                before.contains("root.check(") && before.contains("ArtefactClass::"),
+                "{path}: a `verify_with` constructs a verified value without first asking the \
+                 trust root to check its signature under a named artefact class"
+            );
+        }
+        assert_eq!(
+            constructions,
+            verifies + root_verifies,
+            "{path} constructs a verified value {constructions} times for {} `verify` and \
+             `verify_with` functions; the extra one is a way in that checks no signature",
+            verifies + root_verifies
         );
     }
 
@@ -347,14 +376,55 @@ fn nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_gra
         "qip-mesh depends on the edge cell; the peer protocol can now construct or apply \
          what only the signed downward path may"
     );
-    let peer = read("backend/crates/services/qip-mesh/src/peer.rs");
+    // The protocol lives in `qip-peer` since ADR 0116 (it was in
+    // `qip-contracts` from W5.4 until then), and its link in `qip-peer-link`;
+    // neither links a cell, and the same property holds of both.
+    for crate_path in ["libs/qip-peer", "edge/qip-peer-link"] {
+        let manifest = read(&format!("backend/crates/{crate_path}/Cargo.toml"));
+        assert!(
+            manifest.contains("[dependencies]")
+                && !manifest
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("qip-edge")),
+            "{crate_path} depends on the edge cell; the peer protocol can now construct or \
+             apply what only the signed downward path may"
+        );
+    }
+    let peer = read("backend/crates/libs/qip-peer/src/lib.rs");
     assert!(
         peer.contains("DOWNWARD_ONLY"),
         "premise: this is the module that refuses downward kinds from a peer"
     );
-    for name in ["qip_edge", "apply_policy", "apply_halt", "Verified"] {
+    // Code only, and `qip_edge` as a whole path segment. Round 2's move
+    // gave the module a doc line naming the transport that carried it,
+    // `qip_edge_node::peer`, and a raw `contains("qip_edge")` is true of
+    // `qip_edge_node` — the substring trap the testing rules name. The crate
+    // the property is about is `qip_edge`, the cell; a lib cannot name the
+    // app either way. The other three stay substring matches on purpose:
+    // `Verified` is meant to catch every `Verified*` type.
+    let code: String = peer
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("DOWNWARD_ONLY"),
+        "premise: the comment filter left the module's code in place"
+    );
+    let names_the_cell_crate = code.match_indices("qip_edge").any(|(at, _)| {
+        let after = code[at + "qip_edge".len()..].chars().next();
+        let before = code[..at].chars().next_back();
+        !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    });
+    assert!(
+        !names_the_cell_crate,
+        "the peer protocol names `qip_edge`; a peer frame must never be on a path to the \
+         cell's activation seam"
+    );
+    for name in ["apply_policy", "apply_halt", "Verified"] {
         assert!(
-            !peer.contains(name),
+            !code.contains(name),
             "the peer protocol names `{name}`; a peer frame must never be on a path to the \
              cell's activation seam"
         );

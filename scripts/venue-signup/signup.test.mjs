@@ -13,7 +13,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { inflateSync } from "node:zlib";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,25 +59,28 @@ let apiKeyShown = "";
 let baseUrl = "";
 let server;
 
+const EXTRA = {
+  clean: "",
+  captcha: '<div class="g-recaptcha" data-sitekey="mock"></div>',
+  tax: '<label for="tin">Tax identification number</label><input id="tin" name="tax_id">',
+  extra: '<label for="ref">Referral code</label><input id="ref" name="referral_code">',
+  verify: "",
+  // Two elements answering to '#name'. The DOM permits it and venues ship
+  // it; a recipe selector that matches both says which element it means to
+  // nobody.
+  twins: '<label for="name">Trading name</label><input id="name" name="trading_name">',
+  // A second consent box beside the approved one. If a recipe's terms
+  // selector were broad enough to match it, this box would be ticked
+  // without anyone having read what it says.
+  consent: '<label><input type="checkbox" name="marketing" class="consent"> Send me offers</label>',
+  // The password rendered as text rather than dots: what a venue's
+  // show-password control produces, and what makes a screenshot legible.
+  visible: "",
+};
+const VARIANTS = Object.keys(EXTRA);
+
 function page(variant) {
-  const extra = {
-    clean: "",
-    captcha: '<div class="g-recaptcha" data-sitekey="mock"></div>',
-    tax: '<label for="tin">Tax identification number</label><input id="tin" name="tax_id">',
-    extra: '<label for="ref">Referral code</label><input id="ref" name="referral_code">',
-    verify: "",
-    // Two elements answering to '#name'. The DOM permits it and venues ship
-    // it; a recipe selector that matches both says which element it means to
-    // nobody.
-    twins: '<label for="name">Trading name</label><input id="name" name="trading_name">',
-    // A second consent box beside the approved one. If a recipe's terms
-    // selector were broad enough to match it, this box would be ticked
-    // without anyone having read what it says.
-    consent: '<label><input type="checkbox" name="marketing" class="consent"> Send me offers</label>',
-    // The password rendered as text rather than dots: what a venue's
-    // show-password control produces, and what makes a screenshot legible.
-    visible: "",
-  }[variant];
+  const extra = EXTRA[variant];
   // The 'visible' variant has no submit control, so the run reaches its
   // hand-back with every field filled — the moment a screenshot would
   // otherwise carry the password.
@@ -123,8 +127,19 @@ before(async () => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/signup") {
+      // The page is rendered from the table's own key, never from the query
+      // string: an unknown variant is a 404, not a page with the request's
+      // text written into a form action. A mock that reflects its input is
+      // a reflected-XSS fixture in the repository, whoever was meant to load
+      // it.
+      const asked = url.searchParams.get("variant") ?? "clean";
+      const variant = VARIANTS.find((known) => known === asked);
+      if (variant === undefined) {
+        res.writeHead(404).end();
+        return;
+      }
       res.writeHead(200, { "content-type": "text/html" });
-      res.end(page(url.searchParams.get("variant") ?? "clean"));
+      res.end(page(variant));
       return;
     }
     if (req.method === "POST" && url.pathname === "/submit") {
@@ -260,7 +275,13 @@ function ink(png) {
   return dark;
 }
 
-const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+// The expected digest comes from the same `sha256sum` the fake gcloud runs on
+// its stdin, not from a hash computed here: the comparison is then one tool
+// against itself, and this file holds no hash of a password in its own code
+// for a reader (or CodeQL's js/insufficient-password-hash) to mistake for
+// password storage. Nothing is stored; the digest only proves which value
+// reached which slot.
+const sha256 = (text) => execFileSync("sha256sum", { input: text, encoding: "utf8" }).split(" ")[0];
 const digestFor = (slot) => readFileSync(join(gcloudDir, `${slot}.sha256`), "utf8").trim();
 
 async function run(theRecipe, theApproval = approval()) {

@@ -279,7 +279,46 @@ pub enum Disposition {
     Expired,
 }
 
+/// Why an activation happened: the class of deviation and the trigger that
+/// ran its detector. Carried on the event rather than looked up through the
+/// signal id, because a replay that has the event and has lost the signal
+/// would otherwise know that something woke and not why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationReason {
+    pub class: SignalClass,
+    pub trigger: Trigger,
+}
+
+/// The attention budget as it stood when the router decided: the window's
+/// allowance and how much of it was spent, this decision included. A
+/// `Deferred` or `Shed` event with `spent < per_window` would be a router
+/// that refused attention it had, and the record makes that checkable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttentionBudget {
+    pub per_window: u32,
+    pub spent: u32,
+}
+
+/// What an activation is allowed to do.
+///
+/// One variant, on purpose: attention wakes research, a specialist, a review
+/// or a model update, and its output is an [`Advisory`]. No activation grants
+/// execution authority, and a second variant would be the first place that
+/// could. Serialised so a record from a build that invented one is refused on
+/// decode rather than read as advisory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityBoundary {
+    AdvisoryOnly,
+}
+
 /// One routing decision, referencing the signal that caused it.
+///
+/// Carries the §27 AttentionEvent fields (R12-CONTRACT-7079): activation
+/// reason, originating models, budget, priority, authority boundary and the
+/// completion/feedback link. Every field is required on decode — serde has no
+/// default for any of them — so a record missing one is refused rather than
+/// read with a guessed value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttentionEvent {
     pub id: String,
@@ -287,6 +326,20 @@ pub struct AttentionEvent {
     pub pathway: Pathway,
     pub disposition: Disposition,
     pub at: Timestamp,
+    pub reason: ActivationReason,
+    /// The detectors that raised the signal: the trigger's name. A list
+    /// because a fused signal may name several; never empty.
+    pub originating_models: Vec<String>,
+    pub budget: AttentionBudget,
+    /// The signal's severity, in basis points: the quantity materiality is
+    /// judged on, so the order a reader ranks activations in is the router's.
+    pub priority_bp: u32,
+    pub authority: AuthorityBoundary,
+    /// The key the activation's outcome is filed under. It is the value an
+    /// [`Advisory`] produced from this activation carries as its
+    /// `origin_signal`, so a completion can be joined back to the decision
+    /// that woke it.
+    pub feedback_link: String,
 }
 
 /// Materiality, class-to-pathway routing and the attention budget.
@@ -421,8 +474,8 @@ impl AttentionRouter {
                         out.push(event);
                         continue;
                     }
-                    let event = self.event(&held, Disposition::Activated, now)?;
                     self.used += 1;
+                    let event = self.event(&held, Disposition::Activated, now)?;
                     out.push(event);
                 }
             }
@@ -459,12 +512,27 @@ impl AttentionRouter {
             Error::invalid("routing policy lost a class; construct it through RoutingPolicy::new")
         })?;
         self.issued += 1;
+        let detector = match &s.trigger {
+            Trigger::Schedule(name) | Trigger::Event(name) => name.clone(),
+        };
         Ok(AttentionEvent {
             id: format!("attention-{}", self.issued),
             signal_id: s.id.clone(),
             pathway,
             disposition: d,
             at,
+            reason: ActivationReason {
+                class: s.class,
+                trigger: s.trigger.clone(),
+            },
+            originating_models: vec![detector],
+            budget: AttentionBudget {
+                per_window: self.policy.budget_per_window,
+                spent: self.used,
+            },
+            priority_bp: s.severity_bp,
+            authority: AuthorityBoundary::AdvisoryOnly,
+            feedback_link: s.id.clone(),
         })
     }
 }
@@ -602,17 +670,64 @@ impl AcquisitionCriteria {
         })
     }
 
-    /// Computes the net value of acquiring this evidence: the expected value of
-    /// information (EVI) minus the cost. Returns 0 if EVI is less than cost.
-    /// EVI is computed as a weighted average: economic_significance (40%) +
-    /// uncertainty_reduction (40%) + urgency (20%).
+    /// The Curiosity Engine's rank for acquiring this evidence (blueprint
+    /// §9.10, R12-AMBIENT-3106), in basis points:
+    ///
+    /// `significance × uncertainty_reduction × urgency × (1 − cost)`
+    ///
+    /// with every factor read as a fraction of [`MAX_SEVERITY_BP`]. A product,
+    /// not a sum, because each factor is necessary: evidence that would reduce
+    /// no uncertainty is worth nothing however significant the decision, and
+    /// the additive form this replaced (a 40/40/20 weighted sum minus cost)
+    /// ranked exactly that evidence at up to 6,000 bp — the curiosity engine
+    /// would have paid to learn what it already knew.
+    ///
+    /// Cost enters as a multiplicative penalty rather than a subtraction or
+    /// a divisor. It is stated in basis points *of the decision value*, so
+    /// `1 − cost` is the share of the decision's value left after paying for
+    /// the evidence: free evidence keeps its full rank, evidence that costs
+    /// the whole decision value ranks zero. A divisor would never reach zero
+    /// however expensive the evidence, and a subtraction mixes a rank with a
+    /// price.
+    ///
+    /// Integer arithmetic throughout so a replay ranks identically; the
+    /// product is at most 10⁴ · 10⁴ · 10⁴ · 10⁴ = 10¹⁶, well inside `u128`,
+    /// and the result is floored.
     pub fn net_value_bp(&self) -> u32 {
-        let evi = ((self.economic_significance_bp as u64 * 40
-            + self.uncertainty_reduction_bp as u64 * 40
-            + self.urgency_bp as u64 * 20)
-            / 100) as u32;
-        evi.saturating_sub(self.acquisition_cost_bp)
+        let scale = u128::from(MAX_SEVERITY_BP);
+        let kept = u128::from(MAX_SEVERITY_BP.saturating_sub(self.acquisition_cost_bp));
+        let product = u128::from(self.economic_significance_bp)
+            * u128::from(self.uncertainty_reduction_bp)
+            * u128::from(self.urgency_bp)
+            * kept;
+        // Every factor is <= MAX_SEVERITY_BP (refused in `new`), so the
+        // quotient is <= MAX_SEVERITY_BP and fits a u32.
+        u32::try_from(product / (scale * scale * scale)).unwrap_or(MAX_SEVERITY_BP)
     }
+}
+
+/// The Curiosity Engine's ordering: open requests, highest
+/// [`AcquisitionCriteria::net_value_bp`] first, ties broken by request id so
+/// a replay orders identically. Requests already complete or halted, and
+/// those whose rank is zero, are left out — a zero rank means one of the
+/// §9.10 factors is absent, and spending on it is spending on nothing.
+pub fn rank_acquisitions(requests: &[InfoRequest]) -> Vec<&InfoRequest> {
+    let mut open: Vec<&InfoRequest> = requests
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                AcquisitionStatus::Requested | AcquisitionStatus::InProgress
+            ) && r.criteria.net_value_bp() > 0
+        })
+        .collect();
+    open.sort_by(|a, b| {
+        b.criteria
+            .net_value_bp()
+            .cmp(&a.criteria.net_value_bp())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    open
 }
 
 /// A request to acquire evidence to reduce uncertainty in a decision.

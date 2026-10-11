@@ -1,0 +1,89 @@
+{
+  "comment": "Development-agent controls (R12 GOV-9067, SEC-9068, SEC-9077, SEC-9078, SEC-9084, CICD-9076, CICD-9082, CICD-9083), read by scripts/agent-guard.mjs and scripts/agent-lanes.mjs. The role table mirrors '## Paths you may change' in each .claude/agents/*.md; scripts/agent-guard.test.mjs fails when the two disagree, so a role cannot widen in one place only. Editing this file is itself a protected change: an agent-authored commit touching it needs a person's approving review.",
+
+  "agent_markers": {
+    "comment": "How a commit is recognised as agent-authored. Any one marker is enough. Matching is case-insensitive on the whole value. An agent session that pushes as its user, with none of these, is invisible to every check here; that limit is stated in docs/ops/runbooks/development-agent-controls.md rather than hidden.",
+    "author_names": ["Claude"],
+    "author_emails": ["noreply@anthropic.com"],
+    "co_author_emails": ["noreply@anthropic.com"],
+    "branch_prefixes": ["claude/", "worktree-agent-"],
+    "actor_patterns": ["*[bot]", "claude*"]
+  },
+
+  "protected_paths": {
+    "comment": "Paths an agent-authored change may touch only with an approving review from a person who is not an agent. These are the files that decide what every other check means: the workflows, the agents' own instructions and settings, the gates' scripts and policies, the paper-trading boundary's Terraform layer, the owner's switches (every environment's tfvars), and the dependency allow-list.",
+    "globs": [
+      ".github/**",
+      ".claude/**",
+      "CLAUDE.md",
+      "**/CLAUDE.md",
+      "scripts/check-*.sh",
+      "scripts/dependency-allowlist.txt",
+      "scripts/secrets-reviewed.txt",
+      "scripts/agent-policy.json",
+      "scripts/agent-guard.mjs",
+      "scripts/agent-lanes.mjs",
+      "scripts/agent-egress.mjs",
+      "scripts/lanes/**",
+      "scripts/sast-policy.json",
+      "scripts/sast-gate.mjs",
+      "scripts/sast-baseline.json",
+      "infrastructure/terraform/variables.tf",
+      "infrastructure/terraform/execution-nodes-enabled.tf",
+      "infrastructure/terraform/build-pool.tf",
+      "infrastructure/environments/**",
+      "docs/adr/**"
+    ]
+  },
+
+  "unmarked_protected_change": {
+    "comment": "GOV-9067. A change with no agent marker is a person's only by default, and an agent pushing as its user with no trailer is exactly that default. On a protected path the default is not accepted: every commit must carry a signature GitHub verified against a key a person registered, or a person must approve the head commit. GitHub's own web-flow key signs every commit made through the API or the web editor, an agent's included, so a commit it signed is not a person's signature; its committer address is listed here so the guard can tell.",
+    "web_flow_committer_emails": ["noreply@github.com"]
+  },
+
+  "dispatch_refused_for_agents": {
+    "comment": "Workflows an agent identity may never start: each deploys, applies infrastructure or reaches a cloud credential. A planner may read and plan; no agent merges or deploys (GOV-9067). Enforced by the guard step at the top of each workflow, before anything authenticates.",
+    "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml"]
+  },
+
+  "roles": {
+    "chief-orchestrator": { "kind": "planner", "may_edit": [] },
+    "product-manager": { "kind": "planner", "may_edit": ["docs/product/**", "docs/claude/**"] },
+    "solution-architect": { "kind": "planner", "may_edit": ["docs/adr/**", "docs/architecture/**", ".claude/rules/architecture/**"] },
+    "code-reviewer": { "kind": "reviewer", "may_edit": [] },
+    "security-engineer": { "kind": "reviewer", "may_edit": [] },
+    "backend-engineer": { "kind": "coder", "may_edit": ["backend/crates/libs/**", "backend/crates/services/**", "backend/crates/runtime/**", "backend/crates/edge/**", "backend/crates/agents/**", "backend/crates/quant/**"] },
+    "cloud-platform-engineer": { "kind": "coder", "may_edit": ["infrastructure/**", ".github/workflows/**", "scripts/**"] },
+    "data-ai-engineer": { "kind": "coder", "may_edit": ["backend/crates/services/qip-market-ingestion/**", "qip-data-finder/**", "qip-world-model/**", "qip-opportunity-engine/**", "qip-cost-router/**", "qip-training/**", "backend/crates/libs/qip-quantum/**"] },
+    "frontend-engineer": { "kind": "coder", "may_edit": ["frontend/**"] },
+    "sre-release-engineer": { "kind": "coder", "may_edit": [".github/workflows/**", "infrastructure/environments/**/images.tfvars", "docs/operations/**"] },
+    "technical-writer": { "kind": "coder", "may_edit": ["docs/**", "README.md", "ops/**/*.md", ".claude/**/*.md"] },
+    "test-engineer": { "kind": "coder", "may_edit": ["backend/crates/**/tests/**", "frontend/portal/tests/**"] },
+    "ux-designer": { "kind": "coder", "may_edit": ["frontend/portal/src/**", "docs/product/**"] }
+  },
+
+  "lane_manifest": {
+    "comment": "The current round's lane plan, a path relative to the repository root. An agent commit carrying `Agent-Lane: <id>` is held to that lane's `owns` by agent-guard.mjs, on the pull request and at deploy; a trailer naming no lane in this file is refused. Point it at the next round's manifest in the same protected change that commits it.",
+    "path": "scripts/lanes/round-3.json"
+  },
+
+  "lane_limits": {
+    "comment": "Every lane an orchestrator dispatches carries a budget no larger than these, and acceptance commands. The sandbox workflow sets its job timeout from the lane's own minutes. `tokens` and `usd` are what the lane may spend on models; `agent-lanes.mjs spend` refuses a lane whose model-gateway ledger shows more, and a ledger line whose spend it cannot read counts as over (SEC-9077).",
+    "max_minutes": 360,
+    "max_usd": 50,
+    "max_tokens": 2000000
+  },
+
+  "sandbox": {
+    "comment": "The agent sandbox's network (SEC-9077, SEC-9078; ADR 0117). agent-sandbox.yml runs a lane's acceptance under a group the runner's firewall lets reach loopback only, DNS included, so scripts/agent-egress.mjs is the one way out: HTTPS CONNECT to these hosts on 443, within these quotas, and nothing else. No model provider is listed, so a lane cannot call a model from the sandbox at all; scripts/agent-egress.test.mjs fails if one is added. Every host here is a package registry, and each accepts uploads with a credential the sandbox does not hold; that residual is named in ADR 0117.",
+    "egress_allow": [
+      "index.crates.io",
+      "static.crates.io",
+      "crates.io",
+      "static.rust-lang.org",
+      "registry.npmjs.org"
+    ],
+    "egress_max_requests": 4000,
+    "egress_max_bytes": 4294967296
+  }
+}

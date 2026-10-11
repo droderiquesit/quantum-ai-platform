@@ -1,0 +1,2964 @@
+[
+  {
+    "id": "R12-MODEL-4001",
+    "domain": "MODEL",
+    "title": "Hot lane stays Rust-first and bounded",
+    "statement": "Everything compiled into the hot (reflex/order) lane is Rust and has a bounded worst-case cost; no slow-lane crate (training, world model, research models) is linked into the reflex binary.",
+    "rationale": "v11 relaxed the Rust-only rule for research only; an unbounded or non-Rust component on the order path breaks the latency guarantee the hot lane exists to give.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A dependency-closure test of qip-edge-node finds only lane-0 crates and no slow-lane crate; adding a normal dependency from qip-edge on qip-training/qip-world-model/qip-ai must fail it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4002",
+    "domain": "MODEL",
+    "title": "Generalist models confined to the slow lane",
+    "statement": "Foundation/generalist (large multimodal) models are used only in the slow lane for research, extraction, planning, tool use, explanation and hypothesis generation, and are never consulted on the order path or by a deterministic risk check.",
+    "rationale": "A frontier-model call on the order path makes execution latency and outcome depend on a remote model; §14 requires every executable action to pass deterministic limits.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A test proves the hosted language-model adapter can be constructed only by the slow-lane composition root and that no reflex/fast-path crate links it; moving construction into qip-fastbrain or qip-edge-node must fail it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Row 1 of the §10 model-class table."
+  },
+  {
+    "id": "R12-MODEL-4003",
+    "domain": "MODEL",
+    "title": "Specialist predictive models in slow/warm lanes",
+    "statement": "The foundry provides specialist predictive models, run in slow/warm lanes, for regime, event probability, valuation, liquidity, slippage, default, volatility, demand and supply.",
+    "rationale": "Generalist models are not calibrated predictors for these targets; specialists are what the warm lane sizes on.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "21",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each of the nine targets has a registered, trained, evaluated model card of its class that a warm-lane consumer reads; removing one class's model leaves its consumer refusing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4004",
+    "domain": "MODEL",
+    "title": "Reflex models: tiny bounded hot-lane inference",
+    "statement": "Reflex models run in the hot lane as tiny bounded inference for order-book state, fill probability, adverse selection, short-horizon signals and opportunity scoring.",
+    "rationale": "The hot lane may only run models whose worst-case cost fits a latency budget.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell evaluates a promoted bounded model for each named purpose inside Cell::work and the result changes a decision; a model whose cost exceeds the budget is refused at install."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4005",
+    "domain": "MODEL",
+    "title": "Policy/distilled models evaluated deterministically",
+    "statement": "Policy/distilled models compressed from larger models are evaluable deterministically and cheaply in hot/warm lanes, with their fidelity to the teacher measured.",
+    "rationale": "A teacher whose cost grows with a hyperparameter is inadmissible on the execution path; an unmeasured student is an unknown model.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "distil returns only a measured Distillation; the distilled form evaluates bit-identically and within its cost bound; deleting the fidelity measurement makes the test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4006",
+    "domain": "MODEL",
+    "title": "Ensembles with calibrated uncertainty and regime selection",
+    "statement": "Ensembles (non-hot, or compact in hot) provide model diversity, calibrated uncertainty and regime-conditioned selection.",
+    "rationale": "A single model gives no measure of its own uncertainty and cannot be selected by regime.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A registered ensemble reports a calibrated predictive interval and the selector picks members by the platform's regime; a test with a regime switch changes the selection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4007",
+    "domain": "MODEL",
+    "title": "Microstructure representation models",
+    "statement": "Slow/warm-lane models learn compact representations of book, flow, liquidity and venue state from tick streams for fusion, regime detection and downstream specialist/reflex models.",
+    "rationale": "Raw tick features are too high-dimensional for reflex models; without a learned representation each model re-derives its own.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A representation model trained on tick replay emits a versioned embedding consumed by a regime detector; removing it changes the detector's inputs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4008",
+    "domain": "MODEL",
+    "title": "Execution digital-twin models calibrated to telemetry",
+    "statement": "Slow/warm execution digital-twin models of fill probability, queue, slippage, impact, latency and opportunity decay are calibrated to Algorik telemetry and historical replay.",
+    "rationale": "Counterfactuals priced on an uncalibrated cost model produce regret numbers nobody can trust.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Twin parameters are refit from recorded fills and the calibrated twin's fill-error distribution narrows; a test shows a recalibration changing twin output."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4009",
+    "domain": "MODEL",
+    "title": "World-model ensembles with arbitration and disagreement",
+    "statement": "Concurrent domain/regional/horizon/scenario world models run as an ensemble with arbitration, recorded disagreement and calibration.",
+    "rationale": "One shared world model cannot say the models disagree; averaging hides that the platform does not know.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The kernel reads an arbitrated view that carries its Disagreement; two members with opposite views produce a recorded disagreement rather than an average."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4010",
+    "domain": "MODEL",
+    "title": "Symbolic and neuro-symbolic reasoners",
+    "statement": "Slow/warm symbolic and neuro-symbolic reasoners provide rules, graphs, temporal/causal logic, probabilistic logic, constraints, planning and neural-symbolic hybrids.",
+    "rationale": "Learned models alone cannot carry invariants and constraints that must hold exactly.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The REASON stage invokes rule, temporal, constraint and Bayesian reasoners and their outcome reaches the journal; a neuro-symbolic hybrid is registered and evaluated."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4011",
+    "domain": "MODEL",
+    "title": "Ambient forecasting/surprise models, distilled in fast lanes",
+    "statement": "Persistent expected-state, anomaly, precursor, assumption and opportunity models run continuously, and appear in faster lanes only in distilled form.",
+    "rationale": "Surprise detection must be continuous, and an undistilled ambient model in the hot lane would break its budget.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An ambient model emits surprise signals each cycle that reach attention/REASON; only its distilled form is linked into a fast lane."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4012",
+    "domain": "MODEL",
+    "title": "World-model/reflex compilers to bounded artifacts",
+    "statement": "Compilers translate validated symbolic predicates, representations and model outputs into bounded deployable warm/reflex artifacts.",
+    "rationale": "Without compilation, intelligence found in the slow lane cannot become deterministic fast behaviour without calling a frontier model on the order path.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A validated symbolic predicate compiles to a bounded program the cell installs; an unvalidated predicate is refused at compile."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4013",
+    "domain": "MODEL",
+    "title": "Intervention-effect/uplift models with abstention",
+    "statement": "Uplift models estimate heterogeneous causal effects of candidate actions across entities, audiences, markets and horizons, and abstain when the effect is not identifiable.",
+    "rationale": "Acting on a non-identifiable effect is acting on a guess presented as causal knowledge.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An uplift estimator returns an effect with identification status and abstains on a non-identified design; a test with a confounded design asserts abstention."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4014",
+    "domain": "MODEL",
+    "title": "Action-policy planners gated by simulation before authority",
+    "statement": "Action-policy/planner models propose sequenced interventions under causal, cost, risk, legal, identity, authority and timing constraints, and are evaluated against simulators and counterfactual world-model branches before any authority is granted.",
+    "rationale": "A planner granted authority without simulated evaluation turns an untested policy into action.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "22",
+        "section": "§10 Model & Strategy Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A plan cannot obtain execution authority unless a simulation and counterfactual-branch evaluation record is attached; removing the evaluation makes authorisation refuse."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4015",
+    "domain": "MODEL",
+    "title": "Training data campaigns from episodes, references, licensed extracts",
+    "statement": "A training data campaign is assembled from retained internal episodes plus reproducible external references and licensed extracts.",
+    "rationale": "A training set nobody can reassemble cannot be audited, and an unlicensed extract is a compliance breach.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A learning round's window is produced by a campaign whose manifest names each internal episode set and each external reference with licence and hash; an unadmitted source is refused at the door."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4016",
+    "domain": "MODEL",
+    "title": "Features computed with strict lineage and leak prevention",
+    "statement": "Features and representations used for training are computed with strict lineage and point-in-time leak prevention.",
+    "rationale": "A feature readable before its knowable instant produces backtests nobody should trust.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every training feature carries lineage to its source records and an as-of time; the holdout gate fails a run whose feature timings leak; injecting a look-ahead feature fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4017",
+    "domain": "MODEL",
+    "title": "Classical baseline trained first and calibrated",
+    "statement": "Before any candidate model is evaluated, the classical baseline is trained, calibrated and on record.",
+    "rationale": "A challenger scored against an unrecorded or uncalibrated baseline produces an assertion, not a result (ADR 0006).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Evaluating a candidate without a calibrated baseline on record is refused; removing the calibration check lets the test's candidate through and fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4018",
+    "domain": "QUANT",
+    "title": "Quantum-assisted model variants only on eligible workloads",
+    "statement": "Quantum-assisted model variants are optional and evaluated only on eligible workloads, against the calibrated classical baseline.",
+    "rationale": "Quantum variants on ineligible workloads spend QPU budget on problems with no plausible advantage.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A quantum-informed candidate is admitted only with a calibrated baseline reference and an eligible workload family; an ineligible family is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4019",
+    "domain": "MODEL",
+    "title": "Out-of-time validation before acceptance",
+    "statement": "Models are validated out-of-time (holdout after the training window) before acceptance.",
+    "rationale": "A random holdout of a time series shares neighbours with training and overstates skill.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The holdout is the latest slice; a fit on pure noise is refused a skill claim; changing the split to random fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4020",
+    "domain": "MODEL",
+    "title": "Cross-regime validation before acceptance",
+    "statement": "Models are validated across regimes before acceptance; a model that has only been validated in one regime is not accepted for others.",
+    "rationale": "A model fitted in one regime fails silently when the regime changes.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Acceptance requires scores in more than one classified regime, or restricts the model to the regimes it was scored in; a single-regime model used in another regime is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4021",
+    "domain": "MODEL",
+    "title": "Adversarial validation before acceptance",
+    "statement": "Models are validated adversarially (perturbed/adversarial inputs) before acceptance.",
+    "rationale": "A model never tested on adversarial inputs is exposed to manipulated data (§14 model and data risk).",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Acceptance runs an adversarial perturbation suite and refuses a model whose output moves beyond tolerance."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4022",
+    "domain": "MODEL",
+    "title": "Simulation and paper-trading validation before acceptance",
+    "statement": "Models are validated in simulation and paper trading before acceptance.",
+    "rationale": "Out-of-sample statistics do not show behaviour under execution; paper trading is the platform's only execution target (ADR 0003).",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A model reaches decision eligibility only after a recorded simulation/paper trial; skipping it refuses promotion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4023",
+    "domain": "MODEL",
+    "title": "Accepted models signed, versioned, attested, in a Model Pack",
+    "statement": "Every accepted model is signed, versioned, attested and added to a versioned Model Pack.",
+    "rationale": "An unsigned model cannot be attributed to whoever trained it; an unversioned set cannot be reproduced.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A promotion writes a pack naming its predecessor and the model's signature; a cell refuses a model whose signature does not verify against the trust root."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4024",
+    "domain": "MODEL",
+    "title": "Reflex models exported to bounded formats and distributed",
+    "statement": "Reflex-compatible models are exported to bounded runtime formats and distributed to edge nodes.",
+    "rationale": "A model nobody distributed is a model the hot lane never runs; an unbounded format breaks the latency budget.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A promoted distillate appears in the trained_models manifest slot shipped over the mesh, and a cell installs a plan carrying it; a model absent from the manifest is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-4025",
+    "domain": "MODEL",
+    "title": "Promote/hold/retire from live, drift and counterfactual performance",
+    "statement": "Promote, hold and retire decisions are made continuously from live (paper) performance, drift and counterfactual performance.",
+    "rationale": "A model is kept or removed on evidence of how it performs now, not on its validation day.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§10.1 Training Lifecycle"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A model whose drift exceeds its threshold is retired and its predecessor reactivated; a model whose counterfactual performance degrades is held; tests drive each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4026",
+    "domain": "QUANT",
+    "title": "Every quantum workload has a classical baseline",
+    "statement": "Every quantum workload has a classical baseline solved on the same problem every time the quantum path runs.",
+    "rationale": "'We used a quantum computer' is not a result (ADR 0006).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every routing decision carries a classical objective; a workload family without a baseline is refused registration; removing the classical solve fails the router test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4027",
+    "domain": "QUANT",
+    "title": "Quantum and classical scored on a common objective",
+    "statement": "Each quantum workload declares one common objective on which both quantum and classical paths are scored.",
+    "rationale": "Scores on different objectives cannot be compared, so 'better' would be undefined.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every SolverRun's objective comes from the same PortfolioProblem::objective_at; a test with a solver reporting its own objective is corrected or refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4028",
+    "domain": "QUANT",
+    "title": "Quantum promotion threshold per workload",
+    "statement": "Each quantum workload has a stated, positive promotion threshold the quantum result must beat the classical baseline by; ties go to classical.",
+    "rationale": "A zero margin lets noise decide which solver is reported better.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum answer better by less than the margin loses; a tie loses; setting the margin to zero fails the tie test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4029",
+    "domain": "QUANT",
+    "title": "QPU jobs are asynchronous",
+    "statement": "QPU jobs are submitted asynchronously; no caller blocks on a quantum queue for an answer it needs inline.",
+    "rationale": "A caller waiting on a QPU queue makes its own progress depend on a queue it does not control.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The only path that reaches a provider submits a job and returns; a synchronous submission is refused; a test with a slow provider shows the cycle completing on the classical answer."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4030",
+    "domain": "QUANT",
+    "title": "QPU never on the market hot path",
+    "statement": "No quantum or QPU code is linked into, or called from, the market hot path.",
+    "rationale": "A QPU round-trip on the order path makes execution latency unbounded.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "qip-edge-node's dependency closure excludes qip-quantum and qip-optimization-engine; adding the dependency fails the lane test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4031",
+    "domain": "QUANT",
+    "title": "Quantum output is a candidate; classical verification is authoritative",
+    "statement": "Quantum output is treated only as a candidate solution or search aid, never proof of truth; classical verification and evidence remain authoritative.",
+    "rationale": "A provider's claim accepted unverified lets a wrong or relabelled result size capital.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum result is usable only after classical recomputation and feasibility check; a provider claim that disagrees with recomputation is refused; a quantum-gateway output offered as a model candidate is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4032",
+    "domain": "QUANT",
+    "title": "Portfolio/family allocation via QUBO/QAOA",
+    "statement": "Portfolio/family allocation can be formulated as QUBO and solved by QAOA or another hybrid optimizer under cardinality, diversification and exposure constraints, against the classical baseline.",
+    "rationale": "Workload table row 1: the one family where a quantum formulation is plausible today.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With quantum enabled and an eligible problem, the kernel attempts QAOA, and the routing journal records both runs; constraint-violating quantum answers are refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4033",
+    "domain": "QUANT",
+    "title": "Multi-leg path selection as QUBO/graph optimisation",
+    "statement": "Multi-leg cycle/path sets can be selected by QUBO/graph optimisation under inventory, settlement, capital and concurrency constraints, against a classical solver.",
+    "rationale": "Workload table row 2.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A path-selection QUBO decodes to a feasible cycle set and is benchmarked against the classical path router."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4034",
+    "domain": "QUANT",
+    "title": "Capital placement as combinatorial optimisation",
+    "statement": "Where collateral and cash sit across regions/venues is posed as a combinatorial optimisation (quantum-eligible) given expected opportunities and transfer cost, with a classical baseline.",
+    "rationale": "Workload table row 3.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A placement problem has a QUBO formulation benchmarked against the classical pre-positioning planner."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4035",
+    "domain": "QUANT",
+    "title": "Feature/ensemble selection by quantum-assisted binary selection",
+    "statement": "Compact learner/feature sets for specialist or reflex models can be chosen by quantum-assisted binary selection, against a classical selector.",
+    "rationale": "Workload table row 4.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A feature-selection QUBO with a classical baseline selector, scored on held-out loss."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4036",
+    "domain": "QUANT",
+    "title": "Quantum kernels / variational models research",
+    "statement": "Quantum kernels and variational circuits are evaluated for whether they add measurable classification/regression value over classical models.",
+    "rationale": "Workload table row 5.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A kernel/variational experiment reports out-of-sample uplift versus a strong classical model."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "Foundry says a variational/kernel model would need an ADR for any dependency it implies."
+  },
+  {
+    "id": "R12-QUANT-4037",
+    "domain": "QUANT",
+    "title": "Quantum reservoir / extreme learning research",
+    "statement": "Quantum reservoir/extreme-learning paths are evaluated experimentally for selected time-series or nonlinear tasks.",
+    "rationale": "Workload table row 6.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reservoir experiment with a classical reservoir baseline on the same task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4038",
+    "domain": "QUANT",
+    "title": "Scenario/hypothesis selection under compute budgets",
+    "statement": "Diverse high-information scenarios/experiments are selected by optimisation under limited compute/data budgets.",
+    "rationale": "Workload table row 7.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "23",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A selection formulation chooses a scenario subset under a budget and is compared with a classical greedy selector."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4039",
+    "domain": "QUANT",
+    "title": "Evidence graph clustering, never a truth oracle",
+    "statement": "Quantum-assisted evidence-graph clustering/selection is experimental and its output is never used as a truth oracle.",
+    "rationale": "Workload table row 8.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Clustering output enters only as a candidate grouping and cannot set a belief's truth value."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4040",
+    "domain": "QUANT",
+    "title": "Symbolic/combinatorial reasoning search compared to classical solvers",
+    "statement": "Quantum QUBO/QAOA search over constraint solutions, graph selections or symbolic hypothesis subsets is used only where the formulation is suitable and is compared to classical solvers.",
+    "rationale": "Workload table row 9.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A constraint problem's QUBO decodes to the classical minimiser's optimum on test instances and is benchmarked against it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4041",
+    "domain": "QUANT",
+    "title": "World-model ensemble selection preserving minority hypotheses",
+    "statement": "Model/scenario subsets are selected under compute budgets while preserving uncertainty and minority hypotheses.",
+    "rationale": "Workload table row 10.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A selection that drops all minority hypotheses is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4042",
+    "domain": "QUANT",
+    "title": "Hypothesis-space exploration is research, never validation",
+    "statement": "Quantum-assisted exploration of hypothesis spaces is research only and is never treated as empirical validation.",
+    "rationale": "Workload table row 11.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A hypothesis whose only support is a quantum exploration result cannot reach a validated state."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4043",
+    "domain": "QUANT",
+    "title": "Intervention plans re-scored classically before execution",
+    "statement": "Any candidate intervention portfolio/sequence produced by combinatorial (quantum) search is re-scored by classical causal models, policy gates and simulation before any execution.",
+    "rationale": "Workload table row 12: a search result is not authority to act.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A searched plan cannot be executed without a classical causal score, a policy-gate pass and a simulation record."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4044",
+    "domain": "QUANT",
+    "title": "Counterfactual branch selection is not causal proof",
+    "statement": "Quantum-assisted selection of counterfactual/intervention branches for expensive simulation is a selection aid only; no quantum result is treated as causal proof.",
+    "rationale": "Workload table row 13.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A causal claim cannot cite a quantum branch-selection result as evidence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4045",
+    "domain": "QUANT",
+    "title": "Reality boundary: classical ships unless quantum wins on objective, cost and latency",
+    "statement": "Production use of a quantum result requires benchmarked improvement over classical methods on the same objective, cost and latency constraints; if quantum loses, the classical result ships.",
+    "rationale": "Quantum advantage is unproven for most practical workloads.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11 Quantum Foundry"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum answer that wins on objective but exceeds the cost or latency budget is not used; a losing quantum answer leaves the classical result in force."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4046",
+    "domain": "QUANT",
+    "title": "Problem compiler routes across compute substrates",
+    "statement": "A Problem Compiler and Compute Intelligence Router decide whether work runs on Rust/CPU, GPU, TPU, quantum-inspired algorithms, IBM QPU hardware or parallel ensembles.",
+    "rationale": "§11.1: quantum as one substrate among several rather than an isolated optimizer.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11.1 Quantum-Classical Cognitive Compute Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A routed problem records which substrate was chosen among the declared set and why."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4047",
+    "domain": "QUANT",
+    "title": "Routing policy learns from measured outcomes",
+    "statement": "No substrate is presumed superior; routing policy is learned from measured quality, calibration, latency, repeatability and cost.",
+    "rationale": "A static routing rule cannot discover where a substrate pays.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "24",
+        "section": "§11.1 Quantum-Classical Cognitive Compute Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Recorded benchmarks update the routing policy; a substrate that consistently loses stops being tried."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4048",
+    "domain": "QUANT",
+    "title": "Classify the task before routing",
+    "statement": "The compiler classifies each task as forecasting, graph search, combinatorial optimisation, sampling, kernel method, simulation, symbolic solving or model training.",
+    "rationale": "§11.2 step 1.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.2 Problem Compiler & Hybrid Compute Router"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each of the eight classes is a variant; an unclassified task is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4049",
+    "domain": "QUANT",
+    "title": "Extract variables, constraints, objective, tolerances, deadlines, proofs",
+    "statement": "The compiler extracts variables, constraints, objective, tolerances, deadlines and required proof/verification properties for each task.",
+    "rationale": "§11.2 step 2: a formulation missing a tolerance or deadline cannot be judged.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.2 Problem Compiler & Hybrid Compute Router"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A compiled problem carries all six; a missing one is refused rather than defaulted."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4050",
+    "domain": "QUANT",
+    "title": "Generate classical baseline and eligible quantum formulations",
+    "statement": "For each task the compiler generates a classical baseline and eligible quantum/quantum-inspired formulations (QUBO/Ising, kernels, variational circuits).",
+    "rationale": "§11.2 step 3.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.2 Problem Compiler & Hybrid Compute Router"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A compiled task has a classical formulation always and quantum formulations only where eligible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4051",
+    "domain": "QUANT",
+    "title": "Parallel dispatch when expected information value justifies",
+    "statement": "Candidates are dispatched to one or more substrates in parallel only when expected information value justifies the cost.",
+    "rationale": "§11.2 step 4.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.2 Problem Compiler & Hybrid Compute Router"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Dispatch records an expected-information-value estimate and declines dispatch below it."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4052",
+    "domain": "QUANT",
+    "title": "Verify returned candidates classically",
+    "statement": "Every returned candidate is verified classically before use.",
+    "rationale": "§11.2 step 5: an unverified candidate is an unverified claim.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.2 Problem Compiler & Hybrid Compute Router"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A candidate whose recomputed objective or feasibility disagrees is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4053",
+    "domain": "QUANT",
+    "title": "Record quality/cost/latency and update Solver Registry",
+    "statement": "Each routed solve records quality, cost and latency and updates the Solver Registry and future routing policy.",
+    "rationale": "§11.2 step 5: without the record, routing cannot learn and claims cannot be audited.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.2 Problem Compiler & Hybrid Compute Router"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The journal record carries quality, cost and latency per solver run, and the registry's view of a solver changes after it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4054",
+    "domain": "QUANT",
+    "title": "Forecasting quantum research checked out-of-time vs strong classical",
+    "statement": "Quantum kernels/reservoir/QML or ensemble feature spaces used for forecasting are checked by out-of-time calibration against strong classical models.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum forecasting experiment reports out-of-time calibration beside a strong classical model's."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4055",
+    "domain": "QUANT",
+    "title": "World-model quantum search checked for coherence and reproducibility",
+    "statement": "Quantum hypothesis-subset/scenario selection or graph partition for world models is checked for causal/evidence coherence and reproducibility.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Selected subsets are re-run for reproducibility and checked for causal/evidence coherence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4056",
+    "domain": "QUANT",
+    "title": "Hedging quantum search checked on constraints, Greeks, liquidity, cost",
+    "statement": "Quantum hedge-basket and tail-scenario optimisation is checked classically for constraints, Greeks, liquidity and executable cost.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum hedge basket violating a Greek or liquidity bound is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4057",
+    "domain": "QUANT",
+    "title": "Capital quantum search checked on invariants and transaction costs",
+    "statement": "Quantum portfolio, collateral, funding and capital-placement search is checked against risk/capital invariants and transaction costs.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum allocation that breaks a capital invariant or ignores transaction cost is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4058",
+    "domain": "QUANT",
+    "title": "Arbitrage quantum search checked on executable edge and saga feasibility",
+    "statement": "Quantum multi-leg path/cycle and reservation optimisation is checked for live executable edge and bounded-loss saga feasibility.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A selected cycle whose executable edge is negative or saga infeasible is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4059",
+    "domain": "QUANT",
+    "title": "Model-society quantum selection checked on score uplift and economics",
+    "statement": "Quantum feature/ensemble/agent-team selection is checked for forecast score uplift and compute economics.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A selection reports score uplift and compute cost against the classical selection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4060",
+    "domain": "QUANT",
+    "title": "Simulation quantum sampling checked by verification and bias analysis",
+    "statement": "Quantum sampling and combinatorial state selection for simulation is checked by classical verification and bias analysis.",
+    "rationale": "§11.3 table: each research row names its required classical check.",
+    "kind": "invariant",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Sampled states are classically verified and a bias analysis is recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4061",
+    "domain": "QUANT",
+    "title": "Quantum outputs enter as ensemble features, not authority",
+    "statement": "Classical, quantum-inspired and QPU methods produce independent candidates whose outputs become ensemble features rather than direct authority.",
+    "rationale": "§11.4: a quantum output acting directly would bypass evaluation.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.4 Quantum-Classical Ensemble Learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A quantum-derived output reaches a decision only as an input feature to an evaluated model; offering it as a model is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4062",
+    "domain": "QUANT",
+    "title": "Evaluation learns where quantum representations add information",
+    "statement": "The Evaluation Brain learns, per regime, whether a quantum-derived representation adds information beyond classical baselines.",
+    "rationale": "§11.4: advantage, if any, is regime-specific.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.4 Quantum-Classical Ensemble Learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A per-regime information-gain score is recorded for each quantum-derived feature."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4063",
+    "domain": "QUANT",
+    "title": "QPU work stays asynchronous research behind stable contracts",
+    "statement": "Today QPU jobs remain asynchronous research workloads, and the cognitive contracts are shaped so that deeper subproblems for future fault-tolerant hardware need no contract redesign.",
+    "rationale": "§11.5: hardware will change; contracts should not.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.5 Hardware Evolution Boundary"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The quantum request/result contract is solver-agnostic (QUBO + result + baseline) and no research job class reaches production authority."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-4064",
+    "domain": "QUANT",
+    "title": "Quantum never establishes truth or bypasses deterministic controls",
+    "statement": "No quantum result establishes truth or bypasses deterministic financial controls; anything sized from a quantum answer still passes the deterministic pre-trade gate.",
+    "rationale": "§11.5: deterministic controls outrank every substrate.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "25",
+        "section": "§11.5 Hardware Evolution Boundary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A proposal sized by a winning quantum answer reaches the OMS and is refused by PreTradeChecker when it breaches a limit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4065",
+    "domain": "ASSET",
+    "title": "Asset Brain owns economic lifecycle, not execution mechanics",
+    "statement": "The Asset Brain owns the economic lifecycle of positions and does not perform execution mechanics.",
+    "rationale": "Mixing position economics with order mechanics couples decisions about holding to how orders fill.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Position economics types (qip-portfolio, qip-financial position records) have no dependency on execution/broker crates."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4066",
+    "domain": "ASSET",
+    "title": "Per-position mandate and target exposure",
+    "statement": "For every position the Asset Brain maintains the governing mandate and target exposure.",
+    "rationale": "A position without a mandate cannot be judged against what it was for.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every held position resolves to a mandate and a target exposure; a position without one is refused or flagged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4067",
+    "domain": "ASSET",
+    "title": "Valuation confidence, horizon and expected liquidity per position",
+    "statement": "For every position the Asset Brain maintains valuation confidence, investment horizon and expected liquidity.",
+    "rationale": "§12: an uncertain mark cannot silently support size.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A position's record carries all three; stale valuation confidence refuses sizing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4068",
+    "domain": "ASSET",
+    "title": "Hedges, corporate actions and commitments per position",
+    "statement": "For every position the Asset Brain maintains its hedges, corporate actions and commitments.",
+    "rationale": "A position whose hedge or pending corporate action is unknown is mis-sized and mis-valued.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each position resolves its hedge relationship, pending corporate actions and commitments, with 'none' stated rather than inferred."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4069",
+    "domain": "ASSET",
+    "title": "Exit plan and attribution per position",
+    "statement": "For every position the Asset Brain maintains an exit plan and attribution.",
+    "rationale": "A position with a confident mark and no exit plan is constructible today and should not be.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A position cannot be opened without an exit plan; its P&L attributes exactly to sources."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4070",
+    "domain": "ASSET",
+    "title": "Portfolio construction across strategies, classes, regions, horizons",
+    "statement": "Portfolio construction spans strategies, asset classes, regions and horizons jointly.",
+    "rationale": "Constructing each dimension separately double-counts risk across them.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "One construction run respects per-strategy, per-class, per-region and per-horizon budgets together."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4071",
+    "domain": "ASSET",
+    "title": "Position lifecycle discover through attribute",
+    "statement": "Each position follows discover -> evaluate -> acquire -> hold/hedge -> monitor -> resize -> exit/divest -> settle -> attribute, and nothing reaches attribute without settling.",
+    "rationale": "Crediting a result for a position whose ownership never cleared is a false record.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Illegal transitions are refused; exit cannot reach attribute without settle."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4072",
+    "domain": "ASSET",
+    "title": "Illiquid/private mode",
+    "statement": "An illiquid/private mode handles commitments, capital calls, marks, lockups and secondary-exit logic.",
+    "rationale": "Private positions cannot be exited or valued like listed ones.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A private position records commitments and calls, carries a dated mark, refuses exit inside a lockup and plans a secondary exit at an evidenced discount."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4073",
+    "domain": "ASSET",
+    "title": "Physical mode with inventory, logistics and product economics",
+    "statement": "A physical mode integrates inventory/logistics and product-level economics into the asset lifecycle.",
+    "rationale": "Physical goods have landed costs and logistics that a price model cannot see.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A physical position carries landed cost and inventory state from the inventory ledger."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "COMMERCE"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-4074",
+    "domain": "ASSET",
+    "title": "Continuous reconciliation of economic exposure and legal ownership",
+    "statement": "Economic exposure is continuously reconciled against legal/settled ownership, and a break stops the affected scope.",
+    "rationale": "A book that believes it owns what custody does not hold trades on fiction.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§12 Asset Management Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "LEARN reconciles the ledger view against custody statements each cycle; a break halts the scope; a test injects a mismatch."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4075",
+    "domain": "CAPITAL",
+    "title": "Capital Brain decides placement and uncommitted liquidity",
+    "statement": "The Capital Brain decides where deployable capital should be, what it should be doing, and how much liquidity must remain uncommitted.",
+    "rationale": "Capital placed without a reserve decision commits the floor.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each cycle produces an allocation and a reserve floor; a commitment that would breach the floor is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4076",
+    "domain": "CAPITAL",
+    "title": "Capital Bank holds, routes, converts, collateralises, finances",
+    "statement": "The Capital Bank is the treasury/funding fabric that holds, routes, converts, collateralises and finances capital.",
+    "rationale": "§13: treasury operations need one fabric with one record.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each operation is a journaled record reconciled to the ledger."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-4077",
+    "domain": "GOV",
+    "title": "Regulated functions only through permitted legal entities",
+    "statement": "Deposit-taking, third-party lending, brokerage, derivatives dealing and similar regulated functions run only through appropriate legal entities, counterparties and jurisdictional permissions.",
+    "rationale": "Running a regulated function without permission is a legal breach.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A regulated function is refused unless an (entity, counterparty, jurisdiction) permission is recorded; the empty registry refuses everything."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4078",
+    "domain": "CAPITAL",
+    "title": "Cash, stable-value, short-duration and idle-cash yield routing",
+    "statement": "Cash, stable-value assets and short-duration instruments are managed, and idle cash above the uncommitted floor is routed to yield.",
+    "rationale": "Idle cash earns nothing; cash in a seven-day instrument counted as cash today spends the floor.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Only cash above the floor is routed, into permitted instrument classes, and each amount is dated on the ladder at its availability."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4079",
+    "domain": "CAPITAL",
+    "title": "Liquidity ladder and withdrawal/reserve forecasts",
+    "statement": "The Capital Brain keeps a liquidity ladder and forecasts withdrawals and reserve needs.",
+    "rationale": "Without dated liquidity, a reserve is a number not a schedule.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A dated ladder places every balance and obligation in its rung; a withdrawal forecast feeds the reserve floor."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4080",
+    "domain": "CAPITAL",
+    "title": "Cross-margin, collateral and encumbrance model",
+    "statement": "A cross-margin, collateral and encumbrance model states which asset collateralises which obligation at which venue.",
+    "rationale": "A scalar margin figure assumes cross-margining everywhere, the rarest and most dangerous assumption.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "LEARN builds the collateral graph from risk aggregates and statements and reports uncovered exposure; a pledge beyond mark is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4081",
+    "domain": "CAPITAL",
+    "title": "Financing adapters where permitted",
+    "statement": "FX funding, borrow/lend, repo and credit-line adapters operate only where permitted.",
+    "rationale": "Financing without permission or adapters is unavailable funding presented as available.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each adapter refuses without a recorded permission."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4082",
+    "domain": "CAPITAL",
+    "title": "Capital grants with expiry, capacity and drawdown limits",
+    "statement": "Capital is granted to strategies and regions with an expiry, a capacity and a drawdown limit, enforced locally where the capital is used.",
+    "rationale": "The only reliable bound on an unreachable cell is a grant that expires on its own clock.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell refuses an order after expiry, above gross capacity, or after the loss limit is reached; a region bound limits the sum of strategies."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4083",
+    "domain": "CAPITAL",
+    "title": "Cross-region pre-positioning for arbitrage and market making",
+    "statement": "Capital is pre-positioned across regions for arbitrage and market making.",
+    "rationale": "Capital in the wrong region at the moment of opportunity is unused edge.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "DECIDE plans how much to move where via the cheapest signed corridor; LEARN scores the plan once its window closes."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4084",
+    "domain": "CAPITAL",
+    "title": "Autonomous treasury transfer only inside signed corridors and caps",
+    "statement": "Autonomous treasury transfers move only along human-signed corridors and within their hard caps.",
+    "rationale": "A compromised engine with unconstrained transfer authority drains the treasury.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13 Capital Brain & Capital Bank"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every transfer intent passes the corridor gate's checks against the signed corridor; an intent exceeding any cap or off-corridor is refused."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4085",
+    "domain": "CAPITAL",
+    "title": "Capital society of specialised competing agents",
+    "statement": "Treasury, liquidity, funding, leverage, collateral, strategy-allocation, region-allocation, venue-allocation, tax-aware and survival agents submit competing capital plans.",
+    "rationale": "One optimizer has one blind spot; competing plans expose disagreement.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13.1 Capital Intelligence Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named agent submits a plan per cycle and the kernel records all of them before choosing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4086",
+    "domain": "CAPITAL",
+    "title": "Deterministic Capital Kernel enforces balances, obligations, hard limits",
+    "statement": "A deterministic Capital Kernel enforces authoritative balances, obligations and hard limits on any plan before capital is committed.",
+    "rationale": "A plan from any agent must not commit capital the books do not hold.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "26",
+        "section": "§13.1 Capital Intelligence Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A plan that over-commits balances, ignores an obligation or breaches a hard limit is refused; reservation makes passing and holding one act."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4087",
+    "domain": "CAPITAL",
+    "title": "Survival kernel accounts every capital quantity continuously",
+    "statement": "The survival kernel continuously accounts for NAV, free cash, reserved cash, margin, collateral, settlement obligations, funding maturity, emergency reserves and deployable capital, derived from the ledger.",
+    "rationale": "A reserve typed in by a caller is not an account.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§13.2 Capital Survival Kernel"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each cycle the kernel derives all nine figures from ledger state; a mismatch with the ledger is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4088",
+    "domain": "CAPITAL",
+    "title": "Expiring strategy grant with exposure, liquidity, leverage, drawdown, loss budget",
+    "statement": "Every strategy receives an expiring capital grant constrained by exposure, liquidity, leverage, drawdown and loss budget.",
+    "rationale": "A grant without liquidity or leverage bounds lets a disconnected cell build an unexitable or levered position.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§13.2 Capital Survival Kernel"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The grant carries all five bounds and the cell refuses an order breaching any."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4089",
+    "domain": "CAPITAL",
+    "title": "Hedge capacity and stressed liquidity withheld before opportunity",
+    "statement": "Capital for hedge capacity and stressed liquidity is withheld before opportunity capital is released.",
+    "rationale": "Opportunity capital released first leaves nothing to hedge with in the stress it was meant for.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§13.2 Capital Survival Kernel"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The construction budget is opportunity capital after hedge and stressed-liquidity reserves; removing the reserve raises the budget in the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4090",
+    "domain": "CAPITAL",
+    "title": "Funding and collateral optimised across currencies, venues, entities",
+    "statement": "Funding and collateral are optimised across currencies, venues, counterparties and legal entities while ledger truth remains authoritative.",
+    "rationale": "Unoptimised funding wastes carry; optimisation that overrides the ledger invents capital.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§13.2 Capital Survival Kernel"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An optimiser proposes placements whose totals reconcile to the ledger."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4091",
+    "domain": "CAPITAL",
+    "title": "Shadow portfolios for every real allocation",
+    "statement": "For every real allocation the platform keeps counterfactual shadow portfolios with alternate sizes, hedge structures, timing, venues and rejected opportunities.",
+    "rationale": "Without the paths not taken, a gate that fired cannot be shown protective or merely expensive.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§13.3 Shadow Portfolio Universe"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every placed and every declined order has priced alternatives for size, timing, venue and hedge; a declined order's 'trade' alternative prices the veto."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-4092",
+    "domain": "CAPITAL",
+    "title": "Separate prediction quality from sizing, execution and allocation quality",
+    "statement": "Learning separates prediction quality from sizing quality, execution quality and capital-allocation quality.",
+    "rationale": "A good forecast badly sized reads as a bad forecast unless the effects are separated.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§13.3 Shadow Portfolio Universe"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Per decision, a decomposition attributes outcome to prediction, sizing, execution and allocation components that sum to the total."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4093",
+    "domain": "RISK",
+    "title": "Every executable action passes the deterministic risk gate",
+    "statement": "The Risk Brain forecasts and reasons, but every executable action passes deterministic limits evaluated on locally available state; no model sits in the gate.",
+    "rationale": "A control whose output depends on a model or a remote call is not a control.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every call site that reaches a broker or placer is preceded by a deterministic gate; a test enumerates them and fails on a new unguarded one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4094",
+    "domain": "RISK",
+    "title": "Risk Brain discovers hidden concentration and emerging risk",
+    "statement": "The Risk Brain uses AI, causal and scenario models to discover hidden concentration and emerging risk, as advice that never replaces the gate.",
+    "rationale": "Concentration invisible inside any one cell is visible only to a cross-cell or causal view.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Crowded positions across cells and shared causal drivers are reported each cycle."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4095",
+    "domain": "RISK",
+    "title": "Market risk domain covered",
+    "statement": "Risk covers market exposure: price, volatility, gap, basis, Greeks, factor and causal-driver exposure.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4096",
+    "domain": "RISK",
+    "title": "Liquidity risk domain covered",
+    "statement": "Risk covers liquidity: depth, time-to-exit, impact, crowded exit and quote/borrow availability.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4097",
+    "domain": "RISK",
+    "title": "Counterparty/venue risk domain covered",
+    "statement": "Risk covers counterparty/venue: credit, custody, exchange, bridge, broker and settlement exposure.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4098",
+    "domain": "RISK",
+    "title": "Capital risk domain covered",
+    "statement": "Risk covers capital: leverage, margin, collateral, concentration, funding and liquidity buffers.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4099",
+    "domain": "RISK",
+    "title": "Model risk domain covered",
+    "statement": "Risk covers model risk: drift, calibration, regime mismatch, uncertainty, feature failure and adversarial inputs.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4100",
+    "domain": "RISK",
+    "title": "Data risk domain covered",
+    "statement": "Risk covers data: stale, poisoned, manipulated, missing and inconsistent sources.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4101",
+    "domain": "RISK",
+    "title": "Operational risk domain covered",
+    "statement": "Risk covers operational failure: node, network, clock, deployment, credential, reconciliation and dependency.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4102",
+    "domain": "RISK",
+    "title": "Systemic risk domain covered",
+    "statement": "Risk covers systemic cross-asset/region/counterparty contagion and correlated causal mechanisms.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4103",
+    "domain": "RISK",
+    "title": "Conduct/intervention risk domain covered",
+    "statement": "Risk covers conduct/intervention: truthfulness, disclosure, identity, communications permissions, market conduct, manipulation, causal overclaiming, externalities and action-channel compromise.",
+    "rationale": "§14 risk-domain table row: an uncovered domain is a risk nobody measures.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "27",
+        "section": "§14 Risk Brain + Deterministic Risk Gate"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named exposure in the row has a measurement and either a deterministic limit or a recorded finding; a test drives each."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4104",
+    "domain": "RISK",
+    "title": "Hedge Brain independent of alpha generation",
+    "statement": "The Hedge Brain operates independently of alpha generation: its inputs are exposures and declared policy, never alpha signals.",
+    "rationale": "A hedge that depends on the alpha view fails exactly when the view is wrong.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The hedge review reads only risk state, catalogue and prices; a test shows a hedge unchanged by alpha signals."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4105",
+    "domain": "RISK",
+    "title": "Hedge Brain maps exposures to drivers, factors, Greeks and tails",
+    "statement": "The Hedge Brain continuously maps portfolio exposures to causal drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail scenarios.",
+    "rationale": "A hedge that sees only one axis leaves the others naked.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The hedge survey reads exposures on every listed axis."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4106",
+    "domain": "RISK",
+    "title": "Search for the cheapest executable hedge preserving edge",
+    "statement": "The Hedge Brain searches for the cheapest executable hedge portfolio that protects survival while preserving expected edge.",
+    "rationale": "A declared single-instrument hedge is rarely the cheapest protection.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given several candidate instruments, the search returns the least-cost portfolio meeting the protection target."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4107",
+    "domain": "RISK",
+    "title": "Hedge candidates across permitted instrument classes",
+    "statement": "Hedge candidates may span permitted options, futures, FX, rates, commodities, volatility, correlated assets, event contracts and cash/collateral actions.",
+    "rationale": "Restricting hedges to linear cash instruments forfeits convex protection.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A hedge policy can name an instrument of each class and size it correctly (multiplier, delta)."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4108",
+    "domain": "RISK",
+    "title": "Hedging uses the multi-world forecast distribution",
+    "statement": "Hedging uses the same multi-world forecast distribution as the rest of the platform: different hedges protect different surviving futures.",
+    "rationale": "A hedge sized on one point forecast protects one future.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The hedge evaluation scores candidates across forecast worlds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4109",
+    "domain": "RISK",
+    "title": "Hedge evaluation beyond correlation",
+    "statement": "Hedges are evaluated on cost, basis risk, convexity, liquidity decay, counterparty risk and unwind feasibility, not simply correlation.",
+    "rationale": "A correlated hedge with basis or unwind risk fails in the stress it was bought for.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A hedge proposal records each of the six measures; a candidate failing unwind feasibility is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4110",
+    "domain": "RISK",
+    "title": "Model-Risk Brain predicts when the platform is wrong",
+    "statement": "A dedicated Model-Risk Brain predicts when the platform itself is likely to be wrong.",
+    "rationale": "§14.2: confidence must be governed by evidence of reliability.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A per-component reliability estimate is maintained from graded outcomes and read at sizing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4111",
+    "domain": "RISK",
+    "title": "Size and grants contract when calibration decays",
+    "statement": "Position size and capital grants contract automatically when calibration decays.",
+    "rationale": "§14.2: confidence contracts automatically when the platform's evidence of being right weakens.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving the trigger in a kernel test narrows the sizing budget and the next issued grant; the multiplier never exceeds one; removing the trigger leaves size unchanged and fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4112",
+    "domain": "RISK",
+    "title": "Size and grants contract when model disagreement rises",
+    "statement": "Position size and capital grants contract automatically when model disagreement rises.",
+    "rationale": "§14.2: confidence contracts automatically when the platform's evidence of being right weakens.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving the trigger in a kernel test narrows the sizing budget and the next issued grant; the multiplier never exceeds one; removing the trigger leaves size unchanged and fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4113",
+    "domain": "RISK",
+    "title": "Size and grants contract when evidence freshness falls",
+    "statement": "Position size and capital grants contract automatically when evidence freshness falls.",
+    "rationale": "§14.2: confidence contracts automatically when the platform's evidence of being right weakens.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving the trigger in a kernel test narrows the sizing budget and the next issued grant; the multiplier never exceeds one; removing the trigger leaves size unchanged and fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4114",
+    "domain": "RISK",
+    "title": "Size and grants contract when OOD scores spike",
+    "statement": "Position size and capital grants contract automatically when out-of-distribution scores spike.",
+    "rationale": "§14.2: confidence contracts automatically when the platform's evidence of being right weakens.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving the trigger in a kernel test narrows the sizing budget and the next issued grant; the multiplier never exceeds one; removing the trigger leaves size unchanged and fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4115",
+    "domain": "RISK",
+    "title": "Size and grants contract on regime mismatch with training",
+    "statement": "Position size and capital grants contract automatically when the active regime no longer resembles the training/evaluation regimes.",
+    "rationale": "§14.2: confidence contracts automatically when the platform's evidence of being right weakens.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Driving the trigger in a kernel test narrows the sizing budget and the next issued grant; the multiplier never exceeds one; removing the trigger leaves size unchanged and fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4116",
+    "domain": "RISK",
+    "title": "Generate adversarial and synthetic tail worlds",
+    "statement": "Risk continuously generates adversarial and synthetic tail worlds, including ones that never occurred historically.",
+    "rationale": "A historical library cannot contain the next crisis.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each SIMULATE stage stresses the book with library scenarios plus generated adversarial/synthetic worlds outside the library's bounds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4117",
+    "domain": "RISK",
+    "title": "Survivability under liquidity freezes",
+    "statement": "Capital and hedge systems demonstrate survivability in a liquidity freezes tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4118",
+    "domain": "RISK",
+    "title": "Survivability under venue outages",
+    "statement": "Capital and hedge systems demonstrate survivability in a venue outages tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4119",
+    "domain": "RISK",
+    "title": "Survivability under gap moves",
+    "statement": "Capital and hedge systems demonstrate survivability in a gap moves tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4120",
+    "domain": "RISK",
+    "title": "Survivability under correlation inversion",
+    "statement": "Capital and hedge systems demonstrate survivability in a correlation inversion tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4121",
+    "domain": "RISK",
+    "title": "Survivability under counterparty failure",
+    "statement": "Capital and hedge systems demonstrate survivability in a counterparty failure tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4122",
+    "domain": "RISK",
+    "title": "Survivability under model failure",
+    "statement": "Capital and hedge systems demonstrate survivability in a model failure tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4123",
+    "domain": "RISK",
+    "title": "Survivability under data poisoning",
+    "statement": "Capital and hedge systems demonstrate survivability in a data poisoning tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-4124",
+    "domain": "RISK",
+    "title": "Survivability under simultaneous multi-market shocks",
+    "statement": "Capital and hedge systems demonstrate survivability in a simultaneous multi-market shocks tail world, and failure to survive changes capital or hedges.",
+    "rationale": "§14.3: survival must be demonstrated, not assumed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stress test of the paper book in this world shows equity above the survival floor or triggers a recorded capital/hedge response; removing the response fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  }
+]

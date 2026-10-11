@@ -14,10 +14,17 @@
 //!
 //! These are the only two managed targets in [`crate::provider::StorageTarget`]
 //! that are real. They are real because they are the two with a plain JSON REST
-//! API. AlloyDB and Spanner speak PostgreSQL wire protocol and gRPC, Bigtable
-//! speaks gRPC, Memorystore speaks RESP — each needs a protocol implementation
-//! this workspace does not have and a dependency policy that permits only
-//! `serde` will not acquire.
+//! API. AlloyDB speaks the PostgreSQL wire protocol, Bigtable speaks gRPC,
+//! Memorystore speaks RESP — each needs a protocol implementation this
+//! workspace does not have.
+//!
+//! Spanner is the exception that is half true, and it is stated here so it is
+//! not read either way: Spanner publishes a JSON REST surface beside its gRPC
+//! one, and [`spanner`] is a shim over it for the one store ADR 0113 puts
+//! there — the ledger's key-value table, committed by `qip-ledgerd`. The
+//! provider still refuses [`crate::provider::StorageTarget::Spanner`] as a
+//! general [`crate::KeyValueStore`]: a second Spanner store is its own
+//! decision, not a side effect of this one.
 //!
 //! # The two things a deployment must supply
 //!
@@ -67,7 +74,15 @@
 //! when the pod was rescheduled.
 
 pub mod auth;
+/// Cloud Spanner over its REST API (ADR 0113 §2): the key-value shim
+/// `qip-ledgerd` commits each delivery through. Spanner also speaks gRPC;
+/// this module uses the JSON surface Google publishes beside it, which is
+/// what made it possible here without a protocol stack.
+pub mod spanner;
 pub mod storage;
+/// Workload certificates from CA Service, named after the instance's
+/// service account (ADR 0112 §2).
+pub mod workload_certificate;
 
 pub use auth::{AccessToken, MetadataServerTokens, StaticToken, TokenFile, TokenSource};
 pub use storage::{CloudStorageBlobStore, CloudStorageConfig};

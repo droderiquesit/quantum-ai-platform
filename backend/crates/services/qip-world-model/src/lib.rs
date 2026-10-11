@@ -19,18 +19,25 @@
 pub mod arbitrage_state;
 pub mod causal;
 pub mod confounder;
-pub mod evidence;
+// Evidence and the fabric moved to `qip-evidence` so ingestion can check
+// evidence without linking this slow-lane crate; re-exported under the same
+// paths so `qip_world_model::evidence::…` and `crate::fabric` still resolve.
+pub use qip_evidence::evidence;
 pub mod execution_state;
 pub mod exposure;
+pub use qip_evidence::fabric;
 pub mod falsification;
 pub mod features;
 pub mod federation;
 pub mod granger;
 pub mod graph;
 pub mod inference;
+pub mod lattice;
 pub mod lead_lag;
 pub mod liquidity;
+pub mod now;
 pub mod order_flow;
+pub mod poisoning;
 pub mod price_impact;
 pub mod reaction;
 pub mod relationship;
@@ -50,12 +57,16 @@ pub use causal::{
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
 pub use evidence::{
-    AuthenticitySignal, EvidenceRecord, GeographicConsistency, TemporalConsistency,
+    AuthenticitySignal, EvidenceRecord, GeoPoint, GeographicConsistency, TemporalConsistency,
 };
 pub use execution_state::{ExecutionRecord, ExecutionState, VenueExecutionStats};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,
     hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,
+};
+pub use fabric::{
+    Authenticity, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, KeyOutcome, KnowledgeDelta,
+    ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
 };
 pub use falsification::{
     Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
@@ -79,6 +90,7 @@ pub use liquidity::{
     VenueShift,
 };
 pub use order_flow::{FlowDirection, FlowObservation, OrderFlowState};
+pub use poisoning::{PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning};
 pub use price_impact::{ImpactMap, ImpactObservation, ImpactState, VenueImpactModel};
 pub use reaction::ReactionEpisode;
 pub use relationship::{Relationship, RelationshipKind};

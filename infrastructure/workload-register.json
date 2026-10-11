@@ -213,11 +213,11 @@
       "workload": "event-fabric-broker",
       "runtime": "compute-engine",
       "declared_by": "infrastructure/terraform/modules/event-fabric-broker",
-      "state_owner": "None in use. As designed, qip-fabricd, the sole writer of every partition's batch chain (ADR 0100 §2), journalling to the block device qip_storage_journal_device names (default /dev/sdb) mounted at /var/lib/qip/journal (modules/event-fabric-broker/startup.sh.tftpl). As declared, nothing holds that state: the module's instance template exists only where enabled is true, enabled defaults to false, no module block in infrastructure/terraform/main.tf instantiates the module, and the template declares a boot disk and no second disk, so the journal device it names is not one this configuration provides.",
+      "state_owner": "qip-fabricd, the sole writer of every partition's batch chain (ADR 0100 §2), journalling to its own persistent disk attached as `qip-journal` (/dev/disk/by-id/google-qip-journal), mounted at /var/lib/qip/journal by modules/event-fabric-broker/startup.sh.tftpl, which refuses to start rather than journal to the boot disk and formats the device only when it carries no filesystem. Instantiated by infrastructure/terraform/fabric.tf behind `event_fabric_broker`, null in every environment, so no such state exists today.",
       "upstream": [
         {
           "peer": "event-fabric producers and consumers, finding the broker through the _qip-event-fabric._tcp SRV record and the A record the module writes from broker_internal_addresses (modules/event-fabric-broker/main.tf)",
-          "protocol": "qip-transport::event_fabric's HTTP/1.1 client over plaintext TCP inside the VPC, on broker_port (default 9200) (ADR 0100 §1, §7); unwired, because nothing instantiates the module"
+          "protocol": "qip-transport::event_fabric's HTTP/1.1 client over plaintext TCP inside the VPC, on broker_port (default 9200) (ADR 0100 §1, §7); not deployed in any environment, because `event_fabric_broker` is null everywhere"
         }
       ],
       "downstream": [
@@ -228,9 +228,36 @@
       ],
       "scaling": {
         "model": "disabled",
-        "detail": "Behind enabled, which defaults to false until FABRIC-086's consensus record exists (modules/event-fabric-broker/variables.tf), and instantiated by no module block in the root. Even with enabled true it declares an instance template and two DNS records and no instance group or instance, so it would start no machine. ADR 0100 §3 sizes the first build at one broker and one disk per region."
+        "detail": "Behind the root's `event_fabric_broker` object (fabric.tf), null in every environment because no boot image carrying qip-fabricd has been baked. When set: one machine from the module's template, `google_compute_instance_from_template`, on the one stable address the A record names. Not an instance group, and more than one address is refused at plan: the first build is RF1 with no consensus (ADR 0100 §3), so a second broker or a surge replacement is a second writer of one chain."
       },
-      "degraded_mode": "Not deployed, so there is no broker to lose: ADR 0100 §8's first slice runs with enabled = false on a configured address (modules/event-fabric-broker/README.md). As designed, a lost broker is that region's fabric gone until it returns, because RF1 has no replica to fail over to; producers keep every record in their spool until the broker reports it archived, and FABRIC-077 and FABRIC-086 are not met by this build (ADR 0100 §3)."
+      "degraded_mode": "Not deployed, so there is no broker to lose. As designed, a lost broker is that region's fabric gone until the machine returns with its journal disk, because RF1 has no replica to fail over to; producers keep every record in their spool until the broker reports it archived, and FABRIC-077 and FABRIC-086 are not met by this build (ADR 0100 §3)."
+    },
+    {
+      "workload": "ledgerd",
+      "runtime": "compute-engine",
+      "declared_by": "infrastructure/terraform/modules/ledgerd",
+      "state_owner": "qip-ledgerd, the sole writer of the ledger chain of double-entry postings for fills (ADR 0100 §2), in its store under QIP_LEDGER_ARCHIVE_PATH (/var/lib/qip/ledger) on its own persistent disk `qip-<env>-ledger-archive`, attached as `qip-ledger`. The postings are derived from the fabric's P1 stream, which is the record; a lost archive is rebuilt by replay. Instantiated by infrastructure/terraform/fabric.tf behind `ledgerd`, null in every environment, so no such state exists today.",
+      "upstream": [
+        {
+          "peer": "the event-fabric broker, as consumer group QIP_LEDGER_FABRIC_CONSUMER_GROUP (default qip-ledgerd), reading P1 outcomes",
+          "protocol": "qip-transport::event_fabric over plaintext TCP inside the VPC (ADR 0100 §1, §7); not deployed"
+        },
+        {
+          "peer": "readers of the ledger's read-side API, on the machine's stable internal address and listen_port (default 8090)",
+          "protocol": "HTTP/1.1 inside the ledger trust zone's declared paths; no external address"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "the archive disk",
+          "protocol": "local block-device writes through qip-storage's durable store"
+        }
+      ],
+      "scaling": {
+        "model": "disabled",
+        "detail": "Behind the root's `ledgerd` object, null in every environment because no boot image carrying qip-ledgerd has been baked. When set: exactly one `google_compute_instance`, deliberately not an instance group, because a group's surge would run a second writer of the ledger chain."
+      },
+      "degraded_mode": "Not deployed. As designed, a stopped ledger stops posting and nothing else: producers and the broker retain P1 outcomes, the ledger resumes from its consumer group's position when it returns, and any fill whose `simulated` flag is not true parks that cell rather than posting (ADR 0106), a refusal in the binary with no setting in this module to relax it."
     }
   ]
 }

@@ -44,7 +44,7 @@ use qip_arbitrage::plan::{LegPlanner, PlanSettings};
 use qip_arbitrage::pricing::price_path;
 use qip_arbitrage::scan::{OpportunityScanner, RejectionStage, SizePolicy};
 use qip_arbitrage::search::{SearchSettings, search_candidates};
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
 use qip_contracts::edge::{DeductionKind, LegStep};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::StrategyId;
@@ -1335,7 +1335,7 @@ fn a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops() -> Resu
     // Inside the window and inside the grant: the cell acts without asking.
     assert!(matches!(
         envelope.admit(&xlon, d("300"), &fresh, t(10)),
-        CapitalGrant::Full
+        CapitalAdmission::Full
     ));
 
     // Still cut off, and now past the grant it holds: refused whole, never
@@ -1349,12 +1349,12 @@ fn a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops() -> Resu
     };
     let over_headroom = envelope.admit(&xlon, d("400"), &mostly_used, t(20));
     assert!(
-        matches!(over_headroom, CapitalGrant::Refused(_)),
+        matches!(over_headroom, CapitalAdmission::Refused(_)),
         "400 against 200 of headroom was not refused whole: {over_headroom:?}"
     );
     assert_eq!(
         over_headroom,
-        CapitalGrant::Refused(
+        CapitalAdmission::Refused(
             "order notional 400 exceeds the 200 of the 1000 gross limit left".into()
         ),
         "the refusal did not name the headroom that stopped it"
@@ -1375,7 +1375,7 @@ fn a_cell_cut_off_from_the_centre_spends_only_its_grant_and_then_stops() -> Resu
     // the property that bounds a cell the centre can no longer talk to.
     assert!(!envelope.is_live(t(3600)));
     match envelope.admit(&xlon, d("1"), &fresh, t(3600)) {
-        CapitalGrant::Refused(reason) => assert!(
+        CapitalAdmission::Refused(reason) => assert!(
             reason.contains("expired"),
             "the expiry refusal did not say it had expired: {reason}"
         ),
@@ -1640,8 +1640,8 @@ fn quantum_being_unavailable_produces_a_classical_answer_that_says_why() -> Resu
             minimum_assets_for_quantum: 4,
             exact_enumeration_limit: 8,
             ..RoutingPolicy::default()
-        })
-        .with_quantum(Arc::new(hosted))
+        })?
+        .with_quantum(Arc::new(hosted))?
         .solve(&problem)?;
 
     assert_ne!(

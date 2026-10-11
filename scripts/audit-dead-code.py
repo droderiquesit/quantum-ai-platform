@@ -35,8 +35,8 @@ Heuristics and their limits, stated so nobody over-reads the output:
   * `#[cfg(test)]` position decides what counts as production: a `src/` hit after
     a file's first unindented `#[cfg(test)]` is a test and is excluded from
     declarations, but references from anywhere count — so an item called ONLY by
-    tests is NOT reported here. That is a separate claim class; use
-    `scripts/audit-register.py`, which checks it.
+    tests is NOT reported here. That is a separate claim class, and nothing in
+    this repository checks it.
 
 Exits 1 when it finds candidates, so a reviewer can gate on it. It is not wired
 into `make check`: most of what it surfaces is legitimate public API, and a gate

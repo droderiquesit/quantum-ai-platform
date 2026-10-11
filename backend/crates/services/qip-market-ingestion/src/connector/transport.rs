@@ -109,6 +109,59 @@ pub struct SourceResponse {
     /// serve again and the ladder is only a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after: Option<Duration>,
+    /// The source's own version tag for what it served (`etag`), where it
+    /// sends one. Carried to the data reference so a later re-fetch can be
+    /// compared against the source's own claim of change as well as the
+    /// hash (R12-DATA-1033's etag field, never filled before 2026-10-11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// What the source declared its body's SHA-256 to be (`content-digest`,
+    /// RFC 9530, or the older `digest`, RFC 3230), checked by the transport
+    /// against the bytes as they arrived — before any redaction, which would
+    /// otherwise make an honest body read as altered. `None` where the
+    /// source declared no SHA-256 (R12-EVID-2034).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<ContentDigest>,
+}
+
+/// A body digest the source declared, and whether the body matched it.
+///
+/// A match is integrity of this copy over the channel it came on — it is not
+/// authenticity and earns none, because the declaration and the body came
+/// from the same place. A mismatch is the finding: the bytes are not what
+/// their own source said it sent, and every claim extracted from them is
+/// spoofed evidence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentDigest {
+    /// The declared SHA-256, as lowercase hex.
+    pub declared: String,
+    /// Whether the body as received hashed to `declared`.
+    pub matched: bool,
+}
+
+impl ContentDigest {
+    /// Check `declared` (hex) against `body`.
+    pub fn check(declared: impl Into<String>, body: &[u8]) -> Self {
+        let declared = declared.into().to_ascii_lowercase();
+        let matched = qip_core::sha256_hex(body) == declared;
+        Self { declared, matched }
+    }
+
+    /// The SHA-256 a `content-digest` or `digest` header value declares, as
+    /// hex, or `None` where it declares none or one that does not decode.
+    /// RFC 9530 writes `sha-256=:BASE64:`, RFC 3230 `SHA-256=BASE64`; other
+    /// algorithms in the list are ignored rather than trusted.
+    pub fn declared_sha256(header: &str) -> Option<String> {
+        header.split(',').find_map(|member| {
+            let (algorithm, value) = member.trim().split_once('=')?;
+            if !algorithm.trim().eq_ignore_ascii_case("sha-256") {
+                return None;
+            }
+            let encoded = value.trim().trim_matches(':');
+            let bytes = qip_transport::kms::decode_base64(encoded).ok()?;
+            (bytes.len() == 32).then(|| bytes.iter().map(|b| format!("{b:02x}")).collect())
+        })
+    }
 }
 
 impl SourceResponse {
@@ -119,7 +172,20 @@ impl SourceResponse {
             body: body.into(),
             latency,
             retry_after: None,
+            etag: None,
+            content_digest: None,
         }
+    }
+
+    /// The source declared `declared` (hex SHA-256) for this body.
+    pub fn with_declared_digest(mut self, declared: impl Into<String>) -> Self {
+        self.content_digest = Some(ContentDigest::check(declared, self.body.as_bytes()));
+        self
+    }
+
+    pub fn with_etag(mut self, etag: impl Into<String>) -> Self {
+        self.etag = Some(etag.into());
+        self
     }
 
     pub fn with_retry_after(mut self, wait: Duration) -> Self {
@@ -374,6 +440,14 @@ impl SourceTransport for HttpSourceTransport {
         let response = self.client.send(&http).map_err(Error::from)?;
         let latency =
             Duration::from_nanos(i64::try_from(began.elapsed().as_nanos()).unwrap_or(i64::MAX));
+        // Checked over the bytes as they arrived: `scrub` below may rewrite
+        // the body, and a digest compared after it would call an honest
+        // source a forger.
+        let content_digest = response
+            .header("content-digest")
+            .or_else(|| response.header("digest"))
+            .and_then(ContentDigest::declared_sha256)
+            .map(|declared| ContentDigest::check(declared, &response.body));
         let body = response
             .body_as_str()
             .map_err(Error::from)
@@ -386,6 +460,12 @@ impl SourceTransport for HttpSourceTransport {
             body,
             latency,
             retry_after: response.header("retry-after").and_then(parse_retry_after),
+            etag: response
+                .header("etag")
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_string),
+            content_digest,
         })
     }
 }
@@ -401,4 +481,42 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
         return None;
     }
     Some(Duration::from_secs(seconds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContentDigest;
+
+    /// SHA-256 of the empty body, as RFC 9530 and RFC 3230 each write it.
+    const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const EMPTY_B64: &str = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+
+    /// A digest header the parser misread would either credit a spoofed body
+    /// as matching or call an honest one altered. Mutation: drop the
+    /// `sha-256` algorithm filter — the md5 member is read and the first
+    /// assertion fails.
+    #[test]
+    fn a_sha_256_member_is_read_from_either_header_form_and_other_algorithms_are_ignored() {
+        // The first member is 32 bytes under another algorithm: a parser that
+        // ignored the algorithm would read it as the SHA-256, and the length
+        // check alone would not stop it.
+        let other = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let rfc9530 = format!("sha3-256=:{other}:, sha-256=:{EMPTY_B64}:");
+        assert_eq!(
+            ContentDigest::declared_sha256(&rfc9530).as_deref(),
+            Some(EMPTY_HEX)
+        );
+        let rfc3230 = format!("SHA-256={EMPTY_B64}");
+        assert_eq!(
+            ContentDigest::declared_sha256(&rfc3230).as_deref(),
+            Some(EMPTY_HEX)
+        );
+        assert_eq!(
+            ContentDigest::declared_sha256("md5=:XUFAKrxLKna5cZ2REBfFkg==:"),
+            None
+        );
+        assert_eq!(ContentDigest::declared_sha256("sha-256=:not base64:"), None);
+        assert!(ContentDigest::check(EMPTY_HEX, b"").matched);
+        assert!(!ContentDigest::check(EMPTY_HEX, b"x").matched);
+    }
 }

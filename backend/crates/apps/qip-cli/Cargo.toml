@@ -25,9 +25,15 @@ qip-storage.workspace = true
 qip-agents.workspace = true
 qip-risk.workspace = true
 qip-kernel.workspace = true
-# `qip agency shadow`: the agency engine's one composition root. Contracts and
-# a pure pass; it holds no adapter, and this crate hands it one that refuses.
+# `qip agency shadow`: the agency engine's one composition root. It holds no
+# adapter, and this crate hands it one that refuses (ADR 0114); it does hold
+# the conduct policy, the guard kept across passes, and the journal.
 qip-agency.workspace = true
+# The legal-eligibility register the agency policy document declares.
+qip-compliance.workspace = true
+# The agency policy and pass documents are deserialised into this crate's own
+# types (`serde` is one of the workspace's two permitted crates).
+serde.workspace = true
 # The HTTP server the live demonstration's three doubles are served by. Already
 # a dependency of this crate for the API's own types; `qip_api::http::Server` is
 # the platform's own HTTP/1.1 server, so the demonstration binds one rather than
@@ -84,6 +90,11 @@ qip-capital-fabric.workspace = true
 # matching the kernel's private producer string — would silently match nothing
 # the day it changed.
 qip-streaming.workspace = true
+
+# No `ring` here, although the grant's mutual-TLS test mints certificates
+# with it through `qip-transport/tests/support/certs.rs`: that file names it
+# as `qip_transport::ring`, the re-export of the one pin in `qip-tls`, and
+# `cargo deny`'s workspace-duplicate check refuses a second pin.
 
 [lints]
 workspace = true

@@ -56,7 +56,7 @@
 //! running a limit nobody chose. Unset is the engine's default, the figure
 //! every node ran before the variable existed.
 
-use qip_arbitrage::graph::VenueFacts;
+use qip_arbitrage::graph::{EdgeCosts, VenueFacts};
 use qip_arbitrage::{
     ArbitrageGraph, EdgeAssumptions, MAX_CYCLE_EDGES, MIN_CYCLE_EDGES, Node, OpportunityScanner,
     PlanSettings, SearchSettings, SizePolicy, TradableRegistry,
@@ -196,7 +196,7 @@ pub fn graph_from_whitelist(
             venue.clone(),
             VenueFacts::new(conversion.venue_class, VenueStatus::Open),
         );
-        graph.add_trade(
+        let index = graph.add_trade(
             Node::new(
                 ObjectId::from_string(conversion.from.as_str()),
                 venue.clone(),
@@ -209,6 +209,35 @@ pub fn graph_from_whitelist(
             Timestamp::EPOCH,
             0,
         )?;
+        // The per-conversion costs the centre stated (R12-MESH-5055 to
+        // -5057): tax and duty, logistics, settlement risk, fill probability
+        // and borrow, priced by the desk's net-edge calculator as named
+        // deductions. A figure out of range refuses the whole whitelist,
+        // naming the conversion, rather than being clamped into one the
+        // centre did not sign.
+        if let Some(costs) = &conversion.costs {
+            graph
+                .set_costs(
+                    index,
+                    EdgeCosts {
+                        tax_duty_fraction: costs.tax_duty_fraction,
+                        logistics_fraction: costs.logistics_fraction,
+                        settlement_risk_fraction: costs.settlement_risk_fraction,
+                        fill_probability: costs.fill_probability,
+                        borrow_rate_annual: costs.borrow_rate_annual,
+                    },
+                )
+                .map_err(|error| {
+                    Error::invalid(format!(
+                        "conversion {position} ({} -> {} at {}) states costs the desk cannot \
+                         price: {}",
+                        conversion.from,
+                        conversion.to,
+                        conversion.venue,
+                        error.message()
+                    ))
+                })?;
+        }
     }
     Ok(graph)
 }

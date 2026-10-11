@@ -63,6 +63,16 @@ qip-routing.workspace = true
 # is this binary's own reflex-ring-to-spool-to-drain composition, so the
 # envelope type is a production dependency here, not a test-only fixture.
 qip-events.workspace = true
+# The limit vocabulary the cell's Risk Gate evaluates, read from the node's
+# limits document (`risk.rs`). A workspace crate `qip-edge` already depends
+# on, not a third external dependency.
+qip-risk.workspace = true
+# The peer Reflex Mesh's link (ADR 0116). Lane 1, hosted here because the
+# peer hop must be node to node (blueprint §16); the decision loop reaches it
+# only through `qip_peer_link::boundary::ReflexPort`, and `main.rs` alone
+# spawns it. With it this crate is a Lane 1 host, and the Lane 0 set is its
+# closure minus this crate and `qip-peer` (`lane_placement.rs`).
+qip-peer-link.workspace = true
 
 [dev-dependencies]
 # ADR 0100 § 1's broker library (qip-streaming::event_fabric). Dev-only: this

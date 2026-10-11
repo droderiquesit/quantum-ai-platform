@@ -69,6 +69,8 @@ spec:
         value: paper_trading
       - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
         value: /var/run/secrets/qip/capital-envelope-key/capital-envelope-key
+      - name: QIP_DEPLOYMENT
+        value: prod
       - name: QIP_STORAGE_TARGET
         value: memory
       - name: QIP_TOKEN_ANALYST_FILE

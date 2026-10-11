@@ -13,6 +13,17 @@ output "service_account_email" {
   value = google_service_account.workload.email
 }
 
+output "service_account_id" {
+  description = <<-EOT
+    The workload identity's account id — configuration, so known at plan,
+    where the email is not. A grant that must be readable in the plan (ADR
+    0110's signer bindings) writes the email from this and checks it against
+    `service_account_email` at apply.
+  EOT
+
+  value = google_service_account.workload.account_id
+}
+
 output "name" {
   description = "The Cloud Run resource's name — and the manifest's `metadata.name`, which is how Config Connector acquires it. The environment is in it, so two environments in one project cannot collide."
   value       = local.name

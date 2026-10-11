@@ -1,0 +1,13 @@
+# The last freight a person promoted through the `paper` gate.
+#
+# Written by Kargo's `record-gate` task (kargo/base/gatetask.yaml) and by
+# nothing else; `git log` on this file is the gate's history. Empty until the
+# first promotion through the gate: no freight has passed it yet, and an
+# empty record says so rather than naming a digest nobody promoted.
+freight: ""
+promotion: ""
+sourceCommit: ""
+images:
+  qip-api: ""
+  qip-fastbrain: ""
+  qip-deepbrain: ""

@@ -41,6 +41,13 @@ qip-api.workspace = true
 # longer matches its JSON sources (ADR 0099). A dev-dependency on an app, as
 # qip-api above is: nothing ships depending on it.
 qip-cli.workspace = true
+# The edge node's library, so `order_route_risk_gate.rs` drives an order
+# through the cell exactly as the binary assembles it — `assemble_with_risk`,
+# `run_pass`, the repricer — rather than reading the source for the gate's
+# call (R12-RISK-4093). A path dependency rather than a new root
+# `[workspace.dependencies]` entry; a dev-dependency on an app, as the two
+# above are, and nothing ships depending on it.
+qip-edge-node = { path = "../../apps/qip-edge-node" }
 
 # The stress, chaos and performance suites reach the edge stack directly: the
 # cell and its journal, the books it prices from, the sequencer that decides a

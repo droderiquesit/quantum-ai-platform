@@ -92,9 +92,17 @@ fn grant(strategy: &str) -> Result<VerifiedEnvelope> {
             signature,
         )
     };
-    let unsigned = build("unsigned")?;
-    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(1))
+    // Bounded as the centre's issuer bounds every grant (R12-CAPITAL-4088):
+    // the cell `assemble` builds refuses an envelope without exposure bounds.
+    let unsigned = build("")?;
+    let capital = unsigned.gross_limit();
+    let unsigned = unsigned.with_exposure(qip_contracts::capital::ExposureBounds::bounded(
+        2_500,
+        qip_core::Decimal::ONE,
+        capital,
+    )?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
 
 /// The node's pieces, assembled the way `main.rs` assembles them — through
@@ -142,11 +150,18 @@ fn refused_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// What one pass of one strategy actually spends of the region.
+/// What one pass of one strategy actually spends: what it holds of the
+/// region, and the notional of the order it sends.
 ///
 /// Measured against an allocation far larger than a pass could need rather
 /// than restated as a literal: the degradation floor scales every size, so a
 /// literal here would be a number this file believed and the cell did not.
+///
+/// The two must be one number. The node's Risk Gate measures the sent
+/// notional against the allocation; round 2 held at the mid and sent at the
+/// touch, so an allocation of exactly the hold refused the first strategy's
+/// own order and one of exactly the order was spent half a spread past what
+/// the region held. The probe asserts they agree rather than returning both.
 fn spent_by_one_strategy() -> Result<Decimal> {
     let opening = "100000000";
     let (mut node, mut gateway, mut feed) = node_with(opening, &["alpha"])?;
@@ -168,6 +183,7 @@ fn spent_by_one_strategy() -> Result<Decimal> {
         "the probe premise failed: the pass placed no order: {:?}",
         report.refusals
     );
+    let sent = report.orders[0].quantity * report.orders[0].price;
     // Against the bound the share set — the grant's gross, under a ceiling
     // far above it — not the ceiling: the ceiling funds nothing.
     let bound = node
@@ -182,7 +198,12 @@ fn spent_by_one_strategy() -> Result<Decimal> {
         bound < Decimal::parse(opening).expect("a decimal literal"),
         "the probe premise failed: the share did not bound the node below its ceiling ({bound})"
     );
-    Ok(bound - free)
+    let held = bound - free;
+    assert_eq!(
+        held, sent,
+        "the region held a different notional from the one the order was sent at"
+    );
+    Ok(held)
 }
 
 #[test]
@@ -257,10 +278,10 @@ fn a_node_built_by_this_root_refuses_to_start_without_a_region_allocation() {
 
 #[test]
 fn a_node_built_with_the_allocation_refuses_a_second_strategy_once_it_is_spent() -> Result<()> {
-    // Sized to exactly what one strategy spends, so the first strategy takes
-    // the whole region and the second finds nothing. Both hold a grant of a
-    // million, so nothing per-strategy is what stops the second: only the
-    // bound this root now installs.
+    // Sized to exactly what one strategy's order sends — which is what it
+    // holds — so the first strategy takes the whole region and the second
+    // finds nothing. Both hold a grant of a million, so nothing per-strategy
+    // is what stops the second: only the bound this root now installs.
     let one = spent_by_one_strategy()?;
     assert!(
         one.is_positive(),
@@ -270,7 +291,7 @@ fn a_node_built_with_the_allocation_refuses_a_second_strategy_once_it_is_spent()
     assert_eq!(
         node.cell.region_allocation_free(),
         Some(one),
-        "the premise is a node holding exactly one strategy's worth"
+        "the premise is a node holding exactly one strategy's order"
     );
 
     let mut stats = PassStats::default();

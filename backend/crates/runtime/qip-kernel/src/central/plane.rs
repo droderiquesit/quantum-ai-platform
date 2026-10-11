@@ -95,6 +95,7 @@ pub fn capital_subject(strategy: &StrategyId, cell: &str) -> String {
         venues: Vec::new(),
         expires_at: Timestamp::from_secs(0),
         requested_by: String::new(),
+        exposure: None,
     }
     .subject()
 }
@@ -1541,6 +1542,46 @@ impl CentralPlane {
         self.key_is_reproducible
     }
 
+    /// Sign every capital envelope from now on under ADR 0110's `envelope`
+    /// key, and verify them with the public keys the cells hold.
+    ///
+    /// Called by a composition root before anything is served, like the key
+    /// swap in `harden_central`. The plane's other signatures — compliance
+    /// records, strategy DNA — keep the operator's shared key, which is why
+    /// [`Self::signing_key_is_reproducible`] still matters after this.
+    ///
+    /// Proven before it is installed: one probe envelope payload is signed
+    /// and verified through the pair offered, so a signer whose key is not
+    /// in the verifier's bundle is refused here rather than discovered as a
+    /// fleet refusing every grant.
+    pub fn install_envelope_signer(
+        &mut self,
+        signer: std::sync::Arc<dyn qip_contracts::trust::ArtefactSigner>,
+        verifier: std::sync::Arc<dyn qip_contracts::trust::ArtefactVerifier>,
+        now: Timestamp,
+    ) -> Result<()> {
+        let probe = b"capital-envelope signer probe";
+        let signature = qip_contracts::trust::sign_artefact(
+            signer.as_ref(),
+            qip_contracts::trust::ArtefactClass::Envelope,
+            probe,
+        )?;
+        verifier.verify(
+            qip_contracts::trust::ArtefactClass::Envelope,
+            probe,
+            &signature,
+            now,
+        )?;
+        self.issuer = EnvelopeIssuer::asymmetric(signer, verifier)?;
+        Ok(())
+    }
+
+    /// Whether this plane's envelopes carry an asymmetric signature (ADR
+    /// 0110) rather than the shared key's MAC.
+    pub const fn envelope_signing_is_asymmetric(&self) -> bool {
+        self.issuer.is_asymmetric()
+    }
+
     /// The compliance report, carrying this plane's own signing posture.
     ///
     /// The caveat is added here rather than inside `qip-compliance`, which
@@ -1889,6 +1930,45 @@ impl CentralPlane {
         drawdown: f64,
         now: Timestamp,
     ) -> Result<IssuedCapital> {
+        self.issue_narrowed(
+            strategy,
+            requested_by,
+            approval,
+            credentials,
+            drawdown,
+            Decimal::ONE,
+            now,
+        )
+    }
+
+    /// [`Self::issue`], with the envelope's gross limit narrowed by
+    /// `narrowing` before it is signed — the confidence governor's grant
+    /// contraction (R12-RISK-4111, 4112, 4114, 4115; see
+    /// `crate::confidence::ConfidenceSignals::decide_for_grant`).
+    ///
+    /// Applied to the terms, before signing, so the signed payload, the
+    /// approval chain's request and the cell's enforcement all carry the one
+    /// narrowed figure; the order and loss sub-limits follow it because they
+    /// are fractions of the gross. Refuses a narrowing outside `(0, 1]`: a
+    /// factor above one would widen a grant past what the allocator sized, and
+    /// one of zero is a grant of nothing, which is a refusal and should say so.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_narrowed(
+        &mut self,
+        strategy: &StrategyId,
+        requested_by: &str,
+        approval: &Approval,
+        credentials: &[OperatorCredential],
+        drawdown: f64,
+        narrowing: Decimal,
+        now: Timestamp,
+    ) -> Result<IssuedCapital> {
+        if !narrowing.is_positive() || narrowing > Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "a grant narrowing of {narrowing} is outside (0, 1); the confidence governor may \
+                 only contract a grant, and a grant narrowed to nothing is a refusal"
+            )));
+        }
         let stage = self.factory.stage_of(strategy);
         if !stage.holds_capital() {
             return Err(Error::denied(format!(
@@ -1933,7 +2013,17 @@ impl CentralPlane {
             )));
         }
 
-        let terms = EnvelopeTerms::from_allocation(&allocation, self.config.envelope_validity);
+        let mut terms = EnvelopeTerms::from_allocation(&allocation, self.config.envelope_validity);
+        terms.gross_limit = terms
+            .gross_limit
+            .checked_mul(narrowing)
+            .filter(|gross| gross.is_positive())
+            .ok_or_else(|| {
+                Error::denied(format!(
+                    "{strategy}'s allocation of {} narrowed by {narrowing} leaves no grant to sign",
+                    allocation.notional
+                ))
+            })?;
         let envelope = self.issuer.issue(&terms, approval, now)?;
         // Verified immediately rather than trusted: the issuer is the boundary
         // that decides whether a cell may commit capital, and a grant that does
@@ -1949,6 +2039,10 @@ impl CentralPlane {
             venues: terms.venues.clone(),
             expires_at: envelope.expires_at(),
             requested_by: requested_by.to_string(),
+            // The issued envelope's own bounds, so the approval chain signs
+            // the same liquidity and leverage the cell will enforce and the
+            // payload comparison below covers them (R12-CAPITAL-4088).
+            exposure: envelope.exposure().cloned(),
         };
         let approved =
             self.compliance

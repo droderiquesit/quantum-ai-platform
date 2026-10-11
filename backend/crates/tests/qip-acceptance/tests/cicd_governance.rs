@@ -115,3 +115,54 @@ fn terraform_apply_and_destroy_consume_saved_plans_not_auto_approve() {
         );
     }
 }
+
+/// R12-GOV-9080: an agent proposing an exception cites the rule it changes.
+///
+/// The template carries the field and ci's `rule-citation` job refuses a pull
+/// request that changes a rule file without naming it there. The job's
+/// behaviour is `scripts/rule-citation.test.mjs`, run by the `scripts` job;
+/// this holds the wiring — that the field cannot leave the template and the
+/// job cannot leave ci, or stop reading the body from the event file — which
+/// the script's own tests cannot see.
+#[test]
+fn a_pull_request_that_changes_a_rule_must_name_it_and_ci_refuses_one_that_does_not() {
+    let text = template();
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    // The whole delimited line: the script reads the text after this exact
+    // label, so a reworded label would leave every body uncited.
+    assert!(
+        lines.contains(&"**Rule changed:** none"),
+        "PR template must carry the '**Rule changed:** none' line the rule-citation job reads"
+    );
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.github/workflows/ci.yml");
+    let ci = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("ci.yml: {e}"));
+    let job = ci
+        .split("\n  rule-citation:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  # ").next())
+        .unwrap_or_else(|| panic!("ci.yml has no rule-citation job"));
+    assert!(
+        job.contains("if: github.event_name == 'pull_request'"),
+        "the rule-citation job is not bound to pull requests, the only event with a body"
+    );
+    assert!(
+        job.contains(
+            "node scripts/rule-citation.mjs --event \"$GITHUB_EVENT_PATH\" --changed \"$RUNNER_TEMP/changed.txt\""
+        ),
+        "the rule-citation job does not judge the event's body against the changed paths"
+    );
+    assert!(
+        job.contains("git diff --name-only \"$BASE_SHA\" \"$HEAD_SHA\""),
+        "the rule-citation job does not compute the changed paths against the base"
+    );
+    assert!(
+        !job.contains("github.event.pull_request.body"),
+        "the body is pasted into the job as an expression; it is a stranger's text and is \
+         read from the event file only"
+    );
+    assert!(
+        ci.contains("scripts/rule-citation.test.mjs"),
+        "the rule-citation script's tests are not run by the scripts job"
+    );
+}

@@ -67,6 +67,21 @@ const INFRA_WORKFLOW: &str = ".github/workflows/infra.yml";
 /// in exactly this order and the Argo CD Applications are one per entry.
 const ENVIRONMENTS: [&str; 4] = ["dev", "test", "stage", "prod"];
 
+/// The Kargo chain, in promotion order (R12 CICD-9112): the four
+/// environments with the `replay` and `paper` gates between `test` and
+/// `stage`. The gates are stages with no environment of their own.
+const CHAIN: [&str; 6] = ["dev", "test", "replay", "paper", "stage", "prod"];
+
+/// The links of [`CHAIN`] that are gates rather than environments.
+const GATES: [&str; 2] = ["replay", "paper"];
+
+/// The one registry every platform image is built into and promoted from.
+/// `deploy.yml` builds each commit once, here, and every environment runs
+/// the digest it built (R12 CICD-9097, CICD-9112). It is dev's repository
+/// because dev is the environment the automatic path builds for; the
+/// vendored images are still mirrored per environment.
+const BUILD_REGISTRY: &str = "us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev";
+
 /// The binaries the workspace builds. None may be the image of a Kubernetes
 /// workload anywhere under `infrastructure/gitops`; three of them are the
 /// images of `RunService` manifests, which is a different thing.
@@ -1797,7 +1812,7 @@ fn kargo_rendered(environment: &str) -> Vec<Manifest> {
     rendered
 }
 
-/// The Kargo Stages, keyed by name; exactly the four environments.
+/// The Kargo Stages, keyed by name; exactly the links of [`CHAIN`].
 fn stages_by_name(manifests: &[Manifest]) -> BTreeMap<String, Manifest> {
     let stages = of_kind(manifests, "Stage");
     let mut by_name = BTreeMap::new();
@@ -1809,12 +1824,13 @@ fn stages_by_name(manifests: &[Manifest]) -> BTreeMap<String, Manifest> {
         );
     }
     let names: Vec<&String> = by_name.keys().collect();
-    let mut expected: Vec<String> = ENVIRONMENTS.iter().map(|env| (*env).to_string()).collect();
+    let mut expected: Vec<String> = CHAIN.iter().map(|link| (*link).to_string()).collect();
     expected.sort();
     assert_eq!(
         names,
         expected.iter().collect::<Vec<_>>(),
-        "the chain declares Stages {names:?}; ADR 0036 decision 6 is exactly the four environments"
+        "the chain declares Stages {names:?}; ADR 0036 decision 6 with R12 CICD-9112's gates is \
+         exactly {CHAIN:?}"
     );
     by_name
 }
@@ -1879,10 +1895,14 @@ fn the_warehouse_subscribes_to_every_catalogue_binary_and_never_selects_by_semve
                  names a repository and the freight names the digest",
                 warehouse.describe()
             );
+            // The one build registry on every control plane. A warehouse on
+            // an environment's own registry promotes bytes that environment
+            // built for itself, which is the per-environment rebuild R12
+            // CICD-9112 prohibits.
             assert!(
-                repo_url.contains(&format!("/qip-{environment}/")),
-                "{} subscribes to `{repo_url}`, which is not {environment}'s own registry \
-                 qip-{environment}",
+                repo_url.starts_with(&format!("{BUILD_REGISTRY}/")),
+                "{} subscribes to `{repo_url}`, which is not in the build registry \
+                 {BUILD_REGISTRY}; every environment is promoted the digest built there once",
                 warehouse.describe()
             );
             let binary = trading_binary_of(&repo_url).unwrap_or_else(|| {
@@ -1956,13 +1976,15 @@ fn the_warehouse_subscribes_to_every_catalogue_binary_and_never_selects_by_semve
 }
 
 #[test]
-fn the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse() {
+fn the_kargo_stages_chain_dev_test_replay_paper_stage_prod_from_one_warehouse() {
     // Promotion order is the whole safety argument for `test` and `stage`:
-    // freight reaches `stage` only after `test` verified it. A Stage taking
-    // freight directly from the Warehouse skips every environment before it,
-    // and a Stage naming the wrong predecessor promotes something a
-    // different environment approved. The same chain on every control
-    // plane, because each renders the one base.
+    // freight reaches `stage` only after `test`, the replay gate and the
+    // paper gate each passed it, in that order (R12 CICD-9112). A Stage
+    // taking freight directly from the Warehouse skips every link before
+    // it, and a Stage naming the wrong predecessor promotes something a
+    // different link approved — `stage` reading from `test` would skip both
+    // gates while every name in the file still looked right. The same chain
+    // on every control plane, because each renders the one base.
     for environment in ENVIRONMENTS {
         let rendered = kargo_rendered(environment);
         let warehouse = of_kind(&rendered, "Warehouse")
@@ -1971,7 +1993,7 @@ fn the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse() {
             .expect("one Warehouse; the subscription test says so");
         let stages = stages_by_name(&rendered);
         let mut previous: Option<&str> = None;
-        for stage_name in ENVIRONMENTS {
+        for stage_name in CHAIN {
             let stage = &stages[stage_name];
             let requested = list_at(&stage.value, &["spec", "requestedFreight"]);
             assert_eq!(
@@ -2020,12 +2042,171 @@ fn the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse() {
                         vec![before.to_string()],
                         "{} takes freight from {upstream:?}; the chain is {}",
                         stage.describe(),
-                        ENVIRONMENTS.join(" → ")
+                        CHAIN.join(" → ")
                     );
                 }
             }
             previous = Some(stage_name);
         }
+    }
+}
+
+/// A promotion template's stage-level variable, by name.
+fn stage_var(stage: &Manifest, name: &str) -> Option<String> {
+    list_at(&stage.value, &["spec", "promotionTemplate", "spec", "vars"])
+        .into_iter()
+        .find(|var| text_at(var, &["name"]).as_deref() == Some(name))
+        .and_then(|var| text_at(var, &["value"]))
+}
+
+#[test]
+fn every_link_promotes_the_digest_built_once_in_the_one_registry() {
+    // R12 CICD-9112: the same immutable artifact through every link, and a
+    // per-environment rebuild prohibited. Until this held, each stage's
+    // `registry` named its own environment's repository and `deploy.yml`
+    // rebuilt per environment, so a promotion wrote dev's digest under a
+    // registry that never held it — and had it held one, it would have been
+    // different bytes from a second build. The digest a promotion writes is
+    // `imageFrom(warehouseRegistry)`, under the name `registry`; the two
+    // being the one build registry is what makes "promoted" mean "the same
+    // bytes".
+    for environment in ENVIRONMENTS {
+        let rendered = kargo_rendered(environment);
+        let stages = stages_by_name(&rendered);
+        // Premise: the promoting links exist and carry the variables, so
+        // the loop below is not vacuously satisfied by stages with none.
+        let mut promoting = 0usize;
+        for link in CHAIN {
+            if link == "prod" {
+                continue;
+            }
+            let stage = &stages[link];
+            let steps = list_at(
+                &stage.value,
+                &["spec", "promotionTemplate", "spec", "steps"],
+            );
+            let task = steps
+                .first()
+                .and_then(|step| text_at(step, &["task", "name"]))
+                .unwrap_or_default();
+            let expected_task = if GATES.contains(&link) {
+                "record-gate"
+            } else {
+                "promote-cloud-run"
+            };
+            assert_eq!(
+                task,
+                expected_task,
+                "{} runs `{task}`; a {} runs `{expected_task}`",
+                stage.describe(),
+                if GATES.contains(&link) {
+                    "gate, which has no environment to write,"
+                } else {
+                    "stage with an environment"
+                }
+            );
+            let warehouse_registry = stage_var(stage, "warehouseRegistry");
+            assert_eq!(
+                warehouse_registry.as_deref(),
+                Some(BUILD_REGISTRY),
+                "{} reads freight digests from {warehouse_registry:?}, not the build registry",
+                stage.describe()
+            );
+            if !GATES.contains(&link) {
+                let registry = stage_var(stage, "registry");
+                assert_eq!(
+                    registry.as_deref(),
+                    Some(BUILD_REGISTRY),
+                    "{} writes the digest under {registry:?}; any registry but the one it was \
+                     built in names bytes that are not there, or bytes built a second time",
+                    stage.describe()
+                );
+            }
+            promoting += 1;
+        }
+        assert_eq!(promoting, CHAIN.len() - 1);
+    }
+
+    // And the environments' own records name the build registry for the
+    // three promoted images, so the first promotion into test, stage or
+    // prod does not move an image between registries as a side effect.
+    for environment in ENVIRONMENTS {
+        let path = format!("{ENVS}/{environment}/kustomization.yaml");
+        let text = read(&path);
+        for binary in ["qip-api", "qip-fastbrain", "qip-deepbrain"] {
+            let expected = format!("newName: {BUILD_REGISTRY}/{binary}");
+            assert!(
+                text.lines().any(|line| line.trim() == expected),
+                "{path} does not name `{BUILD_REGISTRY}/{binary}`; the promoted digest lives \
+                 there and nowhere else"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_replay_and_paper_gates_are_promoted_by_a_person_and_record_what_passed() {
+    // The two gates are only gates if nothing walks freight through them on
+    // its own. An auto-promotion policy on either turns "a person checked
+    // the replay held" into "five minutes passed", and the stage after it
+    // would read freight as verified that nobody looked at.
+    for environment in ENVIRONMENTS {
+        let rendered = kargo_rendered(environment);
+        let mut policies: Vec<&Value> = Vec::new();
+        for manifest in &rendered {
+            find_key(&manifest.value, "promotionPolicies", &mut policies);
+        }
+        // Premise: the policies were found at all, and dev's is among them.
+        let entries: Vec<&Value> = policies
+            .iter()
+            .flat_map(|list| list.as_array().into_iter().flatten())
+            .collect();
+        assert!(
+            entries
+                .iter()
+                .any(|policy| text_at(policy, &["stage"]).as_deref() == Some("dev")),
+            "{environment}'s chain shows no promotion policy for dev; this test cannot see \
+             policies at all"
+        );
+        for policy in entries {
+            let stage = text_at(policy, &["stage"]).unwrap_or_default();
+            let enabled = at(policy, &["autoPromotionEnabled"]) == Some(&Value::Bool(true));
+            assert!(
+                !(GATES.contains(&stage.as_str()) && enabled),
+                "a promotion policy promotes the `{stage}` gate automatically on \
+                 {environment}'s control plane; a gate nobody looks at is not a gate"
+            );
+        }
+
+        // The task the gates run writes a record and nothing else.
+        let tasks = of_kind(&rendered, "PromotionTask");
+        let gate = tasks
+            .iter()
+            .find(|task| task.name() == "record-gate")
+            .unwrap_or_else(|| panic!("{environment}'s chain declares no `record-gate` task"));
+        let uses: Vec<String> = list_at(&gate.value, &["spec", "steps"])
+            .iter()
+            .filter_map(|step| text_at(step, &["uses"]))
+            .collect();
+        assert!(
+            uses.iter().any(|step| step == "yaml-update")
+                && uses.iter().any(|step| step == "git-commit")
+                && uses.iter().any(|step| step == "git-push"),
+            "the record-gate task runs {uses:?}; it must write, commit and push the record"
+        );
+        assert!(
+            !uses
+                .iter()
+                .any(|step| step == "kustomize-set-image" || step == "argocd-update"),
+            "the record-gate task runs {uses:?}; a gate has no environment to change"
+        );
+    }
+    for gate in GATES {
+        let record = format!("{GITOPS}/gates/{gate}/freight.yaml");
+        assert!(
+            repository_root().join(&record).is_file(),
+            "{record} does not exist; the `{gate}` gate's task writes there"
+        );
     }
 }
 
@@ -2382,9 +2563,10 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
             );
             let (repository, _) = split_reference(&image);
             assert!(
-                repository.contains(&format!("/qip-{environment}/")),
-                "{describe} pulls `{image}` from a repository other than qip-{environment}, the \
-                 one modules/registry creates and deploy.yml pushes to"
+                repository.starts_with(&format!("{BUILD_REGISTRY}/")),
+                "{describe} pulls `{image}` from a repository other than the build registry \
+                 {BUILD_REGISTRY}, the one deploy.yml builds every commit into once and \
+                 Kargo promotes from"
             );
 
             // Environment: every variable the entry sets, by exact name, and

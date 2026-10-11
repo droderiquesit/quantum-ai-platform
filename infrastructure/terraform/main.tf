@@ -202,6 +202,9 @@ module "services" {
   enable_security_command_center = var.enable_security_command_center
   enable_gitops                  = var.gitops_enabled
 
+  # build-pool.tf. Off everywhere until the owner turns the pool on.
+  enable_cloud_build_private_pool = var.cloud_build_private_pool_enabled
+
   # False. Disabling an API on destroy does not revoke access, it deletes the
   # resources under it — including ones this configuration never created. See
   # the variable.
@@ -463,41 +466,12 @@ module "trust_zones" {
     database = module.data.spanner_database
   } : null
 
-  # The control fabric has no resource anywhere in this configuration, so this
-  # is null here, explicitly, rather than by a default two files away.
-  #
-  # The register's gap 5 says the null default is argued and correct and that
-  # what is missing is the argument for why nothing can ever set it. This is
-  # that argument, at the seam where a value would be passed.
-  #
-  # Blueprint §46.1's control fabric is Pub/Sub. Three things stand between
-  # that and a topic here, and none of them is a value somebody could type:
-  #
-  #   * **Nothing in this build can speak to it.** `qip-streaming`'s Pub/Sub
-  #     transport is a port that refuses: `PubSubTransport` returns
-  #     `Error::Unavailable` naming what production must supply, and its module
-  #     doc says why — "Reaching it needs a gRPC client, a TLS stack and a
-  #     Google auth flow", none of which this workspace has. Admitting them is
-  #     ADR 0009's decision to reopen, not this file's. A topic created now
-  #     would be one no process could publish to or pull from, which is exactly
-  #     what `modules/data` refuses to provision by default: "a provisioned
-  #     database no adapter can open is a bill, an attack surface, and a
-  #     diagram that reads as a capability".
-  #   * **Whether it is Pub/Sub at all is open.** ADR 0011 replaced Pub/Sub
-  #     with the in-tree HTTP mesh for the data bus; the centre-to-node path is
-  #     unwired for a different reason (`catalogue.tf`'s note on
-  #     `QIP_MESH_CELLS`: a Cloud Run service publishes one port and the mesh
-  #     binds one per cell). Which of the two carries the control fabric is a
-  #     decision, and ADR 0024 records it as work it names and does not do.
-  #   * **A name here would not be a name this repository created.** The only
-  #     other shape available — a root variable naming a topic somebody made by
-  #     hand — puts four IAM bindings on a resource outside this configuration,
-  #     which the domain rule refuses by name.
-  #
-  # So it stays null until an ADR decides the first two. When one does, the
-  # topic is a resource in this repository and this line names it, in the same
-  # diff.
-  control_fabric_topic = null
+  # No control-fabric topic is passed, because the module no longer takes
+  # one. The control fabric is the Rust Fabric (ADR 0100; §1.1 keeps Pub/Sub
+  # out of internal messaging), so the two topic bindings the module once
+  # declared — and this root could only ever pass null to — are gone rather
+  # than kept inert. `qip-acceptance`'s `blueprint_arch` suite refuses the
+  # variable coming back.
 }
 
 module "observability" {
@@ -550,6 +524,12 @@ module "registry" {
 
   ci_service_account = module.cicd.service_account_email
   project_number     = local.project_number
+
+  # The later environments' CI accounts and Cloud Run agents, read-only on
+  # this registry, because they are promoted the digest built here and never
+  # build their own (R12 CICD-9112). Empty in every environment until one
+  # after dev is provisioned.
+  promotion_readers = var.registry_promotion_readers
 
   # The ring every keyed store's key lives in; the two GENERIC repositories
   # are encrypted with a key the module creates there (SEC-046).
@@ -674,8 +654,12 @@ module "ai" {
 # an entry in a variable rather than a directory, and the plan that carries
 # it is the evidence ADR 0020's step 3 asks for.
 module "execution_node" {
+  # Declared is not provisioned: `execution_nodes_enabled` (its own file)
+  # is false everywhere, so a node committed to a tfvars creates nothing
+  # until the owner flips it, and its validations refuse the flip while the
+  # node's image or allocation is still null.
   source   = "./modules/execution-node"
-  for_each = var.execution_nodes
+  for_each = var.execution_nodes_enabled ? var.execution_nodes : {}
 
   # Nothing here can be created before its API is on. See module "services".
   depends_on = [module.services]
@@ -724,7 +708,20 @@ module "execution_node" {
   egress_bootstrap = file("${path.module}/../egress/envoy.yaml")
   egress_endpoints = module.egress_proxy.endpoints
 
-  capital_envelope_secret_id = module.secrets.secret_ids["qip-capital-envelope-key"]
+  # ADR 0110 and 0112: the node verifies against the baked trust bundle and
+  # speaks mutual TLS on a CA Service workload certificate. It holds no shared
+  # key. `execution-nodes-enabled.tf` refuses enabling a node until the
+  # environment has the bundle, the pinned roots and the CA, so nothing below
+  # reaches the module as a null.
+  trust_bundle_path     = local.trust_bundle_image_path
+  google_tls_roots_path = local.google_roots_image_path
+  workload_certificates = {
+    ca_pool              = local.cas_runtime.ca_pool
+    certificate_template = local.cas_runtime.template
+    lifetime_secs        = local.cas_runtime.lifetime_secs
+    trust_roots_pem      = local.cas_runtime.trust_roots
+  }
+
   venue_credential_secret_id = module.secrets.secret_ids["qip-venue-credential"]
 
   # The root's own predicate, passed through unchanged. The module then

@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 18] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 30] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -138,8 +138,27 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 18] = [
     // is exercised only when somebody runs it by hand.
     ".claude/hooks/test_guard_dangerous_command.py",
     ".claude/hooks/test_hooks.py",
+    // The development-agent boundary (round 2's CI/CD lane, R12 GOV-9067,
+    // SEC-9068, CICD-9076/9082/9083). `agent-guard.mjs` IS on workflow
+    // paths: every deploying workflow sparse-checks `scripts/` out of the
+    // default branch and runs it as its first step, before anything
+    // authenticates and before any toolchain is installed, so a branch
+    // cannot loosen the rule it is judged by. Rust could not do that job
+    // there — a guard that first had to compile the workspace would run
+    // after the steps it exists to precede — and Node is on every hosted
+    // runner, built-ins only, nothing installed. `agent-lanes.mjs` reads the
+    // same `agent-policy.json` and is written in the guard's language, and
+    // `agent-egress.mjs` is the agent sandbox's one way out (SEC-9077), run
+    // on `agent-sandbox.yml`'s path from a root-owned copy of the default
+    // branch's scripts. ADR 0117 records all three: the policy file, what
+    // the guard refuses, its blind spots and what would make it wrong.
+    "scripts/agent-egress.mjs",
+    "scripts/agent-egress.test.mjs",
+    "scripts/agent-guard.mjs",
+    "scripts/agent-guard.test.mjs",
+    "scripts/agent-lanes.mjs",
+    "scripts/agent-lanes.test.mjs",
     "scripts/audit-dead-code.py",
-    "scripts/audit-register.py",
     "scripts/check-manifests.py",
     // The ADR 0102 fleet: the worker runs as a Cloud Run Job task in a
     // container holding a Node runtime and no Rust toolchain, and it calls
@@ -150,8 +169,38 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 18] = [
     "scripts/fleet/dispatch.test.mjs",
     "scripts/fleet/worker.mjs",
     "scripts/fleet/worker.test.mjs",
+    // The game-day harness (R12 RES-10186): drives the real Rust binaries
+    // as child processes, injects SIGKILL/SIGSTOP and times recovery over
+    // their HTTP probes. Written in the scripts job's one runtime rather
+    // than as a crate because it is a driver *of* the binaries, not part of
+    // them, and a harness linked into the workspace would be the thing it
+    // measures. On a workflow path only as `node --test` in ci.yml's
+    // `scripts` job. The fixture is its test double and models no binary.
+    "scripts/game-day/fixtures/fake-service.mjs",
+    "scripts/game-day/harness.mjs",
+    "scripts/game-day/harness.test.mjs",
     "scripts/model-gateway.mjs",
     "scripts/model-gateway.test.mjs",
+    // The CodeQL blocking gate (R12 CICD-9105), on `codeql-analysis.yml`'s
+    // path: it reads the SARIF the analysis wrote and fails the `sast` job
+    // on a finding at or above `sast-policy.json`'s threshold. That job
+    // installs Node and no Rust toolchain, and the gate must judge the
+    // analysis in the job that ran it, so it is in Node, built-ins only.
+    // On a workflow path, so it owes an ADR on the same terms as the agent
+    // guard above: ADR 0117, which records its policy file and threshold.
+    // A pull request that changes a rule names it (R12 GOV-9080), run by
+    // ci.yml's `rule-citation` job, which installs Node and no Rust
+    // toolchain: it reads the pull request body from the event file and the
+    // changed paths from `git diff`, and must refuse before anything is
+    // built, so a check that first compiled the workspace would be slower to
+    // say less. Built-ins only, nothing installed. It IS on a workflow path,
+    // so on the terms above it owes an ADR; none names it yet, which is why
+    // it is not in `WORKFLOW_PATH_TOOLING_ADR` below. Recording it there is
+    // the owner's decision, not this list's.
+    "scripts/rule-citation.mjs",
+    "scripts/rule-citation.test.mjs",
+    "scripts/sast-gate.mjs",
+    "scripts/sast-gate.test.mjs",
     // Sends the owner a text through a carrier email gateway over SMTP with
     // STARTTLS. Rust cannot do the job here: TLS in-tree is what ADR 0009
     // forbids, and a dependency needs an ADR. Not on a workflow path.
@@ -213,10 +262,63 @@ fn the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set() 
         "the non-Rust tooling outside the browser layer no longer matches the \
          set §2.1 records as this repository's accepted deviation from rule 1. \
          New: {added:?}. Gone: {removed:?}. If a file is new, say in the same \
-         commit why the platform's own language could not do the job, update \
-         the §2.1 row in docs/DELIVERY-STATUS.md, and raise an ADR if it sits \
+         commit why the platform's own language could not do the job, say it \
+         again beside the file's entry in this list, and raise an ADR if it sits \
          on a workflow path as scripts/terraform-undeletable.py does. If a \
          file is gone, strike it from this list so the set stops describing a \
          tree nobody has"
     );
+}
+
+/// The Node tooling that sits on a workflow path, and the ADR that records
+/// each. A list entry saying "ADR 0117 records it" is a citation; this makes
+/// it one a build checks.
+const WORKFLOW_PATH_TOOLING_ADR: (&str, [&str; 4]) = (
+    "0117-",
+    [
+        "scripts/agent-guard.mjs",
+        "scripts/agent-lanes.mjs",
+        "scripts/agent-egress.mjs",
+        "scripts/sast-gate.mjs",
+    ],
+);
+
+#[test]
+fn the_node_tooling_on_workflow_paths_is_recorded_by_an_accepted_adr() {
+    // The failure this prevents is the one the list above recorded against
+    // itself: two scripts on workflow paths whose entries said an ADR was
+    // owed and none was written. Now the ADR exists, and this fails if it is
+    // renumbered, unaccepted, or stops naming a script it is cited for.
+    let (prefix, scripts) = WORKFLOW_PATH_TOOLING_ADR;
+    let adr_dir = qip_acceptance::repository_root().join("docs/adr");
+    let mut matches: Vec<String> = std::fs::read_dir(&adr_dir)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", adr_dir.display()))
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(prefix) && name.ends_with(".md"))
+        .collect();
+    matches.sort();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one ADR numbered {prefix}*, found {matches:?}"
+    );
+    let text = qip_acceptance::read(&format!("docs/adr/{}", matches[0]));
+    assert!(
+        text.contains("- **Status**: **Accepted**"),
+        "{} is not accepted, so the tooling it is cited for is still unrecorded",
+        matches[0]
+    );
+    for script in scripts {
+        assert!(
+            ACCEPTED_NON_RUST_TOOLING.contains(&script),
+            "{script} is cited as workflow-path tooling but is not in the accepted set"
+        );
+        let name = script.rsplit('/').next().unwrap_or(script);
+        assert!(
+            text.contains(name),
+            "{} does not name {name}, which the accepted tooling list cites it for",
+            matches[0]
+        );
+    }
 }

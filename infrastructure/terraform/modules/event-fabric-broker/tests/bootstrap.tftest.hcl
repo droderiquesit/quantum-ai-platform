@@ -21,6 +21,15 @@ variables {
   broker_internal_addresses = ["10.0.1.10"]
   qip_events_config         = "base64encodedconfig"
   qip_fabricd_config        = "base64encodedconfig"
+  deployment                = "dev"
+  google_tls_roots_path     = "/etc/qip/trust/google-roots.pem"
+  admitted_peers            = ["qip-dev-ledgerd.test-project.iam.gserviceaccount.com"]
+  workload_certificates = {
+    ca_pool              = "projects/test-project/locations/us-east4/caPools/qip-dev-internal"
+    certificate_template = "projects/test-project/locations/us-east4/certificateTemplates/qip-dev-workload"
+    lifetime_secs        = 86400
+    trust_roots_pem      = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+  }
 }
 
 run "fabric_087_srv_records_created" {

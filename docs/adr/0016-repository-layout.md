@@ -69,3 +69,19 @@ fewer surfaces. If a real dataset or catalogue never materialises, `data/`
 should shrink back to its README rather than accrete unrelated files. If a
 second licensed template family arrives, `vendor/` may need per-vendor
 licence notes rather than one flat `templates/`.
+
+## Amendment — 2026-10-11, the seven-repository target is declined again
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status is unchanged.
+
+Blueprint v12's seven repositories (ADR 0099/0101 conflict C6, already
+declined there) are declined again, now on the real-money argument as well as
+the original one: a change to a wire contract, the code that speaks it, the
+Terraform that deploys it and the test that holds the paper boundary lands
+as **one reviewed commit**, and a split would turn every such change into a
+coordinated multi-repository release whose intermediate states nobody
+reviewed together. The ownership a repository would give is given by a
+directory and by `CODEOWNERS` with required code-owner review (ADR 0108 P7).
+R12-CICD-9088 to R12-CICD-9094 stay BLOCKED by this decision, not by an
+oversight.

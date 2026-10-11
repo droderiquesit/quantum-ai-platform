@@ -23,15 +23,22 @@
 //! having when a peer supports it; adding it before the peer does would be
 //! untested code on the path that moves money.
 //!
-//! # There is no TLS here
+//! # Plaintext and TLS are two clients, never one that chooses
 //!
-//! [`Url::parse`] refuses `https` by name rather than silently downgrading it.
-//! See the crate documentation for the deployment boundary that makes plaintext
-//! acceptable and for what production has to add.
+//! [`Url::parse`] refuses `https` by name rather than silently downgrading
+//! it, and [`HttpClient`] is plaintext. Since ADR 0112 an `https` peer is
+//! reached through [`TlsHttpClient`], built from a `rustls` config the
+//! composition root assembled ([`crate::tls`]), with URLs from
+//! [`Url::parse_https`]. Each client refuses the other's URLs: a plaintext
+//! client handed an `https` URL does not open a socket, and a TLS client
+//! handed an `http` URL does not either. There is no code path on which a
+//! configured TLS link quietly goes out in plaintext.
 
+use qip_tls::rustls;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 /// Limits applied to every response this client reads.
@@ -167,6 +174,11 @@ pub enum HttpError {
     LineTooLong { phase: Phase, limit: usize },
     /// More headers than [`ClientLimits::max_headers`].
     TooManyHeaders { limit: usize },
+    /// The TLS handshake failed: the peer's certificate did not verify, it
+    /// refused ours, or it offered nothing this client accepts (TLS 1.3
+    /// only). Not transient — a certificate that did not verify will not
+    /// verify on the next attempt, and retrying it hides the cause.
+    Tls { authority: String, detail: String },
 }
 
 impl HttpError {
@@ -189,6 +201,7 @@ impl HttpError {
             | Self::ReadFailed { .. } => true,
             Self::InvalidUrl { .. }
             | Self::UnsupportedScheme { .. }
+            | Self::Tls { .. }
             | Self::Malformed { .. }
             | Self::BodyTooLarge { .. }
             | Self::LineTooLong { .. }
@@ -214,6 +227,7 @@ impl HttpError {
             Self::BodyTooLarge { .. } => "body_too_large",
             Self::LineTooLong { .. } => "line_too_long",
             Self::TooManyHeaders { .. } => "too_many_headers",
+            Self::Tls { .. } => "tls",
         }
     }
 }
@@ -224,7 +238,8 @@ impl std::fmt::Display for HttpError {
             Self::InvalidUrl { url, detail } => write!(f, "{url} is not a usable URL: {detail}"),
             Self::UnsupportedScheme { scheme } => write!(
                 f,
-                "the {scheme} scheme is not supported: this build has no TLS stack, and a client \
+                "the {scheme} scheme is not supported by this client: the plaintext client has \
+                 no TLS stack and the TLS client has no plaintext path (ADR 0112), and a client \
                  that quietly downgraded to plaintext would be worse than one that refuses"
             ),
             Self::Resolve { authority, detail } => {
@@ -267,6 +282,9 @@ impl std::fmt::Display for HttpError {
             Self::TooManyHeaders { limit } => {
                 write!(f, "the response carried more than {limit} headers")
             }
+            Self::Tls { authority, detail } => {
+                write!(f, "the TLS handshake with {authority} failed: {detail}")
+            }
         }
     }
 }
@@ -286,6 +304,7 @@ impl From<HttpError> for qip_core::Error {
             HttpError::InvalidUrl { .. } | HttpError::UnsupportedScheme { .. } => {
                 Self::invalid(message)
             }
+            HttpError::Tls { .. } => Self::denied(message),
             HttpError::ConnectTimeout { .. } | HttpError::ReadTimeout { .. } => {
                 Self::timeout(message)
             }
@@ -799,11 +818,17 @@ pub struct Url {
     /// the same socket — so [`PartialEq`] ignores it; see the manual impl.
     port_explicit: bool,
     target: String,
+    /// `https` rather than `http`. Only [`Url::parse_https`] sets it, and
+    /// only [`TlsHttpClient`] will send to such a URL.
+    tls: bool,
 }
 
 impl PartialEq for Url {
     fn eq(&self, other: &Self) -> bool {
-        self.host == other.host && self.port == other.port && self.target == other.target
+        self.host == other.host
+            && self.port == other.port
+            && self.target == other.target
+            && self.tls == other.tls
     }
 }
 
@@ -827,6 +852,29 @@ impl Url {
     /// through to the "no scheme" arm below, whatever it contains further
     /// in, and that arm already redacts through [`redact_for_echo`].
     pub fn parse(raw: &str) -> HttpResult<Self> {
+        Self::parse_scheme(raw, false)
+    }
+
+    /// Parse `https://host[:port][/path][?query]` and nothing else — the
+    /// address of a peer reached through [`TlsHttpClient`] (ADR 0112).
+    ///
+    /// The mirror of [`Self::parse`]: `http` is refused here by name for the
+    /// same reason `https` is refused there. The same userinfo and fragment
+    /// refusals apply; the default port is 443.
+    pub fn parse_https(raw: &str) -> HttpResult<Self> {
+        Self::parse_scheme(raw, true)
+    }
+
+    /// Whether this is an `https` URL.
+    pub const fn is_tls(&self) -> bool {
+        self.tls
+    }
+
+    fn scheme(&self) -> &'static str {
+        if self.tls { "https" } else { "http" }
+    }
+
+    fn parse_scheme(raw: &str, tls: bool) -> HttpResult<Self> {
         let invalid = |detail: &str| HttpError::InvalidUrl {
             url: redact_for_echo(raw),
             detail: detail.to_string(),
@@ -837,7 +885,7 @@ impl Url {
             return Err(invalid("no scheme; an absolute http:// URL is required"));
         };
         let scheme = scheme.to_ascii_lowercase();
-        if scheme != "http" {
+        if scheme != if tls { "https" } else { "http" } {
             // `scheme` is a byte-for-byte slice of `raw` that `split_scheme`
             // stopped advancing through at the first character outside the
             // RFC 3986 scheme grammar, so it can hold neither `@`, `:` nor
@@ -872,7 +920,7 @@ impl Url {
 
         let (host, port) = split_authority(authority).ok_or_else(|| invalid("malformed host"))?;
         let port_explicit = port.is_some();
-        let port = port.unwrap_or(80);
+        let port = port.unwrap_or(if tls { 443 } else { 80 });
         if host.is_empty() {
             return Err(invalid("empty host"));
         }
@@ -899,6 +947,7 @@ impl Url {
             port,
             port_explicit,
             target,
+            tls,
         })
     }
 
@@ -908,10 +957,14 @@ impl Url {
     /// somewhere else.
     pub fn with_path(&self, path: &str) -> HttpResult<Self> {
         let separator = if path.starts_with('/') { "" } else { "/" };
-        Self::parse(&format!(
-            "http://{}{separator}{path}",
-            self.authority_for_url()
-        ))
+        Self::parse_scheme(
+            &format!(
+                "{}://{}{separator}{path}",
+                self.scheme(),
+                self.authority_for_url()
+            ),
+            self.tls,
+        )
     }
 
     pub fn host(&self) -> &str {
@@ -951,7 +1004,13 @@ impl Url {
 
 impl std::fmt::Display for Url {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "http://{}{}", self.authority_for_url(), self.target)
+        write!(
+            f,
+            "{}://{}{}",
+            self.scheme(),
+            self.authority_for_url(),
+            self.target
+        )
     }
 }
 
@@ -1001,6 +1060,24 @@ impl HttpRequest {
     /// A request whose body is a JSON document.
     pub fn json(method: Method, url: &str, body: Vec<u8>) -> HttpResult<Self> {
         Ok(Self::new(method, url)?
+            .with_header("content-type", "application/json; charset=utf-8")
+            .with_header("accept", "application/json")
+            .with_body(body))
+    }
+
+    /// A request to an `https` URL, for [`TlsHttpClient`].
+    pub fn new_tls(method: Method, url: &str) -> HttpResult<Self> {
+        Ok(Self {
+            method,
+            url: Url::parse_https(url)?,
+            headers: Vec::new(),
+            body: Vec::new(),
+        })
+    }
+
+    /// [`Self::json`] to an `https` URL.
+    pub fn json_tls(method: Method, url: &str, body: Vec<u8>) -> HttpResult<Self> {
+        Ok(Self::new_tls(method, url)?
             .with_header("content-type", "application/json; charset=utf-8")
             .with_header("accept", "application/json")
             .with_body(body))
@@ -1117,10 +1194,19 @@ impl HttpClient {
     /// A non-2xx status is **not** an error: it is a response, and what to do
     /// about a 503 as opposed to a 400 is the caller's decision. The errors
     /// here are the ones where there is no response to hand back.
+    ///
+    /// Refuses an `https` URL without opening a socket: this client is
+    /// plaintext, and sending to port 443 in the clear would be the silent
+    /// downgrade ADR 0112 forbids.
     pub fn send(&self, request: &HttpRequest) -> HttpResult<HttpResponse> {
+        if request.url().is_tls() {
+            return Err(HttpError::UnsupportedScheme {
+                scheme: "https".to_string(),
+            });
+        }
         let stream = self.connect(request.url())?;
         self.write_request(&stream, request)?;
-        self.read_response(stream, request.method())
+        read_response(stream, request.method(), self.limits)
     }
 
     pub fn get(&self, url: &str) -> HttpResult<HttpResponse> {
@@ -1137,45 +1223,7 @@ impl HttpClient {
     /// deployment where that is not true wants a resolver this build does not
     /// have.
     fn connect(&self, url: &Url) -> HttpResult<TcpStream> {
-        let authority = url.authority();
-        let addresses: Vec<SocketAddr> = (url.host(), url.port())
-            .to_socket_addrs()
-            .map_err(|error| HttpError::Resolve {
-                authority: authority.clone(),
-                detail: error.to_string(),
-            })?
-            .collect();
-        if addresses.is_empty() {
-            return Err(HttpError::NoAddress { authority });
-        }
-
-        let mut last = None;
-        for address in &addresses {
-            match TcpStream::connect_timeout(address, self.limits.connect_timeout) {
-                Ok(stream) => {
-                    // Mesh messages are small and latency-sensitive; waiting
-                    // 40ms for a second segment that is never coming is the
-                    // whole of Nagle's downside here.
-                    let _ = stream.set_nodelay(true);
-                    let _ = stream.set_read_timeout(Some(self.limits.read_timeout));
-                    let _ = stream.set_write_timeout(Some(self.limits.write_timeout));
-                    return Ok(stream);
-                }
-                Err(error) if is_timeout(&error) => {
-                    last = Some(HttpError::ConnectTimeout {
-                        authority: authority.clone(),
-                        after: self.limits.connect_timeout,
-                    });
-                }
-                Err(error) => {
-                    last = Some(HttpError::ConnectFailed {
-                        address: address.to_string(),
-                        detail: error.to_string(),
-                    });
-                }
-            }
-        }
-        Err(last.unwrap_or(HttpError::NoAddress { authority }))
+        connect_tcp(url, self.limits)
     }
 
     fn write_request(&self, mut stream: &TcpStream, request: &HttpRequest) -> HttpResult<()> {
@@ -1187,122 +1235,260 @@ impl HttpClient {
                 detail: error.to_string(),
             })
     }
+}
 
-    fn read_response(&self, stream: TcpStream, method: Method) -> HttpResult<HttpResponse> {
-        let limits = self.limits;
-        let mut reader = BufReader::new(stream);
+/// The TLS client (ADR 0112): the same request encoding, response parsing
+/// and limits as [`HttpClient`], over a `rustls` session.
+///
+/// Holds the config rather than building one, so the composition root
+/// decides once whether this is a mutual-TLS link presenting a workload
+/// certificate ([`crate::tls::WorkloadIdentity::client_config`]) or a
+/// server-authenticated call to a Google API
+/// ([`crate::tls::server_authenticated_client`]). Refuses every `http`
+/// URL — there is no plaintext path through this type.
+#[derive(Clone)]
+pub struct TlsHttpClient {
+    limits: ClientLimits,
+    config: Arc<rustls::ClientConfig>,
+}
 
-        // --- status line ---
-        let line = read_line(
-            &mut reader,
-            limits.max_status_line,
-            Phase::StatusLine,
-            limits.read_timeout,
-        )?;
-        let (status, reason) = parse_status_line(&line)?;
+impl std::fmt::Debug for TlsHttpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsHttpClient")
+            .field("limits", &self.limits)
+            .finish_non_exhaustive()
+    }
+}
 
-        // --- headers ---
-        let mut headers: BTreeMap<String, String> = BTreeMap::new();
-        loop {
-            if headers.len() >= limits.max_headers {
-                return Err(HttpError::TooManyHeaders {
-                    limit: limits.max_headers,
-                });
-            }
-            let line = read_line(
-                &mut reader,
-                limits.max_header_line,
-                Phase::Headers,
-                limits.read_timeout,
-            )?;
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                break;
-            }
-            let Some((name, value)) = line.split_once(':') else {
-                return Err(HttpError::Malformed {
-                    phase: Phase::Headers,
-                    detail: format!("a header line has no colon: {line:?}"),
-                });
-            };
-            let name = name.trim().to_ascii_lowercase();
-            let value = value.trim().to_string();
-            // A repeated `content-length` with two different values is the
-            // classic desync: two parsers disagree about where the body ends.
-            if name == "content-length"
-                && let Some(existing) = headers.get(&name)
-                && existing != &value
-            {
-                return Err(HttpError::Malformed {
-                    phase: Phase::Headers,
-                    detail: format!("two content-length headers disagree: {existing} and {value}"),
-                });
-            }
-            headers.insert(name, value);
+impl TlsHttpClient {
+    pub const fn new(limits: ClientLimits, config: Arc<rustls::ClientConfig>) -> Self {
+        Self { limits, config }
+    }
+
+    pub const fn limits(&self) -> ClientLimits {
+        self.limits
+    }
+
+    /// The same client with other limits, for a caller whose route bounds
+    /// its own response.
+    #[must_use]
+    pub fn with_limits(&self, limits: ClientLimits) -> Self {
+        Self {
+            limits,
+            config: Arc::clone(&self.config),
         }
+    }
 
-        let chunked = headers
-            .get("transfer-encoding")
-            .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"));
-        if chunked && headers.contains_key("content-length") {
-            return Err(HttpError::Malformed {
-                phase: Phase::Headers,
-                detail: "the response declares both content-length and chunked transfer-encoding, \
-                         which is how two parsers end up disagreeing about where the body ends"
-                    .to_string(),
+    /// Connect, complete the handshake, write, read the whole response,
+    /// close.
+    ///
+    /// The handshake is driven to completion before the request is written,
+    /// under the socket's read and write timeouts, so a peer that stalls the
+    /// handshake costs at most those and a certificate refusal is reported as
+    /// [`HttpError::Tls`] rather than as a write failure.
+    pub fn send(&self, request: &HttpRequest) -> HttpResult<HttpResponse> {
+        let url = request.url();
+        if !url.is_tls() {
+            return Err(HttpError::UnsupportedScheme {
+                scheme: "http".to_string(),
             });
         }
-
-        // --- body ---
-        let carries_body = method.expects_response_body() && status_allows_body(status);
-        let body = if !carries_body {
-            Vec::new()
-        } else if chunked {
-            read_chunked(&mut reader, &limits)?
-        } else if let Some(declared) = headers.get("content-length") {
-            let declared: usize = declared.parse().map_err(|_| HttpError::Malformed {
-                phase: Phase::Headers,
-                detail: format!("content-length {declared:?} is not a number"),
-            })?;
-            // Refused before the allocation, so a peer declaring four
-            // gigabytes costs nothing but the connection.
-            if declared > limits.max_body {
-                return Err(HttpError::BodyTooLarge {
-                    limit: limits.max_body,
-                    at_least: declared,
-                });
-            }
-            let mut body = vec![0u8; declared];
-            reader
-                .read_exact(&mut body)
-                .map_err(|error| classify(&error, Phase::Body, limits.read_timeout))?;
-            body
-        } else {
-            // No framing at all: the body ends when the connection does. Read
-            // one byte past the limit so exceeding it is detectable rather
-            // than silently truncated.
-            let mut body = Vec::new();
-            let read = reader
-                .by_ref()
-                .take(limits.max_body as u64 + 1)
-                .read_to_end(&mut body)
-                .map_err(|error| classify(&error, Phase::Body, limits.read_timeout))?;
-            if read > limits.max_body {
-                return Err(HttpError::BodyTooLarge {
-                    limit: limits.max_body,
-                    at_least: read,
-                });
-            }
-            body
+        let authority = url.authority();
+        let tls_failure = |detail: String| HttpError::Tls {
+            authority: authority.clone(),
+            detail,
         };
-
-        Ok(HttpResponse {
-            status,
-            reason,
-            headers,
-            body,
-        })
+        let name =
+            rustls::pki_types::ServerName::try_from(url.host().to_string()).map_err(|error| {
+                tls_failure(format!(
+                    "{} is not a name a certificate carries: {error}",
+                    url.host()
+                ))
+            })?;
+        let mut socket = connect_tcp(url, self.limits)?;
+        let mut session = rustls::ClientConnection::new(Arc::clone(&self.config), name)
+            .map_err(|error| tls_failure(error.to_string()))?;
+        while session.is_handshaking() {
+            session
+                .complete_io(&mut socket)
+                .map_err(|error| tls_failure(error.to_string()))?;
+        }
+        let mut stream = rustls::StreamOwned::new(session, socket);
+        stream
+            .write_all(&request.encode())
+            .and_then(|()| stream.flush())
+            .map_err(|error| HttpError::WriteFailed {
+                detail: error.to_string(),
+            })?;
+        read_response(stream, request.method(), self.limits)
     }
+}
+
+/// Resolve and connect, with the handshake bounded by
+/// [`ClientLimits::connect_timeout`]. See [`HttpClient`]'s note on
+/// resolution, which carries no timeout of its own.
+fn connect_tcp(url: &Url, limits: ClientLimits) -> HttpResult<TcpStream> {
+    let authority = url.authority();
+    let addresses: Vec<SocketAddr> = (url.host(), url.port())
+        .to_socket_addrs()
+        .map_err(|error| HttpError::Resolve {
+            authority: authority.clone(),
+            detail: error.to_string(),
+        })?
+        .collect();
+    if addresses.is_empty() {
+        return Err(HttpError::NoAddress { authority });
+    }
+
+    let mut last = None;
+    for address in &addresses {
+        match TcpStream::connect_timeout(address, limits.connect_timeout) {
+            Ok(stream) => {
+                // Mesh messages are small and latency-sensitive; waiting
+                // 40ms for a second segment that is never coming is the
+                // whole of Nagle's downside here.
+                let _ = stream.set_nodelay(true);
+                let _ = stream.set_read_timeout(Some(limits.read_timeout));
+                let _ = stream.set_write_timeout(Some(limits.write_timeout));
+                return Ok(stream);
+            }
+            Err(error) if is_timeout(&error) => {
+                last = Some(HttpError::ConnectTimeout {
+                    authority: authority.clone(),
+                    after: limits.connect_timeout,
+                });
+            }
+            Err(error) => {
+                last = Some(HttpError::ConnectFailed {
+                    address: address.to_string(),
+                    detail: error.to_string(),
+                });
+            }
+        }
+    }
+    Err(last.unwrap_or(HttpError::NoAddress { authority }))
+}
+
+/// Read one whole response from any byte stream — a socket for
+/// [`HttpClient`], a `rustls` session for [`TlsHttpClient`] — under the
+/// same limits.
+fn read_response<S: Read>(
+    stream: S,
+    method: Method,
+    limits: ClientLimits,
+) -> HttpResult<HttpResponse> {
+    let mut reader = BufReader::new(stream);
+
+    // --- status line ---
+    let line = read_line(
+        &mut reader,
+        limits.max_status_line,
+        Phase::StatusLine,
+        limits.read_timeout,
+    )?;
+    let (status, reason) = parse_status_line(&line)?;
+
+    // --- headers ---
+    let mut headers: BTreeMap<String, String> = BTreeMap::new();
+    loop {
+        if headers.len() >= limits.max_headers {
+            return Err(HttpError::TooManyHeaders {
+                limit: limits.max_headers,
+            });
+        }
+        let line = read_line(
+            &mut reader,
+            limits.max_header_line,
+            Phase::Headers,
+            limits.read_timeout,
+        )?;
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(HttpError::Malformed {
+                phase: Phase::Headers,
+                detail: format!("a header line has no colon: {line:?}"),
+            });
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim().to_string();
+        // A repeated `content-length` with two different values is the
+        // classic desync: two parsers disagree about where the body ends.
+        if name == "content-length"
+            && let Some(existing) = headers.get(&name)
+            && existing != &value
+        {
+            return Err(HttpError::Malformed {
+                phase: Phase::Headers,
+                detail: format!("two content-length headers disagree: {existing} and {value}"),
+            });
+        }
+        headers.insert(name, value);
+    }
+
+    let chunked = headers
+        .get("transfer-encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"));
+    if chunked && headers.contains_key("content-length") {
+        return Err(HttpError::Malformed {
+            phase: Phase::Headers,
+            detail: "the response declares both content-length and chunked transfer-encoding, \
+                     which is how two parsers end up disagreeing about where the body ends"
+                .to_string(),
+        });
+    }
+
+    // --- body ---
+    let carries_body = method.expects_response_body() && status_allows_body(status);
+    let body = if !carries_body {
+        Vec::new()
+    } else if chunked {
+        read_chunked(&mut reader, &limits)?
+    } else if let Some(declared) = headers.get("content-length") {
+        let declared: usize = declared.parse().map_err(|_| HttpError::Malformed {
+            phase: Phase::Headers,
+            detail: format!("content-length {declared:?} is not a number"),
+        })?;
+        // Refused before the allocation, so a peer declaring four
+        // gigabytes costs nothing but the connection.
+        if declared > limits.max_body {
+            return Err(HttpError::BodyTooLarge {
+                limit: limits.max_body,
+                at_least: declared,
+            });
+        }
+        let mut body = vec![0u8; declared];
+        reader
+            .read_exact(&mut body)
+            .map_err(|error| classify(&error, Phase::Body, limits.read_timeout))?;
+        body
+    } else {
+        // No framing at all: the body ends when the connection does. Read
+        // one byte past the limit so exceeding it is detectable rather
+        // than silently truncated.
+        let mut body = Vec::new();
+        let read = reader
+            .by_ref()
+            .take(limits.max_body as u64 + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| classify(&error, Phase::Body, limits.read_timeout))?;
+        if read > limits.max_body {
+            return Err(HttpError::BodyTooLarge {
+                limit: limits.max_body,
+                at_least: read,
+            });
+        }
+        body
+    };
+
+    Ok(HttpResponse {
+        status,
+        reason,
+        headers,
+        body,
+    })
 }
 
 /// Whether a status code may carry a body at all.
@@ -1338,8 +1524,8 @@ fn parse_status_line(line: &str) -> HttpResult<(u16, String)> {
 }
 
 /// Read one line, refusing at the limit rather than after it.
-fn read_line(
-    reader: &mut BufReader<TcpStream>,
+fn read_line<R: Read>(
+    reader: &mut BufReader<R>,
     limit: usize,
     phase: Phase,
     timeout: StdDuration,
@@ -1360,7 +1546,7 @@ fn read_line(
 }
 
 /// Decode a chunked body, bounded per chunk and in total.
-fn read_chunked(reader: &mut BufReader<TcpStream>, limits: &ClientLimits) -> HttpResult<Vec<u8>> {
+fn read_chunked<R: Read>(reader: &mut BufReader<R>, limits: &ClientLimits) -> HttpResult<Vec<u8>> {
     let mut body: Vec<u8> = Vec::new();
     loop {
         let line = read_line(

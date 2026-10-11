@@ -56,6 +56,7 @@ use qip_core::{Decimal, Timestamp};
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::adapter::SourceDescriptor;
 use qip_market_ingestion::connector::FetchDigest;
+use qip_market_ingestion::connector::evidence::ParserLineage;
 use qip_market_ingestion::connector::manifest::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -273,6 +274,10 @@ pub struct DataReference {
     /// Instructions for re-fetching this extent.
     #[serde(default)]
     re_fetch_instructions: Option<String>,
+    /// The decoder that extracted what was fetched, at which version
+    /// (R12-DATA-1034). `None` for bytes no connector parsed.
+    #[serde(default)]
+    parser: Option<ParserLineage>,
 }
 
 /// Whether `hash` has the shape `qip_core::sha256_hex` writes: sixty-four
@@ -314,6 +319,57 @@ struct DataReferenceWire {
     expiry: Option<Timestamp>,
     #[serde(default)]
     re_fetch_instructions: Option<String>,
+    #[serde(default)]
+    parser: Option<ParserLineage>,
+}
+
+/// The acquisition facts a door fills when it knows them: the source's
+/// version tag, the resume position, the licence class, the origin
+/// geography, when the extent stops being fresh, how to fetch it again, and
+/// which parser read it. One value rather than seven positional `None`s,
+/// which is how six of them came to be left unfilled by every door until
+/// 2026-10-11 (R12-DATA-1033..1035, 1037, R12-AMBIENT-1040).
+#[derive(Clone, Debug, Default)]
+struct Acquisition {
+    etag: Option<String>,
+    cursor: Option<String>,
+    entitlement: Option<LicensingClass>,
+    geography: Option<Region>,
+    expiry: Option<Timestamp>,
+    re_fetch_instructions: Option<String>,
+    parser: Option<ParserLineage>,
+}
+
+impl Acquisition {
+    /// What an admission states about every fetch under it: its class, its
+    /// origin, and an expiry the manifest's freshness SLA after retrieval.
+    fn of_admission(source: &AdmittedSource, retrieved_at: Timestamp) -> Self {
+        Self {
+            entitlement: Some(source.class()),
+            geography: Some(source.region()),
+            expiry: Some(retrieved_at.saturating_add(source.freshness_sla())),
+            ..Self::default()
+        }
+    }
+}
+
+/// The re-fetch instruction a reference carries: enough for the re-fetch
+/// driver (`crate::refetch`) or an auditor to ask the source for the same
+/// extent under the same licence and know what it should hash to.
+fn re_fetch_instruction(
+    source: &AdmittedSource,
+    locator: &str,
+    content_hash: &str,
+    etag: Option<&str>,
+) -> String {
+    format!(
+        "GET {locator} from `{}` through its egress route, under licence `{}`; expect sha256 \
+         {content_hash}{}",
+        source.source_id(),
+        source.licence(),
+        etag.map(|tag| format!(" or etag {tag}"))
+            .unwrap_or_default()
+    )
 }
 
 impl TryFrom<DataReferenceWire> for DataReference {
@@ -350,12 +406,15 @@ impl TryFrom<DataReferenceWire> for DataReference {
             wire.cost_estimate,
             wire.availability,
             wire.entitlements,
-            wire.etag,
-            wire.cursor,
-            wire.entitlement,
-            wire.geography,
-            wire.expiry,
-            wire.re_fetch_instructions,
+            Acquisition {
+                etag: wire.etag,
+                cursor: wire.cursor,
+                entitlement: wire.entitlement,
+                geography: wire.geography,
+                expiry: wire.expiry,
+                re_fetch_instructions: wire.re_fetch_instructions,
+                parser: wire.parser,
+            },
         )
     }
 }
@@ -407,12 +466,7 @@ impl DataReference {
             cost_estimate,
             availability,
             source.entitlements().to_vec(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Acquisition::default(),
         )
     }
 
@@ -434,11 +488,21 @@ impl DataReference {
         cost_estimate: Decimal,
         availability: f64,
     ) -> Result<Self> {
+        let locator = locator.into();
+        let acquisition = Acquisition {
+            re_fetch_instructions: Some(re_fetch_instruction(
+                source,
+                &locator,
+                &qip_core::sha256_hex(bytes),
+                None,
+            )),
+            ..Acquisition::of_admission(source, retrieved_at)
+        };
         Self::build(
             source.source_id(),
             SourceOrigin::CatalogueAdmitted,
             Some(source.category()),
-            locator.into(),
+            locator,
             symbols,
             range,
             source.schema().clone(),
@@ -447,12 +511,7 @@ impl DataReference {
             cost_estimate,
             availability,
             Vec::new(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            acquisition,
         )
     }
 
@@ -484,6 +543,15 @@ impl DataReference {
         } else {
             format!("{REPLAY_LOCATOR_SCHEME}{locator}")
         };
+        let acquisition = Acquisition {
+            re_fetch_instructions: Some(re_fetch_instruction(
+                source,
+                &locator,
+                &qip_core::sha256_hex(bytes),
+                None,
+            )),
+            ..Acquisition::of_admission(source, retrieved_at)
+        };
         Self::build(
             source.source_id(),
             SourceOrigin::ReplayedAdmitted,
@@ -497,12 +565,7 @@ impl DataReference {
             cost_estimate,
             availability,
             Vec::new(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            acquisition,
         )
     }
 
@@ -537,6 +600,22 @@ impl DataReference {
             )));
         }
         let (start, end) = digest.period();
+        // Every acquisition fact the fetch knew, filled here and not left
+        // to a later path: the source's etag and the resume position as the
+        // runtime recorded them, the admission's class, origin and freshness,
+        // the instruction to fetch it again, and the parser that read it.
+        let acquisition = Acquisition {
+            etag: digest.etag().map(str::to_string),
+            cursor: digest.cursor().map(str::to_string),
+            re_fetch_instructions: Some(re_fetch_instruction(
+                source,
+                digest.locator(),
+                digest.sha256(),
+                digest.etag(),
+            )),
+            parser: Some(digest.parser().clone()),
+            ..Acquisition::of_admission(source, digest.retrieved_at())
+        };
         Self::build_hashed(
             source.source_id(),
             SourceOrigin::CatalogueAdmitted,
@@ -551,12 +630,7 @@ impl DataReference {
             cost_estimate,
             availability,
             Vec::new(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            acquisition,
         )
     }
 
@@ -604,12 +678,7 @@ impl DataReference {
             Decimal::ZERO,
             1.0,
             Vec::new(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Acquisition::default(),
         )
     }
 
@@ -629,12 +698,7 @@ impl DataReference {
         cost_estimate: Decimal,
         availability: f64,
         entitlements: Vec<Entitlement>,
-        etag: Option<String>,
-        cursor: Option<String>,
-        entitlement: Option<LicensingClass>,
-        geography: Option<Region>,
-        expiry: Option<Timestamp>,
-        re_fetch_instructions: Option<String>,
+        acquisition: Acquisition,
     ) -> Result<Self> {
         if bytes.is_empty() {
             return Err(Error::invalid(format!(
@@ -657,12 +721,7 @@ impl DataReference {
             cost_estimate,
             availability,
             entitlements,
-            etag,
-            cursor,
-            entitlement,
-            geography,
-            expiry,
-            re_fetch_instructions,
+            acquisition,
         )
     }
 
@@ -682,13 +741,17 @@ impl DataReference {
         cost_estimate: Decimal,
         availability: f64,
         entitlements: Vec<Entitlement>,
-        etag: Option<String>,
-        cursor: Option<String>,
-        entitlement: Option<LicensingClass>,
-        geography: Option<Region>,
-        expiry: Option<Timestamp>,
-        re_fetch_instructions: Option<String>,
+        acquisition: Acquisition,
     ) -> Result<Self> {
+        let Acquisition {
+            etag,
+            cursor,
+            entitlement,
+            geography,
+            expiry,
+            re_fetch_instructions,
+            parser,
+        } = acquisition;
         if locator.trim().is_empty() {
             return Err(Error::invalid(format!(
                 "the data reference for `{source_id}` has no locator, so the specific extent \
@@ -747,6 +810,16 @@ impl DataReference {
                 "availability must be a fraction in [0, 1], not {availability}"
             )));
         }
+        // An extent that expired before it was retrieved was never fresh;
+        // the field would tell a scheduler to trust it for a negative span.
+        if let Some(expiry) = expiry
+            && expiry < retrieved_at
+        {
+            return Err(Error::invalid(format!(
+                "the data reference for `{source_id}` expires at {expiry} before it was \
+                 retrieved at {retrieved_at}; an extent cannot go stale before it arrives"
+            )));
+        }
         Ok(Self {
             source_id: source_id.to_string(),
             origin,
@@ -767,6 +840,7 @@ impl DataReference {
             geography,
             expiry,
             re_fetch_instructions,
+            parser,
         })
     }
 
@@ -853,6 +927,19 @@ impl DataReference {
 
     pub fn re_fetch_instructions(&self) -> Option<&str> {
         self.re_fetch_instructions.as_deref()
+    }
+
+    /// The decoder that read the fetched bytes, where a connector did.
+    pub const fn parser(&self) -> Option<&ParserLineage> {
+        self.parser.as_ref()
+    }
+
+    /// Whether this extent is past its expiry at `now`. An extent with no
+    /// expiry recorded is never reported fresh by default: `None` is
+    /// returned and the caller decides, because "we do not know" and "still
+    /// fresh" are different answers.
+    pub fn is_expired(&self, now: Timestamp) -> Option<bool> {
+        self.expiry.map(|expiry| now > expiry)
     }
 
     /// Whether a re-fetch producing `bytes` still matches what this reference

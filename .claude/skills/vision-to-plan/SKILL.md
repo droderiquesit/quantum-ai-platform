@@ -11,7 +11,7 @@ description: Turn a product outcome into a dependency-ordered task graph with ac
 
 ## Prerequisites
 
-`docs/product/VISION.md`; `../../DELIVERY-STATUS.md`; a clean or knowingly-dirty working tree.
+`docs/product/VISION.md`; `docs/blueprint/README.md`; a clean or knowingly-dirty working tree.
 
 ## Steps
 

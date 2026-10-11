@@ -12,6 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-events.workspace = true
+# `tick_capture` re-exports the captured-event types from here, so the edge
+# capture path can build them without linking this crate.
+qip-contracts.workspace = true
 # The Cloud Storage adapter in `gcp` — and the access `qip-mesh`'s BigQuery
 # client shares with it (DATA-058) — speak the GCP JSON APIs over
 # `qip_transport::HttpClient` — the platform's one reviewed HTTP/1.1 client,
@@ -20,6 +23,16 @@ qip-events.workspace = true
 # transport's spool needs lives in `qip-core`, so the transport does not need
 # this crate to get it.
 qip-transport.workspace = true
+# The tick-lake segment codec (R12-TICK-2057), admitted by ADR 0109's
+# audited-crate route and named as the candidate by ADR 0113 §3: the lake is
+# read by tools outside this repository (BigQuery, Dataflow), so a standard
+# frame format is the point, and a private in-tree codec would compress into
+# bytes nothing else can read. Pinned, default features off (no legacy
+# decoders, no dictionary builder, no array helpers). ADR 0113 admits it
+# behind a measurement, so the codec is off by default: `SegmentCodec::Identity`
+# is what every writer uses until a composition root is told otherwise, and
+# `lake_codec::measure_partitions` is the measurement.
+zstd = { version = "=0.14.2", default-features = false }
 
 [lints]
 workspace = true

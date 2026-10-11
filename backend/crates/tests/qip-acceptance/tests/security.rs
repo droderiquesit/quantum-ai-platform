@@ -2432,9 +2432,17 @@ const FAMILY_WEIGHT_FIELDS: [&str; 4] = ["proposals", "envelopes", "grants", "ce
 /// writer of a capital envelope, and `optimization_engine::family_horizons`
 /// the family budget nothing calls. A body that calls one of these has moved
 /// capital whether or not it ever names a field.
-const WEIGHT_WRITERS: [&str; 4] = [
+///
+/// `issue_narrowed` since round 2 (R12-RISK-4111): `CentralPlane::issue` now
+/// delegates to it, and it is where the envelope is actually signed and
+/// stored — `Platform::issue_capital` calls it directly. Without it here both
+/// reviewed rows below vanished from the scan while the writer itself
+/// carried on, which is the scan going blind rather than the mover going
+/// away.
+const WEIGHT_WRITERS: [&str; 5] = [
     "set_proposal",
     "issue",
+    "issue_narrowed",
     "family_horizons",
     "family_horizons_settled",
 ];
@@ -2850,7 +2858,25 @@ const RETURN_TYPE_PROBES: [(&str, bool); 6] = [
 /// exclusion is invisible at review time — it is how the three previous
 /// versions of this scan came to guard nothing — whereas a row with a wrong
 /// reason is something a reader can argue with.
-const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 12] = [
+const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 14] = [
+    (
+        "runtime/qip-kernel/src/lattice_stage.rs",
+        "run",
+        "round 2's Temporal Forecast Lattice pass calling `qip_world_model::lattice::issue`, \
+         which issues a calibrated *forecast* from the central lane and not an envelope; the \
+         stage is advisory and the platform's own comment says nothing downstream reads its \
+         output. Listed for the same reason as `recall_for`: the `issue` token cannot tell the \
+         writers apart, and an exclusion nobody can see is how this scan was bypassed before",
+    ),
+    (
+        "runtime/qip-kernel/src/central/plane.rs",
+        "issue_narrowed",
+        "round 2's body of `CentralPlane::issue` (R12-RISK-4111): the same refusals of a rung \
+         that holds no capital, a strategy with no proposal and a dark region, the size still the \
+         allocator's under the platform's own drawdown, and one more argument that can only \
+         contract it — a narrowing outside (0, 1] is refused before anything is read, so the \
+         confidence governor may sign a cell less and never more. No family figure reaches it",
+    ),
     (
         "apps/qip-cli/src/demo/mod.rs",
         "cycle",

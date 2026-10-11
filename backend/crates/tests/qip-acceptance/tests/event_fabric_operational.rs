@@ -282,93 +282,47 @@ fn fabric_054_when_fabric_unavailable_node_runs_on_last_valid_package_within_bou
 }
 
 #[test]
-fn fabric_055_broker_loss_moves_leadership_to_insync_follower_producers_consumers_carry_on() {
-    // FABRIC-055: On the loss of a broker, leadership of each partition it led must move
-    // to an in-sync follower in another zone; producers must refresh the partition map
-    // from metadata and retry by producer epoch, consumers must resume from their committed
-    // offsets, and Reflex execution must not wait for the failover.
+fn fabric_055_broker_loss_moves_only_the_lost_brokers_leaderships_and_there_is_no_in_sync_follower()
+{
+    // FABRIC-055, driven through `qip_streaming::event_fabric::partition::leader_for`.
+    // The previous test cloned a Vec of replica structs, flipped `is_leader`
+    // by hand and asserted the flip. What production does on the loss of a
+    // broker: rendezvous assignment moves every partition the lost broker led
+    // to a surviving broker, and moves nothing else. **Gap:** the new leader
+    // is not an in-sync follower, because there are no followers — RF1 only
+    // (`StreamPolicy::new` refuses anything else until C2) — so an
+    // acknowledged record on the lost broker's disk is unavailable until the
+    // broker or its archive returns. Producer epoch retry and consumer resume
+    // are not exercised here.
+    //
+    // Mutation: in `leader_for`, include `brokers.len()` in the hashed
+    // material — partitions move between two surviving brokers and the
+    // "unchanged" assertion fires.
+    use qip_streaming::event_fabric::partition::leader_for;
 
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug, Clone)]
-    struct PartitionReplica {
-        broker_id: u32,
-        zone: String,
-        is_leader: bool,
-        in_sync: bool,
+    let before = ["broker-a", "broker-b", "broker-c"];
+    let after = ["broker-b", "broker-c"];
+    let mut moved = 0usize;
+    for partition in 0..600u32 {
+        let was = leader_for("fills", partition, &before).expect("a leader");
+        let now = leader_for("fills", partition, &after).expect("a leader");
+        assert_ne!(
+            now, "broker-a",
+            "partition {partition} is still led by the lost broker"
+        );
+        if was == "broker-a" {
+            moved += 1;
+        } else {
+            assert_eq!(
+                now, was,
+                "partition {partition} moved between two survivors"
+            );
+        }
     }
-
-    // Before broker loss
-    let replicas_before = vec![
-        PartitionReplica {
-            broker_id: 1,
-            zone: "us-central1-a".to_string(),
-            is_leader: true,
-            in_sync: true,
-        },
-        PartitionReplica {
-            broker_id: 2,
-            zone: "us-central1-b".to_string(),
-            is_leader: false,
-            in_sync: true,
-        },
-        PartitionReplica {
-            broker_id: 3,
-            zone: "us-central1-c".to_string(),
-            is_leader: false,
-            in_sync: true,
-        },
-    ];
-
-    // Broker 1 fails
-    let mut replicas_after = replicas_before.clone();
-    replicas_after[0].is_leader = false;
-
-    // Leadership moves to in-sync follower in different zone
-    let new_leader = replicas_after
-        .iter_mut()
-        .find(|r| r.in_sync && !r.is_leader && r.zone != replicas_before[0].zone)
-        .unwrap();
-
-    new_leader.is_leader = true;
-
-    // Verify new leader is in different zone
-    assert_ne!(new_leader.zone, "us-central1-a");
-    assert!(new_leader.in_sync);
-
-    // Producer recovery after failover
-    #[derive(Debug)]
-    struct ProducerState {
-        epoch: u32,
-        last_sent_sequence: u64,
-    }
-
-    let mut producer = ProducerState {
-        epoch: 1,
-        last_sent_sequence: 99,
-    };
-
-    // On failover, producer refreshes partition map and retries by epoch
-    producer.epoch += 1;
-    // Retry sends starting from last_sent_sequence + 1
-    let _retry_start = producer.last_sent_sequence + 1;
-    assert_eq!(producer.epoch, 2);
-
-    // Consumer recovery from committed offset
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct ConsumerState {
-        committed_offset: u64,
-        group_id: String,
-    }
-
-    let consumer = ConsumerState {
-        committed_offset: 500,
-        group_id: "trading-group".to_string(),
-    };
-
-    // On leader change, consumer resumes from committed offset
-    let resume_offset = consumer.committed_offset;
-    assert_eq!(resume_offset, 500);
+    // Premise: the lost broker led something, so "only its partitions moved"
+    // is a claim about partitions that had to move.
+    assert!(moved > 100, "the lost broker led only {moved} of 600");
+    assert!(leader_for("fills", 0, &[]).is_err(), "no broker, no leader");
 }
 
 #[test]
