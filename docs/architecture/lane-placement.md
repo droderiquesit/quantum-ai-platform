@@ -60,6 +60,7 @@ crates is placed in the slowest lane it hosts.
 | qip-opportunity-engine | 2 | opportunity valuation over bounded inputs |
 | qip-optimization-engine | 2 | portfolio construction; the classical baseline is computed every time and wins ties |
 | qip-portfolio-engine | 2 | portfolio construction over the optimiser; refresh within a cycle budget |
+| qip-evidence | 2 | evidence records and the fabric that checks them; pure, no I/O, so ingestion can check before release without linking the slow-lane world model |
 | qip-market-ingestion | 2 | connector feeds with timeouts; licensing posture evaluated first |
 | qip-ledgerd | 2 | ledger daemon appending to the local log |
 | qip-ai | 3 | model rungs and the cost router's vocabulary; no order-path caller |

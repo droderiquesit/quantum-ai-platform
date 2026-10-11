@@ -19,10 +19,13 @@
 pub mod arbitrage_state;
 pub mod causal;
 pub mod confounder;
-pub mod evidence;
+// Evidence and the fabric moved to `qip-evidence` so ingestion can check
+// evidence without linking this slow-lane crate; re-exported under the same
+// paths so `qip_world_model::evidence::…` and `crate::fabric` still resolve.
+pub use qip_evidence::evidence;
 pub mod execution_state;
 pub mod exposure;
-pub mod fabric;
+pub use qip_evidence::fabric;
 pub mod falsification;
 pub mod features;
 pub mod federation;

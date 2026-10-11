@@ -241,7 +241,9 @@ rests on a broker default); two are optional.
 | `QIP_EVENT_FABRIC_DATA_DIR` | partitions, the leader epoch, consumer checkpoints, isolations and the operator-action log |
 | `QIP_EVENT_FABRIC_CATALOGUE` | the stream catalogue: stream policies and grants. Re-read while running; a changed file that parses replaces the grants in force, and one that does not changes nothing and is reported on the health body as `catalogue_error` |
 | `QIP_EVENT_FABRIC_IDENTITIES_FILE` | one `<identity> <sha256 of its token>` per line. Digests, never tokens |
-| `QIP_EVENT_FABRIC_ARCHIVE_DIR` | where sealed segments are archived. A directory, refused if it is inside the data directory. The Cloud Storage adapter is not selectable here yet |
+| `QIP_EVENT_FABRIC_ARCHIVE_DIR` | where sealed segments are archived, when the archive is a directory, refused if it is inside the data directory. Exactly one of this and `QIP_EVENT_FABRIC_ARCHIVE_BUCKET` is set; there is no fallback from one to the other |
+| `QIP_EVENT_FABRIC_ARCHIVE_BUCKET` | the Cloud Storage landing bucket sealed segments are archived to, when the archive is a bucket. Needs `QIP_GCP_ENDPOINT` (the in-VPC TLS-terminating proxy) and exactly one lasting credential, `QIP_GCP_METADATA_SERVER` or `QIP_GCP_TOKEN_FILE`; a literal token is refused. Reading segments back from the bucket on fetch is not built yet |
+| `QIP_EVENT_FABRIC_ARCHIVE_PREFIX` | optional: the key prefix this broker writes under inside the bucket, so one regional bucket can hold several brokers |
 | `QIP_EVENT_FABRIC_LISTEN` | the protocol listener, `/v1/event-fabric/...`, bearer token on every request |
 | `QIP_EVENT_FABRIC_HEALTH_LISTEN` | health and `/metrics`, on a listener of its own, refused if it is the protocol's |
 | `QIP_EVENT_FABRIC_PARTITIONS` | partitions per stream, 1 to 1024. Changing it on an existing data directory changes which partition every key routes to |

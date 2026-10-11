@@ -11,12 +11,12 @@ mod connector_common;
 use connector_common::{TestConnector, at, body, manifest, manifest_json};
 use qip_core::Timestamp;
 use qip_core::error::Result;
+use qip_evidence::EvidenceFabric;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::connector::emulator::{RecordedAnswer, RecordedExchange, SourceEmulator};
 use qip_market_ingestion::connector::runtime::ConnectorRuntime;
 use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector::{RuntimeConfig, SourceManifest};
-use qip_world_model::EvidenceFabric;
 use std::sync::{Arc, Mutex};
 
 fn now() -> Timestamp {

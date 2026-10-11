@@ -12,6 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-events.workspace = true
+# `tick_capture` re-exports the captured-event types from here, so the edge
+# capture path can build them without linking this crate.
+qip-contracts.workspace = true
 # The Cloud Storage adapter in `gcp` — and the access `qip-mesh`'s BigQuery
 # client shares with it (DATA-058) — speak the GCP JSON APIs over
 # `qip_transport::HttpClient` — the platform's one reviewed HTTP/1.1 client,

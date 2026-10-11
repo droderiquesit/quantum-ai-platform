@@ -24,10 +24,10 @@
 
 use crate::align::{Order, Placed, align};
 use crate::clock::{ClockDiscipline, ClockObservation, CorrectionKind};
+use qip_contracts::captured_event::{CapturedMarketEvent, ClockCorrectionLineage};
 use qip_contracts::market_event::MarketEvent;
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
-use qip_storage::tick_capture::{CapturedMarketEvent, ClockCorrectionLineage};
 use std::collections::BTreeMap;
 
 /// Streams a capture path tracks before refusing a new one. A feed handler

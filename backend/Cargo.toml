@@ -8,6 +8,7 @@ resolver = "3"
 members = [
     # --- libraries: shared, dependency-light, no I/O side effects ---
     "crates/libs/qip-core",
+    "crates/libs/qip-evidence",
     "crates/libs/qip-numerics",
     "crates/libs/qip-events",
     "crates/libs/qip-financial",
@@ -107,6 +108,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
 qip-core = { path = "crates/libs/qip-core" }
+qip-evidence = { path = "crates/libs/qip-evidence" }
 qip-numerics = { path = "crates/libs/qip-numerics" }
 qip-events = { path = "crates/libs/qip-events" }
 qip-financial = { path = "crates/libs/qip-financial" }

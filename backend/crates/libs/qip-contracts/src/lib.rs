@@ -30,6 +30,7 @@
 pub mod action;
 pub mod ambient;
 pub mod capital;
+pub mod captured_event;
 pub mod degradation;
 pub mod edge;
 pub mod expansion;

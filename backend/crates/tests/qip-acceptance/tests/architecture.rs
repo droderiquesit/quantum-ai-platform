@@ -1000,7 +1000,16 @@ fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
     // store and opens key-value stores only. `qip-storage`'s own suite holds
     // the other half: `key_value` refuses both targets
     // (a_warehouse_or_a_wide_column_target_cannot_be_opened_as_the_key_value_store_a_process_keeps_its_state_on).
-    const FORBIDDEN: [&str; 4] = ["BigQuery", "Bigtable", "bigquery", ".blobs("];
+    //
+    // A blob store is admitted in exactly one place since W1.13 (v12.0 §8.2:
+    // market events are captured at the edge into the tick lake): the
+    // `LakeSink` the drain thread owns, which writes sealed spool segments
+    // off the decision path. It was banned outright while the node had no
+    // lake; it is now allowed only as the argument to `LakeSink::new` in
+    // `main.rs`, and the decision loop (`scheduler.rs`) may never name one,
+    // so a blob read or write cannot reach a pass.
+    const FORBIDDEN: [&str; 3] = ["BigQuery", "Bigtable", "bigquery"];
+    let mut lake_sinks = 0usize;
     let adapters = qip_acceptance::read("backend/crates/libs/qip-storage/src/provider.rs");
     for token in ["BigQuery", "Bigtable", "pub fn blobs("] {
         assert!(
@@ -1020,6 +1029,21 @@ fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
             // the node does not use it.
             let code = line.split("//").next().unwrap_or_default();
             opens_key_value |= code.contains(".key_value(");
+            if code.contains(".blobs(") {
+                let previous = if index == 0 {
+                    ""
+                } else {
+                    text.lines().nth(index - 1).unwrap_or_default()
+                };
+                assert!(
+                    path.ends_with("main.rs") && previous.contains("LakeSink::new("),
+                    "{}:{} opens a blob store outside the drain's LakeSink; the edge node may \
+                     write the tick lake from its drain and reach no blob store anywhere else",
+                    path.display(),
+                    index + 1
+                );
+                lake_sinks += 1;
+            }
             for token in FORBIDDEN {
                 assert!(
                     !code.contains(token),
@@ -1039,6 +1063,15 @@ fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
         opens_key_value,
         "the node opens no key-value store, so the scan found nothing because it looked at \
          nothing a store is opened from"
+    );
+    assert_eq!(
+        lake_sinks, 1,
+        "the node should open exactly one blob store, for the drain's tick-lake sink"
+    );
+    let decision_loop = qip_acceptance::read("backend/crates/apps/qip-edge-node/src/scheduler.rs");
+    assert!(
+        decision_loop.contains("fn turn(") && !decision_loop.contains("blobs"),
+        "the decision loop must exist and must never name a blob store"
     );
 }
 

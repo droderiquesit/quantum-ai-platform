@@ -38,9 +38,9 @@ use super::validate::SchemaGuard;
 use crate::adapter::SensedRecord;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
+use qip_evidence::{ClaimKey, EvidenceFabric, KnowledgeDelta};
 use qip_financial::quality::DataQuality;
 use qip_transport::{Sleeper, ThreadSleeper};
-use qip_world_model::{ClaimKey, EvidenceFabric, KnowledgeDelta};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 

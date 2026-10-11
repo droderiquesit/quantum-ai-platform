@@ -410,6 +410,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-evidence"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "serde",
+]
+
+[[package]]
 name = "qip-evolution"
 version = "0.1.0"
 dependencies = [
@@ -626,6 +635,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-events",
+ "qip-evidence",
  "qip-financial",
  "qip-market",
  "qip-numerics",
@@ -634,7 +644,6 @@ dependencies = [
  "qip-sequencing",
  "qip-storage",
  "qip-transport",
- "qip-world-model",
  "serde",
  "serde_json",
 ]
@@ -846,6 +855,7 @@ dependencies = [
 name = "qip-storage"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-events",
  "qip-transport",
@@ -937,6 +947,7 @@ dependencies = [
  "qip-core",
  "qip-entity-resolution",
  "qip-events",
+ "qip-evidence",
  "qip-financial",
  "qip-market",
  "qip-numerics",

@@ -5,7 +5,7 @@
 //! went straight from parse to the record: an admitted event became a
 //! [`SensedRecord`] with no evidence object, nothing checked its timeline,
 //! weighed its authenticity or linked it to what other sources said, and
-//! `qip_world_model::EvidenceRecord` was constructed nowhere outside its own
+//! `qip_evidence::EvidenceRecord` was constructed nowhere outside its own
 //! tests.
 //!
 //! [`ConnectorRuntime::ingest`](super::runtime::ConnectorRuntime) now builds
@@ -33,8 +33,8 @@ use super::manifest::{SchemaVersion, SourceManifest};
 use crate::adapter::SensedRecord;
 use qip_core::Timestamp;
 use qip_core::error::Result;
-use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
-use qip_world_model::{AuthenticitySignal, EvidenceRecord, EvidenceVerdict};
+use qip_evidence::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
+use qip_evidence::{AuthenticitySignal, EvidenceRecord, EvidenceVerdict};
 use serde::{Deserialize, Serialize};
 
 /// Which parser extracted a record, at which version, against which schema
@@ -111,6 +111,28 @@ pub fn claimed_value(record: &SensedRecord) -> Option<(String, String)> {
     }
 }
 
+/// The instant a record's claim is dated at, for the temporal check.
+///
+/// For every record but a bar this is [`SensedRecord::occurred_at`]. A bar's
+/// `occurred_at` is the *end* of its bucket, and a daily bucket is a
+/// calendar day: an IEX daily bar opens at the session's midnight and its
+/// bucket ends at the next midnight, seven hours after the session closed
+/// and the source published it. Dating the claim at the bucket's end made
+/// every daily bar "report an event after its own publication", so the
+/// fabric ruled each one `PostdatesSource` and the runtime quarantined every
+/// bar Alpaca served — four quarantined, none admitted. A bar is a claim
+/// about the bucket that begins at `open_time`, which is also the instant
+/// the payload stamps it with; a bar whose bucket *opens* after its
+/// publication is the genuinely impossible one, and that still fails.
+/// Releasing a bar before its bucket has run is the knowability gate's
+/// refusal (the manifest's publication delay), not the evidence check's.
+pub fn claimed_at(record: &SensedRecord) -> Timestamp {
+    match record {
+        SensedRecord::Bar(bar) => bar.open_time,
+        other => other.occurred_at(),
+    }
+}
+
 /// Build the evidence record for one admitted event.
 ///
 /// `published_at` is the instant the record became knowable under the
@@ -157,7 +179,7 @@ pub fn evidence_of(
         // `[0, 1]`: a quality score out of range is a connector bug.
         confidence,
     )?
-    .with_claimed_at(record.occurred_at())
+    .with_claimed_at(claimed_at(record))
     .with_location(format!("region:{:?}", manifest.region))
     .with_authenticity_signal(AuthenticitySignal::HashVerified {
         algorithm: "sha256".into(),
