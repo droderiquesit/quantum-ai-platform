@@ -309,6 +309,13 @@ fn ledger_config(dir: &std::path::Path, fabric: &Fabric) -> LedgerConfig {
             PARTITIONS.to_string(),
         ),
         (qip_ledgerd::config::POLL_MS, "20".to_string()),
+        // ADR 0112: the test owns both ends of a loopback socket, so
+        // plaintext, which only a local deployment may choose.
+        (qip_ledgerd::config::DEPLOYMENT, "local".to_string()),
+        (
+            qip_transport::tls::TLS_MODE_VARIABLE,
+            "plaintext".to_string(),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))

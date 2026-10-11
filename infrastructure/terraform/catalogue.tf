@@ -271,6 +271,10 @@ locals {
         {
           QIP_API_ADDRESS    = "0.0.0.0:8080"
           QIP_STORAGE_TARGET = var.storage_target
+          # ADR 0110 decision 5: the deployment, named, so the binary can
+          # refuse the seed-derived signing key everywhere but a developer's
+          # machine. The binary refuses to start without it.
+          QIP_DEPLOYMENT = var.environment
           # The autonomy ceiling, from the one root variable whose validation
           # refuses the three live rungs at plan time. Every workload takes it
           # from here and never from a literal, so lowering or raising it is a
@@ -422,6 +426,10 @@ locals {
           QIP_FASTBRAIN_HEALTH_ADDRESS = "0.0.0.0:8080"
           QIP_STORAGE_TARGET           = var.storage_target
           QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
+          # ADR 0110 decision 5: the deployment, named, so the binary can
+          # refuse the seed-derived signing key everywhere but a developer's
+          # machine. The binary refuses to start without it.
+          QIP_DEPLOYMENT = var.environment
         },
         # The live market-data connector, or nothing. Both keys or neither:
         # `connector_feed` refuses half a configuration by name rather than
@@ -517,6 +525,10 @@ locals {
           QIP_STORAGE_TARGET           = var.storage_target
           QIP_AUTONOMY_CEILING         = var.autonomy_ceiling
           QIP_CYCLE_INTERVAL_SECONDS   = var.cycle_interval_seconds
+          # ADR 0110 decision 5: the deployment, named, so the binary can
+          # refuse the seed-derived signing key everywhere but a developer's
+          # machine. The binary refuses to start without it.
+          QIP_DEPLOYMENT = var.environment
         },
         # The source-discovery cadence `DiscoveryConfig::from_lookup` reads.
         # Unset, the desk runs its own default of zero — no pass at all,

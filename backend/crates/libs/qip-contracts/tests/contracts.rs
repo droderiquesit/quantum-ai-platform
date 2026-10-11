@@ -2855,6 +2855,11 @@ fn a_model_pack_with_all_required_fields_present_is_accepted() -> Result<()> {
         budget_microseconds: 1_000_000,
         expires_at: 1_760_086_400,
         rollback_parent: "prev_digest_hash".to_string(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
     };
     pack.validate()?;
     Ok(())
@@ -2872,6 +2877,11 @@ fn a_model_pack_missing_any_required_field_is_refused() {
         budget_microseconds: 1_000_000,
         expires_at: 1_760_086_400,
         rollback_parent: String::new(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
     };
 
     pack.artifact_digest = String::new();
@@ -2918,6 +2928,11 @@ fn a_model_pack_with_out_of_range_calibration_is_refused() {
         budget_microseconds: 1_000_000,
         expires_at: 1_760_086_400,
         rollback_parent: String::new(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
     };
 
     // Calibration > 1.0
@@ -2955,6 +2970,11 @@ fn a_model_pack_serialises_and_deserialises_round_trip() -> Result<()> {
         budget_microseconds: 5_000_000,
         expires_at: 1_760_172_800,
         rollback_parent: "prev_sha256_xyz789".to_string(),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
     };
 
     let json = serde_json::to_string(&pack)?;

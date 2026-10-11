@@ -266,8 +266,17 @@ fn run() -> Result<()> {
     let envelope_key =
         qip_core::secret::from_environment(qip_deepbrain::trust::ENVELOPE_KEY_VARIABLE)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // ADR 0110 decision 5: which deployment this is, named and never
+    // inferred. Absent is refused, so a deployment that forgot to say what it
+    // is cannot run on the seed-derived key the way a developer's machine may.
+    let deployment = qip_core::deployment::Deployment::parse(
+        std::env::var(qip_deepbrain::trust::DEPLOYMENT_VARIABLE)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
-        qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref())
+        qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
     // The durable trial book, on the same storage the event log archives to.

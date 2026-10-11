@@ -275,8 +275,68 @@ fn run() -> Result<()> {
     // also has.
     let envelope_key = qip_core::secret::from_environment(qip_api::trust::ENVELOPE_KEY_VARIABLE)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let provenance = qip_api::trust::harden_central(&mut platform, envelope_key.as_deref())
-        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // ADR 0110 decision 5: which deployment this is, named and never
+    // inferred. Absent is refused, so a deployment that forgot to say what it
+    // is cannot run on the seed-derived key the way a developer's machine may.
+    let deployment = qip_core::deployment::Deployment::parse(
+        std::env::var(qip_api::trust::DEPLOYMENT_VARIABLE)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let provenance =
+        qip_api::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+
+    // ADR 0110: the signer every policy payload, halt and capital envelope
+    // leaves this process under. `kms` signs through Cloud KMS with keys that
+    // never enter the process; `local` (a developer machine only) from a
+    // keys file; unset keeps the shared key above for its last release. Each
+    // asymmetric signer is proven against the trust bundle the cells hold
+    // before anything is served, and the envelope signer is installed into
+    // the plane here, after the operator key swap, so that swap cannot
+    // discard it.
+    let signing = qip_api::signing::configure(
+        &qip_api::signing::SigningSettings::from_env(&|name| std::env::var(name).ok()),
+        deployment,
+        now,
+        &|| {
+            Arc::new(qip_api::signing::MetadataBearer(
+                qip_storage::gcp::auth::MetadataServerTokens::new(clock.clone()),
+            ))
+        },
+        clock.clone(),
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // ADR 0110 / REFLEX-9011: what the trained_models slot may name. Outside
+    // a local deployment an absent release names nothing — see
+    // `hold_models_to_release` for why that is the fail-closed reading.
+    let release_banner = qip_api::signing::hold_models_to_release(
+        &mut platform,
+        deployment,
+        std::env::var(qip_api::signing::MODEL_PACKS_VARIABLE)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .as_deref()
+            .map(std::path::Path::new),
+        std::env::var(qip_api::signing::TRUST_BUNDLE_VARIABLE)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .as_deref()
+            .map(std::path::Path::new),
+        now,
+    )
+    .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    if let qip_api::signing::SigningPosture::Asymmetric(signers) = &signing {
+        platform
+            .central_mut()
+            .install_envelope_signer(
+                Arc::clone(&signers.envelope),
+                Arc::clone(&signers.verifier) as Arc<dyn qip_contracts::trust::ArtefactVerifier>,
+                now,
+            )
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    }
 
     // A tape must end before the roster's authorisation does, and the
     // assembled organisation is asked directly. See
@@ -344,17 +404,30 @@ fn run() -> Result<()> {
     // banner says the deltas have nowhere to land here.
     let mesh_settings = qip_api::mesh::MeshSettings::from_env()?;
     let mesh = match &mesh_settings {
-        Some(settings) => Some(Arc::new(Mutex::new(qip_api::mesh::MeshBackbone::open(
-            settings,
-            storage.key_value("mesh")?,
-            clock.clone(),
-            // The same trust root the plane signs envelopes with, so a cell
-            // verifies policy and capital against one key and a rotation is
-            // one secret rolled in one place. Absent here means policy
-            // distribution is off and the backbone counts it, rather than
-            // signing with something nobody verifies.
-            envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
-        )?))),
+        Some(settings) => Some(Arc::new(Mutex::new(
+            qip_api::mesh::MeshBackbone::open(
+                settings,
+                storage.key_value("mesh")?,
+                clock.clone(),
+                // The same trust root the plane signs envelopes with, so a cell
+                // verifies policy and capital against one key and a rotation is
+                // one secret rolled in one place. Absent here means policy
+                // distribution is off and the backbone counts it, rather than
+                // signing with something nobody verifies.
+                envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
+            )
+            .map(|mut backbone| {
+                // Under ADR 0110 the class keys replace the shared key for
+                // payloads and halts as well as for envelopes.
+                if let qip_api::signing::SigningPosture::Asymmetric(signers) = &signing {
+                    backbone.sign_with(qip_api::mesh::PolicySigners {
+                        policy: Arc::clone(&signers.policy),
+                        halt: Arc::clone(&signers.halt),
+                    });
+                }
+                backbone
+            })?,
+        ))),
         None => None,
     };
 
@@ -568,7 +641,10 @@ fn run() -> Result<()> {
         "  console:          read-only; it can trip the kill switch and has no path that \
          clears one"
     );
+    println!("  deployment:       {deployment} (QIP_DEPLOYMENT)");
     println!("  capital trust:    {}", provenance.describe());
+    println!("  artefact signing: {}", signing.describe());
+    println!("  model release:    {release_banner}");
     println!("  risk limits:      {limits_banner}");
     println!("  feed:             {feed_banner}");
     if let Some(line) = &journal_banner {

@@ -47,6 +47,10 @@ fn node(test: &str) -> Command {
         .env_clear()
         .env("QIP_CELL_ID", "london-1")
         .env("QIP_CELL_REGION", "europe-west2")
+        // Required since ADR 0110 decision 5; `local` because this harness
+        // verifies with the shared key, which a deployed node may not hold
+        // past its removal date.
+        .env("QIP_DEPLOYMENT", "local")
         .env("QIP_VENUES", "CX")
         .env("QIP_REGION_ALLOCATION", "1000000")
         .env("QIP_CAPITAL_ENVELOPE_KEY_FILE", &key)

@@ -1917,7 +1917,16 @@ fn the_dependency_graph_is_acyclic() {
 // --- external surface -------------------------------------------------------
 
 #[test]
-fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
+fn no_crate_declares_a_third_party_dependency_the_committed_allowlist_does_not_admit() {
+    // ADR 0109 decision 1: this test held every crate to `serde` and
+    // `serde_json` until the first admitted crate landed (`ring` and
+    // `rustls`, ADR 0110 and ADR 0112), and the ADR says it is retired in
+    // that same change and replaced by a walk against the committed
+    // allow-list. The decision core is still held to two by
+    // `the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two`
+    // below; this test now holds every other crate to the list, so a crate
+    // nobody admitted still fails here by name.
+    //
     // The lockfile check in `scripts/check-dependencies.sh` catches what was
     // resolved. This catches what was *asked for*, which is the line a
     // reviewer sees in the diff.
@@ -1933,7 +1942,18 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     // Unlike the boundary graph this counts **every** kind, including dev and
     // build dependencies: the rule is that the workspace declares two
     // third-party crates, and a test-only dependency is still a supply chain.
-    let permitted: BTreeSet<&str> = ["serde", "serde_json"].into_iter().collect();
+    let allowlist = qip_acceptance::read("scripts/dependency-allowlist.txt");
+    let permitted: BTreeSet<&str> = allowlist
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    // Premise: the list was read and still admits the decision core's two,
+    // or an empty read would refuse everything and say nothing useful.
+    assert!(
+        permitted.contains("serde") && permitted.contains("serde_json"),
+        "the committed allow-list does not admit serde and serde_json; it was not read"
+    );
     let metadata = workspace_metadata();
     let members = workspace_member_names(&metadata);
     let mut offenders = Vec::new();
@@ -1960,7 +1980,9 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     );
     assert!(
         offenders.is_empty(),
-        "third-party dependencies were declared: {offenders:?}"
+        "third-party dependencies the committed allow-list does not admit were declared: \
+         {offenders:?}. Admit each in scripts/dependency-allowlist.txt with the ADR that admits \
+         it (ADR 0109), or remove it"
     );
 }
 

@@ -47,6 +47,7 @@ use crate::arbitrage::ArbitrageInstaller;
 use crate::strategies::StrategyInstaller;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Timestamp};
+use qip_edge::TrustRoot;
 use qip_edge::cell::{Cell, WorkReport};
 use qip_edge::mesh::{
     CapitalDownlink, CellStateDelta, CellUplink, Dispatch, DownlinkBatch, DownlinkConfig,
@@ -237,18 +238,38 @@ impl MeshLink {
     /// tests, which is the whole reason `qip-transport` takes one: a test
     /// asserts the retry ladder instead of spending it, and a deployment
     /// actually waits.
+    ///
+    /// `trust` is what every grant, payload and halt is verified against:
+    /// the trust bundle under ADR 0110, or the shared key for its last
+    /// release. The composition root chose it; this link never sees a file.
     pub fn connect(
         settings: &MeshSettings,
-        envelope_key: &[u8],
+        trust: TrustRoot,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
-        Self::connect_with(settings, envelope_key, clock, Arc::new(ThreadSleeper))
+        Self::connect_trusted_with(settings, trust, clock, Arc::new(ThreadSleeper))
     }
 
-    /// The same, with the sleeper supplied.
+    /// The same over a shared key, with the sleeper supplied — the form the
+    /// pre-ADR-0110 tests drive.
     pub fn connect_with(
         settings: &MeshSettings,
         envelope_key: &[u8],
+        clock: Arc<dyn Clock>,
+        sleeper: Arc<dyn Sleeper>,
+    ) -> Result<Self> {
+        Self::connect_trusted_with(
+            settings,
+            TrustRoot::shared_key(envelope_key)?,
+            clock,
+            sleeper,
+        )
+    }
+
+    /// The same with the root and the sleeper supplied.
+    pub fn connect_trusted_with(
+        settings: &MeshSettings,
+        trust: TrustRoot,
         clock: Arc<dyn Clock>,
         sleeper: Arc<dyn Sleeper>,
     ) -> Result<Self> {
@@ -266,7 +287,7 @@ impl MeshLink {
             Arc::clone(&sleeper),
             Box::new(MemoryDeadLetters::new(DEAD_LETTER_CAPACITY)),
         )?;
-        let downlink = CapitalDownlink::connect(
+        let downlink = CapitalDownlink::connect_trusted(
             DownlinkConfig::new(&settings.cell, settings.mesh_config("downlink")).with_breaker(
                 qip_transport::breaker::BreakerPolicy::default(),
                 // Offset so the two halves of one link do not draw the same
@@ -274,18 +295,18 @@ impl MeshLink {
                 // and would otherwise probe it on the same millisecond.
                 settings.seed.wrapping_add(1),
             ),
-            envelope_key,
+            trust.clone(),
             Arc::clone(&clock),
             Arc::clone(&sleeper),
         )?;
-        let policy = PolicyDownlink::connect(
+        let policy = PolicyDownlink::connect_trusted(
             DownlinkConfig::new(&settings.cell, settings.mesh_config("downlink")).with_breaker(
                 qip_transport::breaker::BreakerPolicy::default(),
                 // A third offset for the third consumer of the same peer, for
                 // the same reason the second got one.
                 settings.seed.wrapping_add(2),
             ),
-            envelope_key,
+            trust,
             clock,
             sleeper,
         )?;

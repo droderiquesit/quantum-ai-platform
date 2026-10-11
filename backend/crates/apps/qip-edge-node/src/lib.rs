@@ -55,6 +55,7 @@ pub mod strategies;
 pub mod tape;
 /// The node's own metric seam: the mesh link, rendered as a series.
 pub mod telemetry;
+pub mod trust;
 pub mod venue;
 
 use allocation::RegionCapital;

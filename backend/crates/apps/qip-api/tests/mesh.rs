@@ -134,7 +134,11 @@ fn rig_full(
     )?;
     // The trust root first, exactly as `main` orders it: the key installed
     // here is the key the downlink in these tests verifies against.
-    harden_central(&mut platform, Some(ENVELOPE_KEY))?;
+    harden_central(
+        &mut platform,
+        Some(ENVELOPE_KEY),
+        qip_core::deployment::Deployment::Local,
+    )?;
 
     let settings = MeshSettings {
         cells: vec![CellAddress {
@@ -2832,6 +2836,92 @@ fn a_cycle_ships_the_cell_holding_a_retired_lot_its_disposition_and_no_other_cel
     assert!(
         VerifiedPolicy::verify(tampered, key, CELL, asked_at).is_err(),
         "a disposition altered after signing still verifies at the cell"
+    );
+    Ok(())
+}
+
+// --- ADR 0110: the class keys, end to end over real sockets -------------------
+
+/// With the API signing under ADR 0110's class keys, a cell holding only the
+/// trust bundle verifies the cycle's payload and the operator's halt, and a
+/// cell still on the shared key refuses both. Real sockets, real P-256
+/// signatures, and the kill switch the console trips.
+///
+/// Mutation: make `MeshBackbone::dispatch_policy` ignore `signers` (sign
+/// with `policy_key` whenever one is present) and the bundle cell refuses
+/// the payload; make `broadcast_halt` sign under the policy signer and the
+/// bundle cell refuses the halt. Either fails this.
+#[test]
+fn a_backbone_signing_under_the_class_keys_is_verified_by_a_bundle_cell_and_refused_by_a_shared_key_cell()
+-> Result<()> {
+    use qip_contracts::trust::{ArtefactClass, ArtefactSigner, TrustBundle, TrustedKey};
+    use qip_transport::trust::{BundleVerifier, LocalSigner};
+
+    let rig = rig(64)?;
+    let policy = Arc::new(LocalSigner::generate(
+        ArtefactClass::Policy,
+        "test/policy/1",
+    )?);
+    let halt = Arc::new(LocalSigner::generate(ArtefactClass::Halt, "test/halt/1")?);
+    let envelope = LocalSigner::generate(ArtefactClass::Envelope, "test/envelope/1")?;
+    let bundle = TrustBundle::new(
+        [policy.as_ref(), halt.as_ref(), &envelope]
+            .into_iter()
+            .map(|signer| TrustedKey {
+                class: signer.class(),
+                key_version: signer.key_version().to_string(),
+                public_key: signer.public_key_hex(),
+                not_after: Timestamp::from_secs(4_000_000_000),
+            })
+            .collect(),
+        std::collections::BTreeSet::new(),
+    )?;
+    rig.mesh
+        .lock()
+        .map_err(|_| Error::unavailable("the mesh lock is poisoned"))?
+        .sign_with(qip_api::mesh::PolicySigners {
+            policy: policy.clone(),
+            halt: halt.clone(),
+        });
+
+    let mut bundle_cell = PolicyDownlink::connect_trusted(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config("policy-bundle", &format!("http://{}", rig.cell_peer)),
+        ),
+        qip_edge::TrustRoot::bundle(BundleVerifier::new(bundle)),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )?;
+    let mut shared_cell = policy_downlink(&rig, "policy-shared")?;
+
+    run_cycle(&rig)?;
+    let response = rig
+        .api
+        .handle(&request(Method::Post, "/api/v1/kill-switch"));
+    assert_eq!(response.status, 200);
+
+    let bundle_batch = bundle_cell.poll(at(Duration::from_secs(5)))?;
+    // Premise: the bundle cell received frames at all, so an empty refusal
+    // list below is not an empty inbox.
+    assert_eq!(bundle_batch.verified.len(), 1, "{bundle_batch:?}");
+    assert_eq!(bundle_batch.halts.len(), 1, "{bundle_batch:?}");
+    assert!(
+        bundle_batch.refused.is_empty(),
+        "{:?}",
+        bundle_batch.refused
+    );
+
+    let shared_batch = shared_cell.poll(at(Duration::from_secs(5)))?;
+    assert!(shared_batch.verified.is_empty() && shared_batch.halts.is_empty());
+    assert!(
+        !shared_batch.refused.is_empty()
+            && shared_batch
+                .refused
+                .iter()
+                .all(|refusal| refusal.reason.contains("trust bundle")),
+        "a shared-key cell did not refuse the asymmetric frames by name: {:?}",
+        shared_batch.refused
     );
     Ok(())
 }

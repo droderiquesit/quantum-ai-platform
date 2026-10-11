@@ -17,7 +17,9 @@
 //! to the transport factory directly, so a `{:?}` of the configuration can
 //! never print it.
 
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
+use qip_transport::tls::{TLS_MODE_VARIABLE, TlsPaths, link_mode};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -29,7 +31,12 @@ pub const DATA_DIR: &str = "QIP_LEDGER_ARCHIVE_PATH";
 pub const LISTEN: &str = "QIP_LEDGER_LISTEN_ADDR";
 /// The consumer group the ledger joins on the outcomes stream.
 pub const CONSUMER_GROUP: &str = "QIP_LEDGER_FABRIC_CONSUMER_GROUP";
-/// The fabric broker: `http://host:port`, scheme and authority only.
+/// Which deployment the ledger runs in (ADR 0110 decision 5, ADR 0112).
+/// Required: it decides whether the fabric link may be plaintext.
+pub const DEPLOYMENT: &str = "QIP_DEPLOYMENT";
+/// The fabric broker: `https://host:port` over mutual TLS (ADR 0112), or
+/// `http://host:port` on a `local` deployment that chose plaintext; scheme
+/// and authority only.
 pub const FABRIC_URL: &str = "QIP_LEDGER_FABRIC_URL";
 /// The P1 outcomes stream the ledger books from.
 pub const FABRIC_STREAM: &str = "QIP_LEDGER_FABRIC_STREAM";
@@ -55,8 +62,13 @@ pub struct LedgerConfig {
     pub listen_addr: SocketAddr,
     /// Consumer group ID for reading P1 outcomes from the event fabric.
     pub fabric_consumer_group: String,
-    /// `http://host:port` of the fabric broker.
+    /// The fabric broker's scheme and authority. The scheme agrees with
+    /// [`Self::fabric_tls`]: `https` when it is `Some`, `http` when `None`.
     pub fabric_url: String,
+    /// The workload certificate the fabric client presents (ADR 0112):
+    /// `None` is plaintext, admitted only where [`DEPLOYMENT`] is `local`
+    /// and `QIP_TLS_MODE=plaintext` says so.
+    pub fabric_tls: Option<TlsPaths>,
     /// The P1 outcomes stream.
     pub fabric_stream: String,
     /// Partitions of that stream; one worker reads each.
@@ -101,15 +113,32 @@ impl LedgerConfig {
         let fabric_url = required(
             variables,
             FABRIC_URL,
-            "the broker's http://host:port (the egress-free in-VPC address)",
+            "the broker's https://host:port (the egress-free in-VPC address)",
         )?;
-        // The fabric transport speaks plaintext HTTP/1.1 and appends each
-        // route's own path: a path here would be doubled, and https would
-        // be refused by the client on the first call rather than here.
-        let authority = fabric_url.strip_prefix("http://").ok_or_else(|| {
+        // ADR 0112: the link's security is decided from the deployment and
+        // the TLS variables, and the URL's scheme must agree with it — an
+        // http address on a TLS link is not upgraded, and an https address
+        // on a plaintext link is not downgraded. The transport appends each
+        // route's own path, so a path here would be doubled.
+        let deployment = Deployment::parse(variables.get(DEPLOYMENT).map(String::as_str))?;
+        let fabric_tls = link_mode(
+            deployment,
+            variables.get(TLS_MODE_VARIABLE).map(String::as_str),
+            TlsPaths::from_lookup(&|name| variables.get(name).cloned())?.as_ref(),
+        )?;
+        let scheme = if fabric_tls.is_some() {
+            "https://"
+        } else {
+            "http://"
+        };
+        let authority = fabric_url.strip_prefix(scheme).ok_or_else(|| {
             Error::invalid(format!(
-                "{FABRIC_URL} '{fabric_url}' must start with http://; the fabric client has no \
-                 TLS stack and refuses https by name"
+                "{FABRIC_URL} '{fabric_url}' must start with {scheme}: the fabric link is {}",
+                if fabric_tls.is_some() {
+                    "mutual TLS (ADR 0112)"
+                } else {
+                    "plaintext, which only a local deployment may choose"
+                }
             ))
         })?;
         if authority.is_empty() || authority.contains('/') {
@@ -154,6 +183,7 @@ impl LedgerConfig {
             listen_addr,
             fabric_consumer_group,
             fabric_url,
+            fabric_tls,
             fabric_stream,
             fabric_partitions,
             poll_ms,
@@ -173,6 +203,8 @@ mod tests {
             (FABRIC_URL, "http://fabricd.internal:7100"),
             (FABRIC_STREAM, "reflex-outcomes"),
             (FABRIC_PARTITIONS, "4"),
+            (DEPLOYMENT, "local"),
+            (TLS_MODE_VARIABLE, "plaintext"),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_string(), value.to_string()))
@@ -234,5 +266,46 @@ mod tests {
         let mut variables = complete();
         variables.insert(POLL_MS.to_string(), "0".to_string());
         assert!(LedgerConfig::parse(&variables).is_err());
+    }
+
+    /// ADR 0112 at the ledger's fabric client. Mutation: let `plaintext`
+    /// through outside `local`, or stop checking the URL's scheme against
+    /// the link, and one of these parses; this fails.
+    #[test]
+    fn a_ledger_reaches_the_fabric_in_plaintext_only_where_a_local_deployment_chose_it() {
+        let mut deployed = complete();
+        deployed.insert(DEPLOYMENT.to_string(), "stage".to_string());
+        assert!(
+            LedgerConfig::parse(&deployed).is_err(),
+            "plaintext in stage"
+        );
+
+        let mut tls = complete();
+        tls.remove(TLS_MODE_VARIABLE);
+        tls.insert(DEPLOYMENT.to_string(), "stage".to_string());
+        for (name, value) in [
+            (
+                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+                "/etc/qip/tls/chain.pem",
+            ),
+            (
+                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+                "/run/qip/tls/key.pem",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/roots.pem",
+            ),
+        ] {
+            tls.insert(name.to_string(), value.to_string());
+        }
+        // An http address on a TLS link is refused, not upgraded.
+        assert!(LedgerConfig::parse(&tls).is_err(), "http on a TLS link");
+        tls.insert(
+            FABRIC_URL.to_string(),
+            "https://fabricd.internal:7100".to_string(),
+        );
+        let config = LedgerConfig::parse(&tls).expect("https on a TLS link");
+        assert!(config.fabric_tls.is_some());
     }
 }

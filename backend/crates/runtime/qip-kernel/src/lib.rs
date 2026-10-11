@@ -51,6 +51,7 @@ pub mod feature_statistics;
 pub mod federation_stage;
 pub mod hedge_review;
 pub mod model_serving;
+pub mod model_trust;
 pub mod platform;
 pub mod pre_positioning;
 pub mod precedent_declines;

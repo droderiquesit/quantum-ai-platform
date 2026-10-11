@@ -70,6 +70,46 @@ impl VerifiedEnvelope {
         })
     }
 
+    /// Verify an envelope against the cell's [`crate::trust::TrustRoot`],
+    /// under the `envelope` key — the same refusals as [`Self::verify`], in
+    /// the same order: signature, cell, validity window.
+    pub fn verify_with(
+        envelope: CapitalEnvelope,
+        root: &crate::trust::TrustRoot,
+        expected_cell: &str,
+        now: Timestamp,
+    ) -> Result<Self> {
+        root.check(
+            qip_contracts::trust::ArtefactClass::Envelope,
+            envelope.signing_payload().as_bytes(),
+            envelope.signature(),
+            now,
+        )
+        .map_err(|error| {
+            Error::denied(format!(
+                "the capital envelope for {} is refused: {}",
+                envelope.strategy().as_str(),
+                error.message()
+            ))
+        })?;
+        if envelope.cell() != expected_cell {
+            return Err(Error::denied(format!(
+                "an envelope for cell {} was presented to cell {expected_cell}",
+                envelope.cell()
+            )));
+        }
+        if !envelope.is_live(now) {
+            return Err(Error::denied(format!(
+                "the capital envelope for {} is outside its validity window",
+                envelope.strategy().as_str()
+            )));
+        }
+        Ok(Self {
+            inner: envelope,
+            verified_at: now,
+        })
+    }
+
     pub fn strategy(&self) -> &StrategyId {
         self.inner.strategy()
     }
