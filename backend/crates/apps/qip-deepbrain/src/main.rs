@@ -612,6 +612,24 @@ fn run() -> Result<()> {
     let refetch_every = qip_deepbrain::connectors::refetch_every(&|name| std::env::var(name).ok())
         .map_err(configuration)?;
     evolution = evolution.with_refetch(refetch_every);
+    // How often each connector is scored on incremental information gain
+    // and realised contribution against the own stream (R12-DATA-2022,
+    // 2025, 1105); 0 when unset attaches no desk.
+    let source_alpha_every =
+        qip_deepbrain::source_alpha::source_alpha_every(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    evolution = evolution.with_source_alpha(source_alpha_every);
+    println!(
+        "  source alpha:     {}",
+        if source_alpha_every == 0 {
+            format!(
+                "disabled ({}=0 or unset)",
+                qip_deepbrain::source_alpha::SOURCE_ALPHA_EVERY_VARIABLE
+            )
+        } else {
+            format!("every {source_alpha_every} cycle(s), each connector against the own stream")
+        }
+    );
     println!(
         "  re-fetch:         {}",
         if refetch_every == 0 {
@@ -938,6 +956,9 @@ fn run() -> Result<()> {
             }
             for failure in &outcome.side_failures {
                 println!("  not run: {failure}");
+            }
+            if let Some(round) = &outcome.source_alpha {
+                println!("  {}", round.describe());
             }
             if let Some(findings) = &outcome.refetch {
                 let unretrievable = findings

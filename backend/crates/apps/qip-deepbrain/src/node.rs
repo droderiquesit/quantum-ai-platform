@@ -124,6 +124,9 @@ pub struct StepOutcome {
     /// What re-fetching the connector arms' referenced extents found, on the
     /// cycles where a pass ran (R12-DATA-1037).
     pub refetch: Option<Vec<qip_data_finder::refetch::ReFetchFinding>>,
+    /// What scoring the connector sources found, on the cycles where a pass
+    /// ran (R12-DATA-2022, 2025, 1105).
+    pub source_alpha: Option<crate::source_alpha::SourceAlphaRound>,
     /// What the research loop's sweep did, on the cycles where one ran
     /// (`research.rs`). A fourth cadence beside the three above.
     pub research: Option<crate::research::ResearchRound>,
@@ -184,6 +187,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         learning: None,
         discovery: None,
         refetch: None,
+        source_alpha: None,
         research: None,
         operations: None,
         tick: None,
@@ -439,6 +443,7 @@ pub fn run_with(
             // Re-verify what was referenced, on its own cadence, after the
             // poll that referenced it.
             outcome.refetch = engine.maybe_refetch(platform, cycles, now)?;
+            outcome.source_alpha = engine.maybe_score_sources(cycles, now);
         }
         // Research after discovery, so a source catalogued this cycle is
         // licensed for this sweep's admissions. The bounds are the discovery

@@ -69,6 +69,7 @@ pub mod reference;
 pub mod research;
 pub mod roster;
 pub mod signal_mapper;
+pub mod source_alpha;
 pub mod status;
 pub mod succession;
 pub mod tick_desk;
