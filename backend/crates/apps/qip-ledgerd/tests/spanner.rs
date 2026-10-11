@@ -12,6 +12,11 @@
 //! run against a real instance is the evidence for that, not this file.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+#[path = "../../../libs/qip-transport/tests/support/certs.rs"]
+mod certs;
+#[path = "support/pki.rs"]
+mod pki;
+
 use qip_contracts::ledger::Settlement;
 use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
 use qip_contracts::message::BookSide;
@@ -30,7 +35,6 @@ use qip_storage::gcp::spanner::{SpannerConfig, SpannerDatabase, SpannerKv};
 use qip_storage::{EngineConfig, GcpAccess, StaticToken};
 use qip_transport::event_fabric::auth::BearerToken;
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
-use qip_transport::http::{ClientLimits, HttpClient};
 use qip_transport::retry::Sleeper;
 use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
 use serde_json::{Value, json};
@@ -456,30 +460,18 @@ fn a_second_writer_claiming_the_spanner_ledger_fences_the_first_out() {
 }
 
 /// A deployed ledger's configuration: the deployment of the same name, so
-/// the fabric link is mutual TLS (ADR 0112) — the agreement `parse` requires.
-/// The certificate paths are only recorded here; `main` loads them, and the
-/// broker below is reached through `unreachable_broker`, so nothing reads
-/// them in this file.
-fn spanner_config(environment: &str) -> LedgerConfig {
+/// both of its links are mutual TLS (ADR 0112) — the agreement `parse`
+/// requires. The certificate is `pki`'s, minted for the run and on disk,
+/// because `start` loads it for the read API's listener; the fabric half
+/// goes through `unreachable_broker`, which never presents it.
+fn spanner_config(environment: &str, pki: &pki::Pki) -> LedgerConfig {
     let deployment = match environment {
         "staging" => "stage",
         other => other,
     };
-    let variables: BTreeMap<String, String> = [
+    let mut variables: BTreeMap<String, String> = [
         (qip_ledgerd::config::ENVIRONMENT, environment),
         (qip_ledgerd::config::DEPLOYMENT, deployment),
-        (
-            qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
-            "/etc/qip/tls/chain.pem",
-        ),
-        (
-            qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
-            "/run/qip/tls/key.pem",
-        ),
-        (
-            qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
-            "/etc/qip/tls/roots.pem",
-        ),
         (qip_ledgerd::config::LISTEN, "127.0.0.1:0"),
         (qip_ledgerd::config::CONSUMER_GROUP, "ledger"),
         (qip_ledgerd::config::FABRIC_URL, "https://127.0.0.1:9"),
@@ -493,6 +485,7 @@ fn spanner_config(environment: &str) -> LedgerConfig {
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
+    variables.extend(pki.variables());
     LedgerConfig::parse(&variables).expect("a deployed Spanner configuration loads")
 }
 
@@ -529,7 +522,10 @@ fn unreachable_broker() -> Connect {
 /// start succeeds and the first assertion fails.
 #[test]
 fn a_deployed_ledger_starts_only_on_a_spanner_database_it_can_reach() {
-    let config = spanner_config("prod");
+    let tls_dir =
+        std::env::temp_dir().join(format!("qip-ledgerd-spanner-tls-{}", std::process::id()));
+    let pki = pki::Pki::mint(&tls_dir);
+    let config = spanner_config("prod", &pki);
     let refused = qip_ledgerd::start_with_access(
         &config,
         Arc::new(SystemClock),
@@ -575,9 +571,10 @@ fn a_deployed_ledger_starts_only_on_a_spanner_database_it_can_reach() {
     .expect("premise: a reachable database starts the ledger");
     assert!(running.is_ready());
     assert_eq!(running.store().backend_kind(), "spanner");
-    let response = HttpClient::new(ClientLimits::default())
-        .get(&format!("http://{}/health", running.address()))
-        .expect("health answers");
+    // A deployed ledger's read API is mutual TLS, so health is read by a
+    // client presenting a certificate the ledger's roots chain.
+    let response = pki::get(&pki.client(&pki.reader), running.address(), "/health")
+        .expect("health answers a certified reader");
     let body: Value = serde_json::from_slice(&response.body).expect("health is JSON");
     assert_eq!(body["store"], json!("spanner"));
     assert!(
@@ -585,4 +582,5 @@ fn a_deployed_ledger_starts_only_on_a_spanner_database_it_can_reach() {
         "premise: the start claimed the writer row and committed its probe"
     );
     running.stop();
+    let _ = std::fs::remove_dir_all(&tls_dir);
 }

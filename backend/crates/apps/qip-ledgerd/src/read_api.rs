@@ -25,6 +25,14 @@
 //! The account is a query parameter, not a path segment, because a trading
 //! account is written `trading:cell/strategy` and a `/` in a path segment is
 //! a second segment.
+//!
+//! **Who may ask.** Read-only is not the same as public: these routes are
+//! the paper book in full. Outside a `local` deployment the listener is
+//! mutual TLS (ADR 0112) — a client presents a certificate the process's
+//! roots chain, optionally one naming a workload in
+//! `QIP_LEDGER_ADMITTED_PEERS`, or no handler here runs. That is decided in
+//! [`crate::start`], not in this handler, so no route can be reached around
+//! it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

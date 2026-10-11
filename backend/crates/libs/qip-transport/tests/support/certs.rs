@@ -184,3 +184,33 @@ pub(crate) fn leaf(ca: &Minted, serial: u8, dns_name: &str) -> Minted {
         subject: dns_name.to_string(),
     }
 }
+
+/// [`leaf`], valid for the IPv4 address `ip` as well as `dns_name` — for a
+/// server a client reaches by a checked address rather than a name, as
+/// `qip event-fabric grant` reaches its loopback broker. An iPAddress
+/// subject alternative name is context tag 7 holding the four octets.
+pub(crate) fn leaf_with_ip(ca: &Minted, serial: u8, dns_name: &str, ip: [u8; 4]) -> Minted {
+    let (pair, pkcs8) = key();
+    let extensions = vec![
+        extension(OID_BASIC_CONSTRAINTS, true, sequence(&[])),
+        // digitalSignature.
+        extension(OID_KEY_USAGE, true, tlv(0x03, &[0x07, 0x80])),
+        extension(
+            OID_EXTENDED_KEY_USAGE,
+            false,
+            sequence(&[oid(OID_SERVER_AUTH), oid(OID_CLIENT_AUTH)]),
+        ),
+        extension(
+            OID_SUBJECT_ALT_NAME,
+            false,
+            sequence(&[tlv(0x82, dns_name.as_bytes()), tlv(0x87, &ip)]),
+        ),
+    ];
+    let certificate_der = certificate(serial, &ca.subject, &ca.pair, dns_name, &pair, extensions);
+    Minted {
+        certificate_der,
+        pkcs8,
+        pair,
+        subject: dns_name.to_string(),
+    }
+}

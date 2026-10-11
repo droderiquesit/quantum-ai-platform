@@ -33,7 +33,7 @@
 use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_storage::gcp::spanner::{DEFAULT_TABLE, SpannerDatabase};
-use qip_transport::tls::{TLS_MODE_VARIABLE, TlsPaths, link_mode};
+use qip_transport::tls::{PeerNames, TLS_MODE_VARIABLE, TlsPaths, link_mode};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -102,6 +102,11 @@ pub const CONSUMER_GROUP: &str = "QIP_LEDGER_FABRIC_CONSUMER_GROUP";
 /// Which deployment the ledger runs in (ADR 0110 decision 5, ADR 0112).
 /// Required: it decides whether the fabric link may be plaintext.
 pub const DEPLOYMENT: &str = "QIP_DEPLOYMENT";
+/// Optional: comma-separated DNS names a client certificate must carry one
+/// of to be served by the read API (ADR 0112), as `qip-fabricd`'s
+/// `QIP_EVENT_FABRIC_ADMITTED_PEERS` does for the protocol listener. Refused
+/// on a plaintext listener, where nothing could check it.
+pub const ADMITTED_PEERS: &str = "QIP_LEDGER_ADMITTED_PEERS";
 /// The fabric broker: `https://host:port` over mutual TLS (ADR 0112), or
 /// `http://host:port` on a `local` deployment that chose plaintext; scheme
 /// and authority only.
@@ -126,21 +131,37 @@ pub const MAXIMUM_PARTITIONS: u32 = 1024;
 pub struct LedgerConfig {
     /// Workstation or deployment, from [`ENVIRONMENT`]; selects the store.
     pub environment: LedgerEnvironment,
-    /// The deployment from [`DEPLOYMENT`]; decides the fabric link.
+    /// The deployment from [`DEPLOYMENT`]; decides whether the fabric link
+    /// and the read API may be plaintext.
     pub deployment: Deployment,
     /// Where the ledger's rows live.
     pub storage: LedgerStorage,
-    /// Socket address the read API and health listen on.
+    /// Socket address the read API and health listen on — mutual TLS
+    /// whenever [`Self::workload_tls`] is `Some`.
     pub listen_addr: SocketAddr,
     /// Consumer group ID for reading P1 outcomes from the event fabric.
     pub fabric_consumer_group: String,
     /// The fabric broker's scheme and authority. The scheme agrees with
-    /// [`Self::fabric_tls`]: `https` when it is `Some`, `http` when `None`.
+    /// [`Self::workload_tls`]: `https` when it is `Some`, `http` when `None`.
     pub fabric_url: String,
-    /// The workload certificate the fabric client presents (ADR 0112):
-    /// `None` is plaintext, admitted only where [`DEPLOYMENT`] is `local`
-    /// and `QIP_TLS_MODE=plaintext` says so.
-    pub fabric_tls: Option<TlsPaths>,
+    /// This process's workload certificate (ADR 0112), and the one fact
+    /// both of its links are secured by: the fabric client presents it, and
+    /// the read API's listener serves under it and requires a client
+    /// certificate chained to the same roots. `None` is plaintext on both,
+    /// admitted only where [`DEPLOYMENT`] is `local` and
+    /// `QIP_TLS_MODE=plaintext` says so.
+    ///
+    /// One field rather than one per link (it was `fabric_tls` while only the
+    /// client used it): two settings for one process's identity could
+    /// disagree, and the disagreement that matters — an encrypted fabric link
+    /// beside a plaintext read API serving every balance — is exactly the one
+    /// nobody would see on a dashboard that shows the fabric link.
+    pub workload_tls: Option<TlsPaths>,
+    /// [`ADMITTED_PEERS`]: the workloads the read API serves, checked
+    /// against each client certificate's DNS names. Empty admits any
+    /// certificate the roots chain, which leaves the CA pool's template as
+    /// the only identity control — `qip-fabricd`'s rule, mirrored.
+    pub admitted_peers: Vec<String>,
     /// The P1 outcomes stream.
     pub fabric_stream: String,
     /// Partitions of that stream; one worker reads each.
@@ -227,12 +248,12 @@ impl LedgerConfig {
                 deployment.as_str()
             )));
         }
-        let fabric_tls = link_mode(
+        let workload_tls = link_mode(
             deployment,
             variables.get(TLS_MODE_VARIABLE).map(String::as_str),
             TlsPaths::from_lookup(&|name| variables.get(name).cloned())?.as_ref(),
         )?;
-        let scheme = if fabric_tls.is_some() {
+        let scheme = if workload_tls.is_some() {
             "https://"
         } else {
             "http://"
@@ -240,7 +261,7 @@ impl LedgerConfig {
         let authority = fabric_url.strip_prefix(scheme).ok_or_else(|| {
             Error::invalid(format!(
                 "{FABRIC_URL} '{fabric_url}' must start with {scheme}: the fabric link is {}",
-                if fabric_tls.is_some() {
+                if workload_tls.is_some() {
                     "mutual TLS (ADR 0112)"
                 } else {
                     "plaintext, which only a local deployment may choose"
@@ -251,6 +272,27 @@ impl LedgerConfig {
             return Err(Error::invalid(format!(
                 "{FABRIC_URL} '{fabric_url}' must be scheme and authority only, with no path; \
                  every call appends its own route"
+            )));
+        }
+        let admitted_peers: Vec<String> = variables
+            .get(ADMITTED_PEERS)
+            .map(|names| {
+                names
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Validated here, before anything is opened, so a name no
+        // certificate can carry stops the start rather than the bind.
+        PeerNames::new(admitted_peers.clone())?;
+        if workload_tls.is_none() && !admitted_peers.is_empty() {
+            return Err(Error::invalid(format!(
+                "{ADMITTED_PEERS} names workloads and the read API is plaintext; a peer list \
+                 nothing can check reads as a control. Configure the workload certificate or \
+                 unset {ADMITTED_PEERS}"
             )));
         }
         let fabric_stream = required(variables, FABRIC_STREAM, "the P1 outcomes stream's name")?;
@@ -291,7 +333,8 @@ impl LedgerConfig {
             listen_addr,
             fabric_consumer_group,
             fabric_url,
-            fabric_tls,
+            workload_tls,
+            admitted_peers,
             fabric_stream,
             fabric_partitions,
             poll_ms,
@@ -591,6 +634,60 @@ mod tests {
             "https://fabricd.internal:7100".to_string(),
         );
         let config = LedgerConfig::parse(&tls).expect("https on a TLS link");
-        assert!(config.fabric_tls.is_some());
+        assert!(config.workload_tls.is_some());
+    }
+
+    /// A reader list on a plaintext read API is refused: nothing could check
+    /// a certificate that is never presented, and a list nobody enforces
+    /// reads as a control. On a TLS listener the list is parsed, trimmed and
+    /// kept, and a name no certificate can carry is refused.
+    ///
+    /// Mutation: delete the plaintext refusal in `parse` — the first
+    /// `expect_err` fires.
+    #[test]
+    fn a_reader_list_is_refused_on_a_plaintext_read_api_and_kept_on_a_mutual_tls_one() {
+        let mut plaintext = complete();
+        plaintext.insert(
+            ADMITTED_PEERS.to_string(),
+            "reader.test.qip.internal".to_string(),
+        );
+        let error = LedgerConfig::parse(&plaintext)
+            .expect_err("a reader list on a plaintext read API was accepted");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{ADMITTED_PEERS} names workloads")),
+            "refused for the wrong reason: {error}"
+        );
+        // Premise: without the list, the same plaintext configuration loads.
+        assert!(
+            LedgerConfig::parse(&complete())
+                .expect("the plaintext set loads")
+                .admitted_peers
+                .is_empty()
+        );
+
+        let mut tls = deployed("staging");
+        tls.insert(
+            FABRIC_URL.to_string(),
+            "https://fabricd.internal:7100".to_string(),
+        );
+        tls.insert(
+            ADMITTED_PEERS.to_string(),
+            " reader.test.qip.internal , api.test.qip.internal ,".to_string(),
+        );
+        let config = LedgerConfig::parse(&tls).expect("a reader list on a TLS read API");
+        assert_eq!(
+            config.admitted_peers,
+            vec![
+                "reader.test.qip.internal".to_string(),
+                "api.test.qip.internal".to_string()
+            ]
+        );
+        tls.insert(ADMITTED_PEERS.to_string(), "not a name".to_string());
+        assert!(
+            LedgerConfig::parse(&tls).is_err(),
+            "a name no certificate can carry was admitted"
+        );
     }
 }

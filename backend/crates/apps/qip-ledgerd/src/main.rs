@@ -35,12 +35,14 @@ fn main() {
         // ADR 0112: the fabric link is mutual TLS with this workload's
         // certificate unless a local deployment chose plaintext. Loaded once,
         // here, so a certificate that will not load stops the ledger before
-        // a worker starts; there is no fallback.
-        let link = match &config.fabric_tls {
+        // a worker starts; there is no fallback. The read API serves under
+        // the same certificate (`qip_ledgerd::start` loads it for the
+        // listener), so this one line describes both links.
+        let link = match &config.workload_tls {
             Some(paths) => LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?)),
             None => LinkSecurity::Plaintext,
         };
-        eprintln!("qip-ledgerd: fabric link {}", link.describe());
+        eprintln!("qip-ledgerd: fabric link and read API {}", link.describe());
         let url = config.fabric_url.clone();
         let connect: Connect = Arc::new(move || {
             let token = BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;

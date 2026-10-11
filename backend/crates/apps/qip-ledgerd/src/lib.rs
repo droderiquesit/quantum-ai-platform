@@ -23,7 +23,12 @@
 //!    stops the start, and nothing falls back to a disk. Either way, the
 //!    store refuses to open if its balances are not the fold of its own
 //!    history ([`store::LedgerStore::verify_history`]).
-//! 3. **The read API's port is bound.**
+//! 3. **The read API's port is bound** — over mutual TLS with the process's
+//!    workload certificate (ADR 0112), requiring a client certificate the
+//!    roots chain, and over plaintext only where the deployment is `local`
+//!    and `QIP_TLS_MODE=plaintext` says so. Every balance and posting is
+//!    served here, and a plaintext read API in a deployment would hand them
+//!    to anything that can route a packet to the port.
 //! 4. **One worker per partition starts consuming**, resuming where the
 //!    store — not the broker — says ([`consumer`]).
 //! 5. **Only then is the process ready.** `/health` answers 503 until both
@@ -66,6 +71,7 @@ use qip_storage::GcpAccess;
 use qip_storage::gcp::spanner::{SpannerConfig, SpannerKv};
 use qip_transport::retry::Sleeper;
 use qip_transport::server::{Server, ServerLimits};
+use qip_transport::tls::{PeerNames, TlsServer, WorkloadIdentity};
 
 use crate::config::{LedgerConfig, LedgerStorage};
 use crate::consumer::{Connect, PartitionWorker, Statuses, WorkerConfig};
@@ -245,16 +251,41 @@ pub fn start_with_access(
     readiness.storage_proven();
 
     let statuses: Statuses = Arc::new(Mutex::new(BTreeMap::new()));
-    let server = Server::bind(
-        &config.listen_addr.to_string(),
-        Arc::new(ReadApi::new(
-            store.clone(),
-            readiness.clone(),
-            metrics.clone(),
-            statuses.clone(),
-        )),
-        ServerLimits::default(),
-    )?;
+    let read_api = Arc::new(ReadApi::new(
+        store.clone(),
+        readiness.clone(),
+        metrics.clone(),
+        statuses.clone(),
+    ));
+    // ADR 0112: the read API is mutual TLS whenever this process has a
+    // workload certificate, which outside a `local` deployment it must —
+    // the same identity the fabric client presents. Loaded here, after
+    // storage is proven and before the port is bound, as `qip-fabricd`
+    // loads its listener's; a certificate that will not load stops the
+    // ledger, and there is no fallback to the plaintext bind below.
+    //
+    // `/health` and `/metrics` stay behind the same handshake rather than on
+    // a plaintext probe port of their own, as `qip-fabricd`'s are. A probe
+    // port is admissible only if it carries nothing but readiness, and this
+    // one would not: `/health` names every stream and partition with its
+    // offset and last error, and nothing probes this process yet that a
+    // separate listener would serve.
+    let server = match &config.workload_tls {
+        Some(paths) => Server::bind_tls(
+            &config.listen_addr.to_string(),
+            read_api,
+            ServerLimits::default(),
+            TlsServer {
+                config: WorkloadIdentity::from_files(paths)?.server_config()?,
+                peers: PeerNames::new(config.admitted_peers.clone())?,
+            },
+        )?,
+        None => Server::bind(
+            &config.listen_addr.to_string(),
+            read_api,
+            ServerLimits::default(),
+        )?,
+    };
     let address = server.local_address()?;
     let stop_server = server.shutdown_handle();
 
