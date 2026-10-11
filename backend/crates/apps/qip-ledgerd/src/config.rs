@@ -592,5 +592,23 @@ mod tests {
         );
         let config = LedgerConfig::parse(&tls).expect("https on a TLS link");
         assert!(config.fabric_tls.is_some());
+
+        // The other direction: an https address on a local plaintext link is
+        // refused at start-up rather than at the first call, where the
+        // plaintext client would refuse the scheme. Until the round-2
+        // mutation pass this half was absent, and a `parse` that accepted
+        // `https://` whatever the link passed the test.
+        LedgerConfig::parse(&complete()).expect("premise: local plaintext over http loads");
+        let mut https_on_plaintext = complete();
+        https_on_plaintext.insert(
+            FABRIC_URL.to_string(),
+            "https://fabricd.internal:7100".to_string(),
+        );
+        let error =
+            LedgerConfig::parse(&https_on_plaintext).expect_err("https on a plaintext link");
+        assert!(
+            error.to_string().contains("must start with http://"),
+            "refused for another reason: {error}"
+        );
     }
 }
