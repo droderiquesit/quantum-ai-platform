@@ -4,9 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use qip_contracts::ambient::{
-    AcquisitionCriteria, AcquisitionStatus, Advisory, AmbientSignal, AttentionRouter,
-    ComputeAllocation, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
-    Pathway, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
+    AcquisitionCriteria, AcquisitionStatus, ActivationReason, Advisory, AmbientSignal,
+    AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary, ComputeAllocation,
+    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
+    PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
 };
 use qip_core::{Duration, Timestamp, dec};
 use std::collections::BTreeSet;
@@ -1002,4 +1003,97 @@ fn a_compute_allocation_records_all_metadata_for_auditability() {
     assert_eq!(alloc.model_reputation().domain(), "equities");
     assert_eq!(alloc.model_reputation().overall_bp(), 8_000); // (8000*40 + 7500*30 + 8500*30)/100
     assert_eq!(alloc.rationale(), "strong forecast accuracy needed");
+}
+
+/// R12-CONTRACT-7079: the event the router produces carries the six §27
+/// AttentionEvent fields, each with the value the decision actually had, and
+/// survives a round trip unchanged.
+///
+/// The failure this prevents: an event that said only "signal X woke pathway
+/// Y" — what the type carried until 2026-10-11 — cannot say what budget the
+/// wake was charged to, whether it could have carried authority, or where its
+/// outcome is filed, so a replay could count activations and explain none.
+#[test]
+fn an_attention_event_carries_its_reason_origin_budget_priority_authority_and_feedback_link() {
+    let mut router = AttentionRouter::new(policy(2, 1));
+    let first = router
+        .route(&signal(1, SignalClass::Risk, 7_500, 0), at(0))
+        .expect("routes");
+    let second = router
+        .route(&signal(2, SignalClass::Surprise, 6_000, 1), at(1))
+        .expect("routes");
+    assert_eq!(
+        (first.len(), second.len()),
+        (1, 1),
+        "premise: both material"
+    );
+    let (a, b) = (&first[0], &second[0]);
+
+    assert_eq!(
+        a.reason,
+        ActivationReason {
+            class: SignalClass::Risk,
+            trigger: Trigger::Schedule("every-minute".into()),
+        }
+    );
+    assert_eq!(b.reason.class, SignalClass::Surprise);
+    assert_eq!(a.originating_models, vec!["every-minute".to_string()]);
+    // The budget as each decision left it: one spent, then two.
+    assert_eq!(
+        a.budget,
+        AttentionBudget {
+            per_window: 2,
+            spent: 1
+        }
+    );
+    assert_eq!(
+        b.budget,
+        AttentionBudget {
+            per_window: 2,
+            spent: 2
+        }
+    );
+    assert_eq!((a.priority_bp, b.priority_bp), (7_500, 6_000));
+    assert_eq!(a.authority, AuthorityBoundary::AdvisoryOnly);
+    assert_eq!(a.feedback_link, "sig-1");
+    // The link joins to the advisory an activation produces.
+    let advisory = Advisory::new("risk review", a.signal_id.clone());
+    assert_eq!(advisory.origin_signal(), a.feedback_link);
+
+    let encoded = serde_json::to_string(a).expect("encodes");
+    let decoded: AttentionEvent = serde_json::from_str(&encoded).expect("decodes");
+    assert_eq!(&decoded, a, "a round trip preserves every field");
+}
+
+#[test]
+fn an_attention_event_missing_any_contract_field_is_refused_on_decode() {
+    let mut router = AttentionRouter::new(policy(1, 0));
+    let events = router
+        .route(&signal(1, SignalClass::Opportunity, 9_000, 0), at(0))
+        .expect("routes");
+    let full = serde_json::to_value(&events[0]).expect("encodes");
+    let fields = [
+        "reason",
+        "originating_models",
+        "budget",
+        "priority_bp",
+        "authority",
+        "feedback_link",
+    ];
+    for field in fields {
+        // Premise: the field is present in the full record, so its removal is
+        // what the decode below refuses.
+        assert!(full.get(field).is_some(), "{field} absent from {full}");
+        let mut partial = full.clone();
+        partial.as_object_mut().expect("an object").remove(field);
+        let refused = serde_json::from_value::<AttentionEvent>(partial);
+        assert!(
+            refused.is_err(),
+            "an attention event without {field} decoded: {refused:?}"
+        );
+    }
+    // An authority boundary nobody defined is refused, not read as advisory.
+    let mut granted = full.clone();
+    granted["authority"] = serde_json::json!("execution");
+    assert!(serde_json::from_value::<AttentionEvent>(granted).is_err());
 }

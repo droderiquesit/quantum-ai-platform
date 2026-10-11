@@ -53,8 +53,8 @@
 
 use qip_contracts::ambient::{
     AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
-    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
-    RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
+    AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
+    Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
 use qip_contracts::expansion::{CapabilityEntry, GapClass};
 use qip_core::error::{Error, Result};
@@ -531,6 +531,9 @@ pub struct ResearchLoop {
     acquisitions: VecDeque<AcquisitionRecord>,
     capabilities: VecDeque<CapabilityEntry>,
     packages: VecDeque<CompiledReflex>,
+    /// The Brain Registry entry of every specialist a NOW surprise can wake,
+    /// by specialist (R12-CONTRACT-7086). Checked complete at construction.
+    brains: BTreeMap<&'static str, qip_contracts::BrainSpec>,
 }
 
 impl std::fmt::Debug for ResearchLoop {
@@ -579,6 +582,27 @@ impl ResearchLoop {
         // sweep raises today, so the budget binds only in a storm, which is
         // when it is meant to.
         let policy = RoutingPolicy::standard(1_000, 256, Duration::from_hours(1), 256)?;
+        // Every specialist a surprise can wake is a registered brain whose
+        // tools this node actually has. Refused at start-up rather than at
+        // the first wake: a spec naming a tool nobody registered is a brain
+        // that would be woken to do work it cannot do.
+        let brains = crate::now::specialist_registry()?;
+        let tools = registered_tools()?;
+        for specialist in qip_kernel::now_stage::Specialist::ALL {
+            let spec = brains.get(specialist.as_str()).ok_or_else(|| {
+                Error::invalid(format!(
+                    "the {} specialist has no BrainSpec; register it before it can be woken",
+                    specialist.as_str()
+                ))
+            })?;
+            if let Some(missing) = spec.tools.iter().find(|t| tools.get(t).is_none()) {
+                return Err(Error::invalid(format!(
+                    "BrainSpec {} names tool `{missing}`, which this node does not register; \
+                     register the tool or correct the spec",
+                    spec.id
+                )));
+            }
+        }
         Ok(Self {
             desk,
             router: AttentionRouter::new(policy),
@@ -609,6 +633,7 @@ impl ResearchLoop {
             acquisitions: VecDeque::new(),
             capabilities: VecDeque::new(),
             packages: VecDeque::new(),
+            brains,
             config,
         })
     }
@@ -642,6 +667,11 @@ impl ResearchLoop {
 
     pub fn packages(&self) -> impl Iterator<Item = &CompiledReflex> {
         self.packages.iter()
+    }
+
+    /// The Brain Registry entries of the specialists this loop can wake.
+    pub const fn brains(&self) -> &BTreeMap<&'static str, qip_contracts::BrainSpec> {
+        &self.brains
     }
 
     pub const fn desk(&self) -> &ExpansionDesk {
@@ -1023,6 +1053,16 @@ impl ResearchLoop {
                     }
                     Disposition::Activated => {
                         if let Some(specialist) = self.pending_wakes.remove(&event.signal_id) {
+                            // Only a registered brain is woken. Construction
+                            // proved every specialist has a spec, so this
+                            // refusal is the record of a registry that lost
+                            // one, not a path that runs.
+                            if !self.brains.contains_key(specialist.as_str()) {
+                                return Err(Error::invalid(format!(
+                                    "the {} specialist was woken with no BrainSpec registered",
+                                    specialist.as_str()
+                                )));
+                            }
                             round
                                 .woken
                                 .insert(event.signal_id.clone(), specialist.as_str());
@@ -1036,10 +1076,17 @@ impl ResearchLoop {
                         let Some(gap) = self.pending.remove(&event.signal_id) else {
                             continue;
                         };
+                        // Irrefutable while attention has one authority: a
+                        // second variant would be the first activation that
+                        // could act, and it stops compiling here first.
+                        let AuthorityBoundary::AdvisoryOnly = event.authority;
+                        // The advisory is filed under the event's feedback
+                        // link, so its outcome joins back to the decision
+                        // that woke it (R12-CONTRACT-7079).
                         self.admit(
                             gap,
                             event.pathway,
-                            &event.signal_id,
+                            &event.feedback_link,
                             now,
                             &metrics,
                             &mut round,
@@ -1198,7 +1245,7 @@ impl ResearchLoop {
         &mut self,
         gap: RaisedGap,
         pathway: Pathway,
-        signal_id: &str,
+        feedback_link: &str,
         now: Timestamp,
         metrics: &Metrics,
         round: &mut ResearchRound,
@@ -1229,8 +1276,10 @@ impl ResearchLoop {
         if self.advisories.len() == RETAINED {
             self.advisories.pop_front();
         }
-        self.advisories
-            .push_back(Advisory::new(format!("{pathway:?}: {question}"), signal_id));
+        self.advisories.push_back(Advisory::new(
+            format!("{pathway:?}: {question}"),
+            feedback_link,
+        ));
 
         // Value of information (AMBIENT-3104): what reducing this gap's
         // uncertainty is worth, against the cheapest observation that could
@@ -1252,7 +1301,7 @@ impl ResearchLoop {
             return Ok(());
         };
         let mut request = InfoRequest::new(
-            format!("info-{signal_id}"),
+            format!("info-{feedback_link}"),
             question,
             criteria,
             now.saturating_add(self.config.signal_ttl),

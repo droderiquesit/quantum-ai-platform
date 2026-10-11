@@ -175,6 +175,118 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     Ok(())
 }
 
+/// A steady climb: one percent a day with a little deterministic noise, so
+/// the short-window momentum member and the long-window reversion member read
+/// the same tape and answer opposite questions.
+fn trend(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.002;
+            let open = price;
+            price *= 1.01 + noise;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}
+
+/// R12-MODEL-4009 and R12-MODEL-3091 through a real cycle, read back from the
+/// log alone: two members holding opposite views produce a recorded
+/// disagreement — both views kept, the spread measured, no merged number —
+/// and that material disagreement becomes a research task citing the record.
+///
+/// The failure this prevents is the one an ensemble invites: averaging a
+/// near-certain "up" and a near-certain "down" into a confident-looking 0.5,
+/// which says "no view" when the truth is "two strong views, irreconciled".
+#[test]
+fn opposite_member_views_are_journaled_as_a_disagreement_and_raise_research_citing_it() -> Result<()>
+{
+    use qip_world_model::federation::Event;
+    let mut platform = platform()?;
+    platform.observe(trend("AAA", 120));
+    platform.run_cycle(start());
+
+    let reviews = federation_stage::replay(&platform)?;
+    assert_eq!(reviews.len(), 1, "one review, read from the log");
+    let review = &reviews[0];
+    let arbitration = review
+        .arbitrations
+        .iter()
+        .find(|a| a.proposition.contains(":next-close-up@"))
+        .expect("the instrument was arbitrated");
+    let view = |model: &str| {
+        arbitration
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == model)
+            .unwrap_or_else(|| panic!("{model} has no view: {arbitration:?}"))
+            .probability
+    };
+    let (momentum, reversion) = (
+        view(federation_stage::MOMENTUM),
+        view(federation_stage::REVERSION),
+    );
+    // Premise: the two members really are on opposite sides of even odds.
+    assert!(
+        momentum > 0.5 && reversion < 0.5,
+        "momentum {momentum}, reversion {reversion}"
+    );
+    assert!(
+        arbitration.disagreement.spread >= momentum - reversion,
+        "the spread covers both views: {arbitration:?}"
+    );
+    assert!(
+        arbitration.disagreement.spread
+            >= qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+        "{arbitration:?}"
+    );
+    assert_eq!(
+        arbitration.arbitrated_probability, None,
+        "no merged number stands in for two irreconciled views: {arbitration:?}"
+    );
+
+    // The research task, journaled in the same review, cites the decision
+    // record the disagreement is in — by absolute position.
+    let task = arbitration
+        .research
+        .as_ref()
+        .unwrap_or_else(|| panic!("a material disagreement raised no research: {arbitration:?}"));
+    assert!(
+        review
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::ResearchRaised(t) if t == task)),
+        "the task is in the journaled events"
+    );
+    let cited = task
+        .cites
+        .checked_sub(review.journal_base)
+        .and_then(|i| review.events.get(i))
+        .unwrap_or_else(|| panic!("task cites {} outside the review", task.cites));
+    match cited {
+        Event::Decided {
+            proposition,
+            disagreement,
+            ..
+        } => {
+            assert_eq!(proposition, &arbitration.proposition);
+            assert_eq!(disagreement, &arbitration.disagreement);
+        }
+        other => panic!("the task cites {other:?}, not the decision"),
+    }
+    assert!(
+        task.models
+            .contains(&federation_stage::MOMENTUM.to_string())
+    );
+    assert!(
+        task.models
+            .contains(&federation_stage::REVERSION.to_string())
+    );
+    Ok(())
+}
+
 #[test]
 fn a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces()
 -> Result<()> {

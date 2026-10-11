@@ -18,6 +18,7 @@
 //! file's second half is how its surprises reach the research loop's
 //! attention router ([`surprise_signals`]).
 
+use qip_contracts::BrainSpec;
 use qip_contracts::ambient::{AmbientSignal, Detection, Pathway, SignalClass, Trigger};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
@@ -210,6 +211,61 @@ impl NowEstimator {
         self.estimates.insert(domain, estimate);
         Ok(estimate)
     }
+}
+
+/// The Brain Registry entries for the specialists a NOW surprise can wake
+/// (R12-CONTRACT-7086), keyed by [`Specialist::as_str`].
+///
+/// Until these existed the research loop woke "the risk specialist" by a
+/// label, and nothing on record said what that brain was allowed to read,
+/// which tools it held, what it would abstain on or what authority its
+/// output carried — so a wake was attributable to a name and nothing more.
+/// Each spec here is validated by [`BrainSpec::validate`] before it is
+/// returned, and `ResearchLoop::new` refuses to start unless every
+/// specialist has one and every tool a spec names is a tool this node
+/// registered.
+///
+/// What is stated honestly: `calibration` is `0.0` because no specialist's
+/// output has yet been scored against an outcome — zero is the floor of the
+/// field, not a measurement — and `model_stack` names the in-tree NOW
+/// estimators, because no specialist here consults a hosted model
+/// (R12-MODEL-4002).
+pub fn specialist_registry() -> Result<BTreeMap<&'static str, BrainSpec>> {
+    let mut registry = BTreeMap::new();
+    for specialist in Specialist::ALL {
+        let name = specialist.as_str();
+        let (domains, tool): (&[&str], &str) = match specialist {
+            Specialist::Forecast => (&["now-state", "forecast"], "model-fit"),
+            Specialist::Adversarial => (&["now-state", "premise-testing"], "stress-simulator"),
+            Specialist::Sensing => (&["now-state", "source-acquisition"], "source-discovery"),
+            Specialist::Risk => (&["now-state", "exposure"], "stress-simulator"),
+        };
+        let (_, pathway) = route_of(specialist);
+        let spec = BrainSpec {
+            id: format!("now-specialist/{name}"),
+            name: format!("NOW {name} specialist"),
+            competency_domains: domains.iter().map(|d| (*d).to_string()).collect(),
+            tools: vec![tool.to_string()],
+            source_permissions: vec!["platform-state:read".to_string()],
+            memory_scope: "research-loop: bounded, one sweep".to_string(),
+            model_stack: vec!["qip-world-model::now estimators (in-tree)".to_string()],
+            evaluations: vec![
+                "qip-deepbrain tests/research.rs: a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists"
+                    .to_string(),
+            ],
+            abstention_rules: vec![
+                "a surprise below the attention router's materiality wakes nothing".to_string(),
+                "a signal past its expiry wakes nothing".to_string(),
+            ],
+            authority_envelope: format!("advisory_only via {pathway:?}"),
+            calibration: 0.0,
+            version: 1,
+            parent_version_id: None,
+        };
+        spec.validate()?;
+        registry.insert(name, spec);
+    }
+    Ok(registry)
 }
 
 #[cfg(test)]
