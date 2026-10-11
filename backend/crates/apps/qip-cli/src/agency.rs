@@ -118,6 +118,15 @@ pub struct AgencyPolicy {
     pub eligibility: Vec<EligibilityRecord>,
     #[serde(default)]
     pub action_policies: Vec<ActionPolicyDecl>,
+    /// Registered tools the operator has withdrawn (R12-GOV-6123). Applied
+    /// to the guard after it resumes from the journal, so every pass of this
+    /// invocation finds the tool revoked and is refused at the registry with
+    /// the refusal journaled. A name that is not a registered tool is
+    /// refused rather than ignored: a revocation that withdrew nothing is a
+    /// typo that leaves the tool live. Each pass's journal entry carries the
+    /// policy document's hash, so which revocations stood is on the record.
+    #[serde(default)]
+    pub revoked_tools: Vec<String>,
 }
 
 /// A request to widen one class's policy, with the data to check it on.
@@ -243,6 +252,15 @@ impl Session {
         }
         let resumed = journal::resume(journal)?;
         guard.resume(resumed.decisions)?;
+        for tool in &policy.revoked_tools {
+            guard.revoke(tool).map_err(|error| {
+                Error::invalid(format!(
+                    "the agency policy revokes `{tool}`, which it does not register; a \
+                     revocation that withdraws nothing leaves the tool it meant live: {}",
+                    error.message()
+                ))
+            })?;
+        }
         Ok(Self {
             guard,
             register,
