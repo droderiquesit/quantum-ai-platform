@@ -570,13 +570,18 @@ fn variable_literals(text: &str) -> BTreeSet<String> {
 }
 
 /// The variables `qip_transport::tls::link_source` reads: the `pub const`
-/// names `tls.rs` and `cas.rs` declare, and only those — a doc comment that
-/// mentions a variable is not a read.
+/// names `qip-tls`'s `lib.rs` and `cas.rs` declare, and only those — a doc
+/// comment that mentions a variable is not a read.
+///
+/// `qip_transport::tls` is a re-export of the `qip-tls` crate since `b0141f2d`
+/// cut the TLS policy out of the transport, so the declarations live there;
+/// this scan read the transport's old `tls.rs` until 2026-10-11 and every
+/// test that leans on it panicked on a missing file rather than a variable.
 fn variables_read_through_link_source() -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for file in [
-        "backend/crates/libs/qip-transport/src/tls.rs",
-        "backend/crates/libs/qip-transport/src/cas.rs",
+        "backend/crates/libs/qip-tls/src/lib.rs",
+        "backend/crates/libs/qip-tls/src/cas.rs",
     ] {
         for line in read(file).lines() {
             if line.starts_with("pub const ") && line.contains(": &str = \"QIP_") {

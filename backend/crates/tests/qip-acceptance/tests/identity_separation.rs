@@ -184,6 +184,53 @@ const WORKLOAD_IDENTITIES: &[&str] = &[
     "console_service_account_email",
 ];
 
+/// `body`'s lines with their internal whitespace collapsed, so an aligned
+/// `role          = "…"` compares equal to `role = "…"`.
+fn normalised_lines(body: &str) -> Vec<String> {
+    body.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// The body of `resource "<kind>" "<name>"` in the file ending `file`.
+fn resource_body(tree: &[(String, String)], file: &str, kind: &str, name: &str) -> Option<String> {
+    let opening = format!("resource \"{kind}\" \"{name}\"");
+    tree.iter()
+        .filter(|(path, _)| path.ends_with(file))
+        .find_map(|(_, text)| braced(text, text.find(&opening)?).map(str::to_string))
+}
+
+/// Whether a grant is ADR 0110's artefact signer binding, and only that.
+///
+/// ADR 0110 (decision 1 and Amendment 1, decision 1) gives the API's runtime
+/// identity `roles/cloudkms.signer` on the policy, halt and envelope keys and
+/// the model-pack publisher the same role on the model-pack key. Those keys
+/// sign what the centre *dispatches* to cells — frames, halts, envelopes,
+/// packs — and nothing Binary Authorization reads: the attestor is a
+/// different key on a different ring (`modules/binaryauthorization`, on
+/// `module.secrets.key_ring_id`), and an artefact signature admits no image.
+/// So the grant is not deployment-signing authority, and the test that
+/// R12-SEC-9139 holds must not read it as one — but only the exact binding:
+/// the one role, on the `artefact` keys alone, naming only the signer map.
+/// A second role, another key, or another member makes it an ordinary
+/// signing grant again, judged like every other.
+fn is_artefact_signer_binding(file: &str, kind: &str, name: &str, body: &str) -> bool {
+    let lines = normalised_lines(body);
+    let has = |wanted: &str| lines.iter().any(|line| line == wanted);
+    file.ends_with("infrastructure/terraform/artefact-signing.tf")
+        && kind == "google_kms_crypto_key_iam_binding"
+        && name == "artefact_signer"
+        && has("for_each = google_kms_crypto_key.artefact")
+        && has("crypto_key_id = each.value.id")
+        && has("role = \"roles/cloudkms.signer\"")
+        && has("members = [local.artefact_signer_of[each.key]]")
+        && DEPLOYMENT_SIGNING_ROLES
+            .iter()
+            .filter(|role| body.contains(*role))
+            .eq([&"\"roles/cloudkms.signer\""])
+}
+
 fn names_a_pipeline_identity(principal: &str) -> bool {
     PIPELINE_IDENTITIES
         .iter()
@@ -219,7 +266,73 @@ fn no_workload_identity_holds_a_role_that_signs_attests_or_admits_a_deployment()
          found, so this test is reading the wrong tree"
     );
 
+    // ADR 0110's artefact signers are set aside by `is_artefact_signer_binding`,
+    // and that is only sound while the artefact keys cannot be the attestor's.
+    // So the separation it relies on is asserted here, where a change that
+    // breaks it fails this test rather than silently widening the exemption.
+    let tree = terraform_tree();
+    let artefact_key = resource_body(
+        &tree,
+        "infrastructure/terraform/artefact-signing.tf",
+        "google_kms_crypto_key",
+        "artefact",
+    )
+    .expect("premise: ADR 0110's artefact keys (google_kms_crypto_key.artefact) were not found");
+    assert!(
+        normalised_lines(&artefact_key)
+            .iter()
+            .any(|line| line == "key_ring = google_kms_key_ring.artefacts[0].id"),
+        "the artefact keys are no longer on their own `artefacts` ring; a signer on them may \
+         now be a signer on the ring the attestor lives in"
+    );
+    let signer_map = tree
+        .iter()
+        .find(|(path, _)| path.ends_with("infrastructure/terraform/artefact-signing.tf"))
+        .map(|(_, text)| normalised_lines(text))
+        .unwrap_or_default();
+    assert!(
+        signer_map.iter().any(|line| line
+            == "class => contains(local.artefact_classes_signed_by_the_api, class) ? \
+                local.artefact_api_signer : local.artefact_publisher_signer")
+            && signer_map.iter().any(|line| line
+                == "artefact_api_signer = \"serviceAccount:${module.cloud_run[\"api\"].\
+                    service_account_id}@${var.project_id}.iam.gserviceaccount.com\"")
+            && signer_map.iter().any(|line| line
+                == "artefact_publisher_signer = \"serviceAccount:qip-${var.environment}-pack-\
+                    publisher@${var.project_id}.iam.gserviceaccount.com\""),
+        "local.artefact_signer_of no longer maps every class to exactly the API's or the \
+         publisher's account (ADR 0110 Amendment 1, decision 1); the artefact binding's member \
+         is now an identity this test has not judged"
+    );
+    for (file, text) in &tree {
+        if file.contains("modules/binaryauthorization/") {
+            assert!(
+                !text.contains("artefact"),
+                "{file} names an artefact key or ring; the attestor must not sign with a key \
+                 ADR 0110 hands to a workload"
+            );
+        }
+    }
+    let attestor_ring = tree
+        .iter()
+        .find(|(path, _)| path.ends_with("infrastructure/terraform/main.tf"))
+        .and_then(|(_, text)| {
+            let at = text.find("module \"binary_authorization\"")?;
+            braced(text, at).map(normalised_lines)
+        })
+        .expect("premise: module \"binary_authorization\" was not found in the root");
+    assert!(
+        attestor_ring
+            .iter()
+            .any(|line| line == "key_ring_id = module.secrets.key_ring_id"),
+        "the attestor key's ring is no longer the secrets module's ring, so it may be the \
+         artefact ring whose signers include a workload: {attestor_ring:?}"
+    );
+
     for (file, kind, name, body) in &signing {
+        if is_artefact_signer_binding(file, kind, name, body) {
+            continue;
+        }
         let named = principals(body);
         assert!(
             !named.is_empty(),
@@ -291,8 +404,25 @@ fn no_development_or_agent_identity_holds_a_grant_on_any_secret() {
         .filter(|(_, kind, _, _)| kind.starts_with("google_secret_manager_secret_iam"))
         .collect();
 
+    // The capital envelope key is no longer read by the node at all: since
+    // `0a392064` it verifies grants against the trust bundle baked into its
+    // image (ADR 0110), and a read on the shared key would be a grant to mint
+    // what that bundle verifies. So its absence is the property now, and the
+    // node's only secret grant is the venue credential. This listed
+    // `capital_envelope_key` as a grant that must exist until 2026-10-11.
+    let node_secret_grants: Vec<_> = secret_grants
+        .iter()
+        .filter(|(file, _, _, _)| file.ends_with("modules/execution-node/main.tf"))
+        .map(|(_, _, name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        node_secret_grants,
+        ["venue_credential"],
+        "the execution node holds a secret grant beside the venue credential; a node that can \
+         read the capital envelope key can mint the envelopes it is meant to verify (ADR 0110)"
+    );
+
     for (expected_file, expected_name) in [
-        ("modules/execution-node/main.tf", "capital_envelope_key"),
         ("modules/execution-node/main.tf", "venue_credential"),
         ("modules/secrets/main.tf", "venue_credential"),
     ] {
