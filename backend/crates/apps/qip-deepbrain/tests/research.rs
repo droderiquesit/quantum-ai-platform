@@ -99,6 +99,48 @@ fn jumps(symbols: &[&str]) -> Vec<SensedRecord> {
     records
 }
 
+/// R12-CONTRACT-7086: the research loop `main.rs` builds holds a validated
+/// Brain Registry entry for every specialist a NOW surprise can wake, each
+/// naming only tools this node registered, and each survives the contract's
+/// own decode unchanged.
+///
+/// The failure this prevents: a wake attributable to a label and nothing
+/// else — no tools, no permissions, no abstention rule, no authority — which
+/// is what "the risk specialist" was until 2026-10-11.
+#[test]
+fn every_wakeable_specialist_is_a_registered_brain_spec_naming_only_tools_this_node_has() {
+    let loop_ = research(coverage(&[]));
+    let brains = loop_.brains();
+    let specialists = qip_kernel::now_stage::Specialist::ALL;
+    // Premise: there are specialists to cover.
+    assert!(!specialists.is_empty());
+    assert_eq!(brains.len(), specialists.len(), "{brains:?}");
+    let tools = qip_deepbrain::research::registered_tools().unwrap_or_else(|e| panic!("{e}"));
+    for specialist in specialists {
+        let spec = brains
+            .get(specialist.as_str())
+            .unwrap_or_else(|| panic!("{} has no BrainSpec", specialist.as_str()));
+        spec.validate()
+            .unwrap_or_else(|e| panic!("{}: {e}", spec.id));
+        for tool in &spec.tools {
+            assert!(
+                tools.get(tool).is_some(),
+                "{} names unregistered {tool}",
+                spec.id
+            );
+        }
+        assert!(
+            spec.authority_envelope.starts_with("advisory_only"),
+            "{}: {}",
+            spec.id,
+            spec.authority_envelope
+        );
+        let bytes = serde_json::to_vec(spec).unwrap_or_else(|e| panic!("{e}"));
+        let decoded = qip_contracts::BrainSpec::decode(&bytes).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(&decoded, spec, "a round trip preserves every field");
+    }
+}
+
 /// R12-CONTRACT-7078, 7079 and 7085 on the path `qip-deepbrain`'s run loop
 /// takes (`main.rs` builds `ResearchLoop` from `ResearchConfig::from_lookup`):
 /// the loop *produces* an `AmbientSignal` from a raised gap, the attention
