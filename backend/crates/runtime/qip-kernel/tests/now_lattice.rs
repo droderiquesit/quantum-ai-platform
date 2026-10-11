@@ -191,6 +191,34 @@ fn every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests(
     }
 }
 
+/// DATA-3080: the persisted NOW record holds deltas only, and the schema,
+/// not just the writer, says so. A record the platform journaled decodes;
+/// the same record with a raw payload field beside its deltas is refused.
+/// Mutation: drop `#[serde(deny_unknown_fields)]` from `NowReview` and the
+/// smuggled record decodes.
+#[test]
+fn a_journaled_now_record_with_a_raw_payload_field_is_refused_by_the_schema() {
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let review: NowReview = last(&platform, "now:");
+    assert!(!review.deltas.is_empty(), "premise: a pass with deltas");
+
+    let journaled = serde_json::to_value(&review).unwrap();
+    let decoded: NowReview = serde_json::from_value(journaled.clone()).unwrap();
+    assert_eq!(decoded, review, "premise: a journaled record round-trips");
+
+    let mut smuggled = journaled;
+    smuggled["payload"] = serde_json::json!({"close": [100.2, 99.8, 100.2]});
+    let refused = serde_json::from_value::<NowReview>(smuggled);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("unknown field `payload`")),
+        "{refused:?}"
+    );
+}
+
 /// AMBIENT-3079 and the forecast specialist's wake: a break in one
 /// instrument's price is a surprise naming all four specialists, and the
 /// lattice re-forecasts that instrument at a horizon that was not yet due,
