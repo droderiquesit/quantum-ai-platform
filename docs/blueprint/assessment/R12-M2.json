@@ -1296,7 +1296,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:967",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:437"
     ],
-    "gap": "Lake segments are not compressed by default anywhere. The ADR 0113 §3 measurement has not been committed and no deployment sets QIP_TICK_LAKE_CODEC (no reference in infrastructure/). The owner decision ADR 0113 defers is what moves this to COMPLETE.",
+    "gap": "Commit the bytes/day and drain-thread measurement, set QIP_TICK_LAKE_CODEC=zstd explicitly in the execution-node template and flip the default, unless the measurement shows spool pressure rising (ADR 0113 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1305,11 +1305,11 @@
     "depends_on": [
       "R12-TICK-2055"
     ],
-    "blocked_by": "ADR 0002/0009 permit only serde and serde_json; a compression codec needs a new ADR or in-tree implementation.",
+    "blocked_by": "",
     "verification": "a round-trip compression test",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: BLOCKED->PARTIAL: the codec dependency now exists and is reachable from the edge-node composition root. Only the default and the measurement remain."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: BLOCKED->PARTIAL: the codec dependency now exists and is reachable from the edge-node composition root. Only the default and the measurement remain."
   },
   {
     "id": "R12-TICK-2058",

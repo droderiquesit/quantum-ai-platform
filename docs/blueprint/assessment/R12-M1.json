@@ -123,18 +123,18 @@
       "backend/crates/apps/qip-cli/src/agency.rs:30 Unwired adapter refuses every call",
       "backend/crates/services/qip-agency/tests/agency.rs 27 tests"
     ],
-    "gap": "Governed action adapters and closed-loop attribution feeding the world model; any external action needs a governance decision.",
+    "gap": "External action stays refused (ADR 0114 D8). Build the drafting adapter and closed-loop attribution of drafts' measured outcomes into the world model (ADR 0114 Amendment 1).",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External actions (communications, product changes) need explicit governance approval; shadow mode only today.",
+    "blocked_by": "",
     "verification": "cargo test -p qip-agency; cargo test -p qip-cli (agency shadow)",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-REFLEX-1007",
@@ -557,18 +557,18 @@
       "backend/crates/services/qip-agency/src/attribution.rs:35 EffectAttributionDraft",
       "backend/crates/apps/qip-cli/src/agency.rs:48 shadow only"
     ],
-    "gap": "Integrate surfaces with authority checks into a runtime path.",
+    "gap": "Integrate ToolRegistry/ExecutableScope with authority checks into a runtime path through the drafting adapter (ADR 0114 Amendment 1).",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action surfaces require governance approval (shadow-only today).",
+    "blocked_by": "",
     "verification": "cargo test -p qip-contracts; cargo test -p qip-agency",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AMBIENT-1026",
@@ -1262,18 +1262,18 @@
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_factual_support_blocks_when_no_citations",
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_citation_with_no_evidence_id_or_an_impossible_confidence_is_not_factual_support"
     ],
-    "gap": "Truthfulness is a citation-shape check: a fabricated evidence_id under an authorised source passes; nothing resolves the citation against the evidence store or compares the claim with it. The guard-level test (agency.rs:1548) has no factual-support or no_false_claims case, so replacing check_factual_support with pass-always fails only conduct_brain unit tests, not a before-adapter test.",
+    "gap": "Resolve each citation against the evidence store and compare the claim with it; add factual-support and no_false_claims cases to the before-adapter guard test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action surfaces need governance approval; nothing acts externally today.",
+    "blocked_by": "",
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap (no binary composes the guard / guard optional) is now closed by qip-cli (commit 567f8248, 5d9aca21). Grade held at PARTIAL on the substance of the check, not on wiring. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old gap (no binary composes the guard / guard optional) is now closed by qip-cli (commit 567f8248, 5d9aca21). Grade held at PARTIAL on the substance of the check, not on wiring. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1057",
@@ -1292,18 +1292,18 @@
       "backend/crates/services/qip-agency/src/conduct_brain.rs:282-301",
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_provenance_blocks_when_source_unauthorized"
     ],
-    "gap": "Provenance is a membership test on a source_id string the requester types into the draft; nothing establishes that the cited evidence_id exists or came from that source. A draft with no citations passes provenance outright (the `find` returns None, conduct_brain.rs:287-301). Needs citations resolved against the evidence store/manifest before the source is trusted.",
+    "gap": "Resolve citations against the evidence store/manifest before trusting the source; refuse a draft with no citations where provenance is required.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action surfaces need governance approval; nothing acts externally today.",
+    "blocked_by": "",
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Binary wiring and the before-adapter guard test ('provenance' case, agency.rs:1569-1576) are now real; graded down to PARTIAL (taking the lower grade) because the check verifies a declaration, not provenance. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Binary wiring and the before-adapter guard test ('provenance' case, agency.rs:1569-1576) are now real; graded down to PARTIAL (taking the lower grade) because the check verifies a declaration, not provenance. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1058",
@@ -1354,18 +1354,18 @@
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_disclosures_blocks_when_required_missing",
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_required_disclosure_present_by_kind_with_blank_text_discloses_nothing"
     ],
-    "gap": "No before-adapter test drives a missing disclosure: the guard test's fixture sets required_disclosures: [] (agency.rs:971) and the case list has no disclosure case. ConductGate::new accepts an empty required_disclosures (conduct_brain.rs:477-490 refuses empty identities and jurisdictions only), so a policy can configure the check to never fire, and the CLI's own test policy does (qip-cli/tests/agency.rs:30).",
+    "gap": "Refuse an empty required_disclosures in ConductGate::new and add a missing-disclosure case to the before-adapter guard test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action surfaces need governance approval; nothing acts externally today.",
+    "blocked_by": "",
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Binary composition now present; disclosure remains unexercised at the guard and can be configured inert. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Binary composition now present; disclosure remains unexercised at the guard and can be configured inert. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1060",
@@ -1386,18 +1386,18 @@
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_rules_given_decide_the_market_conduct_verdict",
       "backend/crates/services/qip-agency/tests/agency.rs::a_whole_word_conduct_rule_does_not_withhold_a_quote_whose_words_merely_contain_one"
     ],
-    "gap": "Market conduct is judged only from the vocabulary of the draft text (MANIPULATION_PHRASES, qip-contracts/src/action.rs:111, and the lists at conduct_brain.rs:101-160). The step itself (tool, exposure, sequence) is never evaluated against a conduct rule, so manipulative conduct described without a listed phrase passes.",
+    "gap": "Evaluate the step itself (tool, exposure, sequence) against conduct rules, not only draft vocabulary.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action surfaces need governance approval; nothing acts externally today.",
+    "blocked_by": "",
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The guard-level test does fire on no_manipulation/no_fake_consensus/no_rumour_engineering before the adapter, and the binary now composes it. Held at PARTIAL because a lexical filter on message text is not a market-conduct rule check on the action. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The guard-level test does fire on no_manipulation/no_fake_consensus/no_rumour_engineering before the adapter, and the binary now composes it. Held at PARTIAL because a lexical filter on message text is not a market-conduct rule check on the action. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1061",
@@ -1911,24 +1911,24 @@
   },
   {
     "id": "R12-MODEL-1082",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "All training is in-tree Rust (qip-training estimators/distill); a Vertex AI REST port exists but enable_vertex_ai = false; no Python research lane.",
     "evidence": [
       "backend/crates/services/qip-training/src/vertex.rs:1 Vertex AI port",
       "infrastructure/environments/dev/terraform.tfvars:285 enable_vertex_ai = false"
     ],
-    "gap": "ADR permitting a non-Rust research lane, then the lane.",
+    "gap": "Build the offline Python research lane (ADR 0122): own directory and hash-pinned lockfile, Vertex AI custom jobs with no route to production, model packs in a provider-served form with data digest, commit and classical baseline, admitted only through ADR 0110's signed publish; flip enable_vertex_ai in dev with the plan shown.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0001/0011 (Rust everywhere) refuses non-Rust services until a new ADR.",
+    "blocked_by": "",
     "verification": "inspection after ADR",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-MODEL-1083",

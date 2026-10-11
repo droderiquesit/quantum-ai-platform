@@ -483,36 +483,36 @@
     "status": "BLOCKED",
     "current": "Nothing in code reconciles against a bank.",
     "evidence": [],
-    "gap": "Bank statement ingestion and reconciliation.",
+    "gap": "Bank statement reconciliation needs bank accounts.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Needs real bank connectivity (external action); paper-only platform has no bank accounts (ADR 0003).",
+    "blocked_by": "ADR 0021 and ADR 0003 (no real bank accounts); ADR 0108 not accepted",
     "verification": "reconciliation test with a seeded break",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-LEDGER-5024",
     "status": "BLOCKED",
     "current": "Nothing in code reconciles against a custodian.",
     "evidence": [],
-    "gap": "Custodian reconciliation.",
+    "gap": "Custodian reconciliation needs a custodian.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Needs a real custodian (external action, ADR 0003).",
+    "blocked_by": "ADR 0021 and ADR 0003 (no custody); ADR 0108 not accepted",
     "verification": "reconciliation test with a seeded break",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-LEDGER-5025",
@@ -562,18 +562,18 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated"
     ],
-    "gap": "Settlement-agent reconciliation.",
+    "gap": "Settlement-agent reconciliation implies live settlement.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Real settlement agents imply live settlement (ADR 0003).",
+    "blocked_by": "ADR 0003 and ADR 0021; ADR 0108 not accepted",
     "verification": "reconciliation test with a seeded break",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-LEDGER-5028",

@@ -1983,18 +1983,18 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Requires an ADR permitting external action (and, for capital/market, live capital, which ADR 0003 refuses).",
+    "gap": "Publishing externally is refused; agents may draft for a person through the drafting adapter (ADR 0114 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action refused by platform rules; needs a new ADR",
+    "blocked_by": "ADR 0114 D8, confirmed 2026-10-11",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-6093",
@@ -2004,18 +2004,18 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Requires an ADR permitting external action (and, for capital/market, live capital, which ADR 0003 refuses).",
+    "gap": "Outreach is refused; agents may draft for a person through the drafting adapter (ADR 0114 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action refused by platform rules; needs a new ADR",
+    "blocked_by": "ADR 0114 D8, confirmed 2026-10-11",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-6094",
@@ -2047,18 +2047,18 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Requires an ADR permitting external action (and, for capital/market, live capital, which ADR 0003 refuses).",
+    "gap": "Product pricing as an action is refused; a price analysis may be drafted for a person.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action refused by platform rules; needs a new ADR",
+    "blocked_by": "ADR 0114 D8, confirmed 2026-10-11",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-6096",
@@ -2069,18 +2069,18 @@
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call",
       "backend/crates/services/qip-agency/tests/agency.rs:1249 operational tool outside owned registry refused"
     ],
-    "gap": "Requires an ADR permitting external action (and, for capital/market, live capital, which ADR 0003 refuses).",
+    "gap": "Operational change by an agent is refused (and change-management rules forbid an agent deploying); a change may be drafted for a person.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action refused by platform rules; needs a new ADR",
+    "blocked_by": "ADR 0114 D8, confirmed 2026-10-11",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-6097",
@@ -2090,18 +2090,18 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Requires an ADR permitting external action (and, for capital/market, live capital, which ADR 0003 refuses).",
+    "gap": "Moves real capital and collateral.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action refused by platform rules; live capital refused by ADR 0003",
+    "blocked_by": "ADR 0003 and ADR 0021 (live capital); ADR 0108 not accepted",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-6098",
@@ -2111,18 +2111,18 @@
       "backend/crates/services/qip-agency/src/engine.rs:187 Adapter trait: nothing implements it outside tests",
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call"
     ],
-    "gap": "Requires an ADR permitting external action (and, for capital/market, live capital, which ADR 0003 refuses).",
+    "gap": "Live market actions.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External action refused by platform rules; live capital refused by ADR 0003",
+    "blocked_by": "ADR 0003 (live orders refused); ADR 0108 not accepted",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-6099",
@@ -2581,18 +2581,18 @@
       "infrastructure/terraform/modules/secrets/main.tf:121 platform secrets",
       "infrastructure/terraform/main.tf:727-728 envelope key and venue credential only"
     ],
-    "gap": "Credentials for live custody/transfer, banking, market creation and commerce would require live functions.",
+    "gap": "Credentials for live custody, transfer, banking, market creation and commerce.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Custody/transfer, banking/financing, market creation and commerce purchasing are live functions refused by ADR 0003 and the paper-only rules.",
+    "blocked_by": "ADR 0003 and ADR 0021; ADR 0108 not accepted",
     "verification": "inspection of modules/secrets",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GOV-6120",
@@ -2604,7 +2604,7 @@
       "backend/crates/libs/qip-contracts/src/capital.rs:266",
       "libs/qip-contracts/tests/authority_bounds.rs"
     ],
-    "gap": "Enforce admit_bounded in the cell's order path, have the centre issue bounded envelopes, and decide whether a legacy unbounded envelope still admits orders.",
+    "gap": "The cell admits only through admit_bounded and refuses an envelope without AuthorityBounds; the centre issues bounded envelopes (ADR 0008 amendment, 2026-10-11).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2615,7 +2615,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect worth flagging: an envelope with no bounds still admits through CapitalEnvelope::admit, which the cell uses. In production, leverage, product class and regulated function are therefore not governed by any signed bound. The bounds are signed metadata that nothing enforces."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Defect worth flagging: an envelope with no bounds still admits through CapitalEnvelope::admit, which the cell uses. In production, leverage, product class and regulated function are therefore not governed by any signed bound. The bounds are signed metadata that nothing enforces."
   },
   {
     "id": "R12-GOV-6121",
@@ -2696,7 +2696,7 @@
       "services/qip-agency/tests/journal.rs::an_attempted_pass_leaves_three_linked_approval_records_on_the_chain",
       "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md"
     ],
-    "gap": "The third record can appear only after an attempted execution, and no shipped binary may attempt one (ADR 0114). The three-record chain is proven only with a test adapter. What remains is an owner decision under ADR 0114, not code.",
+    "gap": "Build the internal drafting adapter (ADR 0114 Amendment 1), whose only effect is an outbox append, so a shipped binary writes the third (Executed) record honestly.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2707,7 +2707,7 @@
     "verification": "cargo test -p qip-contracts --test action",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: Improved since the last audit: the chain is now journaled from a production path (the previous gap). Grading PARTIAL rather than COMPLETE because no shipped binary has ever produced the three-record set."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Improved since the last audit: the chain is now journaled from a production path (the previous gap). Grading PARTIAL rather than COMPLETE because no shipped binary has ever produced the three-record set."
   },
   {
     "id": "R12-GOV-6125",
@@ -2719,7 +2719,7 @@
       "backend/crates/libs/qip-contracts/src/action.rs:648 unit test: capital intent refused at operational authority",
       "backend/crates/libs/qip-contracts/src/action.rs:668 admitted at capital authority"
     ],
-    "gap": "Bind authority level to a signed approval; integrate.",
+    "gap": "Bind AuthorityLevel to an approval carrying an Attested presence from an enrolled WebAuthn key (ADR 0121) and integrate.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2730,7 +2730,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GOV-6126",

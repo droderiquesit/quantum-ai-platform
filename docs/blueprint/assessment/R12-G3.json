@@ -649,40 +649,40 @@
       "infrastructure/terraform/catalogue.tf:1 Cloud Run catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:7494 no_kubernetes_workload_runs_a_trading_binary_and_no_manifest_lives_outside_the_gitops_tree"
     ],
-    "gap": "Would require reversing ADR 0024.",
+    "gap": "Regional GKE Standard for warm services, solvers, agents and sinks is refused; each capability is placed per ADR 0114 Amendment 1.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes)",
+    "blocked_by": "ADR 0114 D4, confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "n/a while ADR 0024 stands",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-SEC-10031",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "No service mesh; the cell-to-centre mesh wire is plaintext HTTP/1.1 and authenticates nobody (signatures on envelopes are the control). The reflex-not-in-mesh half holds and is tested.",
     "evidence": [
       "backend/crates/libs/qip-transport/src/mesh.rs:1-30 plaintext HTTP/1.1 mesh",
       "backend/crates/libs/qip-transport/src/mesh.rs:735 mTLS expected from a sidecar/ingress",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no machine inside a mesh"
     ],
-    "gap": "mTLS between warm services absent under any mechanism.",
+    "gap": "mTLS for warm services is met by ADR 0112's hop table (Amendment 1): rustls mTLS with CA Service workload certificates on every Compute Engine hop, IAM invocation into Cloud Run. Needs CA Service issuance in Terraform and the composition roots, and the IAM evidence of API-8113. The mesh itself is refused.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (no Kubernetes); mTLS would need a TLS dependency (ADR 0002/0009)",
+    "blocked_by": "",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "The mTLS obligation itself survives ADR 0024; the mechanism does not."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The mTLS obligation itself survives ADR 0024; the mechanism does not."
   },
   {
     "id": "R12-GCP-10032",
@@ -1148,7 +1148,7 @@
       "infrastructure/terraform/variables.tf:978 kms_protection_level default SOFTWARE",
       "infrastructure/terraform/tests/kms-protection.tftest.hcl"
     ],
-    "gap": "Decide which environments require HSM and set it.",
+    "gap": "Replace kms_protection_level with per-purpose variables: signing keys HSM everywhere, CMEK HSM in stage and prod; a Terraform test refusing SOFTWARE where forbidden and admitting it in dev/test CMEK (ADR 0110 Amendment 1).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1159,7 +1159,7 @@
     "verification": "terraform test tests/kms-protection.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-SEC-10054",
@@ -1391,18 +1391,18 @@
     "status": "BLOCKED",
     "current": "No GPU capacity; no GKE workload clusters.",
     "evidence": [],
-    "gap": "Needs a placement decision for accelerators under ADR 0024.",
+    "gap": "GPU node pools are refused (ADR 0114 D4); accelerators are placed as Vertex AI custom jobs (ADR 0122) and only for an experiment that measures a need.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (no Kubernetes)",
+    "blocked_by": "ADR 0114 D4; ADR 0122 §4 and ADR 0069 (no measured accelerator consumer)",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-QUANT-10066",
@@ -3267,18 +3267,18 @@
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:2033 prod_is_promoted_by_nobody_until_an_adr_says_otherwise",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4206 no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue"
     ],
-    "gap": "Live execution is refused by standing decision.",
+    "gap": "Live execution in prod.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0003 paper trading only; live capital refused",
+    "blocked_by": "ADR 0108 (proposed, not accepted); ADR 0003 paper trading only",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": "Signed-artifacts and isolation halves are met as far as prod exists."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Signed-artifacts and isolation halves are met as far as prod exists."
   },
   {
     "id": "R12-CICD-10150",

@@ -114,18 +114,18 @@
     "evidence": [
       "infrastructure/terraform/main.tf (no google_container_cluster)"
     ],
-    "gap": "Requires reversing ADR 0024.",
+    "gap": "Stateful services on GKE are refused; stateful processes run on Compute Engine (fabricd, ledgerd) and state in Spanner (ADR 0111, ADR 0113).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 refuses Kubernetes",
+    "blocked_by": "ADR 0114 D4, confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-MODEL-7007",
@@ -748,18 +748,18 @@
       "qip-streaming/tests/event_fabric_managed.rs::a_follower_holds_the_committed_log_and_takes_over_with_no_committed_loss",
       "qip-fabricd/src/spanner.rs::tests::a_commit_under_a_superseded_lease_epoch_rolls_back_as_fenced_and_inserts_nothing"
     ],
-    "gap": "Provision the fabric Spanner database, prove the adapter against Spanner (emulator or instance), and deploy qip-fabricd (owner decision ADR 0099 C8).",
+    "gap": "Declare the fabric's regional Spanner database in Terraform (gated), prove SpannerManagedLog against the Spanner emulator, add fabricd to the image matrix, and deploy it in dev in ADR 0035's region once billing is enabled, plan shown first (ADR 0111 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0099 conflict C2 (consensus) undecided",
+    "blocked_by": "",
     "verification": "multi-broker replication test",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL: the old gap's code now exists. Whether a Spanner-delegated lease satisfies 'brokers ... replicate partition logs' is ADR 0111's stated open question."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: MISSING->PARTIAL: the old gap's code now exists. Whether a Spanner-delegated lease satisfies 'brokers ... replicate partition logs' is ADR 0111's stated open question."
   },
   {
     "id": "R12-FABRIC-7036",
@@ -787,44 +787,44 @@
   },
   {
     "id": "R12-FABRIC-7037",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "No fabric-controller or Raft quorum exists. ADR 0111 (accepted 2026-10-11) delegates replication and leadership to Spanner (a cloud database) and keeps ADR 0100's refusal of in-tree consensus; qip-fabricd's config refuses any managed log other than 'spanner', including 'raft' (config.rs:286, test at :707-742). Only partition leadership is held (as a Spanner lease row); stream definitions, placement, broker epochs and ACL metadata are not in any quorum.",
     "evidence": [
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md",
       "backend/crates/apps/qip-fabricd/src/config.rs:253-290"
     ],
-    "gap": "The requirement ('Rust Raft', 'no cloud database required') contradicts accepted ADR 0111; it needs a superseding ADR (ADR 0111 names openraft as the fallback) before any build.",
+    "gap": "Leadership is a fenced Spanner lease. Move stream definitions, partition placement, broker epochs and ACL metadata into the same regional database, written under lease-epoch checks (ADR 0111 Amendment 1); the 'no cloud database' clause is refused. Then the controller quorum game day.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0099 conflict C2 (consensus) undecided",
+    "blocked_by": "",
     "verification": "controller quorum game day",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->BLOCKED. ADR 0111 lists 7037 as 'addressed in shape' by the lease; that covers leadership only and requires a cloud database, so it does not meet the statement."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: MISSING->BLOCKED. ADR 0111 lists 7037 as 'addressed in shape' by the lease; that covers leadership only and requires a cloud database, so it does not meet the statement."
   },
   {
     "id": "R12-FABRIC-7038",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "StreamPolicy refuses any mirroring other than None naming C8 (qip-events event_fabric/policy.rs:236-243, :451-456). No mirror process exists.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:451-456"
     ],
-    "gap": "Owner cost/placement decision C8 (ADR 0099/0101), then a mirror implementation.",
+    "gap": "Build fabric-mirror per ADR 0120: StreamPolicy Mirroring::Async arm, target-region replicating consumer into region-qualified streams, idempotent checkpoint in regional Spanner, Gap records, mTLS; prove with a two-broker local test. Deployment waits on a second region.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0099 conflict C8 (mirror target) undecided",
+    "blocked_by": "",
     "verification": "mirror integration test",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->BLOCKED. INCORRECT->BLOCKED: code now refuses mirroring rather than mislabelling it, under a standing ADR 0099 C8 refusal."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->BLOCKED. INCORRECT->BLOCKED: code now refuses mirroring rather than mislabelling it, under a standing ADR 0099 C8 refusal."
   },
   {
     "id": "R12-FABRIC-7039",
@@ -989,7 +989,7 @@
   },
   {
     "id": "R12-FABRIC-7046",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Mutual TLS is now real on the fabric: qip_transport::tls builds TLS 1.3-only configs and Server::bind_tls requires a client certificate (commit 56f2c191); qip-fabricd binds with it when certificate paths are configured (lib.rs:512, config.rs:597). Transport is HTTP/1.1 over TCP; there is no QUIC (transport.rs:82-88 names QUIC as a future seam).",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/lib.rs:512",
@@ -998,18 +998,18 @@
       "qip-transport/tests/mtls.rs::a_certificate_from_another_authority_is_refused_at_the_handshake",
       "qip-transport/tests/mtls.rs::the_fabric_transport_over_a_mutual_tls_link_is_answered_by_a_tls_broker"
     ],
-    "gap": "QUIC is deferred by ADR 0112 ('QUIC only where measured') until a measurement justifies it; the mTLS half is done.",
+    "gap": "mTLS half done. QUIC only on a committed measurement of the cross-region peer-mesh hop (ADR 0112 §4, Amendment 1); commit the measurement.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0009 forbids an in-tree TLS stack and ADR 0002 forbids the dependency; ADR 0099 C2",
+    "blocked_by": "",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: The mTLS half would be COMPLETE on its own; the row stays BLOCKED on the QUIC half by ADR. Old note about fabric_036 is superseded by the mTLS tests."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The mTLS half would be COMPLETE on its own; the row stays BLOCKED on the QUIC half by ADR. Old note about fabric_036 is superseded by the mTLS tests."
   },
   {
     "id": "R12-FABRIC-7047",
@@ -1041,18 +1041,18 @@
     "evidence": [
       "docs/adr/0109-third-party-crates-are-admitted-from-a-committed-audited-allow-list-and-the-decision-core-stays-at-two.md:170"
     ],
-    "gap": "ADR 0109 explicitly does not admit prost: the gap 'stays open by decision until a wire format outside this repository requires protobuf'.",
+    "gap": "prost is not admitted; the fabric codec stays canonical JSON under the schema lock until an external wire format requires protobuf.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0002/0009 dependency policy; ADR 0099 C2",
+    "blocked_by": "ADR 0109 (prost not admitted), confirmed by ADR 0112 Amendment 1, 2026-10-11",
     "verification": "n/a",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-FABRIC-7049",
@@ -2479,14 +2479,14 @@
   },
   {
     "id": "R12-RES-7114",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "Fabric mirroring is refused by name: StreamPolicy rejects any mirroring policy 'fabric-mirror is not built' (backend/crates/libs/qip-events/src/event_fabric/policy.rs:451-455). No mirror, lag gauge or stale marking exists.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:451-455",
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md:81-87",
       "docs/ops/game-days/README.md (Quarterly regional loss: one region authorised, ADR 0035)"
     ],
-    "gap": "Owner decision: ADR 0111 §4 leaves cross-region mirroring to ADR 0101 C8 / ADR 0113's placement question, and ADR 0035 authorises one region; once decided, build mirror, lag metric and stale marking.",
+    "gap": "With the ADR 0120 mirror: local streams stay writable with the mirror down, lag series and bound, stale marking past the bound, replay from checkpoint or archive on return; prove by a two-broker game day. Deployment waits on a second region (ADR 0035 stands).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2495,11 +2495,11 @@
     "depends_on": [
       "R12-FABRIC-7038"
     ],
-    "blocked_by": "ADR 0099 C8",
+    "blocked_by": "",
     "verification": "mirror game day",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->BLOCKED on the undecided placement (ADR 0111 §4) and the single authorised region (ADR 0035). If the auditor's caller prefers, MISSING is equally defensible: nothing substantive exists."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: MISSING->BLOCKED on the undecided placement (ADR 0111 §4) and the single authorised region (ADR 0035). If the auditor's caller prefers, MISSING is equally defensible: nothing substantive exists."
   },
   {
     "id": "R12-OBS-7115",

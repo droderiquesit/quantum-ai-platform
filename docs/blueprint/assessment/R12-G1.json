@@ -103,18 +103,18 @@
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:1-20 Autopilot cluster for controllers only",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569 every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_environment"
     ],
-    "gap": "Intent met on Cloud Run for api/brains; evidence, replay, sinks and package distribution have no warm service at all.",
+    "gap": "The requirement is the GKE Standard service plane itself, which ADR 0114 D4 refuses. Its capabilities are built on Cloud Run per ADR 0114 Amendment 1: evidence (EVID-8108), replay (TICK-8110), sinks (FABRIC-8109).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "ADR 0114 D4 (no workload on Kubernetes), confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "inspection of catalogue.tf against the warm-service list",
     "work_item": "",
     "size": "M",
-    "notes": "Recorded conflict: GCP v3.0 GKE vs ADR 0024."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Recorded conflict: GCP v3.0 GKE vs ADR 0024."
   },
   {
     "id": "R12-DATA-8006",
@@ -1494,18 +1494,18 @@
       "backend/crates/apps/qip-edge-node/src/gateway.rs",
       "backend/crates/apps/qip-edge-node/src/feed.rs (simulated feed only)"
     ],
-    "gap": "Sandbox FIX/WebSocket adapter with pre-allocated buffers.",
+    "gap": "A provider-sandbox venue adapter is ADR 0108 Stage 1, and ADR 0108 is not accepted. Safe pre-work that opens nothing: ADR 0108 P2's endpoint-derived venue class (any host off a committed sandbox allow-list is Live and refused).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0003 paper-trading only; venue sessions are external actions",
+    "blocked_by": "ADR 0108 (proposed, not accepted; Stage 1 not authorised); ADR 0003",
     "verification": "sandbox integration test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-REFLEX-8069",
@@ -1821,24 +1821,24 @@
   },
   {
     "id": "R12-FABRIC-8083",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Fabric speaks plaintext HTTP/1.1 over TCP with bearer tokens; FabricTransport is a swap seam.",
     "evidence": [
       "backend/crates/libs/qip-transport/src/event_fabric/transport.rs:1-10 HttpTransport is the only implementation",
       "backend/crates/libs/qip-transport/src/event_fabric/auth.rs:11 'The fabric runs over plaintext TCP'"
     ],
-    "gap": "QUIC/TLS transport behind the FabricTransport seam.",
+    "gap": "TLS behind the FabricTransport seam exists (mTLS, FABRIC-7046). QUIC is admitted only on a committed TCP+TLS vs QUIC measurement on the cross-region peer-mesh hop (ADR 0112 §4, Amendment 1); commit that measurement and an integration test refusing plaintext.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0002/0009 (no TLS/QUIC crate), ADR 0100 conflict C2",
+    "blocked_by": "",
     "verification": "integration test refusing plaintext",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-FABRIC-8084",
@@ -1877,7 +1877,7 @@
       "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
       "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143"
     ],
-    "gap": "Leader placement by rendezvous in a running multi-broker group (leader_for has no production caller; the lease race decides instead), followers placed in other zones in Terraform (module caps at one broker in one zone), and replication for P2-P4 (ADR 0111 §2 keeps them RF1).",
+    "gap": "Wire leader_for into lease contention: an instance contends immediately only for partitions it is the rendezvous-preferred leader of, otherwise after expiry plus grace (ADR 0111 Amendment 1); followers in other zones via the broker module. P2-P4 stay RF1 by ADR 0111 §2.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1890,7 +1890,7 @@
     "verification": "cargo test -p qip-streaming --test event_fabric_broker",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: leader_for is a tested library function with no production caller; the property 'leader assignment stable under broker list order' is proven of a function the broker never uses. ADR 0111 replaced in-tree replication with a Spanner-lease model for P0/P1; whether lease contention satisfies 'rendezvous leaders' is an owner/register call."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: leader_for is a tested library function with no production caller; the property 'leader assignment stable under broker list order' is proven of a function the broker never uses. ADR 0111 replaced in-tree replication with a Spanner-lease model for P0/P1; whether lease contention satisfies 'rendezvous leaders' is an owner/register call."
   },
   {
     "id": "R12-FABRIC-8086",
@@ -2132,7 +2132,7 @@
       "infrastructure/terraform/variables.tf:1682",
       "tests/qip-acceptance/tests/gcp_placement.rs::every_machine_the_repository_defines_boots_with_secure_boot_a_vtpm_and_integrity_monitoring"
     ],
-    "gap": "A prod plan with five C4D/C4 broker instances across three zones. Today the module refuses a second broker, places every broker in one zone and uses c3, and nothing is enabled in prod.",
+    "gap": "Three C4/C4D brokers per production region, one per zone, meets the requirement's minimum (ADR 0111 Amendment 1). Open the module to multiple addresses, refuse two per zone and any non-C4/C4D shape, and show a prod plan.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2141,11 +2141,11 @@
     "depends_on": [
       "R12-FABRIC-8086"
     ],
-    "blocked_by": "RF3 blocked on ADR 0100 C2",
+    "blocked_by": "",
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The Terraform cap of one broker is stale against ADR 0111, which seats two or three fabricd instances per region on a Spanner lease. The broker code supports that (broker.rs with_managed_log/tend_leases), but the module still refuses a second address, citing RF1. ADR 0111 specifies 2-3 instances, not five, so whether ADR 0111's shape satisfies 8096 needs an owner decision."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The Terraform cap of one broker is stale against ADR 0111, which seats two or three fabricd instances per region on a Spanner lease. The broker code supports that (broker.rs with_managed_log/tend_leases), but the module still refuses a second address, citing RF1. ADR 0111 specifies 2-3 instances, not five, so whether ADR 0111's shape satisfies 8096 needs an owner decision."
   },
   {
     "id": "R12-FABRIC-8097",
@@ -2310,66 +2310,66 @@
   },
   {
     "id": "R12-GCP-8104",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Portfolio logic runs inside qip-kernel composed in Cloud Run binaries (api/fastbrain/deepbrain); Cloud Run autoscaling; no Spanner/Bigtable backing.",
     "evidence": [
       "infrastructure/terraform/catalogue.tf:694",
       "backend/crates/services/qip-portfolio-engine/src"
     ],
-    "gap": "Intent partly met on Cloud Run; managed-store backing missing.",
+    "gap": "Runs as a Cloud Run warm service (ADR 0114 Amendment 1). Needs the ledger on Spanner (ADR 0113 §1, LEDGER-8007) and declared Cloud Run autoscaling bounds; the HPA/custom-metric clause is refused by ADR 0114 D4.",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GCP-8105",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "qip-capital and the kernel issue signed envelopes/grants carried to cells; authoritative capital state in kernel ledger; runs in Cloud Run binaries.",
     "evidence": [
       "backend/crates/services/qip-capital/src",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1138 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy"
     ],
-    "gap": "Placement per ADR 0024; authoritative store per R12-LEDGER-8007.",
+    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Needs the authoritative store per LEDGER-8007 (ADR 0113 §1) and an inspection test that authoritative capital state is written only through qip-ledgerd.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GCP-8106",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Kernel central plane builds policy payloads/envelopes; qip-risk-engine computes stress; composed in Cloud Run brains.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/central/plane.rs",
       "backend/crates/services/qip-risk-engine/src"
     ],
-    "gap": "Placement per ADR 0024.",
+    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests.",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-RISK-8107",
@@ -2395,86 +2395,86 @@
   },
   {
     "id": "R12-EVID-8108",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Source quality/legal/freshness scoring lives in qip-data-finder and kernel source_lifecycle in-process; no Spanner Graph/BigQuery backing.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/freshness.rs",
       "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs"
     ],
-    "gap": "Persistent store; continuous service.",
+    "gap": "Continuous scoring as a scheduled stage of qip-deepbrain on Cloud Run; derived state reproducible from the event log and snapshotted to the archive, no Spanner Graph/BigQuery (ADR 0113, ADR 0114 Amendment 1).",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-FABRIC-8109",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "No sinks exist.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure.rs:332 fabric_095 (fixture-only)"
     ],
-    "gap": "Sinks (R12-FABRIC-8080) and a placement (e.g. dedicated Cloud Run services or VMs).",
+    "gap": "Sinks (FABRIC-8080) first; then a dedicated Compute Engine managed instance group per destination, autoscaled on the consumer-lag series, with per-destination failure isolation (ADR 0114 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "fabric_095 asserts hand-built structs; it tests nothing."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). fabric_095 asserts hand-built structs; it tests nothing."
   },
   {
     "id": "R12-TICK-8110",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Replay and counterfactual scoring run in-process (kernel session_replay, score_declined/score_filled; edge-node replay.rs); no batch sharding.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/session_replay.rs",
       "backend/crates/apps/qip-edge-node/src/replay.rs"
     ],
-    "gap": "Batch job runner (Cloud Run jobs would satisfy intent).",
+    "gap": "Replay and counterfactual scoring exist in-process. Needs a Cloud Run Job launching replay shards over archived segments and comparing live vs counterfactual models, declared in Terraform (ADR 0114 Amendment 1).",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-REASON-8111",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "qip-reasoning-engine/qip-quantum exist in-process; edge crates are structurally barred from reaching solvers.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver",
       "backend/crates/services/qip-reasoning-engine/src"
     ],
-    "gap": "Placement per ADR 0024; Z3/OR-Tools would be non-Rust dependencies.",
+    "gap": "Custom Rust solvers on the deep brain's Cloud Run capacity satisfy the requirement's 'custom Rust' arm (ADR 0114 Amendment 1); no-hot-path is structural. Needs the deep brain's CPU allocation for solver work declared and an inspection test. Z3/OR-Tools are not admitted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "The no-hot-path half is met structurally."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The no-hot-path half is met structurally."
   },
   {
     "id": "R12-DATA-8112",
@@ -2499,25 +2499,25 @@
   },
   {
     "id": "R12-API-8113",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Every catalogue Cloud Run service declares ingress INGRESS_TRAFFIC_INTERNAL_ONLY (infrastructure/gitops/envs/*/api.yaml:27, fastbrain.yaml:27, deepbrain.yaml:27) and invocation is granted to named principals only (infrastructure/gitops/envs/dev/invokers.yaml, e.g. qip-dev-console -> qip-dev-api). No internal Application Load Balancer or GKE Gateway with mTLS exists in Terraform (only EXTERNAL_MANAGED schemes, modules/iap-edge/main.tf:239, modules/public-edge/main.tf:304).",
     "evidence": [
       "infrastructure/gitops/envs/dev/api.yaml:27",
       "infrastructure/gitops/envs/dev/invokers.yaml",
       "docs/adr/0112-mtls-through-rustls-where-the-platform-owns-the-socket-iam-invocation-on-cloud-run-and-quic-only-where-measured.md"
     ],
-    "gap": "The requirement's mechanism (internal ALB/GKE Gateway with mTLS) is rejected by accepted ADR 0112 (§1 table and 'Alternatives rejected': mTLS into Cloud Run is not possible in-container and an internal LB adds a hop IAM already authenticates); ADR 0114 keeps workloads off GKE. Unblocking needs the owner to amend ADR 0112 or the requirement to be restated as IAM-authenticated invocation, after which the substitute still needs proof (an applied plan and an unauthenticated call refused).",
+    "gap": "IAM-authenticated invocation with internal-only ingress is the accepted mechanism (ADR 0112 Amendment 1; internal ALB refused). Needs the invoker manifests applied and evidence that a VPC call with no ID token, and one from an ungranted principal, are refused.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "mTLS needs a TLS stack (ADR 0009)",
+    "blocked_by": "",
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: ADR 0112 claims to 'unblock' API-8113 via IAM invocation; that substitutes a different mechanism rather than satisfying 'Plan shows internal LB'. Nothing shows the invoker manifests applied or an anonymous call refused."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: ADR 0112 claims to 'unblock' API-8113 via IAM invocation; that substitutes a different mechanism rather than satisfying 'Plan shows internal LB'. Nothing shows the invoker manifests applied or an anonymous call refused."
   },
   {
     "id": "R12-GCP-8114",
@@ -2548,38 +2548,38 @@
     "evidence": [
       "infrastructure/terraform/modules/gitops-control-plane/main.tf (location = var.region, enable_autopilot = true)"
     ],
-    "gap": "Per ADR 0024 Cloud Run is regional; intent met for warm services.",
+    "gap": "GKE Standard regional clusters are the requirement; refused. Cloud Run is regional for warm services.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "ADR 0114 D4, confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GCP-8116",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "No service-plane cluster; Cloud Run services have per-service limits.",
     "evidence": [
       "infrastructure/terraform/modules/cloudrun/main.tf"
     ],
-    "gap": "Per ADR 0024: per-service concurrency/max-instance budgets as the equivalent.",
+    "gap": "Built as the Cloud Run equivalent (ADR 0114 Amendment 1): every catalogue service declares maximum instances and concurrency, research runs in separately budgeted Cloud Run Jobs, and a test refuses a service without a maximum. Node-pool taints are refused.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "blocked_by": "",
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-8117",

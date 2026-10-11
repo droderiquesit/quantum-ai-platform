@@ -1631,11 +1631,11 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0003 paper trading and ADR 0021 (record and refusal, never the movement): holding/routing/converting real capital is live capital and an external action.",
+    "blocked_by": "ADR 0021 (capital movement refused) and ADR 0003; ADR 0108 not accepted and does not cover capital movement",
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GOV-4077",
@@ -1729,18 +1729,18 @@
     "evidence": [
       "backend/crates/services/qip-capital/src/funding.rs"
     ],
-    "gap": "Adapters.",
+    "gap": "Financing adapters with counterparties.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0003 paper trading: financing adapters are live external actions with counterparties.",
+    "blocked_by": "ADR 0021 and ADR 0003; ADR 0108 not accepted and does not cover financing",
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CAPITAL-4082",
@@ -2408,7 +2408,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs:1955-1975",
       "backend/crates/apps/qip-api/src/auth.rs:169-217"
     ],
-    "gap": "Owner action ADR 0076 (a per-person credential that can attest presence) so a grant can be issued, and with it narrowed, in a deployed binary.",
+    "gap": "Implement ADR 0121 (attested operator presence), then ADR 0075 Gates B and C, so a grant is issued, and narrowed, in a deployed binary.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2419,7 +2419,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The sizing half is COMPLETE-grade; the 'narrow the next issued grant' half is implemented and kernel-tested but unreachable in production. qip-cli's demo signs envelopes with issuer.issue directly (apps/qip-cli/src/demo/mod.rs:983), outside the governor; it is a demo, not a deployed path."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The sizing half is COMPLETE-grade; the 'narrow the next issued grant' half is implemented and kernel-tested but unreachable in production. qip-cli's demo signs envelopes with issuer.issue directly (apps/qip-cli/src/demo/mod.rs:983), outside the governor; it is a demo, not a deployed path."
   },
   {
     "id": "R12-RISK-4112",
@@ -2431,7 +2431,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_split_panel_shrinks_the_size_of_the_thesis_it_split_on",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel (Platform-level) test driving dissent through the cycle into both the sizing budget and the next grant, with the mutation; ADR 0076 so a grant is issuable.",
+    "gap": "A kernel test driving dissent through the cycle into the sizing budget and the next grant, mutation-verified; ADR 0121 so a grant is issuable in a deployed binary.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2442,7 +2442,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement."
   },
   {
     "id": "R12-RISK-4113",
@@ -2478,7 +2478,7 @@
       "runtime/qip-kernel/tests/central.rs::decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant",
       "runtime/qip-kernel/src/confidence.rs::tests::an_out_of_distribution_instrument_shrinks_the_size"
     ],
-    "gap": "A kernel test that an OOD score narrows the sizing budget; ADR 0076 so the narrowed grant is issued in a deployed binary.",
+    "gap": "A kernel test that an OOD score narrows the sizing budget; ADR 0121 so the narrowed grant is issued in a deployed binary.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2489,7 +2489,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
   },
   {
     "id": "R12-RISK-4115",
@@ -2501,7 +2501,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_regime_never_graded_in_shrinks_the_size",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving a regime mismatch into the sizing budget and the next grant; ADR 0076 so a grant is issuable.",
+    "gap": "A kernel test driving a regime mismatch into the sizing budget and the next grant; ADR 0121 so a grant is issuable in a deployed binary.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2512,7 +2512,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing."
   },
   {
     "id": "R12-RISK-4116",

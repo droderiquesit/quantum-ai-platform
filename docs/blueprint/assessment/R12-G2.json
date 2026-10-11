@@ -352,18 +352,18 @@
       "infrastructure/terraform/modules/cloudrun/main.tf:1-40",
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:131 google_container_cluster (control plane only)"
     ],
-    "gap": "Requires reversing ADR 0024 for workloads.",
+    "gap": "Persistent cognitive services on GKE are refused; they run on Cloud Run. The burst half is ADR 0122's research lane on Vertex AI custom jobs.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads) refuses GKE for workloads.",
+    "blocked_by": "ADR 0114 D4, confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "terraform plan",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-WORLD-9016",
@@ -1393,18 +1393,18 @@
       "backend/crates/services/qip-agency/src/lib.rs:11-16",
       "backend/crates/apps/qip-cli/src/agency.rs:48 Unwired adapter"
     ],
-    "gap": "Adapter services, each needing an approved external-action scope.",
+    "gap": "Adapter services per external action class are refused; the only approved adapter is the internal drafting adapter (ADR 0114 Amendment 1).",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "External actions (publication/outreach/pricing/market creation) need an explicit decision and approval; GKE placement conflicts with ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads).",
+    "blocked_by": "ADR 0114 D8 (external action refused), confirmed 2026-10-11",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-AGENCY-9063",
@@ -1728,7 +1728,7 @@
       ".github/workflows/agent-sandbox.yml:44",
       "scripts/fleet/worker.mjs:13-31"
     ],
-    "gap": "No egress policy on either sandbox (the Cloud Run Job declares no VPC egress or allow-list). No read-only production-telemetry grant exists for any sandbox identity, so there is no default read access to telemetry at all. The fleet identity holds a data-store write grant (storage.objectUser) on its bucket. There is no namespace/project per sandbox: the fleet sits in the dev project by owner choice (main.tf:5-10). Synthetic-data use is not enforced.",
+    "gap": "Fleet stays in dev until ADR 0113's split; add VPC egress restricted to Google APIs, roles/monitoring.viewer only, a narrowed bucket grant, and worker-side refusal of non-synthetic datasets (ADR 0102 amendment, 2026-10-11).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1739,7 +1739,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real."
   },
   {
     "id": "R12-SEC-9078",
@@ -1969,18 +1969,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9089",
@@ -1990,18 +1990,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9090",
@@ -2011,18 +2011,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9091",
@@ -2032,18 +2032,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9092",
@@ -2053,18 +2053,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9093",
@@ -2074,18 +2074,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9094",
@@ -2095,18 +2095,18 @@
       "infrastructure/gitops/envs/dev/kustomization.yaml",
       "backend/crates/libs/qip-contracts/src"
     ],
-    "gap": "Would require reversing the one-repo decision.",
+    "gap": "Declined: one repository, ownership by directory and CODEOWNERS.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Platform rule: one repository (MULTI_REPO).",
+    "blocked_by": "ADR 0016 (amendment 2026-10-11) and ADR 0101 C6, declined",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-CICD-9095",
@@ -2165,7 +2165,7 @@
       "infrastructure/environments/dev/terraform.tfvars:281",
       "infrastructure/terraform/tests/build-pool.tftest.hcl"
     ],
-    "gap": "Every build still runs on GitHub-hosted runners because the pool is disabled and not applied; enabling it needs an owner-approved apply then the tfvars flip. The portal image remains exempt from the two-build comparison (deploy.yml:746-751).",
+    "gap": "Apply modules/build-pool to dev with the plan shown, flip cloud_build_private_pool_enabled in a separate commit, and extend the two-build comparison to the portal with a commit-derived build id (ADR 0115 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2176,7 +2176,7 @@
     "verification": "build twice and compare digests",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: INCORRECT->PARTIAL: the contradiction is now a disabled, implemented path rather than an absent one."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: INCORRECT->PARTIAL: the contradiction is now a disabled, implemented path rather than an absent one."
   },
   {
     "id": "R12-CICD-9098",
@@ -2435,7 +2435,7 @@
       "backend/crates/apps/qip-api/src/main.rs:306",
       "backend/crates/edge/qip-edge/tests/trust_bundle.rs"
     ],
-    "gap": "(1) No KMS signing key for policy, model or halt manifests exists in Terraform. The only ASYMMETRIC_SIGN key is the Binary Authorization attestor (modules/binaryauthorization/main.tf:57), and ADR 0110 order-of-work step 3 ('KMS keys and the publish workflow in Terraform') is not done. kms_protection_level defaults to SOFTWARE (variables.tf:1045), which the signer would refuse. (2) No publish workflow signs model packs or release manifests with KMS. (3) No environment sets QIP_ARTEFACT_SIGNER=kms, so the shared HMAC key remains the posture until 2027-01-31 (libs/qip-transport/src/trust.rs:99). The KMS tests run against a fake KMS server, not a KMS public key.",
+    "gap": "Write the four HSM signing keys and the publish workflow in Terraform, apply to dev through infra.yml with the plan shown, set QIP_ARTEFACT_SIGNER=kms in dev after a real-key verification (ADR 0110 Amendment 1).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2446,7 +2446,7 @@
     "verification": "cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The old note citing ADR 0043 is stale: ADR 0109/0110 now permit asymmetric verification through rustls/ring, so this is no longer gated by design. What remains is owner-applied infrastructure."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The old note citing ADR 0043 is stale: ADR 0109/0110 now permit asymmetric verification through rustls/ring, so this is no longer gated by design. What remains is owner-applied infrastructure."
   },
   {
     "id": "R12-SEC-9110",
@@ -2523,18 +2523,18 @@
     "evidence": [
       "infrastructure/gitops/envs/dev/api.yaml"
     ],
-    "gap": "Cloud Run traffic-split canary as the ADR 0024 equivalent.",
+    "gap": "Argo Rollouts for GKE services is the requirement; there are no GKE services. The canary capability is CICD-9116 on Cloud Run.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads)",
+    "blocked_by": "ADR 0114 D4, confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "n/a",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-REFLEX-9114",
@@ -2581,23 +2581,23 @@
   },
   {
     "id": "R12-CICD-9116",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "Cloud Run services; rollback is a re-dispatch of deploy for an earlier commit (existing tag reused).",
     "evidence": [
       ".github/workflows/deploy.yml:395-422"
     ],
-    "gap": "Cloud Run equivalent.",
+    "gap": "Cloud Run traffic-split canary, an SLO gate read from the pushed series (ADR 0122), and rollback to the previous promoted digest (ADR 0115), driven through the Kargo promotion (ADR 0114 Amendment 1).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads)",
+    "blocked_by": "",
     "verification": "n/a",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-REFLEX-9117",
@@ -2622,24 +2622,24 @@
   },
   {
     "id": "R12-FABRIC-9118",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "qip-fabricd is a single-node broker; the topic policy refuses a replication factor other than one.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136,320 replication_factor != 1 refused",
       "backend/crates/apps/qip-fabricd/src/lib.rs:1-5"
     ],
-    "gap": "Multi-broker replication.",
+    "gap": "ADR 0111 supersedes ADR 0100 §3 for P0/P1: the managed log and followers exist (FABRIC-7035). Needs the Spanner database provisioned, the adapter proven against the emulator, and a multi-instance run; P2-P4 stay RF1 (ADR 0111 §2).",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0100 §3 refuses replication and mirroring.",
+    "blocked_by": "",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:211,246 (fabric_084, fabric_086) assert on locally constructed fixture structs, not on code or Terraform; they pass regardless of the implementation."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:211,246 (fabric_084, fabric_086) assert on locally constructed fixture structs, not on code or Terraform; they pass regardless of the implementation."
   },
   {
     "id": "R12-MODEL-9119",
@@ -3160,24 +3160,24 @@
   },
   {
     "id": "R12-OBS-9143",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Nine alert policies are declared but gated off (workload_metrics_exist=false); the Cloud Run GMP sidecar is refused because the only published image fails the Trivy gate; the node receiver waits on a node.",
     "evidence": [
       "infrastructure/terraform/modules/observability/main.tf:23-401",
       "infrastructure/terraform/modules/cloudrun/main.tf:382 collector_config"
     ],
-    "gap": "Upstream fixed sidecar image, then a scrape proof.",
+    "gap": "Push the registry snapshot from the central binaries to Cloud Monitoring over the REST adapter (ADR 0122), re-point the nine alert policies to the pushed types, read a series back in dev, then flip workload_metrics_exist.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "Upstream: cloud-run-gmp-sidecar image fails the platform's own vulnerability gate (external fix needed).",
+    "blocked_by": "",
     "verification": "scrape proof, then flip workload_metrics_exist",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-OBS-9144",
@@ -3223,23 +3223,23 @@
   },
   {
     "id": "R12-OBS-9146",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "Single-node broker; append latency recorded (qip_event_fabric_append_latency_ms) but no quorum.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/telemetry.rs:34"
     ],
-    "gap": "Requires replication (ADR 0100 §3).",
+    "gap": "Record the Spanner commit latency on the P0/P1 produce path per class as the quorum-acknowledgement latency (ADR 0111 Amendment 1), with a test that the series moves.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0100 §3 refuses replication/mirroring.",
+    "blocked_by": "",
     "verification": "cargo test for the recording crate",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-OBS-9147",
@@ -3263,23 +3263,23 @@
   },
   {
     "id": "R12-OBS-9148",
-    "status": "BLOCKED",
+    "status": "MISSING",
     "current": "Mirroring refused by ADR 0100 §3; no mirror-lag metric.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136"
     ],
-    "gap": "Requires mirroring.",
+    "gap": "qip_fabric_mirror_lag_records and qip_fabric_mirror_lag_seconds from the fabric mirror (ADR 0120), labels bounded by region list and committed stream set, with a test.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0100 §3 refuses replication/mirroring.",
+    "blocked_by": "",
     "verification": "cargo test for the recording crate",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-OBS-9149",
@@ -3686,43 +3686,43 @@
   },
   {
     "id": "R12-RES-9168",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Fabric is single-node with replication refused; Reflex promotion absent.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:320"
     ],
-    "gap": "Replication + promotion.",
+    "gap": "Replication and lease promotion exist for P0/P1 (ADR 0111). Needs the game day on a deployed multi-instance fabric and the Reflex standby promotion drill.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0100 §3 refuses replication factor other than one.",
+    "blocked_by": "",
     "verification": "game day",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-RES-9169",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Single-node broker; no followers.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/lib.rs:1-5"
     ],
-    "gap": "Replication.",
+    "gap": "Followers catch up from the managed log (ADR 0111). Needs followers in other zones in Terraform (ADR 0111 Amendment 1, three per region) and a follower-loss game day.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0100 §3.",
+    "blocked_by": "",
     "verification": "game day",
     "work_item": "",
     "size": "XL",
-    "notes": "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:246 fabric_086 asserts on a hard-coded fixture (`let on_one_device = false; assert!(!on_one_device)`) and proves nothing about the broker."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:246 fabric_086 asserts on a hard-coded fixture (`let on_one_device = false; assert!(!on_one_device)`) and proves nothing about the broker."
   },
   {
     "id": "R12-RES-9170",
@@ -3978,24 +3978,24 @@
   },
   {
     "id": "R12-FABRIC-9182",
-    "status": "BLOCKED",
+    "status": "PARTIAL",
     "current": "Single-node broker by design.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:136,320",
       "infrastructure/terraform/modules/event-fabric-broker/main.tf"
     ],
-    "gap": "Multi-broker.",
+    "gap": "Multi-instance fabric on a Spanner lease (ADR 0111): open the broker module to three C4/C4D instances, one per zone (ADR 0111 Amendment 1), and plan it.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0100 §3.",
+    "blocked_by": "",
     "verification": "n/a",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-GCP-9183",
@@ -4004,18 +4004,18 @@
     "evidence": [
       "infrastructure/gitops/envs/dev/api.yaml"
     ],
-    "gap": "N/A under ADR 0024.",
+    "gap": "HPA/VPA and Cluster Autoscaler are the requirement; refused. Lag-scaled consumers are FABRIC-8109 on a Compute Engine MIG.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads)",
+    "blocked_by": "ADR 0114 D4, confirmed by ADR 0114 Amendment 1, 2026-10-11",
     "verification": "n/a",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
   },
   {
     "id": "R12-DATA-9184",
