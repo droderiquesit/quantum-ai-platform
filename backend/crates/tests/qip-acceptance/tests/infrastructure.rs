@@ -9846,7 +9846,8 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
          would authenticate against `projects/0/…`. It wrote: {written}"
     );
     assert!(
-        printed.contains("project_number = 0") && printed.contains("scripts/bootstrap-foundation.sh"),
+        printed.contains("project_number = 0")
+            && printed.contains("scripts/bootstrap-foundation.sh"),
         "the identity step refused the unrecorded number without naming it and the script that \
          records it: {printed}"
     );
