@@ -3587,6 +3587,95 @@ mod tests {
         Ok(())
     }
 
+    /// The station-observations arm over its recorded fixture: a document-
+    /// sized GeoJSON body, the shape knowledge packs exist for.
+    fn nws_arm(at: Timestamp) -> Result<ConnectorArm> {
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::SourceEmulator;
+        use qip_market_ingestion::connectors::NwsStationObservationsConnector;
+        use qip_market_ingestion::connectors::nws_station_observations::FIXTURE;
+        let mut manifest = NwsStationObservationsConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        ConnectorArm::over_transport(
+            Box::new(NwsStationObservationsConnector::new(manifest.clone())?),
+            manifest,
+            Box::new(SourceEmulator::from_json(FIXTURE)?),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )
+    }
+
+    /// R12-DATA-1041 and the knowledge-delta half of R12-DATA-2012: the pack
+    /// a poll derives from what it changed in the fabric reaches a durable
+    /// store through the node's own arm, smaller than the body it came from,
+    /// and decodes as a world-model delta rather than any of the source's
+    /// text. Before this the pack was built and measured on every poll and
+    /// dropped with the report, so the durable knowledge layer held nothing
+    /// in any binary.
+    ///
+    /// A ticker's pack is *larger* than its 143-byte body (248 bytes on the
+    /// Coinbase fixture), and the store refuses it and counts the refusal:
+    /// a "knowledge" record bigger than the print it describes is not the
+    /// compact layer the requirement asks for, and ticks are kept by the
+    /// tick lake (Tier T), not here. The second half asserts that refusal.
+    ///
+    /// Mutated by deleting the `self.persist_packs()` call in
+    /// `ConnectorArm::poll`: the store stays empty and `written` reads 0, so
+    /// the first assertion fails.
+    #[test]
+    fn a_connector_polls_knowledge_pack_reaches_the_store_smaller_than_its_source() -> Result<()> {
+        use qip_contracts::knowledge_pack::{KnowledgePack, PackBody};
+        use qip_storage::{BlobStore, MemoryBlobStore};
+        // 2026-09-19T05:55:00Z: eleven of the recording's twelve
+        // observations have cleared the manifest's dissemination delay.
+        let horizon = Timestamp::from_secs(1_789_797_300);
+        let store = std::sync::Arc::new(MemoryBlobStore::new());
+        let mut arm = nws_arm(horizon)?.with_knowledge_packs(store.clone());
+        let mut platform = platform()?;
+        let released = arm.poll(&mut platform, horizon)?;
+        assert!(!released.is_empty(), "premise: the arm released readings");
+
+        let stats = arm.knowledge_packs().clone();
+        let keys = store.list("nws-station-observations/")?;
+        assert_eq!(stats.written, 1, "{stats:?}");
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert_eq!((stats.failures, stats.refused_not_smaller), (0, 0));
+        assert!(
+            stats.pack_bytes > 0 && stats.pack_bytes < stats.source_bytes,
+            "the kept layer is not smaller than its source: {stats:?}"
+        );
+        let bytes = store
+            .get(&keys[0])?
+            .ok_or_else(|| Error::not_found("the written pack"))?;
+        assert_eq!(bytes.len() as u64, stats.pack_bytes);
+        let pack = KnowledgePack::decode(&bytes)?;
+        assert!(
+            matches!(
+                pack.body,
+                PackBody::WorldModelDelta { from_version, to_version, .. }
+                    if to_version > from_version
+            ),
+            "{pack:?}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("geojson"),
+            "the source's document was copied into the pack"
+        );
+
+        // A ticker's pack outweighs its print: refused, counted, not kept.
+        let subject = ObjectId::from_string("BTC-USD");
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ticks = std::sync::Arc::new(MemoryBlobStore::new());
+        let mut ticker = coinbase_arm(&subject, now)?.with_knowledge_packs(ticks.clone());
+        let mut platform = self::platform()?;
+        ticker.poll(&mut platform, now)?;
+        assert_eq!(ticker.knowledge_packs().refused_not_smaller, 1);
+        assert_eq!(ticker.knowledge_packs().written, 0);
+        assert!(ticks.list("")?.is_empty());
+        Ok(())
+    }
+
     /// A released print is sealed into the tick lake at shutdown when the
     /// operator has granted its licensing class a retention right, and the
     /// lake receives nothing when no right was granted — the second half is

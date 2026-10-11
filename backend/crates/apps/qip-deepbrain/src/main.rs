@@ -606,6 +606,12 @@ fn run() -> Result<()> {
     let tick_lake =
         qip_deepbrain::connectors::TickLakeSettings::from_lookup(&|name| std::env::var(name).ok())
             .map_err(configuration)?;
+    // Whether each arm keeps the knowledge packs its polls derive
+    // (R12-DATA-1041); off unless the operator says `store`, and anything
+    // else stops the process before an arm opens.
+    let knowledge_packs =
+        qip_deepbrain::connectors::knowledge_packs_enabled(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
     if let Some(settings) = &config.connector_feed {
         let registrations = platform
             .config()
@@ -662,6 +668,21 @@ fn run() -> Result<()> {
                     }
                 }
             }
+            if knowledge_packs {
+                match config
+                    .storage
+                    .blobs(qip_deepbrain::connectors::KNOWLEDGE_PACK_NAMESPACE)
+                {
+                    Ok(store) => arm = arm.with_knowledge_packs(store),
+                    Err(error) => {
+                        let release = fold_releases(
+                            arm.shutdown(clock.now()),
+                            evolution.shutdown_connectors(clock.now()),
+                        );
+                        return Err(with_release(configuration(error), release));
+                    }
+                }
+            }
             let journaled = config
                 .storage
                 .key_value(StreamJournal::NAMESPACE)
@@ -686,8 +707,14 @@ fn run() -> Result<()> {
                 }
             };
             connector_banner.push(format!(
-                "  connector:        {}; evidence forwarded to the world fabric every poll; {}; {}",
+                "  connector:        {}; evidence forwarded to the world fabric every poll; {}; \
+                 {}; {}",
                 arm.describe(),
+                if knowledge_packs {
+                    "knowledge packs kept when smaller than their source"
+                } else {
+                    "no knowledge packs kept (QIP_DEEPBRAIN_KNOWLEDGE_PACKS unset)"
+                },
                 match &tick_lake {
                     Some(lake) => format!(
                         "ticks sealed into the lake for {:?}",
