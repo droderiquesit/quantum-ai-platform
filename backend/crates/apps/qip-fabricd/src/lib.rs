@@ -50,16 +50,17 @@ use qip_core::error::{Error, Result};
 use qip_events::event_fabric::catalogue::Catalogue;
 use qip_events::event_fabric::policy::StreamPolicy;
 use qip_observability::metrics::Metrics;
+use qip_storage::gcp::GcpAccess;
 use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::SegmentLogConfig;
-use qip_storage::{BlobStore, FileBlobStore};
+use qip_storage::{BlobStore, CloudStorageBlobStore, CloudStorageConfig, FileBlobStore};
 use qip_streaming::event_fabric::broker::Broker;
 use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
 use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
 
-use crate::config::Config;
+use crate::config::{ArchiveTarget, Config};
 use crate::health::Health;
 use crate::telemetry::FabricdTelemetry;
 
@@ -126,6 +127,44 @@ fn prove_archive_writable(store: &dyn BlobStore, leader_epoch: u64) -> Result<()
     }
     store.delete(ARCHIVE_PROBE_KEY)?;
     Ok(())
+}
+
+/// Open the configured archive target. A bucket the configuration cannot
+/// reach — no endpoint, no credential — is refused here, and
+/// `prove_archive_writable` then proves it takes and returns an object, so a
+/// bucket that exists but this broker may not write is refused at start too.
+fn open_archive(target: &ArchiveTarget, clock: Arc<dyn Clock>) -> Result<Arc<dyn BlobStore>> {
+    match target {
+        ArchiveTarget::Directory(directory) => Ok(Arc::new(FileBlobStore::open(directory)?)),
+        ArchiveTarget::CloudStorage {
+            bucket,
+            prefix,
+            endpoint,
+            metadata_server,
+            token_file,
+        } => {
+            let metadata = metadata_server.then_some("1");
+            let access = GcpAccess::from_values(
+                Some(endpoint),
+                metadata,
+                token_file.as_deref(),
+                None,
+                clock,
+            )?;
+            let store = CloudStorageBlobStore::new(
+                CloudStorageConfig::new(bucket.clone())
+                    .with_prefix(prefix.clone())
+                    .with_access(access),
+            )?;
+            if !store.is_available() {
+                return Err(Error::unavailable(format!(
+                    "the archive bucket {bucket} cannot be reached: {}",
+                    store.requirement()
+                )));
+            }
+            Ok(Arc::new(store))
+        }
+    }
 }
 
 /// The protocol listener's handler: every request goes to the [`Service`],
@@ -326,14 +365,14 @@ fn reload_catalogue(
     Ok(())
 }
 
-/// Start the broker described by `config`, archiving to the directory it
-/// names. See the crate documentation for the order and why it is the order.
+/// Start the broker described by `config`, archiving to the directory or
+/// Cloud Storage bucket it names. See the crate documentation for the order and why it is the order.
 pub fn start(config: &Config, clock: Arc<dyn Clock>) -> Result<Running> {
     start_with_archive(config, clock, None)
 }
 
-/// [`start`], archiving to `archive` instead of the configured directory
-/// when one is given. The seam a test stalls the archive through; `main`
+/// [`start`], archiving to `archive` instead of the configured target when
+/// one is given. The seam a test stalls the archive through; `main`
 /// never passes one.
 pub fn start_with_archive(
     config: &Config,
@@ -351,7 +390,7 @@ pub fn start_with_archive(
     let broker = Arc::new(Broker::open(&config.data_dir, clock.clone())?);
     let archive_store: Arc<dyn BlobStore> = match archive {
         Some(store) => store,
-        None => Arc::new(FileBlobStore::open(&config.archive_dir)?),
+        None => open_archive(&config.archive, clock.clone())?,
     };
     prove_archive_writable(archive_store.as_ref(), broker.leader_epoch())?;
     let service = Arc::new(Service::new(
