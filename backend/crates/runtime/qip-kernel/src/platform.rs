@@ -476,6 +476,10 @@ pub struct Platform {
     /// Fed by [`Platform::learn_from`]; read by the REASON stage through the
     /// per-origin factors it hands the reasoning engine (blueprint §13.1).
     self_model: SelfModel,
+    /// The World Model Federation (blueprint §9.3), fed and arbitrated every
+    /// UNDERSTAND pass by `crate::federation_stage`. Advisory: nothing on the
+    /// order path reads it, and its record is the event log.
+    federation: crate::federation_stage::FederationStage,
     /// Failure clusters raised as research prompts (MODEL-046).
     research: qip_learning_engine::research::ResearchLedger,
     /// What the LEARN stage calibrated this cycle, for the journal. Cleared
@@ -4712,6 +4716,7 @@ impl Platform {
             evaluations: Vec::new(),
             last_calibration: None,
             self_model: SelfModel::new(),
+            federation: crate::federation_stage::FederationStage::new(),
             research: qip_learning_engine::research::ResearchLedger::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
@@ -10599,6 +10604,10 @@ impl Platform {
                 .collect(),
             routing_decisions.len() as f64,
         );
+        // Blueprint §9.3: the World Model Federation's pass — views fed,
+        // forecasts scored, disagreement arbitrated and journaled. Advisory;
+        // see `crate::federation_stage` for why nothing downstream reads it.
+        let (federation_detail, federation_problems) = self.understand_federation(now);
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
@@ -10606,7 +10615,7 @@ impl Platform {
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
                   {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
-                 {second_order_detail}{statistics_detail}{routing_detail}",
+                 {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -10624,7 +10633,81 @@ impl Platform {
         if let Some(problem) = statistics_problem {
             outcome = outcome.with_problem(problem);
         }
+        for problem in federation_problems {
+            outcome = outcome.with_problem(problem);
+        }
         outcome
+    }
+
+    /// Gather what the federation's members read, run the pass, and journal
+    /// the review — blueprint §9.3, WORLD-3037/-3038/-3050/-3051/-3052.
+    ///
+    /// Here rather than in `crate::federation_stage` only because the inputs
+    /// are private to `Platform`; the module holds every decision. Returns
+    /// the detail clause and the problems: each member assessment the
+    /// federation refused, and a review the log refused, are findings the
+    /// stage carries rather than silences.
+    fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
+        use crate::federation_stage::{
+            ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
+        };
+        let mut instruments = Vec::new();
+        let mut thin_subjects = 0;
+        for (subject, closes) in &self.price_history {
+            let returns = Self::returns_of(closes);
+            let (Some(last_close), Some(bar)) = (
+                closes.last(),
+                self.bar_history.get(subject).and_then(|bars| bars.last()),
+            ) else {
+                continue;
+            };
+            if returns.len() < FEDERATION_MIN_RETURNS {
+                thin_subjects += 1;
+                continue;
+            }
+            instruments.push(InstrumentView {
+                subject: subject.clone(),
+                returns,
+                last_close: *last_close,
+                observed_through: bar.close_time(),
+                spread_ratio: self.spread_ratio(subject),
+            });
+        }
+        let level = self.autonomy.level();
+        let inputs = FederationInputs {
+            cycle: self.cycle,
+            region: HOME_REGION.to_string(),
+            instruments,
+            system: SystemView {
+                halted: self.autonomy.kill_switch().is_globally_tripped(),
+                autonomy: level.as_str().to_string(),
+                live_authority: level.is_live(),
+                expired_manifests: self.expired_manifests(now).len(),
+                thin_subjects,
+            },
+            chain: self.confirmed_chain().ok().map(|view| ChainView {
+                confirmed_trades: view.state().trades(),
+            }),
+        };
+        let review = self.federation.run(&inputs, now);
+        let detail = review.detail();
+        let mut problems: Vec<String> = review
+            .refused
+            .iter()
+            .map(|(model, why)| format!("world model federation refused `{model}`: {why}"))
+            .collect();
+        if let Err(error) = self.journal_record(review, "kernel/federation", now) {
+            problems.push(format!(
+                "the world model federation's review was computed and not journalled: {}",
+                error.message()
+            ));
+        }
+        (detail, problems)
+    }
+
+    /// The World Model Federation as the UNDERSTAND stage runs it.
+    pub fn federation(&self) -> &crate::federation_stage::FederationStage {
+        &self.federation
     }
 
     /// Blueprint §8.2's fifth query and its first, over the two graphs this
@@ -11844,6 +11927,15 @@ impl Platform {
                         error.message()
                     ));
                 }
+                // Blueprint §9.4: the symbolic reasoners over this hypothesis,
+                // journaled as a derivation trace. Advisory — run after review
+                // has decided, and read by nothing that sizes or sends.
+                let (symbolic_detail, symbolic_problem) =
+                    self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                outcome.detail.push_str(&symbolic_detail);
+                if let Some(problem) = symbolic_problem {
+                    outcome = outcome.with_problem(problem);
+                }
                 let decision = if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
@@ -11946,6 +12038,80 @@ impl Platform {
         problems
             .into_iter()
             .fold(outcome, |acc, problem| acc.with_problem(problem))
+    }
+
+    /// Run `crate::symbolic_stage` over one formed hypothesis and journal the
+    /// derivation — REASON-3053 to -3060.
+    ///
+    /// Gathers only; the module decides. Takes the hypothesis by shared
+    /// reference and returns a clause and a problem, so the derivation has no
+    /// path back into the thesis, its conviction or any order: that is what
+    /// keeps it advisory by construction rather than by convention.
+    fn reason_symbolically(
+        &mut self,
+        opportunity: &Opportunity,
+        reasoned: &ReasoningOutcome,
+        contested: bool,
+        now: Timestamp,
+    ) -> (String, Option<String>) {
+        use crate::symbolic_stage::{AnomalyFacts, SymbolicInput};
+        let (Some(anomaly), Some(subject)) = (
+            opportunity.anomalies.first(),
+            opportunity.affected_objects.first(),
+        ) else {
+            return (String::new(), None);
+        };
+        let hypothesis = &reasoned.hypothesis;
+        let moves: BTreeMap<String, f64> = self
+            .price_history
+            .iter()
+            .filter_map(|(id, closes)| {
+                Self::returns_of(closes)
+                    .last()
+                    .map(|latest| (id.clone(), *latest))
+            })
+            .collect();
+        let input = SymbolicInput {
+            cycle: self.cycle,
+            hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
+            subject: subject.as_str().to_string(),
+            status: hypothesis.status.as_str().to_string(),
+            confidence: hypothesis.effective_confidence(),
+            contested,
+            dissenters: reasoned.dissenters.len(),
+            evidence_items: hypothesis.evidence.len(),
+            kill_switch: self.autonomy.kill_switch().is_globally_tripped(),
+            live_authority: self.autonomy.level().is_live(),
+            anomaly: AnomalyFacts {
+                detector: anomaly.detector.clone(),
+                detected_at: anomaly.detected_at,
+                observed: anomaly.observed,
+                expected: anomaly.expected,
+                confidence: anomaly.confidence(),
+            },
+            catalyst: anomaly
+                .catalyst
+                .as_ref()
+                .map(|link| (link.event_id.clone(), link.event_known_at)),
+            formed_at: hypothesis.formed_at,
+            horizon: hypothesis.horizon,
+            moves,
+        };
+        let derivation = {
+            let world = self.world.read();
+            crate::symbolic_stage::derive(input, world.causal(), now)
+        };
+        let detail = derivation.detail();
+        let problem = self
+            .journal_record(derivation, "kernel/symbolic", now)
+            .err()
+            .map(|error| {
+                format!(
+                    "the symbolic derivation was computed and not journalled: {}",
+                    error.message()
+                )
+            });
+        (detail, problem)
     }
 
     /// The regime in force for `subject`, as the labels memory encodes.
