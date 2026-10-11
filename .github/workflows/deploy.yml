@@ -308,7 +308,10 @@ jobs:
       # its policy, the paper boundary's Terraform layer — is deployable
       # only if a person approved the head of the pull request it arrived
       # through; a change declaring an `Agent-Role` must lie inside that
-      # role's paths. `agent-boundary.yml` says the same on the pull request
+      # role's paths; and a protected change carrying no agent marker at all
+      # needs every non-merge commit signed by a person's registered key, or
+      # the same approval, because no marker is not proof of a person
+      # (GOV-9067, ADR 0117). `agent-boundary.yml` says the same on the pull request
       # itself, but a repository setting decides whether that check is
       # required before merge and this file cannot see the setting; this
       # step is the half that holds whatever the setting is. The change is

@@ -4,8 +4,11 @@
 # Answers, for every pull request and every review of one: is this change
 # agent-authored, and if so does it stay inside the role its commits
 # declare, and has a person approved its head commit where it touches a
-# protected path? The rules are `scripts/agent-policy.json` and the judge is
-# `scripts/agent-guard.mjs`, both read from the default branch — never from
+# protected path? And, for a change with no agent marker that touches a
+# protected path, is every commit signed by a person's key or the head
+# approved by a person (GOV-9067, ADR 0117)? The rules are
+# `scripts/agent-policy.json` and the judge is `scripts/agent-guard.mjs`,
+# both read from the default branch — never from
 # the pull request, which could otherwise rewrite the rule it is judged by.
 #
 # It re-runs on `pull_request_review`, because approval is what changes the

@@ -456,8 +456,8 @@ jobs:
       - run: ./scripts/check-secrets.sh --history
 
   # The development tooling's own tests: the model gateway, the fleet's
-  # dispatcher and worker, the CodeQL blocking gate, the agent boundary and
-  # lane planner, and the game-day harness. They are the programs that send repository source
+  # dispatcher and worker, the CodeQL blocking gate, the agent boundary, the
+  # lane planner and the sandbox's egress proxy, and the game-day harness. They are the programs that send repository source
   # to a provider and decide what a day may cost, and until this job their
   # tests ran only when somebody remembered to run them. Node built-ins only,
   # so there is nothing to install. The files are named one by one rather
@@ -472,9 +472,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/game-day/harness.test.mjs
-      # The agent sandbox holds no secret, no credential and no write, and
-      # every job in it is time-limited (R12 SEC-9068, SEC-9084). Judged by
+      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs
+      # The agent sandbox holds no secret, no credential and no write, every
+      # job in it is time-limited (R12 SEC-9068, SEC-9084), and the lane's
+      # network is the egress proxy and nothing else (SEC-9077). Judged by
       # the same function the tests above exercise, on the committed file.
       - run: node scripts/agent-guard.mjs sandbox .github/workflows/agent-sandbox.yml
 

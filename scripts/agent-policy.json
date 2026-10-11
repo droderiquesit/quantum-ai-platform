@@ -33,6 +33,11 @@
     ]
   },
 
+  "unmarked_protected_change": {
+    "comment": "GOV-9067. A change with no agent marker is a person's only by default, and an agent pushing as its user with no trailer is exactly that default. On a protected path the default is not accepted: every commit must carry a signature GitHub verified against a key a person registered, or a person must approve the head commit. GitHub's own web-flow key signs every commit made through the API or the web editor, an agent's included, so a commit it signed is not a person's signature; its committer address is listed here so the guard can tell.",
+    "web_flow_committer_emails": ["noreply@github.com"]
+  },
+
   "dispatch_refused_for_agents": {
     "comment": "Workflows an agent identity may never start: each deploys, applies infrastructure or reaches a cloud credential. A planner may read and plan; no agent merges or deploys (GOV-9067). Enforced by the guard step at the top of each workflow, before anything authenticates.",
     "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml"]
@@ -55,8 +60,22 @@
   },
 
   "lane_limits": {
-    "comment": "Every lane an orchestrator dispatches carries a budget no larger than these, and acceptance commands. The sandbox workflow sets its job timeout from the lane's own minutes.",
+    "comment": "Every lane an orchestrator dispatches carries a budget no larger than these, and acceptance commands. The sandbox workflow sets its job timeout from the lane's own minutes. `tokens` and `usd` are what the lane may spend on models; `agent-lanes.mjs spend` refuses a lane whose model-gateway ledger shows more, and a ledger line whose spend it cannot read counts as over (SEC-9077).",
     "max_minutes": 360,
-    "max_usd": 50
+    "max_usd": 50,
+    "max_tokens": 2000000
+  },
+
+  "sandbox": {
+    "comment": "The agent sandbox's network (SEC-9077, SEC-9078; ADR 0117). agent-sandbox.yml runs a lane's acceptance under a group the runner's firewall lets reach loopback only, DNS included, so scripts/agent-egress.mjs is the one way out: HTTPS CONNECT to these hosts on 443, within these quotas, and nothing else. No model provider is listed, so a lane cannot call a model from the sandbox at all; scripts/agent-egress.test.mjs fails if one is added. Every host here is a package registry, and each accepts uploads with a credential the sandbox does not hold; that residual is named in ADR 0117.",
+    "egress_allow": [
+      "index.crates.io",
+      "static.crates.io",
+      "crates.io",
+      "static.rust-lang.org",
+      "registry.npmjs.org"
+    ],
+    "egress_max_requests": 4000,
+    "egress_max_bytes": 4294967296
   }
 }

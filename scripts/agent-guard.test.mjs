@@ -116,12 +116,82 @@ test("the autonomy ceiling's validation file is protected", () => {
   assert.equal(refusals.length, 1);
 });
 
-test("a person's own change is outside the agent boundary", () => {
+// Outside the protected paths a change with no marker is a person's, and
+// needs nobody. Mutation: refuse every unmarked change.
+test("an unmarked change outside the protected paths is outside the agent boundary", () => {
   const { agent, refusals } = judgeChange({
-    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".github/workflows/deploy.yml"], commits: [personCommit], reviews: [],
+    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: ["backend/crates/runtime/qip-kernel/src/cycle.rs"], commits: [personCommit], reviews: [],
   });
   assert.equal(agent, false);
   assert.deepEqual(refusals, []);
+});
+
+const signed = (email) => ({
+  commit: { ...personCommit.commit, committer: { name: "Dana", email }, verification: { verified: true, reason: "valid" } },
+});
+
+// GOV-9067. This test replaced "a person's own change is outside the agent
+// boundary", which asserted that an unmarked, unsigned, unapproved change to
+// deploy.yml was admitted — the exact shape an agent pushing as its user
+// with no trailer takes. Mutation: return early for every unmarked change,
+// as the guard did before.
+test("an unmarked change to a protected path needs a person's signature or a person's approval", () => {
+  const judge = (commits, reviews = []) =>
+    judgeChange({ policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".github/workflows/deploy.yml"], commits, reviews });
+
+  const bare = judge([personCommit]);
+  assert.equal(bare.agent, false);
+  assert.equal(bare.refusals.length, 1);
+  assert.match(bare.refusals[0], /no agent marker touches protected paths, 1 of its 1 commit\(s\) carry no person's verified signature/);
+
+  // The admitting halves, each on its own.
+  assert.deepEqual(judge([signed("dana@example.invalid")]).refusals, [], "signed by a person's key");
+  assert.deepEqual(judge([personCommit], [approval("erin")]).refusals, [], "approved by a person");
+});
+
+// GitHub signs every API and web-editor commit itself, an agent's included.
+// Mutation: empty web_flow_committer_emails, or read `verified` alone.
+test("a commit signed by GitHub's web-flow key is not a person's signature", () => {
+  const { refusals } = judgeChange({
+    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
+    commits: [signed("dana@example.invalid"), signed("noreply@github.com")], reviews: [],
+  });
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /1 of its 2 commit\(s\) carry no person's verified signature/);
+  // The merge button's own commit, web-flow signed, is not held against a
+  // signed pull request. Mutation: drop the merge exemption.
+  const merged = judgeChange({
+    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
+    commits: [signed("dana@example.invalid"), { ...signed("noreply@github.com"), parents: [{ sha: "c" }, { sha: "d" }] }], reviews: [],
+  });
+  assert.deepEqual(merged.refusals, []);
+  // Nor is an approval of an earlier commit, the agent rule's own reading.
+  const stale = judgeChange({
+    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
+    commits: [personCommit], reviews: [approval("erin", "b".repeat(40))],
+  });
+  assert.equal(stale.refusals.length, 1);
+});
+
+// A session that rewrites the author but commits as itself is still marked.
+// Mutation: read the author fields only.
+test("an agent committer is recognised even under a person's author name", () => {
+  const disguised = {
+    commit: { author: { name: "Dana", email: "dana@example.invalid" }, committer: { name: "Claude", email: "noreply@anthropic.com" }, message: "x\n" },
+  };
+  assert.ok(isAgentCommit(disguised, POLICY.agent_markers));
+});
+
+// A signature does not excuse an agent's protected change from approval.
+// Mutation: let isPersonSigned stand in for approval on the agent branch.
+test("an agent's protected change still needs approval even when signed", () => {
+  const agentSigned = { commit: { ...agentCommit("technical-writer").commit, verification: { verified: true }, committer: { email: "dana@example.invalid" } } };
+  const { agent, refusals } = judgeChange({
+    policy: POLICY, headRef: "claude/x", headSha: HEAD, files: [".claude/agents/technical-writer.md"], commits: [agentSigned], reviews: [],
+  });
+  assert.ok(agent);
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /no person has approved/);
 });
 
 // GOV-9067: no agent deploys. Mutation: empty the refused list.
@@ -170,6 +240,11 @@ test("a sandbox workflow with a secret, a credential, a write or no time limit i
     "    steps:",
     "      # secrets.NOTHING is mentioned only in this comment",
     "      - run: echo hi",
+    "      - run: |",
+    "          sudo iptables -A OUTPUT -m owner --gid-owner lane-egress -j REJECT",
+    "          node agent-egress.mjs serve --port 3128",
+    '          sudo setpriv --regid="$lane_gid" --no-new-privs -- true',
+    "          node agent-egress.mjs verdict --log egress.jsonl",
     "",
   ].join("\n");
   assert.deepEqual(judgeSandboxWorkflow(clean), []);
@@ -183,6 +258,40 @@ test("a sandbox workflow with a secret, a credential, a write or no time limit i
     ["write", clean.replace("  contents: read", "  contents: write"), /write permission/],
     ["untimed", clean.replace("    timeout-minutes: 30\n", ""), /no timeout-minutes/],
     ["target", clean.replace("  workflow_dispatch:", "  pull_request_target:"), /pull_request_target/],
+  ];
+  for (const [name, text, reason] of variants) {
+    const problems = judgeSandboxWorkflow(text);
+    assert.ok(problems.some((p) => reason.test(p)), `${name}: ${JSON.stringify(problems)}`);
+  }
+});
+
+// SEC-9077: the lane's network is confined, and each piece of the
+// confinement is required on its own, because each alone is the hole.
+// Mutation: drop any one entry from `confinement` in judgeSandboxWorkflow.
+test("a sandbox workflow that leaves the lane's network open in any one way is refused, for that reason", () => {
+  const clean = [
+    "permissions:",
+    "  contents: read",
+    "jobs:",
+    "  run:",
+    "    timeout-minutes: 30",
+    "    steps:",
+    "      - run: |",
+    "          sudo iptables -A OUTPUT -m owner --gid-owner lane-egress -j REJECT",
+    "          node agent-egress.mjs serve --port 3128",
+    '          sudo setpriv --regid="$lane_gid" --no-new-privs -- true',
+    "          node agent-egress.mjs verdict --log egress.jsonl",
+    "",
+  ].join("\n");
+  assert.deepEqual(judgeSandboxWorkflow(clean), [], "premise: the confined fixture is admitted");
+  const variants = [
+    ["firewall", clean.replace(" -j REJECT", " -j ACCEPT"), /firewall/],
+    ["privs", clean.replace(" --no-new-privs", ""), /no_new_privs/],
+    ["group", clean.replace('--regid="$lane_gid"', "--regid=0"), /firewalled group/],
+    ["proxy", clean.replace("agent-egress.mjs serve", "true"), /no egress proxy/],
+    ["verdict", clean.replace("agent-egress.mjs verdict", "true"), /no egress verdict/],
+    // A comment naming the pieces is not the pieces.
+    ["comment", clean.replace("          node agent-egress.mjs verdict --log egress.jsonl", "          # agent-egress.mjs verdict"), /no egress verdict/],
   ];
   for (const [name, text, reason] of variants) {
     const problems = judgeSandboxWorkflow(text);
