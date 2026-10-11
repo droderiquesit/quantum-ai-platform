@@ -1,7 +1,8 @@
 # ADR 0110: Policy frames and model packs are signed by Cloud KMS under a two-person publish, and verified at the edge by one audited crate
 
-- **Status**: *Proposed*, 2026-10-11. The owner accepts in writing; nothing
-  here takes effect by being written. **No longer blocked on the dependency
+- **Status**: **Accepted**, 2026-10-11, by the owner in the session
+  conversation, adopting the recommendation as drafted: "Update as needed
+  remove my decisions make the recommended". Drafted as *Proposed* the same day. **No longer blocked on the dependency
   rule** — ADR 0109 (accepted 2026-10-11, see its status line for how that
   acceptance is evidenced) permits the verify crate this record names. It is
   blocked on its own acceptance and on the infrastructure listed under "Order

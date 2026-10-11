@@ -1,7 +1,8 @@
 # ADR 0111: Event-fabric replication is delegated to a managed consensus, and is not written in-tree
 
-- **Status**: *Proposed*, 2026-10-11. The owner accepts in writing; nothing
-  here takes effect by being written. **No longer blocked on the dependency
+- **Status**: **Accepted**, 2026-10-11, by the owner in the session
+  conversation, adopting the recommendation as drafted: "Update as needed
+  remove my decisions make the recommended". Drafted as *Proposed* the same day. **No longer blocked on the dependency
   rule** (ADR 0109, accepted 2026-10-11, including its Amendment 2, which
   also permits an async runtime). Blocked on its own acceptance, on ADR 0112
   (TLS to Google APIs) and on ADR 0113 (Spanner).

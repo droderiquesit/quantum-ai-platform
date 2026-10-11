@@ -1,7 +1,8 @@
 # ADR 0112: mTLS through rustls where the platform owns the socket, IAM-authenticated invocation on Cloud Run, and QUIC only where measured
 
-- **Status**: *Proposed*, 2026-10-11. The owner accepts in writing; nothing
-  here takes effect by being written. **No longer blocked on the dependency
+- **Status**: **Accepted**, 2026-10-11, by the owner in the session
+  conversation, adopting the recommendation as drafted: "Update as needed
+  remove my decisions make the recommended". Drafted as *Proposed* the same day. **No longer blocked on the dependency
   rule** — ADR 0109 (accepted 2026-10-11) lists `rustls` and `ring`, and ADR
   0012 had admitted `rustls` in principle since it was written.
 - **Date**: 2026-10-11

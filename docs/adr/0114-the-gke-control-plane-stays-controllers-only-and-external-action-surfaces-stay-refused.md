@@ -1,7 +1,8 @@
 # ADR 0114: The GKE control plane stays controllers-only, and external-action surfaces stay refused
 
-- **Status**: *Proposed*, 2026-10-11. The owner accepts in writing; nothing
-  here takes effect by being written. It confirms standing positions rather
+- **Status**: **Accepted**, 2026-10-11, by the owner in the session
+  conversation, adopting the recommendation as drafted: "Update as needed
+  remove my decisions make the recommended". Drafted as *Proposed* the same day. It confirms standing positions rather
   than changing them, so acceptance moves no resource and no code.
 - **Date**: 2026-10-11
 - **Resolves**: owner decisions D4 and D8 in

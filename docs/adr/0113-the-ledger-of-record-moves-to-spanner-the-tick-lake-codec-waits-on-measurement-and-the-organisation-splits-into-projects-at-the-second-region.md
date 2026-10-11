@@ -1,7 +1,9 @@
 # ADR 0113: The ledger of record moves to Spanner, the tick-lake codec waits on measurement, and the organisation splits into projects at the second region
 
-- **Status**: *Proposed*, 2026-10-11. The owner accepts in writing; nothing
-  here takes effect by being written or is provisioned by it. **No longer
+- **Status**: **Accepted**, 2026-10-11, by the owner in the session
+  conversation, adopting the recommendation as drafted: "Update as needed
+  remove my decisions make the recommended". Drafted as *Proposed* the same
+  day; acceptance provisions nothing by itself. **No longer
   blocked on the dependency rule** (ADR 0109, accepted 2026-10-11). Blocked
   on its own acceptance, on ADR 0112 (TLS to Google APIs) and, for every
   apply, on billing being enabled and an owner cost ceiling (ADR 0101 C8, C11).
