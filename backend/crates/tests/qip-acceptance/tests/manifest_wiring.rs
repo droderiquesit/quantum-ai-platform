@@ -1969,7 +1969,7 @@ const NO_STANDBY_PAIR_EXISTS: &str = "Unset is a node with no standby, \
 const THE_PEER_MESH_IS_LOOPBACK_ONLY: &str = "The peer transport speaks \
      plaintext frames and `PeerSettings::read` refuses any address that is \
      not loopback, because a cross-region link in plaintext would carry \
-     reservations and fills unauthenticated (`qip-edge-node/src/peer.rs`). \
+     reservations and fills unauthenticated (`qip-peer-link/src/wire.rs`). \
      A deployed node's peers are on other hosts, so no value a deployment \
      could set would start; the entry ends when the mTLS transport replaces \
      the stream type.";

@@ -1,34 +1,28 @@
 //! The peer Reflex Mesh over a real socket (R12-MESH-5035, 5046, 5060,
 //! 5061–5065, 5070).
 //!
-//! `qip_contracts::peer` is proven frame by frame in `qip-mesh`'s suites by
+//! `qip_peer` is proven frame by frame in `qip-mesh`'s suites by
 //! handing bytes from one endpoint to another in memory. What those cannot
 //! show is that two nodes, each with its own listener and its own wire
 //! thread, exchange those frames node to node — not through the centre, and
 //! not through the fabric. Every test here sends through `PeerLink` and
 //! receives off a socket.
+//!
+//! Moved from `qip-edge-node/tests/` with the link itself (ADR 0116). The
+//! last test drives the link the way the node does in production: through
+//! `boundary::ReflexPort` alone, with the session on its own thread.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_contracts::peer::{
+use qip_core::error::Result;
+use qip_core::{Decimal, Duration, SystemClock, Timestamp, dec};
+use qip_peer::{
     EpochDraft, EpochLeg, ExecutableEdge, MAX_EDGES_PER_STATE, OpportunityEpoch, PeerMessage,
     ReservationBook, ReservationOutcome, encode,
 };
-use qip_contracts::venue::VenueId;
-use qip_core::error::Result;
-use qip_core::ids::ObjectId;
-use qip_core::{Decimal, Duration, SystemClock, Timestamp, dec};
-use qip_edge::cell::CellConfig;
-use qip_edge_node::allocation::RegionCapital;
-use qip_edge_node::assemble;
-use qip_edge_node::feed::SimulatedFeed;
-use qip_edge_node::gateway::SimulatedGateway;
-use qip_edge_node::pass::{PassStats, run_pass};
-use qip_edge_node::peer::{MAX_FRAME, PeerSession, PeerSettings};
-use qip_execution_engine::order::Side;
-use qip_feature_dag::engine::FeatureEngine;
-use qip_feature_dag::state::MarketState;
+use qip_peer_link::boundary::EdgeQuote;
+use qip_peer_link::{MAX_FRAME, PeerSession, PeerSettings};
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -46,14 +40,17 @@ fn free_port() -> SocketAddr {
     probe.local_addr().expect("its address")
 }
 
-/// Two sessions, each listening on its own port and naming the other.
-fn pair(left: &str, right: &str) -> Result<(PeerSession, PeerSession)> {
-    let (left_at, right_at) = (free_port(), free_port());
-    let settings = |node: &str, listen: SocketAddr, peer: &str, peer_at: SocketAddr| PeerSettings {
+fn settings(node: &str, listen: SocketAddr, peer: &str, peer_at: SocketAddr) -> PeerSettings {
+    PeerSettings {
         node: node.to_string(),
         listen,
         peers: BTreeMap::from([(peer.to_string(), peer_at)]),
-    };
+    }
+}
+
+/// Two sessions, each listening on its own port and naming the other.
+fn pair(left: &str, right: &str) -> Result<(PeerSession, PeerSession)> {
+    let (left_at, right_at) = (free_port(), free_port());
     Ok((
         PeerSession::new(&settings(left, left_at, right, right_at))?,
         PeerSession::new(&settings(right, right_at, left, left_at))?,
@@ -252,43 +249,22 @@ fn edge(i: usize) -> ExecutableEdge {
     }
 }
 
-/// A node publishes the touch of the books its cell holds — not the books —
-/// and a peer holds it under the sender's name; a state the size of a book
-/// is refused before it is sent.
+/// A node publishes the touch of its books — not the books — and a peer holds
+/// it under the sender's name; a state the size of a book is refused before
+/// it is sent. That the touch is what the cell's book shows is proven where
+/// the cell is, `qip-edge-node/tests/edge_quotes.rs`.
 ///
 /// Mutation: remove the `MAX_EDGES_PER_STATE` comparison from
 /// `check_edges` and the oversized state is framed and sent.
 #[test]
-fn a_cells_executable_edge_state_reaches_its_peer_and_a_book_sized_one_is_refused() -> Result<()> {
-    let venue = VenueId::new("XLON");
-    let object = ObjectId::from_string("obj-ACME");
-    let config = CellConfig::new("americas", "us-east4").with_venue(venue.clone());
-    let features = FeatureEngine::new(MarketState::default(), qip_core::Duration::from_secs(5));
-    let mut node = assemble(
-        config,
-        features,
-        Arc::new(SystemClock),
-        RegionCapital::read(Some("1000000"))?,
-        None,
-    )?;
-    let mut gateway = SimulatedGateway::new(venue.clone(), 7, at(0))?;
-    let mut feed = SimulatedFeed::new(venue);
-    feed.attach(&mut node.cell)?;
-    gateway.seed_touch(&object, Side::Buy, dec!("99"), dec!("500"), at(1))?;
-    gateway.seed_touch(&object, Side::Sell, dec!("101"), dec!("400"), at(1))?;
-    let mut stats = PassStats::default();
-    run_pass(
-        &mut node.cell,
-        &mut gateway,
-        &mut feed,
-        None,
-        &mut stats,
-        at(2),
-    )?;
-
+fn a_nodes_executable_edge_state_reaches_its_peer_and_a_book_sized_one_is_refused() -> Result<()> {
     let (mut americas, mut europe) = pair("americas", "europe")?;
-    let turn = americas.turn(&node.cell, at(3))?;
-    assert_eq!(turn.edges_published, 1, "premise: the cell holds one book");
+    let mut touch = edge(0);
+    touch.instrument = "obj-ACME".into();
+    touch.bid_size = dec!("500");
+    touch.ask_size = dec!("400");
+    let turn = americas.turn(vec![touch], at(3))?;
+    assert_eq!(turn.edges_published, 1, "premise: one book's touch");
     assert!(turn.offered);
     deliver(&mut europe, at(4));
     let held = europe
@@ -299,7 +275,7 @@ fn a_cells_executable_edge_state_reaches_its_peer_and_a_book_sized_one_is_refuse
     assert_eq!(
         (held[0].bid, held[0].bid_size, held[0].ask, held[0].ask_size),
         (dec!("99"), dec!("500"), dec!("101"), dec!("400")),
-        "the edge is the touch the cell's book shows"
+        "the edge is the touch the sender published"
     );
 
     // A state with more edges than a summary may carry is refused at the
@@ -347,5 +323,80 @@ fn an_older_edge_state_does_not_replace_a_newer_one() -> Result<()> {
             .iter()
             .any(|refusal| refusal.kind == "stale_edge_state")
     );
+    Ok(())
+}
+
+/// The production path, end to end through the port alone (ADR 0116 §3): a
+/// quote the decision loop publishes reaches a peer as edge state, framed on
+/// the session thread; a crossed quote is refused there and counted, never
+/// sent; and the status the port copies reports both.
+///
+/// Mutation (run): make `host::edges` keep a quote whose `validate` fails —
+/// the endpoint then refuses to frame the whole state, so the tradeable
+/// touch never crosses either and the wait times out with
+/// `publish_failures: 1, quotes_refused: 0`. Mutation: make the
+/// session thread `listen` instead of `turn` when an offer arrives, and no
+/// edge state ever reaches the peer, so the wait times out.
+#[test]
+fn a_quote_published_through_the_port_reaches_a_peer_and_a_crossed_one_is_refused_on_the_session_thread()
+-> Result<()> {
+    let (port_at, peer_at) = (free_port(), free_port());
+    let (port, bound) = qip_peer_link::spawn(
+        &settings("americas", port_at, "europe", peer_at),
+        Arc::new(SystemClock),
+    )?;
+    assert_eq!(
+        bound, port_at,
+        "premise: the port's session bound where it was told"
+    );
+    let mut europe = PeerSession::new(&settings("europe", peer_at, "americas", port_at))?;
+
+    let quote = |instrument: &str, bid: Decimal, ask: Decimal| EdgeQuote {
+        venue: "XLON".into(),
+        instrument: instrument.into(),
+        bid,
+        bid_size: dec!("10"),
+        ask,
+        ask_size: dec!("10"),
+        as_of_ns: OPENED,
+    };
+    assert!(port.try_publish(vec![
+        quote("obj-1", dec!("99"), dec!("101")),
+        // Crossed: a bid above the ask is not a touch anyone can trade.
+        quote("obj-2", dec!("102"), dec!("101")),
+    ]));
+
+    let began = std::time::Instant::now();
+    let held = loop {
+        for frame in europe.link().take_inbound() {
+            let _ = europe.endpoint_mut().receive(&frame, at(1));
+        }
+        if let Some(held) = europe.endpoint().peer_edges("americas") {
+            break held.to_vec();
+        }
+        assert!(
+            began.elapsed() < PATIENCE,
+            "no edge state crossed from the port within {PATIENCE:?}: {:?}",
+            port.status()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    assert_eq!(held.len(), 1, "only the tradeable touch crossed: {held:?}");
+    assert_eq!(held[0].instrument, "obj-1");
+
+    // The status is copied after each session turn, so it trails the wire by
+    // up to one turn; wait for the write the peer already saw to show.
+    let began = std::time::Instant::now();
+    while port.status().sent == 0 {
+        assert!(
+            began.elapsed() < PATIENCE,
+            "the port never reported the write: {:?}",
+            port.status()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let status = port.status();
+    assert_eq!(status.quotes_refused, 1, "{status:?}");
+    assert_eq!(status.dropped_offers, 0, "{status:?}");
     Ok(())
 }

@@ -81,7 +81,6 @@ use qip_edge_node::outbox::{
     read_fabric, spool_dir, spool_survives_the_machine,
 };
 use qip_edge_node::pass::PassMeter;
-use qip_edge_node::peer::{LISTEN_VARIABLE, PEERS_VARIABLE, PeerSession, PeerSettings};
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
@@ -101,6 +100,7 @@ use qip_edge_node::{NodeAssembly, assemble_with_risk};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::Metrics;
+use qip_peer_link::{LISTEN_VARIABLE, PEERS_VARIABLE, PeerSettings};
 use qip_routing::reprice::RepricePolicy;
 use qip_storage::lake::LAKE_NAMESPACE;
 use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
@@ -262,7 +262,7 @@ struct NodeConfig {
     standby: Option<StandbySettings>,
     /// The peer Reflex Mesh, when this cell has peers. `None` is a cell that
     /// coordinates with no other cell directly, announced — see
-    /// `qip_edge_node::peer`.
+    /// `qip_peer_link`.
     peers: Option<PeerSettings>,
     /// The core the spool writer is pinned to, when the deployment names
     /// one — see `qip_edge_node::event_fabric::placement`.
@@ -1089,18 +1089,19 @@ fn run() -> Result<()> {
     if let Some(installer) = installer {
         decisions = decisions.with_desk(installer);
     }
-    // The peer mesh: its own thread owns the sockets, and the decision loop
-    // meets it at two bounded queues after the flush.
+    // The peer mesh (ADR 0116): the session and the wire run on threads of
+    // their own, and the decision loop holds only the port, which offers and
+    // never waits. This is the one node module that may name the link beyond
+    // `qip_peer_link::boundary`, because it is the one that spawns it.
     match &config.peers {
         Some(settings) => {
-            let session = PeerSession::new(settings)?;
+            let (port, local) = qip_peer_link::spawn(settings, Arc::clone(&clock))?;
             println!(
-                "qip-edge-node: peer mesh listening on {} for {} peer(s), plaintext on loopback \
-                 only until the mTLS transport of ADR 0112 is built",
-                session.link().local_addr(),
+                "qip-edge-node: peer mesh listening on {local} for {} peer(s), plaintext on \
+                 loopback only until the mTLS transport of ADR 0112 is built",
                 settings.peers.len()
             );
-            decisions = decisions.with_peers(session);
+            decisions = decisions.with_peers(port);
         }
         None => println!(
             "qip-edge-node: no peer mesh ({LISTEN_VARIABLE} and {PEERS_VARIABLE} unset): this \

@@ -1,0 +1,19 @@
+[package]
+name = "qip-peer-link"
+description = "The peer Reflex Mesh link: wire thread, session, and the non-blocking port the reflex node holds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# ADR 0116: the protocol and the shared core, and nothing else. In particular
+# no `qip-edge`: a link that could name the cell could be handed it and run
+# coordination on the decision thread again, which is what this crate was cut
+# out of `qip-edge-node` to stop.
+[dependencies]
+qip-core.workspace = true
+qip-peer.workspace = true
+
+[lints]
+workspace = true

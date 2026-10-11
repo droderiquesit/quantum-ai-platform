@@ -1,12 +1,11 @@
 //! The peer Reflex Mesh on a socket: cells talking to cells (R12-MESH-5035,
 //! 5046, 5050, 5060).
 //!
-//! `qip_contracts::peer` is the protocol — epochs, reservations, FIRE,
-//! fills, unwinds, declines and executable edge states — and it was tested
-//! with no wire under it: `PeerEndpoint` was constructed in tests alone, and
-//! this binary's only link was to the central plane. Latency-sensitive
-//! coordination between regions therefore had no path but through the
-//! centre, which is the broker-mediated hop §16 says it must not take.
+//! `qip_peer` is the protocol — epochs, reservations, FIRE, fills, unwinds,
+//! declines and executable edge states — and it was tested with no wire
+//! under it until `215138c2`: latency-sensitive coordination between
+//! regions had no path but through the centre, which is the broker-mediated
+//! hop §16 says it must not take.
 //!
 //! This module is the wire, and only the wire: frames in, frames out. Every
 //! rule stays in the protocol, so the transport can lose, delay or refuse a
@@ -15,10 +14,11 @@
 //! # Off the decision thread
 //!
 //! A [`PeerLink`] owns a thread that accepts connections, reads frames,
-//! connects to peers and writes to them. The decision thread meets it at two
-//! bounded channels and never waits on either: [`PeerLink::offer`] is a
-//! `try_send` and a full queue is a counted drop; [`PeerLink::take_inbound`]
-//! is `try_recv`. Connecting and writing carry explicit timeouts, and a peer
+//! connects to peers and writes to them. Its owner — in production the
+//! session thread `crate::host` starts, never the reflex cell's decision
+//! thread (ADR 0116) — meets it at two bounded channels and never waits on
+//! either: [`PeerLink::offer`] is a `try_send` and a full queue is a counted
+//! drop; [`PeerLink::take_inbound`] is `try_recv`. Connecting and writing carry explicit timeouts, and a peer
 //! that cannot be reached backs off rather than being retried on every frame.
 //! That is what makes a peer outage unable to hold the journal flush or the
 //! centre's policy downlink (MESH-5050): neither passes through here, and
@@ -35,12 +35,9 @@
 //! transport is the remaining step, and it replaces the stream type here and
 //! nothing in the protocol.
 
-use qip_contracts::peer::{
-    ExecutableEdge, MAX_EDGE_PEERS, MAX_EDGES_PER_STATE, PeerEndpoint, PeerLimits, Refusal,
-};
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
-use qip_edge::cell::Cell;
+use qip_peer::{ExecutableEdge, MAX_EDGE_PEERS, PeerEndpoint, PeerLimits, Refusal};
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -190,7 +187,7 @@ impl PeerCounters {
     }
 }
 
-/// The decision thread's end of the wire.
+/// The session's end of the wire.
 #[derive(Debug)]
 pub struct PeerLink {
     local: SocketAddr,
@@ -500,7 +497,14 @@ pub struct PeerTurn {
     pub offered: bool,
 }
 
-/// The decision thread's peer half: the protocol endpoint and the wire.
+/// The protocol endpoint and the wire, driven together.
+///
+/// Public for Lane 1 callers and for tests that drive two sessions by hand.
+/// The reflex node never holds one: in production `crate::spawn` moves it
+/// onto a session thread of its own, so receiving, refusing, framing edge
+/// state and expiring epochs never run on the thread that runs `Cell::work`
+/// (ADR 0116 §2). Before that ADR this ran on the decision thread and took
+/// the cell itself, which made coordination work part of the reflex budget.
 #[derive(Debug)]
 pub struct PeerSession {
     endpoint: PeerEndpoint,
@@ -534,18 +538,15 @@ impl PeerSession {
         self.link.offer(frame)
     }
 
-    /// Apply what peers sent, then publish this node's executable edge state.
-    /// Nothing here waits: the inbound queue is drained with `try_recv` and
-    /// the state is offered with `try_send`.
-    pub fn turn(&mut self, cell: &Cell, now: Timestamp) -> Result<PeerTurn> {
-        let mut turn = PeerTurn::default();
-        for frame in self.link.take_inbound() {
-            turn.received += 1;
-            if self.endpoint.receive(&frame, now).is_err() {
-                turn.refused += 1;
-            }
-        }
-        let edges = executable_edges(cell);
+    /// Apply what peers sent, then publish this node's executable edge state,
+    /// then expire what has lapsed. Nothing here waits: the inbound queue is
+    /// drained with `try_recv` and the state is offered with `try_send`.
+    ///
+    /// Takes the edges, not the cell: the session cannot see the book, so a
+    /// summary is all it can send (MESH-5060), and it holds nothing a
+    /// reflex crate could hand it by reference and then wait on.
+    pub fn turn(&mut self, edges: Vec<ExecutableEdge>, now: Timestamp) -> Result<PeerTurn> {
+        let mut turn = self.absorb(now);
         turn.edges_published = edges.len();
         self.sequence = self.sequence.saturating_add(1);
         let frame = self.endpoint.edge_state_frame(self.sequence, edges)?;
@@ -554,35 +555,31 @@ impl PeerSession {
         Ok(turn)
     }
 
+    /// Apply what peers sent and expire what has lapsed, publishing nothing.
+    /// The session thread runs this when the cell has offered no fresh
+    /// quotes, so an epoch still expires on time and a peer's frames are
+    /// still read while this cell is quiet.
+    pub fn listen(&mut self, now: Timestamp) -> PeerTurn {
+        let turn = self.absorb(now);
+        self.endpoint.forget_expired(now);
+        turn
+    }
+
+    fn absorb(&mut self, now: Timestamp) -> PeerTurn {
+        let mut turn = PeerTurn::default();
+        for frame in self.link.take_inbound() {
+            turn.received += 1;
+            if self.endpoint.receive(&frame, now).is_err() {
+                turn.refused += 1;
+            }
+        }
+        turn
+    }
+
     /// The endpoint's refusals, for the log.
     pub fn refusals(&self) -> &[Refusal] {
         self.endpoint.refusals()
     }
-}
-
-/// The touch of every book the cell holds a two-sided, tradeable price for,
-/// in the cell's own order, at most [`MAX_EDGES_PER_STATE`] of them. Never
-/// depth: a peer pricing a cycle needs what it could trade against, and a
-/// book it cannot act on is bytes across a region boundary for nothing.
-pub fn executable_edges(cell: &Cell) -> Vec<ExecutableEdge> {
-    cell.liquidity()
-        .iter()
-        .filter_map(|state| {
-            let bid = state.best_bid()?;
-            let ask = state.best_ask()?;
-            let edge = ExecutableEdge {
-                venue: state.venue().as_str().to_string(),
-                instrument: state.object_id().as_str().to_string(),
-                bid: bid.price,
-                bid_size: bid.size,
-                ask: ask.price,
-                ask_size: ask.size,
-                as_of_ns: state.last_update().map_or(0, Timestamp::as_nanos),
-            };
-            edge.validate().is_ok().then_some(edge)
-        })
-        .take(MAX_EDGES_PER_STATE)
-        .collect()
 }
 
 #[cfg(test)]

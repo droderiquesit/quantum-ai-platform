@@ -461,6 +461,7 @@ dependencies = [
  "qip-financial",
  "qip-observability",
  "qip-orderbook",
+ "qip-peer-link",
  "qip-protocols",
  "qip-risk",
  "qip-routing",
@@ -740,6 +741,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-events",
+ "qip-peer",
  "qip-storage",
  "qip-transport",
  "serde",
@@ -796,6 +798,23 @@ dependencies = [
  "qip-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "qip-peer"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-peer-link"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "qip-peer",
 ]
 
 [[package]]

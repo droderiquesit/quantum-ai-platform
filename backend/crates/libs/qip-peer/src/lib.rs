@@ -1,17 +1,22 @@
 //! The peer half of the Reflex Mesh, as a protocol with no sockets.
 //!
-//! `qip_mesh::spine` is the centre-to-cell wire of ADR 0011. This module is
+//! `qip_mesh::spine` is the centre-to-cell wire of ADR 0011. This crate is
 //! the other thing the word "mesh" names: what regional cells say to *each
 //! other* while they coordinate a multi-leg opportunity. It is deliberately
 //! pure: frames in, state and refusals out. Putting the rules here means the
-//! transport (`qip_edge_node::peer`) can only carry bytes and cannot decide
+//! transport (`qip_peer_link`) can only carry bytes and cannot decide
 //! anything, so it cannot weaken them.
 //!
-//! It lives in `qip-contracts`, beside the vocabulary both ends share, and
-//! not in `qip-mesh` where it was written: the edge node may not link
-//! `qip-mesh`, because that crate holds the BigQuery client and no reflex
-//! crate may be able to wait on a warehouse (DATA-058). `qip_mesh::peer`
-//! re-exports this module, so the central side's paths are unchanged.
+//! It is a crate of its own, registered in Lane 1, because of where it may
+//! not live (ADR 0116). Not in `qip-mesh`, where it was written: the edge
+//! node's peer link must link it, and `qip-mesh` holds the BigQuery client
+//! no crate the node links may reach (DATA-058). And not in `qip-contracts`,
+//! where `215138c2` put it: that crate is in every reflex crate's closure,
+//! so the reflex pass could have constructed a [`PeerEndpoint`] and waited
+//! on a reservation, which is what MESH-013 exists to make impossible. Its
+//! dependencies are `serde`, `serde_json` and `qip-core` and nothing else;
+//! `qip_mesh::peer` re-exports it, so the central side's paths are
+//! unchanged.
 //!
 //! Besides the five Lane 1 functions it carries the cells' **executable edge
 //! states** (MESH-5060, [`PeerMessage::EdgeState`]): what each node can trade

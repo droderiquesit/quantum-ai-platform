@@ -23,10 +23,13 @@
 //!    waits; a refusal leaves the entries unshipped and in memory;
 //! 8. leaves a state delta for the mesh worker and a body for the health
 //!    thread, each with `try_lock`;
-//! 9. applies what peer cells sent and offers this cell's executable edge
-//!    state to them (`peer::PeerSession`) — `try_recv` and `try_send` only,
-//!    after the flush, so a peer outage can hold neither the journal nor the
-//!    centre's downlink (MESH-5050).
+//! 9. offers this cell's touch to its peers through
+//!    `qip_peer_link::boundary::ReflexPort` — one `try_send`, after the
+//!    flush, so a peer outage can hold neither the journal nor the centre's
+//!    downlink (MESH-5050). Receiving peers' frames, framing the edge state
+//!    and expiring epochs run on the peer link's own session thread, never
+//!    here (ADR 0116): the port is all of Lane 1 this loop holds, and it has
+//!    no method that can wait.
 //!
 //! Until this loop existed every one of those steps ran on the thread that
 //! accepted health probes, in the order a probe arrived: the store write
@@ -52,6 +55,7 @@
 
 use crate::arbitrage::ArbitrageInstaller;
 use crate::control::{Handoff as ControlHandoff, PlanCompiler, Poller, Readings};
+use crate::edge_quotes::executable_quotes;
 use crate::event_fabric::drain::DrainThread;
 use crate::event_fabric::inputs::{Recorded, RecordedInputs};
 use crate::event_fabric::mirror::FabricMirror;
@@ -64,7 +68,6 @@ use crate::gateway::NodeGateway;
 use crate::health::HealthSnapshot;
 use crate::mesh::{MeshHealth, MeshWorker, apply_inbound};
 use crate::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
-use crate::peer::{PeerSession, PeerTurn};
 use crate::reprice::Requoter;
 use crate::share::RegionShareStatus;
 use crate::strategies::StrategyInstaller;
@@ -76,6 +79,7 @@ use qip_core::{Clock, Timestamp, sha256_hex};
 use qip_edge::cell::{Cell, PolledHalt, WorkReport};
 use qip_edge::pressure::{Exhaustion, JournalPressure, Narrowing};
 use qip_edge::region::RegionOutlook;
+use qip_peer_link::boundary::ReflexPort;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -257,9 +261,8 @@ pub struct DecisionLoop {
     poller: Option<Poller>,
     mesh: Option<MeshWorker>,
     mesh_health: Option<MeshHealth>,
-    peers: Option<PeerSession>,
-    last_peer_turn: Option<PeerTurn>,
-    peer_failures: u64,
+    peers: Option<ReflexPort>,
+    peer_offers_dropped: u64,
     health: Option<(HealthSnapshot, HealthFacts)>,
     relay: Option<JournalRelay>,
     drain: Option<DrainThread>,
@@ -319,8 +322,7 @@ impl DecisionLoop {
             mesh: None,
             mesh_health: None,
             peers: None,
-            last_peer_turn: None,
-            peer_failures: 0,
+            peer_offers_dropped: 0,
             health: None,
             relay: None,
             drain: None,
@@ -378,24 +380,21 @@ impl DecisionLoop {
         self
     }
 
-    /// Speak the peer Reflex Mesh through `session` every turn.
+    /// Offer this cell's touch to its peers through `port` every turn.
     #[must_use]
-    pub fn with_peers(mut self, session: PeerSession) -> Self {
-        self.peers = Some(session);
+    pub fn with_peers(mut self, port: ReflexPort) -> Self {
+        self.peers = Some(port);
         self
     }
 
-    pub fn peers(&self) -> Option<&PeerSession> {
+    /// The peer link's port, if the node has one.
+    pub fn peers(&self) -> Option<&ReflexPort> {
         self.peers.as_ref()
     }
 
-    pub fn peers_mut(&mut self) -> Option<&mut PeerSession> {
-        self.peers.as_mut()
-    }
-
-    /// What the peer session did on the last turn, if the node has one.
-    pub fn last_peer_turn(&self) -> Option<&PeerTurn> {
-        self.last_peer_turn.as_ref()
+    /// Turns on which the port refused this cell's offer.
+    pub fn peer_offers_dropped(&self) -> u64 {
+        self.peer_offers_dropped
     }
 
     #[must_use]
@@ -532,19 +531,18 @@ impl DecisionLoop {
         }
         // The peer mesh, last: after the flush and the centre's delta, so
         // nothing a peer does — or fails to do — stands in front of either.
-        if let Some(peers) = self.peers.as_mut() {
-            match peers.turn(&self.cell, now) {
-                Ok(turn) => self.last_peer_turn = Some(turn),
-                Err(error) => {
-                    self.peer_failures = self.peer_failures.saturating_add(1);
-                    if self.peer_failures % 100 == 1 {
-                        eprintln!(
-                            "qip-edge-node: the peer mesh could not publish this cell's edge \
-                             state: {}",
-                            error.message()
-                        );
-                    }
-                }
+        if let Some(port) = &self.peers
+            && !port.try_publish(executable_quotes(&self.cell))
+        {
+            // A full queue or a stopped session: this turn's touch is
+            // dropped, never waited for, and the next turn's supersedes it.
+            self.peer_offers_dropped = self.peer_offers_dropped.saturating_add(1);
+            if self.peer_offers_dropped % 100 == 1 {
+                eprintln!(
+                    "qip-edge-node: the peer link refused this cell's edge state ({} turns \
+                     so far); the cell decides on regardless",
+                    self.peer_offers_dropped
+                );
             }
         }
         if let Some((snapshot, facts)) = &self.health {
@@ -744,18 +742,24 @@ impl DecisionLoop {
             None => "null".to_string(),
         };
         let peer_mesh = match &self.peers {
-            Some(peers) => {
-                let wire = peers.link().stats();
+            // Read from atomics the session thread stores, so it is one
+            // session turn behind the wire; the figures are diagnostic and
+            // nothing decides on them (ADR 0116, "What it costs").
+            Some(port) => {
+                let status = port.status();
                 format!(
-                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{}}}"#,
-                    peers.endpoint().edge_peers().len(),
-                    peers.refusals().len(),
-                    wire.sent,
-                    wire.send_failures,
-                    wire.queued_drops,
-                    wire.received,
-                    wire.inbound_drops,
-                    self.peer_failures,
+                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{},"dropped_offers":{},"quotes_refused":{},"session_turns":{}}}"#,
+                    status.edge_peers_held,
+                    status.refusals,
+                    status.sent,
+                    status.send_failures,
+                    status.wire_drops,
+                    status.frames_received,
+                    status.inbound_drops,
+                    status.publish_failures,
+                    status.dropped_offers,
+                    status.quotes_refused,
+                    status.turns,
                 )
             }
             None => "null".to_string(),

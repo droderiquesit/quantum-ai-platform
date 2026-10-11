@@ -123,26 +123,71 @@ fn every_workspace_crate_has_exactly_one_lane_and_a_stated_requirement() {
     }
 }
 
+/// The Lane 1 crates the reflex node hosts through its port, and nothing else
+/// (ADR 0116 §4). Fixed here rather than derived, so that growing it is a
+/// diff a reviewer sees: a node hosting a second coordinator is becoming a
+/// coordinator, and the ADR reopens the sidecar rather than widening this.
+const HOSTED_BY_THE_NODE: [&str; 2] = ["qip-peer-link", "qip-peer"];
+
+/// ADR 0116 §4: Lane 0 is the reflex pass's closure — what `qip-edge-node`
+/// links, minus the node itself and the fixed set of Lane 1 crates it hosts
+/// through `qip_peer_link::boundary::ReflexPort`. The node is registered at
+/// Lane 1 under the "slowest lane it hosts" rule.
+///
+/// Before ADR 0116 Lane 0 was the node's whole closure, and that definition
+/// could not survive the node hosting the peer link blueprint §16 requires:
+/// the node would be Lane 1, its closure would stop defining Lane 0, and
+/// Lane 0 would have no definition at all.
 #[test]
-fn the_lane_zero_set_is_exactly_what_the_reflex_node_compiles() {
+fn the_lane_zero_set_is_exactly_what_the_reflex_node_compiles_less_the_link_it_hosts() {
     let register = register();
     let graph = workspace();
     let compiled = closure("qip-edge-node", &graph);
-    // Premise: the closure is not trivially small.
+    // Premise: the closure is not trivially small, and holds the cell.
     assert!(
-        compiled.len() > 15,
+        compiled.len() > 15 && compiled.contains("qip-edge"),
         "closure of qip-edge-node is {compiled:?}"
     );
+    // Premise: every hosted crate is really linked, so the subtraction below
+    // removes something and the constant cannot outlive its reason.
+    for hosted in HOSTED_BY_THE_NODE {
+        assert!(
+            compiled.contains(hosted),
+            "qip-edge-node no longer links {hosted}; remove it from the hosted set"
+        );
+        assert_eq!(
+            register.get(hosted).map(|(lane, _)| *lane),
+            Some(1),
+            "{hosted} is hosted through the reflex port and must be registered at Lane 1"
+        );
+    }
+    assert_eq!(
+        register.get("qip-edge-node").map(|(lane, _)| *lane),
+        Some(1),
+        "qip-edge-node hosts the Lane 1 peer link and is placed in the slowest lane it hosts"
+    );
+    let reflex: BTreeSet<String> = compiled
+        .into_iter()
+        .filter(|name| name != "qip-edge-node" && !HOSTED_BY_THE_NODE.contains(&name.as_str()))
+        .collect();
     let lane_zero: BTreeSet<String> = register
         .iter()
         .filter(|(_, (lane, _))| *lane == 0)
         .map(|(name, _)| name.clone())
         .collect();
     assert_eq!(
-        lane_zero, compiled,
-        "the register's Lane 0 must be what qip-edge-node actually links: a crate in the \
-         closure but registered slower is a slow function in the hot binary, and one \
-         registered at Lane 0 but absent is a placement nobody exercises"
+        lane_zero, reflex,
+        "the register's Lane 0 must be what qip-edge-node links less the node and the Lane 1 \
+         crates it hosts: a crate in that set but registered slower is a slow function in the \
+         hot binary, and one registered at Lane 0 but absent is a placement nobody exercises"
+    );
+    // And the cell's own closure is inside it: Lane 0 always contains
+    // `qip-edge` and everything `qip-edge` links.
+    let cell = closure("qip-edge", &graph);
+    let outside: Vec<&String> = cell.difference(&lane_zero).collect();
+    assert!(
+        outside.is_empty(),
+        "the reflex cell links {outside:?}, which the register does not place at Lane 0"
     );
 }
 

@@ -27,6 +27,9 @@ pub mod control;
 pub mod cross_region;
 /// The polled region-availability wire: which peers have gone dark (§36.3).
 pub mod dark;
+/// What this cell offers its peers: the touch of each book it holds, as
+/// plain data for `qip_peer_link::boundary::ReflexPort` (ADR 0116).
+pub mod edge_quotes;
 pub mod event_fabric;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
@@ -41,9 +44,6 @@ pub mod mirror;
 pub mod outbox;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
-/// The peer Reflex Mesh on a socket: this cell's edge states and the
-/// distributed-cycle protocol, to and from the other cells.
-pub mod peer;
 /// Each venue's own message limits, as the deployment states them.
 pub mod quote_limits;
 pub mod replay;

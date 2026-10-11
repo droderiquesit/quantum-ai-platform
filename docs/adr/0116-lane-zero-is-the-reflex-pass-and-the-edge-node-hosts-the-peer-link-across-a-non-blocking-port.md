@@ -13,9 +13,18 @@
   broker-mediated).
 - **Amends**: `docs/architecture/lane-placement.md`'s definition of Lane 0, and
   the "slowest lane it hosts" rule as it applies to `qip-edge-node`.
-- **Implemented by**: not yet. The design below is handed to an implementer.
-  Until that lands, `mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it`
-  keeps failing, and it is right to.
+- **Implemented by**: `backend/crates/libs/qip-peer` (the protocol, moved
+  with history from `qip-contracts/src/peer.rs`; `qip_mesh::peer`
+  re-exports it), `backend/crates/edge/qip-peer-link` (`wire.rs`, moved from
+  `qip-edge-node/src/peer.rs`; `host.rs`, the session thread; `boundary.rs`,
+  `ReflexPort` and `EdgeQuote`), `qip-edge-node`'s `scheduler.rs` and
+  `edge_quotes.rs` (the port and the plain-data quote, nothing else) and
+  `main.rs` (`qip_peer_link::spawn`), the register in
+  `docs/architecture/lane-placement.md`, and the checks in `qip-acceptance`:
+  `lane_placement.rs::the_lane_zero_set_is_exactly_what_the_reflex_node_compiles_less_the_link_it_hosts`
+  and `mesh_lane.rs` (`the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it`,
+  `no_node_module_but_the_composition_root_reaches_the_peer_link_past_its_port`,
+  `the_reflex_port_declares_only_its_two_methods_and_none_can_wait`).
 
 ## Context
 

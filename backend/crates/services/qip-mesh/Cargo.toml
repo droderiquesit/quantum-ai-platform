@@ -12,6 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
+# The peer protocol, re-exported as `qip_mesh::peer` (ADR 0116): a service
+# depending on a library, the permitted direction.
+qip-peer.workspace = true
 qip-storage.workspace = true
 qip-events.workspace = true
 # ADR 0011's in-tree mesh transport, which the central plane's half of the
