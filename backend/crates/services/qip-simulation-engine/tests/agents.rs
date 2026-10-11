@@ -760,3 +760,138 @@ fn two_runs_whose_agent_records_differ_only_in_where_one_string_ends_have_differ
     );
     Ok(())
 }
+
+/// Lifts `clip` at the venue on every step.
+struct Lifter {
+    clip: Decimal,
+}
+
+impl SimStrategy for Lifter {
+    fn name(&self) -> &str {
+        "lifter"
+    }
+
+    fn on_step(&mut self, _view: &MarketView<'_>) -> Vec<SimOrder> {
+        vec![SimOrder::market(SYMBOL, VENUE, Side::Buy, self.clip)]
+    }
+}
+
+fn maker_quotes(sim: &MarketSimulator) -> Vec<(Timestamp, Decimal, Decimal)> {
+    sim.counterparty_flow()
+        .iter()
+        .filter_map(|record| match record.action {
+            FlowAction::Quote { bid, ask, .. } if record.agent == "quoter" => {
+                Some((record.at, bid, ask))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// R12-TICK-3101: participants respond to the platform's own orders. The
+/// flow used to be a function of the path alone, so a strategy could lift a
+/// maker's offer step after step and the maker never noticed it was short.
+/// Now the platform's fill is settled against the maker's inventory like any
+/// agent's. From the next step its ask backs off, and the book the order
+/// filled against, and every step before it, is unchanged.
+///
+/// Mutation: drop the `own_flow` loop in `generate_flow`, and the
+/// responding market's quotes equal the static market's everywhere.
+#[test]
+fn a_maker_the_platform_bought_from_backs_its_ask_off_from_the_next_step() -> Result<()> {
+    let closes = vec![100.0; 40];
+    let sim = replay(&closes, 11)?.with_agents(vec![CounterpartyAgent::maker(
+        "quoter",
+        dec!("500"),
+        3.0,
+        4.0,
+        dec!("5000"),
+    )?])?;
+    let calm_ask = |at: Timestamp| {
+        let calm = sim.reference_price(SYMBOL, at).expect("a reference");
+        calm + calm.apply_bps(3.0)
+    };
+    let before = maker_quotes(&sim);
+    assert!(
+        before.len() > 30 && before.iter().all(|(at, _, ask)| *ask == calm_ask(*at)),
+        "premise: with nobody trading, the maker quotes symmetrically at every step"
+    );
+
+    let report = sim.execute(
+        &SimOrder::market(SYMBOL, VENUE, Side::Buy, dec!("400")),
+        day(11),
+    )?;
+    assert!(
+        report.filled.is_positive(),
+        "premise: the order filled: {report:?}"
+    );
+    let mut responding = sim.clone();
+    responding.respond_to_fill(&report)?;
+    let after = maker_quotes(&responding);
+    assert_eq!(after.len(), before.len());
+
+    let mut backed_off = 0usize;
+    for ((at, bid, ask), (_, old_bid, old_ask)) in after.iter().zip(&before) {
+        if *at <= report.arrived_at {
+            assert_eq!(
+                (bid, ask),
+                (old_bid, old_ask),
+                "at {at}: a quote moved before the fill"
+            );
+        } else {
+            assert!(
+                *ask > calm_ask(*at),
+                "at {at}: the maker is short {} and its ask {ask} did not back off",
+                report.filled
+            );
+            backed_off += 1;
+        }
+    }
+    assert!(
+        backed_off > 10,
+        "only {backed_off} later step(s) were checked"
+    );
+
+    // Through `run`, the same response meets a strategy's own orders. A
+    // clip big enough to reach the maker's offer pays more on every step
+    // after the first than the same order against the market as it stood,
+    // because the maker it keeps lifting keeps backing off.
+    let clip = dec!("5000");
+    let run = sim.run(&mut Lifter { clip })?;
+    let unresponsive: Vec<Option<Decimal>> = run
+        .reports
+        .iter()
+        .map(|r| {
+            sim.execute(
+                &SimOrder::market(SYMBOL, VENUE, Side::Buy, clip),
+                r.submitted_at,
+            )
+            .ok()
+            .and_then(|s| s.average_price())
+        })
+        .collect();
+    assert!(
+        run.reports.len() > 30,
+        "premise: the lifter traded every step"
+    );
+    assert_eq!(
+        run.reports[0].average_price(),
+        unresponsive[0],
+        "premise: the first lift meets the market as it stood"
+    );
+    for (report, stood) in run.reports.iter().zip(&unresponsive).skip(1) {
+        assert!(
+            report.average_price() > *stood,
+            "at {}: lifted at {:?}, no dearer than a market that never saw the earlier lifts \
+             ({stood:?})",
+            report.submitted_at,
+            report.average_price()
+        );
+    }
+    assert_eq!(
+        maker_quotes(&sim),
+        before,
+        "run mutated the simulator it was asked about"
+    );
+    Ok(())
+}

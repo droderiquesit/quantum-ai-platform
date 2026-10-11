@@ -4,7 +4,7 @@
 //! Each test drives a real `ConnectorRuntime` over a recorded exchange and
 //! asserts on what the poll report carries, premise first.
 
-#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::panic_in_result_fn, clippy::float_cmp)] // the float comparison is against the exact constant the fabric assigns an unsigned claim
 
 mod connector_common;
 

@@ -161,6 +161,35 @@ impl StepOutcome {
     }
 }
 
+/// Tell the forecast lattice whether the strategic service is up, from the
+/// deep brain's own health surface (WORLD-9025).
+///
+/// The deep brain is where the weeks-to-years lane is answered, and until
+/// 2026-10-11 the lattice's "strategic service" was a flag only tests set.
+/// It was always up in every binary, so the backlog that an outage is meant
+/// to accumulate could never accumulate in a running node. The service is
+/// now down whenever the node's `/ready` would say it is: stalled, failing
+/// cycle after cycle, halted by the kill switch, or stopping. Strategic
+/// questions then wait in the lattice's bounded backlog while every stage
+/// still runs, and they are answered when the node recovers. *Warming*,
+/// meaning no cycle has completed yet, does not count as an outage. Every
+/// node warms, and holding its first strategic answers back a cycle would be
+/// a backlog nothing went wrong to cause.
+///
+/// Returns what it set.
+pub fn gate_strategic_service(
+    platform: &mut Platform,
+    status: &NodeStatus,
+    now: Timestamp,
+) -> bool {
+    let available = matches!(
+        status.unready(now),
+        None | Some(crate::status::Unready::Warming)
+    );
+    platform.lattice_mut().set_strategic_available(available);
+    available
+}
+
 /// One pass: run a cycle and time it.
 ///
 /// `now` is passed in rather than read here because everything downstream takes
@@ -398,6 +427,10 @@ pub fn run_with(
             Some(engine) => engine.sense(platform, now)?,
             None => 0,
         };
+
+        if let Ok(guard) = status.lock() {
+            gate_strategic_service(platform, &guard, now);
+        }
 
         let revised = loops
             .permissions
@@ -757,6 +790,47 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// WORLD-9025 on the binary's path: a node whose kill switch is tripped
+    /// reports unready, so the lattice holds its strategic questions, and
+    /// the cycle still traverses every stage. Execution is never what an
+    /// outage stops. Recovered, the service is up again.
+    ///
+    /// Mutation: have `gate_strategic_service` always set `true`, and the
+    /// halted node still answers strategic questions.
+    #[test]
+    fn a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs() {
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock);
+        let status = shared(&brisk());
+        let mut status = status.lock().expect("a fresh lock");
+        assert!(
+            gate_strategic_service(&mut platform, &status, start()),
+            "premise: a warming node is not an outage"
+        );
+
+        let record = |halted: bool| CycleRecord {
+            started_at: start(),
+            finished_at: start(),
+            elapsed: Duration::ZERO,
+            traversed_every_stage: true,
+            problems: Vec::new(),
+            archived: 0,
+            halted,
+        };
+        status.cycle_finished(&record(true));
+        assert!(!gate_strategic_service(&mut platform, &status, start()));
+        assert!(!platform.lattice().strategic_available());
+        let outcome = step(&mut platform, start(), Duration::from_secs(300));
+        assert!(
+            outcome.report.traversed_every_stage(),
+            "a strategic outage stopped the cycle"
+        );
+
+        status.cycle_finished(&record(false));
+        assert!(gate_strategic_service(&mut platform, &status, start()));
+        assert!(platform.lattice().strategic_available());
     }
 
     #[test]

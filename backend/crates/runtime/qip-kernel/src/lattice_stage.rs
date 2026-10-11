@@ -203,9 +203,16 @@ impl LatticeStage {
         self.pending.len()
     }
 
-    /// Whether the strategic service is serving (WORLD-9025).
+    /// Whether the strategic service is serving (WORLD-9025). Set by the
+    /// deep brain's run loop from its own health surface before each cycle;
+    /// see `qip_deepbrain::node::gate_strategic_service`.
     pub fn set_strategic_available(&mut self, available: bool) {
         self.strategic_available = available;
+    }
+
+    /// What [`Self::set_strategic_available`] last said.
+    pub const fn strategic_available(&self) -> bool {
+        self.strategic_available
     }
 
     /// Whether the calibrator's last output reached durable storage. The
