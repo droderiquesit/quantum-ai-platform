@@ -358,11 +358,21 @@ fn one_history_replayed_twice_and_from_a_checkpoint_gives_identical_order_books_
 
     let mut session =
         ReplaySession::new(model(), ticks.clone(), orders.clone(), vec![three_legs()])?;
-    for _ in 0..6 {
+    // Ten steps reach 26 ms: the resting bid decided at 1 ms has arrived
+    // (11 ms) and waits behind the queue for prints that come at 60 ms, so
+    // the checkpoint holds a working order. Taken at six steps (2 ms) it
+    // held none, and omitting `working` from the checkpoint survived.
+    for _ in 0..10 {
         assert!(session.step()?);
     }
     let checkpoint = session.checkpoint();
-    assert_eq!(checkpoint.position(), 6);
+    assert_eq!(checkpoint.position(), 10);
+    assert!(
+        serde_json::to_value(&checkpoint)?["working"]
+            .as_array()
+            .is_some_and(|working| !working.is_empty()),
+        "premise: the checkpoint is taken while an order is working"
+    );
     let checkpoint: qip_simulation_engine::tick_replay::ReplayCheckpoint =
         serde_json::from_str(&serde_json::to_string(&checkpoint)?)?;
     let resumed = ReplaySession::resume(model(), ticks, orders, vec![three_legs()], &checkpoint)?

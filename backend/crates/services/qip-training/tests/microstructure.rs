@@ -40,6 +40,8 @@ fn session(
         observations.push(BookObservation {
             at: at(t),
             venue: venue.into(),
+            sequence: i as u64,
+            entitlement: "vendor-depth".into(),
             instrument: instrument.into(),
             best_bid: bid,
             best_ask: ask,
@@ -226,5 +228,30 @@ fn the_benchmark_has_one_row_per_venue_asset_regime_and_horizon() -> Result<()> 
             .count();
         assert_eq!(row.examples, n, "{key:?}");
     }
+    Ok(())
+}
+
+/// R12-TICK-1051: an observation that names no entitlement — or no venue —
+/// is refused, not labelled. A row nobody can say the platform may use is
+/// not a training row.
+///
+/// Mutation: drop the lineage refusal at the top of `build_examples` and the
+/// blank observations are labelled into rows with no licence.
+#[test]
+fn an_observation_with_no_entitlement_or_venue_is_refused_rather_than_labelled() -> Result<()> {
+    let (observations, trades) = session("XLON", "obj-ACME", 30);
+    let plan = plan(vec![Duration::from_secs(1)]);
+    assert!(
+        !build_examples(&observations, &trades, &plan)?
+            .examples
+            .is_empty(),
+        "premise: the session labels when its lineage is whole"
+    );
+    let mut unlicensed = observations.clone();
+    unlicensed[3].entitlement = " ".into();
+    assert!(build_examples(&unlicensed, &trades, &plan).is_err());
+    let mut nameless = observations;
+    nameless[3].venue = String::new();
+    assert!(build_examples(&nameless, &trades, &plan).is_err());
     Ok(())
 }
