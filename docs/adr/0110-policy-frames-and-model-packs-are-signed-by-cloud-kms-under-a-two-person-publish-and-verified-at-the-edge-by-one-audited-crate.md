@@ -224,3 +224,25 @@ tightens a refusal and relaxes none.
 None run: no shell in the session that wrote this record.
 `documentation::every_internal_link_resolves` and `./scripts/check-secrets.sh`
 are **not run**.
+
+## Amendment 1 — 2026-10-11, which keys are HSM where, and the order of work's step 3
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line is unchanged.
+
+1. **Protection level by key purpose, then by environment**
+   (R12-SEC-10053). Every **asymmetric signing** key — the four artefact
+   classes in decision 1 and the Binary Authorization attestor — is `HSM` in
+   **every** environment, `dev` included, because `KmsSigner` refuses a
+   non-HSM answer and a `dev` that signs with SOFTWARE keys would be a `dev`
+   that cannot run the signer at all. **Encryption** keys (CMEK) are `HSM` in
+   `stage` and `prod` and may stay `SOFTWARE` in `dev` and `test`. The single
+   `kms_protection_level` variable is replaced by one per purpose, and a
+   Terraform test refuses `SOFTWARE` for any signing key anywhere and for any
+   key in `stage` or `prod`, with the admitting half proven beside it.
+2. **Step 3 of the order of work is authorised now** (R12-SEC-9109): the four
+   signing keys and the publish workflow are written in Terraform and the
+   workflow tree, applied to `dev` through `infra.yml` with the plan shown,
+   and `QIP_ARTEFACT_SIGNER=kms` is set in `dev` once a signed artefact has
+   verified against a bundle built from the real key versions. The HMAC
+   removal date already in the tree stands.

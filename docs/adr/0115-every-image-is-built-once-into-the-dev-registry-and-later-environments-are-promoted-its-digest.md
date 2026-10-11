@@ -78,3 +78,21 @@ environment from one registry needed a recorded decision. This is it.
   way that matters (for example, a non-deterministic embedded resource the
   comparison does not see), reproducibility is not established and the
   comparison must be widened before this record's claim stands.
+
+## Amendment 1 — 2026-10-11, the private pool is approved and the portal's exemption is to be closed
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status and decisions
+above are unchanged.
+
+1. **The Cloud Build private pool is approved for `dev`** (R12-CICD-9097):
+   apply `modules/build-pool` through `infra.yml` with the plan shown, then
+   set `cloud_build_private_pool_enabled = true` in `dev`'s tfvars in a
+   separate commit, so that every build of record runs inside private
+   networking with a keyless identity rather than on a hosted runner. The
+   approval is for this apply; it is not standing approval for the next one.
+2. **The portal's exemption from the two-build comparison is to be closed,
+   not kept.** The random build id is the stated cause; the portal's build id
+   is set to the commit, the comparison is extended to the portal image, and
+   if a further source of non-determinism remains the exemption is kept only
+   with that source named in `deploy.yml` beside it.

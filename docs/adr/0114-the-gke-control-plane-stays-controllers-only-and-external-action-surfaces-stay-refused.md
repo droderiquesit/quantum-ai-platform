@@ -155,3 +155,52 @@ stand.
 ## Gates
 
 None run: no shell in the session that wrote this record.
+
+## Amendment 1 — 2026-10-11, which GKE-placed rows are mechanisms and which are capabilities, and what agents may draft through
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line and both
+decisions above are unchanged; this sorts the rows they govern.
+
+### D4: the mechanism stays refused; a capability is built on the runtime of record
+
+A row whose subject **is** the Kubernetes mechanism stays BLOCKED by D4. A
+row whose subject is a **capability** that the requirement happened to place
+on GKE is built on Cloud Run, Cloud Run Jobs or Compute Engine, and is
+scored against that equivalent; the GKE wording of such a row is refused, and
+the register says so in the row rather than leaving the capability unbuilt.
+The two columns below are independent lists; a row on the left is not paired
+with the row beside it.
+
+| Stays BLOCKED (the mechanism is the requirement) | Built on the runtime of record (the capability is) |
+|---|---|
+| R12-GCP-8005 (regional GKE Standard service plane) | R12-GCP-8104, 8105, 8106 — warm portfolio, capital and risk brains on Cloud Run; managed-store backing is ADR 0113's ledger |
+| R12-GCP-8115 (GKE Standard regional clusters) | R12-EVID-8108 — continuous source scoring as a scheduled stage of the deep brain, its derived state reproducible from the event log (no Spanner Graph; ADR 0113) |
+| R12-GCP-9183 (HPA/VPA, Cluster Autoscaler) | R12-FABRIC-8109 — sinks on a dedicated Compute Engine managed instance group per destination, autoscaled on the consumer-lag series |
+| R12-GCP-10030, R12-GCP-7006 (warm/stateful services on GKE) | R12-TICK-8110 — replay shards and counterfactual comparison as Cloud Run Jobs |
+| R12-GCP-9015 (cognitive services on GKE; the burst half is ADR 0122) | R12-REASON-8111 — custom Rust solvers on the deep brain's Cloud Run capacity, off every hot path; Z3/OR-Tools not admitted |
+| R12-CICD-9113 (Argo Rollouts) | R12-GCP-8116 — "research cannot starve control" as per-service maximum instances and concurrency, and research in separately budgeted Cloud Run Jobs |
+| R12-MODEL-10065 (GPU node pools; also waits on a measured need, ADR 0122) | R12-CICD-9116 — canary by Cloud Run traffic split, an SLO gate read from the pushed series (ADR 0121), rollback to the previous promoted digest (ADR 0115) |
+
+### D8: an agent may draft through an adapter whose only effect is an internal outbox
+
+D8 permits drafting and refuses acting. To make the draft path auditable
+rather than informal, `qip-agency` may have exactly one production adapter,
+a **drafting adapter**, whose only effect is to append the draft artefact to
+an internal outbox in the hash-chained log for a person to read. It calls no
+outside system, holds no outside credential, and is in the owned-system
+registry. Through it a shipped binary can write the third record of
+R12-GOV-6124's chain honestly — "executed" meaning a draft was written, which
+is what the record says. Everything after the outbox is a person acting
+through their own credential, outside the platform.
+
+The guard's quality gaps on R12-AGENCY-1006, 1025, 1056, 1057, 1059 and 1060
+— citations resolved against the evidence store rather than checked for
+shape, provenance established rather than declared, disclosures that cannot
+be configured inert, conduct judged on the step and not only its words — are
+buildable now: they govern drafts as much as actions. Their "needs governance
+approval" clause is answered here: external action stays refused, drafting is
+approved.
+
+The four external-action rows (6092, 6093, 6095, 6096) and R12-AGENCY-9062
+(an adapter service per action class) stay BLOCKED by D8.

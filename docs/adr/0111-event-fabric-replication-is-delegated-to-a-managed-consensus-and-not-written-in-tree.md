@@ -179,3 +179,47 @@ ledger fence, the three original layers and `Determinism::Required` stand.
 ## Gates
 
 None run: no shell in the session that wrote this record.
+
+## Amendment 1 — 2026-10-11, the owner's decisions on the rows this record left to "the register's call"
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line above is
+unchanged; these answer the questions this record and the register left open.
+
+1. **Spanner stays the consensus; the `openraft` fallback is not taken.**
+   R12-FABRIC-7037 asks for an in-tree Raft quorum with "no cloud database
+   required for regional operation". That clause is refused, and the cost is
+   the one section "What it costs" already names: a region whose fabricd
+   cannot reach its regional Spanner instance stops acknowledging P0/P1 and
+   narrows. The rest of 7037's intent is adopted: **stream definitions,
+   partition placement, broker epochs and ACL metadata move into the same
+   regional database as the lease**, written only through read-write
+   transactions that check the writer's lease epoch, so the controller's
+   metadata has exactly the durability and fencing the leadership row has.
+   7037 is buildable on that reading.
+2. **Rendezvous chooses who tries; the lease decides who holds**
+   (R12-FABRIC-8085). Each fabricd computes `leader_for` over the live
+   instance set and contends immediately only for the partitions it is the
+   preferred leader of; for any other partition it contends only after the
+   lease has been expired for a stated grace. Placement is then stable and
+   spread across instances, and safety still comes from the database, never
+   from the hash. P2–P4 stay RF1 under §2 above — 8085's "followers in other
+   zones" is met for P0/P1 and refused for P2–P4 until §2's measurement.
+3. **Three brokers per production region, one per zone, C4/C4D**
+   (R12-FABRIC-8096). §1 said "two or three"; this fixes three in production
+   and stage, one per zone across three zones, which meets 8096's stated
+   minimum. Five is reached only on a committed throughput measurement. The
+   broker module stops refusing a second address, refuses more than one
+   broker per zone, and refuses any shape other than C4 or C4D. `dev` may run
+   one, or two for the kill-the-leader drill.
+4. **Deployment (R12-FABRIC-7035).** The fabric's regional Spanner database
+   is declared in Terraform now, gated like the rest of the data module, and
+   the adapter is proven against the Spanner emulator before any instance is
+   applied. `qip-fabricd` is then deployed in `dev`, in ADR 0035's one
+   region, beside the first execution node, when billing is enabled there;
+   the plan is shown before the apply, as the infrastructure rules require.
+5. **The ADR 0100 §3 rows are superseded for P0/P1 by this record, not
+   still blocked by §3**: R12-FABRIC-9118, 9182, R12-RES-9168, 9169 (the
+   managed log, its followers and lease promotion), and R12-OBS-9146, whose
+   "quorum acknowledgement latency" is the Spanner commit latency on the
+   produce path, recorded per class. Cross-region mirroring is ADR 0119.

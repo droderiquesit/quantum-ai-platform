@@ -550,3 +550,16 @@ may be *named* as having approved something, and in its central half decides
 that nobody may yet be named as the second person. It adds no capability,
 removes no refusal, changes no default, and leaves every route that was refused
 before it refused after it.
+
+## Amendment — 2026-10-11, the owner's questions are answered by ADR 0120
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line above is left
+as written; [ADR 0120](0120-operator-presence-and-the-two-person-rule-are-per-person-webauthn-keys-the-platform-verifies-and-cannot-mint.md)
+is the accepted record. It adopts decisions 3, 4's requirement and 5 of this
+record unchanged; amends decision 1 (the per-person credential is an enrolled
+WebAuthn public key, not a bearer token) and decision 2 (`Presence` gains
+`Attested`, constructed only from a verified assertion over a request-bound,
+single-use, 120-second challenge — the "something checks a person" this
+record waited for); and answers "What is still the owner's": build it, by
+that shape rather than (b) or (c), and keep the two-person rule.

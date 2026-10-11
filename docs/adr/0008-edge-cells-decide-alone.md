@@ -89,3 +89,20 @@ cells cannot be kept accurate enough to be worth having, then granting capital
 in advance is granting it blind, and capital should return to being allocated
 per order by a central risk service — accepting the latency, because an
 unmeasurable risk is worse than a slow one.
+
+## Amendment — 2026-10-11, an envelope without authority bounds admits nothing
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The decision above is
+unchanged.
+
+`CapitalEnvelope` can carry signed `AuthorityBounds` (maximum leverage,
+product classes, regulated functions), and `admit_bounded` enforces them, but
+the cell admits through the unbounded `admit`, so no signed bound governs any
+order (R12-GOV-6120). The decision: **the cell admits only through
+`admit_bounded`, and an envelope with no bounds is refused, not admitted as a
+legacy envelope.** Nothing is deployed, so no envelope in circulation is
+stranded; a grant the centre issues after this change carries bounds or is
+not a grant a cell will act on. A missing bound is a refusal, never an
+unlimited one — the fail-closed reading of the capital the cell is granted in
+advance.

@@ -144,3 +144,36 @@ credential's IAM binding and every one of the four fences are unchanged.
 ## Gates
 
 None run: no shell in the session that wrote this record.
+
+## Amendment 1 — 2026-10-11, what satisfies the rows this record named
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line above is
+unchanged.
+
+1. **IAM-authenticated invocation is the platform's answer to R12-API-8113,
+   and the internal Application Load Balancer with mTLS is refused.** The
+   round-2 audit was right that this substitutes a mechanism; this amendment
+   is the owner deciding the substitution, for the reason §"Alternatives
+   rejected" gives (an extra hop to authenticate a caller Cloud Run's front
+   end already authenticates). 8113 is satisfied when a plan shows every
+   catalogue service at `INGRESS_TRAFFIC_INTERNAL_ONLY` with
+   `roles/run.invoker` held only by named service accounts, the invoker
+   manifests are applied, and a call from inside the VPC with no ID token,
+   and one with a token for a principal not granted, are each refused — the
+   evidence the audit found missing.
+2. **R12-SEC-10031 ("Cloud Service Mesh mTLS for warm services")** is
+   satisfied by the hop table in §1: mTLS through `rustls` wherever the
+   platform owns the socket, IAM invocation into Cloud Run. The mesh itself
+   stays refused (ADR 0114 D4). Its "the mesh never carries Reflex traffic"
+   clause holds already and keeps its test.
+3. **QUIC stays measured-only** (R12-FABRIC-7046, R12-FABRIC-8083). Their
+   mTLS halves are built. The remaining work is the measurement §4 asks for —
+   TCP+TLS against QUIC on the cross-region peer-mesh hop, committed — and
+   `quinn` is admitted by its own allow-list record only if that measurement
+   shows a cost the platform needs removed. Both rows are buildable work, not
+   blocked rows.
+4. **`prost` stays unadmitted** (R12-FABRIC-7048), confirming ADR 0109's
+   table: the fabric's codec is canonical JSON under the schema lock until a
+   wire format outside this repository requires protobuf. 7048 stays BLOCKED
+   by that decision.

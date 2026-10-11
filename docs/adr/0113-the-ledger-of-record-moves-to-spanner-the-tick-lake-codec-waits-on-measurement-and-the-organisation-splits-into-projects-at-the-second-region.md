@@ -171,3 +171,26 @@ governs any move beyond paper.
 ## Gates
 
 None run: no shell in the session that wrote this record.
+
+## Amendment 1 — 2026-10-11, the tick-lake codec's default
+
+Made by the owner in the session under the instruction "You make the
+recommended decision and have full permission". The status line is unchanged.
+
+§3 left the default to a measurement and the register scored that as an
+owner decision (R12-TICK-2057). The decision: **lake segments are written
+with `zstd` by default** wherever the lake is written, at a level fixed in the
+change that flips it, because the archive's readers need a standard frame and
+market data is the case a general-purpose compressor is built for. The
+measurement §3 asked for is still committed, in the same change, as the
+evidence for the level and for the claim that compression runs on the drain
+thread without raising spool pressure — and if it shows spool pressure rising,
+the default stays `Identity` and this amendment is void. The deployment sets
+`QIP_TICK_LAKE_CODEC` explicitly (the execution node's startup template)
+rather than relying on the binary's default, so the configuration a node runs
+is the one a reader of the infrastructure sees. Uncompressed and compressed
+segments keep coexisting through the encoding byte, as §3 already provides.
+
+The ledger and placement decisions above also confirm ADR 0119's choice of a
+**regional** instance for the fabric: no fabric produce waits on a
+multi-region commit.
