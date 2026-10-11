@@ -133,3 +133,35 @@ test("the command exits non-zero on a blocking finding and zero on a clean analy
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The ratchet. The gate's first run over the whole repository found 491
+// findings that predate it; without a baseline nothing could ever deploy,
+// and with an unbounded one nothing new would ever block. These pin both
+// halves: a file's allowance admits that many and no more, a file absent
+// from the baseline admits none, and an allowance larger than what was found
+// is reported so the fixing change can lower it.
+test("the baseline admits a file's existing findings and blocks the next one", async () => {
+  const { applyBaseline } = await import("./sast-gate.mjs");
+  const finding = (ruleId, location) => ({ ruleId, location, severity: 7.5 });
+  const blocking = [
+    finding("rust/cleartext-logging", "backend/a.rs:10"),
+    finding("rust/cleartext-logging", "backend/a.rs:20"),
+    finding("rust/cleartext-logging", "backend/a.rs:30"),
+    finding("rust/path-injection", "backend/b.rs:5"),
+  ];
+  const allowances = { "rust/cleartext-logging backend/a.rs": 2, "rust/path-injection backend/c.rs": 1 };
+  const result = applyBaseline(blocking, allowances);
+  assert.equal(result.baselined.length, 2, "premise: the allowance admits exactly two");
+  assert.deepEqual(result.blocking.map((f) => f.location), ["backend/a.rs:30", "backend/b.rs:5"]);
+  assert.deepEqual(result.shrinkable, ["rust/path-injection backend/c.rs: allowance 1, found 0"]);
+  assert.equal(applyBaseline(blocking, {}).blocking.length, 4, "no baseline admits nothing");
+});
+
+test("a baseline that does not parse, or carries a bad allowance, is refused", async () => {
+  const { readBaseline } = await import("./sast-gate.mjs");
+  assert.ok(readBaseline("{").problem);
+  assert.ok(readBaseline("{}").problem);
+  assert.ok(readBaseline('{"allowances":{"r f":-1}}').problem);
+  assert.ok(readBaseline('{"allowances":{"r f":1.5}}').problem);
+  assert.deepEqual(readBaseline('{"allowances":{"r f":2}}').allowances, { "r f": 2 });
+});

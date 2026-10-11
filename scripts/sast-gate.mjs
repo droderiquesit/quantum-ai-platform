@@ -48,7 +48,11 @@ export function readPolicy(text) {
   if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold < 0 || threshold > 10) {
     return { problem: "the SAST policy's min_security_severity is not a number between 0 and 10" };
   }
-  return { policy: { minSecuritySeverity: threshold, band: String(parsed.band ?? "") } };
+  const baseline = parsed?.baseline;
+  if (baseline !== undefined && (typeof baseline !== "string" || baseline.length === 0)) {
+    return { problem: "the SAST policy's baseline, when present, must be a file path" };
+  }
+  return { policy: { minSecuritySeverity: threshold, band: String(parsed.band ?? ""), baseline } };
 }
 
 /** Every rule a run declares, by id, from the driver and any extensions. */
@@ -150,6 +154,53 @@ export function readSarifDirectory(dir) {
 }
 
 /** The command line, end to end. Returns the exit code; writes to `out`/`err`. */
+/**
+ * Apply the ratchet: a blocking finding inside its `<rule> <file>`
+ * allowance is moved to `baselined`, and anything beyond the allowance
+ * stays blocking. Returns `{ blocking, baselined, shrinkable }`, where
+ * `shrinkable` names allowances larger than what the analysis found, so
+ * the change that fixed them can lower the number.
+ */
+export function applyBaseline(blocking, allowances = {}) {
+  const used = new Map();
+  const kept = [];
+  const baselined = [];
+  for (const finding of blocking) {
+    const file = String(finding.location).replace(/:[^:]*$/, "");
+    const key = `${finding.ruleId} ${file}`;
+    const allowed = Number.isInteger(allowances[key]) && allowances[key] > 0 ? allowances[key] : 0;
+    const n = used.get(key) ?? 0;
+    if (n < allowed) {
+      used.set(key, n + 1);
+      baselined.push(finding);
+    } else {
+      kept.push(finding);
+    }
+  }
+  const shrinkable = Object.entries(allowances)
+    .filter(([key, allowed]) => Number.isInteger(allowed) && (used.get(key) ?? 0) < allowed)
+    .map(([key, allowed]) => `${key}: allowance ${allowed}, found ${used.get(key) ?? 0}`);
+  return { blocking: kept, baselined, shrinkable };
+}
+
+/** Read the baseline file the policy names; refuse one that does not parse. */
+export function readBaseline(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (cause) {
+    return { problem: `the SAST baseline is not JSON: ${cause.message}` };
+  }
+  const allowances = parsed?.allowances;
+  if (!allowances || typeof allowances !== "object" || Array.isArray(allowances)) {
+    return { problem: "the SAST baseline has no `allowances` object" };
+  }
+  for (const [key, value] of Object.entries(allowances)) {
+    if (!Number.isInteger(value) || value < 0) return { problem: `baseline allowance for ${key} is not a non-negative integer` };
+  }
+  return { allowances };
+}
+
 export function main(argv, { out = console.log, err = console.error } = {}) {
   const policyAt = argv.indexOf("--policy");
   const policyPath = policyAt >= 0 ? argv[policyAt + 1] : undefined;
@@ -171,7 +222,29 @@ export function main(argv, { out = console.log, err = console.error } = {}) {
     return 1;
   }
   const { documents, problems: readProblems } = readSarifDirectory(dirs[0]);
-  const { blocking, informational, problems } = judge(documents, policy);
+  const judged = judge(documents, policy);
+  const { informational, problems } = judged;
+  let allowances = {};
+  if (policy.baseline) {
+    let baselineText;
+    try {
+      baselineText = readFileSync(policy.baseline, "utf8");
+    } catch (cause) {
+      err(`cannot read the SAST baseline ${policy.baseline}: ${cause.message}`);
+      return 1;
+    }
+    const read = readBaseline(baselineText);
+    if (read.problem) {
+      err(read.problem);
+      return 1;
+    }
+    allowances = read.allowances;
+  }
+  const { blocking, baselined, shrinkable } = applyBaseline(judged.blocking, allowances);
+  for (const finding of baselined) {
+    out(`baselined: ${finding.ruleId} at ${finding.location} (security-severity ${finding.severity}), allowed by ${policy.baseline}`);
+  }
+  for (const line of shrinkable) out(`baseline can shrink: ${line}`);
   for (const finding of informational) {
     out(`not blocking: ${finding.ruleId} at ${finding.location}${finding.severity === undefined ? " (no security-severity)" : ` (security-severity ${finding.severity})`}`);
   }

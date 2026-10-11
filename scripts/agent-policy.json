@@ -27,6 +27,7 @@
       "scripts/lanes/**",
       "scripts/sast-policy.json",
       "scripts/sast-gate.mjs",
+      "scripts/sast-baseline.json",
       "infrastructure/terraform/variables.tf",
       "infrastructure/terraform/execution-nodes-enabled.tf",
       "infrastructure/terraform/build-pool.tf",

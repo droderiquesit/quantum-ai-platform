@@ -193,3 +193,34 @@ in `blueprint_rules.rs` against this ADR. A person's unsigned commit to a
 protected path now needs another person's approval or a registered signing
 key; this costs a solo maintainer a one-time `git config commit.gpgsign` with
 a key added to GitHub as a signing key.
+
+## Amendment 1 (2026-10-11): the SAST gate ratchets from a committed baseline
+
+The gate's first run over the whole repository (PR #207, run
+38135893014) refused 491 findings in 99 files, nearly all of them in code
+that predates the gate: 475 `rust/cleartext-logging` (378 of them in test
+assertion messages), 9 `rust/hard-coded-cryptographic-value` (all test
+vectors in `qip-chain/tests/pools.rs`), 4 `rust/uncontrolled-allocation-size`
+and 3 `rust/path-injection`. As written, the gate made every commit
+undeployable until all of them were fixed, which is not a gate but a stop.
+
+**Decision.** `scripts/sast-policy.json` names `scripts/sast-baseline.json`,
+a per-file allowance keyed `<rule> <file>` and generated from that run. A
+finding inside its file's allowance prints as `baselined:` and does not
+block; one beyond it blocks; a file absent from the baseline allows none.
+The gate prints `baseline can shrink:` where an allowance exceeds what it
+found. The baseline is a protected path (`scripts/agent-policy.json`), so
+raising a number is a reviewed change, and lowering one belongs in the
+change that fixes the findings.
+
+**What it costs.** A new finding of an already-baselined rule in an
+already-baselined file is admitted while the file stays under its count,
+because allowances are counted per file, not pinned to a line (line
+numbers move with every edit and CodeQL's fingerprints are not in the
+log the baseline was built from). The burn-down closes that gap: every
+allowance retired is a file where it no longer exists.
+
+**What would make this wrong.** If the baseline only ever grows, it is an
+exemption list and this amendment should be reversed. Its total is 491 on
+2026-10-11; count it with
+`python3 -c "import json;print(sum(json.load(open('scripts/sast-baseline.json'))['allowances'].values()))"`.
