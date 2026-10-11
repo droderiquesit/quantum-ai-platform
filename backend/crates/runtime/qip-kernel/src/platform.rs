@@ -344,6 +344,14 @@ pub struct Platform {
     /// to tell those apart.
     wallet_tolerance_reasons: BTreeMap<VenueAsset, String>,
     attributor: Attributor,
+    /// The seven §22 keys each fill is attributed under, stamped when the
+    /// hypothesis was formed and the order accepted (R12-MODEL-6003). Read
+    /// by LEARN's attribution; see `crate::attribution`.
+    pub(crate) attribution_lineage: crate::attribution::AttributionLineage,
+    /// §9.8's Model Tournament, §22.1's Forecast Market and §9.11's verifier
+    /// society, as the cycle runs them. Advisory; see
+    /// `crate::model_tournament`.
+    pub(crate) tournament: crate::model_tournament::TournamentStage,
     evaluator: ThesisEvaluator,
     feedback: FeedbackEngine,
 
@@ -4846,6 +4854,8 @@ impl Platform {
             policy_rates: PolicyRateTable::new(),
             wallet_tolerance_reasons: BTreeMap::new(),
             attributor: Attributor::new(),
+            attribution_lineage: crate::attribution::AttributionLineage::new(),
+            tournament: crate::model_tournament::TournamentStage::new(),
             evaluator: ThesisEvaluator::default(),
             feedback: FeedbackEngine::default(),
             organisation,
@@ -12020,6 +12030,13 @@ impl Platform {
                 if let Some(problem) = symbolic_problem {
                     outcome = outcome.with_problem(problem);
                 }
+                // §22's attribution keys and §9.8's tournament, both read
+                // here because this is the instant the facts were true.
+                // Advisory: neither reaches DECIDE. See `crate::attribution`
+                // and `crate::model_tournament`.
+                if let Some(clause) = self.observe_hypothesis(&reasoned, &report, approved, now) {
+                    outcome.detail.push_str(&clause);
+                }
                 let decision = if !approved {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
@@ -12130,6 +12147,99 @@ impl Platform {
         problems
             .into_iter()
             .fold(outcome, |acc, problem| acc.with_problem(problem))
+    }
+
+    /// Hand one formed hypothesis to `crate::attribution` (its forecasters
+    /// and evidence origins, the keys its fills will be credited under) and
+    /// to `crate::model_tournament` (a question, a forecast from every
+    /// specialist that looked, and the verifier society for an important
+    /// one). Gathers only — every figure is read off series the platform
+    /// already holds, at the instant the hypothesis was formed — and returns
+    /// a clause for the stage detail. Neither module holds a path back into
+    /// the thesis or its size.
+    fn observe_hypothesis(
+        &mut self,
+        reasoned: &ReasoningOutcome,
+        report: &qip_investment_agents::OrganisationReport,
+        approved: bool,
+        now: Timestamp,
+    ) -> Option<String> {
+        let roster: Vec<String> = self
+            .organisation
+            .roster()
+            .iter()
+            .map(|manifest| manifest.id.clone())
+            .collect();
+        self.attribution_lineage
+            .note_hypothesis(&reasoned.hypothesis, &roster);
+        let subject = reasoned.hypothesis.subjects.first()?.as_str().to_string();
+        let regime = format!(
+            "{}/{}",
+            self.market_regime(&subject).as_str(),
+            self.volatility_regime(&subject).as_str()
+        );
+        let closes = self
+            .price_history
+            .get(&subject)
+            .cloned()
+            .unwrap_or_default();
+        let spread_ratio = self.spread_ratio(&subject);
+        let crossed_recently = self
+            .regime_transitions
+            .regime_of(&subject)
+            .map(|_| self.regime_transitions.crossed_recently(&subject, now));
+        let id = reasoned.hypothesis.hypothesis_id.as_str();
+        let expected_move_bps = self
+            .predictions
+            .iter()
+            .rev()
+            .find(|prediction| prediction.hypothesis == id)
+            .and_then(|prediction| prediction.claim.as_ref())
+            .map_or(0.0, |claim| claim.expected_move_bps);
+        self.tournament.observe_reasoning(
+            crate::model_tournament::ReasonObservation {
+                hypothesis: &reasoned.hypothesis,
+                report,
+                roster: &roster,
+                regime,
+                closes: &closes,
+                spread_ratio,
+                crossed_recently,
+                expected_move_bps,
+                approved,
+            },
+            now,
+        )
+    }
+
+    /// The model tournament and its forecast market, for the API and the
+    /// tests.
+    pub fn model_tournament(&self) -> &qip_learning_engine::tournament::Tournament {
+        self.tournament.tournament()
+    }
+
+    /// The most recent LEARN attribution, joined to its §22 keys.
+    pub fn last_attribution(&self) -> Option<&crate::attribution::AttributionPass> {
+        self.attribution_lineage.last()
+    }
+
+    /// The latest instant any watched subject crossed a regime boundary,
+    /// for the verifier society's structural-break critic.
+    pub(crate) fn latest_regime_crossing(&self) -> Option<Timestamp> {
+        self.regime_transitions.latest_crossing()
+    }
+
+    /// Every catalogue dataset held quarantined, and every dataset produced
+    /// from one, for the verifier society's data-poisoning critic.
+    pub(crate) fn quarantined_datasets(&self) -> BTreeSet<String> {
+        let mut quarantined = BTreeSet::new();
+        for registration in self.catalog.iter() {
+            if !registration.quality.is_usable() {
+                quarantined.insert(registration.dataset.clone());
+                quarantined.extend(self.catalog.impacted_by(&registration.dataset));
+            }
+        }
+        quarantined
     }
 
     /// Run `crate::symbolic_stage` over one formed hypothesis and journal the
@@ -15019,6 +15129,39 @@ impl Platform {
                 ));
             }
         }
+        // Blueprint §9.8, §9.11 and §22.1: resolve the tournament's due
+        // questions against the first bar past each horizon, credit each
+        // forecaster the attribution's real P&L for the positions it
+        // informed, put every promotion candidate to the verifier society,
+        // and journal the cycle. Advisory: see `crate::model_tournament`.
+        let attributed = self
+            .attribution_lineage
+            .last()
+            .and_then(|pass| crate::attribution::by_forecaster(pass).ok());
+        match self
+            .tournament
+            .learn(&self.bar_history, attributed.as_ref(), self.cycle, now)
+        {
+            Ok(Some(review)) => {
+                let detail = format!("{}; {}", outcome.detail, review.detail());
+                outcome = StageOutcome { detail, ..outcome };
+                if let Err(error) =
+                    self.journal_record(review, crate::model_tournament::TOURNAMENT_ORIGIN, now)
+                {
+                    outcome = outcome.with_problem(format!(
+                        "the tournament's cycle was not journaled: {}",
+                        error.message()
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                outcome = outcome.with_problem(format!(
+                    "the model tournament could not learn this cycle: {}",
+                    error.message()
+                ));
+            }
+        }
         // Blueprint §13.1's regime-experience and blind-spot rows, read over
         // the memory `calibrate_resolved` has just added to. Until this call
         // the self-model answered two of the section's seven questions and
@@ -15795,11 +15938,20 @@ impl Platform {
         observations
     }
 
-    /// Attribute what the fills cost. The body of LEARN, without the capture
-    /// reporting wrapped around it.
+    /// Attribute what the fills earned. The body of LEARN, without the
+    /// capture reporting wrapped around it.
     ///
     /// Returns the stage outcome and what each hypothesis earned, which the
     /// calibration pass grades the resolved theses on.
+    ///
+    /// Gathers only; `crate::attribution` decides. Until R12-MODEL-6003 this
+    /// built every position at its own fill price with realised P&L, spread
+    /// and impact zero, so the decomposition closed on commissions alone and
+    /// every thesis was graded on what it cost to trade. Each fill is now
+    /// marked to its instrument's latest observed close, from its order's
+    /// arrival price, with the slippage split into the spread quoted at
+    /// release and impact; and the result is joined to the seven keys
+    /// stamped when the hypothesis was formed and the order accepted.
     fn attribute(&mut self, now: Timestamp) -> (StageOutcome, BTreeMap<String, Decimal>) {
         let fills = self.orders.fills();
         if fills.is_empty() {
@@ -15814,129 +15966,99 @@ impl Platform {
         }
 
         // The market factor, estimated from the platform's own tape (ADR
-        // 0058). Computed once for the whole attribution rather than per
-        // position: it is one series, and estimating it inside the loop would
-        // let two positions in the same decomposition be measured against
-        // benchmarks that differ by rounding.
-        //
-        // Until this existed, `factor_betas` and `factor_returns` below were
-        // built empty at every site, so the factor half of the decomposition
-        // was structurally silent — and so were `effective_bets` and the
-        // stress tester downstream of it. An instrument whose overlap with the
-        // factor is too short still carries no beta: `beta_of` answers `None`,
-        // the maps stay empty for that position, and it is *unmodelled* rather
-        // than modelled as immune.
+        // 0058), once for the whole attribution: one series, so two positions
+        // in the same decomposition are measured against one benchmark. An
+        // instrument whose overlap is too short carries no beta and is
+        // unmodelled rather than modelled as immune.
         let market = qip_risk::market_factor::MarketFactor::estimate(&self.price_history);
         let factor_return = market.latest_return();
-        // Resolved before the loop, so the closure below borrows a finished
-        // map rather than the order book. A fill whose order the book no
-        // longer holds, or whose instrument has too short an overlap, is
-        // simply absent here — which is what makes it unmodelled downstream.
-        let betas_by_order: BTreeMap<String, f64> = fills
+        let marks: Vec<crate::attribution::FillMark> = fills
             .iter()
-            .filter_map(|fill| {
-                let order = self.orders.order(&fill.order_id)?;
-                let beta = market.beta_of(order.object_id.as_str())?;
-                Some((fill.order_id.as_str().to_string(), beta))
+            .map(|fill| {
+                // The order behind the fill carries its hypotheses and its
+                // side; a fill whose order the book no longer holds is
+                // attributed as a buy with no hypothesis rather than dropped,
+                // which keeps the book's total whole and the gap visible.
+                let order = self.orders.order(&fill.order_id);
+                let instrument = order.map_or_else(
+                    || fill.order_id.as_str().to_string(),
+                    |order| order.object_id.as_str().to_string(),
+                );
+                crate::attribution::FillMark {
+                    order_id: fill.order_id.as_str().to_string(),
+                    mark: self
+                        .bar_history
+                        .get(&instrument)
+                        .and_then(|bars| bars.last())
+                        .map(|bar| bar.close),
+                    beta: market.beta_of(&instrument),
+                    instrument,
+                    at: fill.at,
+                    side: order.map_or(1, |order| i64::from(order.side.sign())),
+                    quantity: fill.quantity,
+                    price: fill.price,
+                    arrival: order.map_or(fill.price, |order| order.arrival_price),
+                    commission: fill.costs,
+                    hypotheses: order
+                        .map(|order| order.hypotheses.clone())
+                        .unwrap_or_default(),
+                }
             })
             .collect();
+        let fill_count = marks.len();
 
-        // Attribute what the fills cost. The decomposition must close, and a
-        // failure here is loud rather than absorbed: unexplained P&L is
-        // exactly where whatever nobody understood is hiding.
-        let periods: Vec<qip_learning_engine::attribution::PositionPeriod> = fills
-            .iter()
-            .map(|fill| qip_learning_engine::attribution::PositionPeriod {
-                object_id: fill.order_id.as_str().to_string(),
-                // The order behind the fill already carries its hypotheses —
-                // `Order::hypotheses` is set from the proposal leg at release
-                // and documents itself as required, "an untraceable order is
-                // one nobody can explain after the fact". This site used to
-                // pass an empty vector, so `by_hypothesis` skipped every
-                // position and returned nothing for everything the platform
-                // traded: the join that makes learning possible was empty on a
-                // platform whose whole purpose is saying why it did what it
-                // did. An order that cannot be found contributes no hypothesis
-                // rather than a guessed one.
-                hypotheses: self
-                    .orders
-                    .order(&fill.order_id)
-                    .map(|order| order.hypotheses.clone())
-                    .unwrap_or_default(),
-                opening_quantity: Decimal::ZERO,
-                opening_price: fill.price,
-                closing_quantity: fill.quantity,
-                closing_price: fill.price,
-                decision_price: fill.price,
-                traded_quantity: fill.quantity,
-                traded_price: fill.price,
-                commission: fill.costs,
-                spread_cost: Decimal::ZERO,
-                impact_cost: Decimal::ZERO,
-                income: Decimal::ZERO,
-                financing: Decimal::ZERO,
-                realised_pnl: Decimal::ZERO,
-                // Both maps carry the market factor where the instrument
-                // has a beta, and neither carries it otherwise. They move
-                // together on purpose: a beta with no return to multiply, or a
-                // return with no beta, is a decomposition term nobody can
-                // evaluate.
-                factor_returns: betas_by_order
-                    .get(fill.order_id.as_str())
-                    .and(factor_return)
-                    .map(|value| {
-                        BTreeMap::from([(
-                            qip_risk::market_factor::MARKET_FACTOR.to_string(),
-                            value,
-                        )])
-                    })
-                    .unwrap_or_default(),
-                factor_betas: betas_by_order
-                    .get(fill.order_id.as_str())
-                    .copied()
-                    .filter(|_| factor_return.is_some())
-                    .map(|value| {
-                        BTreeMap::from([(
-                            qip_risk::market_factor::MARKET_FACTOR.to_string(),
-                            value,
-                        )])
-                    })
-                    .unwrap_or_default(),
-                contract_multiplier: Decimal::from_int(1),
-            })
-            .collect();
-        let total: Decimal = periods
-            .iter()
-            .map(|period| -period.commission)
-            .fold(Decimal::ZERO, |a, b| a + b);
-
-        match self
-            .attributor
-            .attribute(&periods, total, self.capital.equity(), now, now)
-        {
-            Ok(attribution) => {
-                // The hypothesis count is reported because it is the join that
-                // makes learning possible, and because it was silently zero:
-                // this stage said "N fill(s) attributed" every cycle while
-                // `by_hypothesis` returned an empty map, so the number that
-                // was wrong was the one nobody printed. An operator reading
-                // fills attributed across no hypotheses now sees the gap.
-                let by_hypothesis = attribution.by_hypothesis();
-                (
-                    StageOutcome::ran(
-                        Stage::Learn,
-                        attribution.positions.len(),
-                        format!(
-                            "{} fill(s) attributed across {} hypothesis(es), {} of \
-                             implementation cost, residual {}",
-                            attribution.positions.len(),
-                            by_hypothesis.len(),
-                            attribution.implementation_cost(),
-                            attribution.residual()
-                        ),
+        match crate::attribution::run(
+            &self.attributor,
+            &marks,
+            &self.attribution_lineage,
+            factor_return,
+            self.capital.equity(),
+            now,
+        ) {
+            Ok(pass) => {
+                let by_hypothesis = pass.attribution.by_hypothesis();
+                let mut outcome = StageOutcome::ran(
+                    Stage::Learn,
+                    pass.attribution.positions.len(),
+                    format!(
+                        "{} fill(s) attributed across {} hypothesis(es): P&L {}, {} of \
+                         implementation cost, residual {}; {} unmarked, {} unkeyed",
+                        pass.attribution.positions.len(),
+                        by_hypothesis.len(),
+                        pass.attribution.total_pnl,
+                        pass.attribution.implementation_cost(),
+                        pass.attribution.residual(),
+                        pass.unmarked,
+                        pass.keyed.unkeyed()
                     ),
-                    by_hypothesis,
-                )
+                );
+                match crate::attribution::AttributionRecorded::from_pass(
+                    &pass,
+                    &mut self.attribution_lineage,
+                    fill_count,
+                    self.cycle,
+                    now,
+                ) {
+                    Ok(Some(record)) => {
+                        if let Err(error) =
+                            self.journal_record(record, crate::attribution::ATTRIBUTION_ORIGIN, now)
+                        {
+                            outcome = outcome.with_problem(format!(
+                                "the keyed attribution was not journaled: {}",
+                                error.message()
+                            ));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        outcome = outcome.with_problem(format!(
+                            "the attribution could not be grouped by its keys: {}",
+                            error.message()
+                        ));
+                    }
+                }
+                self.attribution_lineage.remember(pass);
+                (outcome, by_hypothesis)
             }
             Err(error) => (
                 StageOutcome::ran(Stage::Learn, 0, "attribution failed")
@@ -15945,7 +16067,6 @@ impl Platform {
             ),
         }
     }
-
     /// The current risk state, as the control functions see it.
     ///
     /// Tracked from realised fills, deterministically: equity is the
@@ -16437,6 +16558,12 @@ impl Platform {
         let side = order.side;
         let quantity = order.quantity;
         let arrival = order.arrival_price;
+        // What §22's attribution keys this order under, read before the
+        // order moves into the manager — see `crate::attribution`.
+        let release_order_id = order.order_id.as_str().to_string();
+        let release_hypotheses = order.hypotheses.clone();
+        let release_scope = order.scope.clone();
+        let release_type = order.order_type.as_str();
         // The order's own buckets, so the pre-trade projection adds this
         // order to the sector, country, class and venue it belongs to before
         // the limits read it. The projection used to be handed no axes, so
@@ -16467,6 +16594,20 @@ impl Platform {
         self.capture_submission(&result, &object_id, side, quantity, arrival, now);
 
         if result.accepted {
+            // Stamped at acceptance, from what was in force at acceptance:
+            // a key read at LEARN from whatever policy holds then would
+            // credit today's policy with yesterday's fill.
+            let context = self.release_context(&result, &object_id, &release_scope, release_type);
+            if let Err(error) = self.attribution_lineage.note_release(
+                &release_order_id,
+                &release_hypotheses,
+                context,
+            ) {
+                self.capture_problems.push(format!(
+                    "order {release_order_id} was accepted but not stamped for attribution: {}",
+                    error.message()
+                ));
+            }
             Ok(())
         } else {
             Err(Error::denied(
@@ -16475,6 +16616,61 @@ impl Platform {
                     .map(|reason| reason.describe())
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
+        }
+    }
+
+    /// The strategy, capital policy, risk rule set and execution path an
+    /// accepted order went out under, and its instrument's quoted spread at
+    /// that instant — the release half of §22's seven keys.
+    ///
+    /// The desk runs one strategy, named by the order's scope; a cell's
+    /// strategies are attributed by the central plane from their own
+    /// contributor vectors. The capital policy is the survival waterfall's
+    /// hedge fraction and whether the last sizing was narrowed. The risk rule
+    /// is the limit set that admitted the order and whether it resized it —
+    /// an admitted order bound no single limit, so naming one would be a
+    /// guess. The path is the venue, whether it was simulated, and the order
+    /// type.
+    fn release_context(
+        &self,
+        result: &SubmissionResult,
+        object_id: &ObjectId,
+        scope: &str,
+        order_type: &str,
+    ) -> crate::attribution::ReleaseContext {
+        let narrowed = self
+            .governor
+            .last()
+            .is_some_and(|budget| !budget.narrowing().is_empty());
+        crate::attribution::ReleaseContext {
+            strategy: format!("desk:{scope}"),
+            capital_policy: format!(
+                "survival(hedge={}){}",
+                self.governor.policy().hedge_capacity_fraction(),
+                if narrowed { "/narrowed" } else { "" }
+            ),
+            risk_rule: format!(
+                "{}{}",
+                self.monitor.limits().name,
+                if result.reduced_to.is_some() {
+                    "/reduced"
+                } else {
+                    ""
+                }
+            ),
+            execution_path: format!(
+                "desk/{}/{}/{order_type}",
+                result.venue.as_deref().unwrap_or("unrouted"),
+                if result.simulated {
+                    "simulated"
+                } else {
+                    "live"
+                }
+            ),
+            quoted_spread_bps: self
+                .spread_history
+                .get(object_id.as_str())
+                .and_then(|series| series.last().copied()),
         }
     }
 
