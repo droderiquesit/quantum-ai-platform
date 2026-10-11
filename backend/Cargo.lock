@@ -299,6 +299,7 @@ dependencies = [
  "qip-market-ingestion",
  "qip-mesh",
  "qip-numerics",
+ "qip-storage",
  "qip-transport",
  "serde",
  "serde_json",

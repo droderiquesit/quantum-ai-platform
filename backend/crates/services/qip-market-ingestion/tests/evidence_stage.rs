@@ -206,3 +206,30 @@ fn a_re_fetch_after_an_unwind_reuses_its_verdict_rather_than_corroborating_itsel
     assert!(again.evidence[0].verdict.corroborates.is_empty());
     Ok(())
 }
+
+#[test]
+fn a_digest_carries_the_sources_etag_its_parser_and_the_cursor_the_poll_left() -> Result<()> {
+    let text = body(&[("e1", "2026-08-24T14:59:00Z", "101.25")]);
+    let mut emulator = SourceEmulator::new(vec![
+        RecordedExchange::always("/v1/health", RecordedAnswer::json(200, "{}")),
+        RecordedExchange::always(
+            "/v1/events",
+            RecordedAnswer::json(200, text.as_str()).with_etag("\"rev-7\""),
+        ),
+    ]);
+    let mut runtime = runtime(manifest(), None)?;
+    let mut connector = TestConnector::new(manifest());
+    let report = runtime.poll(&mut connector, &mut emulator, now())?;
+    let Some(digest) = report.digest else {
+        panic!("premise: the poll took a digest");
+    };
+
+    assert_eq!(digest.etag(), Some("\"rev-7\""));
+    assert_eq!(
+        digest.parser(),
+        &qip_market_ingestion::connector::evidence::ParserLineage::of(&manifest())
+    );
+    let expected = format!("event_time_ns:{}", at("2026-08-24T14:59:00Z").as_nanos());
+    assert_eq!(digest.cursor(), Some(expected.as_str()));
+    Ok(())
+}

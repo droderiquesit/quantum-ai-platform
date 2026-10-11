@@ -55,6 +55,9 @@ pub struct RecordedAnswer {
     /// a connector that has not been tested against the more common failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport_error: Option<String>,
+    /// The `etag` the source sent with this answer, if it sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 impl RecordedAnswer {
@@ -66,6 +69,7 @@ impl RecordedAnswer {
             latency_ms: 0,
             retry_after_secs: None,
             transport_error: None,
+            etag: None,
         }
     }
 
@@ -77,6 +81,7 @@ impl RecordedAnswer {
             latency_ms: 0,
             retry_after_secs: Some(retry_after_secs),
             transport_error: None,
+            etag: None,
         }
     }
 
@@ -88,7 +93,13 @@ impl RecordedAnswer {
             latency_ms: 0,
             retry_after_secs: None,
             transport_error: Some(detail.into()),
+            etag: None,
         }
+    }
+
+    pub fn with_etag(mut self, etag: impl Into<String>) -> Self {
+        self.etag = Some(etag.into());
+        self
     }
 
     pub const fn with_latency_ms(mut self, latency_ms: i64) -> Self {
@@ -106,6 +117,7 @@ impl RecordedAnswer {
             body: self.body.clone(),
             latency: Duration::from_millis(self.latency_ms),
             retry_after: None,
+            etag: self.etag.clone(),
         };
         if let Some(seconds) = self.retry_after_secs {
             response = response.with_retry_after(Duration::from_secs(seconds));

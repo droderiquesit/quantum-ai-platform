@@ -724,7 +724,8 @@ impl ConnectorRuntime {
             subjects,
             at,
         )
-        .ok();
+        .ok()
+        .map(|digest| digest.with_etag(response.etag.clone()));
         if report.digest.is_none() && !events.is_empty() {
             report.unreferenced = true;
             self.stats.unreferenced = self.stats.unreferenced.saturating_add(1);
@@ -736,6 +737,10 @@ impl ConnectorRuntime {
         );
         let accepted = report.admitted.len() as u64;
         self.cursor = connector.advance(&self.cursor, position, accepted);
+        report.digest = report
+            .digest
+            .take()
+            .map(|digest| digest.with_cursor(self.cursor.position.describe()));
         self.stats.admitted = self.stats.admitted.saturating_add(accepted);
         self.stats.duplicates = self.stats.duplicates.saturating_add(report.duplicates);
         self.stats.withheld = self.stats.withheld.saturating_add(report.withheld);
