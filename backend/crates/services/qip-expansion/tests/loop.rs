@@ -541,3 +541,92 @@ fn proven_research_becomes_a_capability_and_failed_research_records_its_null() {
         Admission::Refused { .. }
     ));
 }
+
+fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
+    let observation = Observation {
+        trigger: GapTrigger::UnsupportedRequest,
+        wanting: vec![Wanting::Compute],
+        observation: "a 40-asset allocation the classical solver bounds but does not close".into(),
+        affected_domains: vec!["optimization".into()],
+        evidence: vec!["solver-gap:portfolio-40".into()],
+        severity: 0.6,
+        economic_value: Decimal::from_int(5),
+    };
+    let raised = raise(observation).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        raised.signal.gap_class,
+        GapClass::ComputeQuantumResearch,
+        "premise: this is quantum research"
+    );
+    raised
+}
+
+/// R12-COVERAGE-7175: quantum-assisted research stays a research path. The
+/// only road from a quantum-research gap to a capability is the desk's
+/// `conclude`, which is `promotion::promote`: all four environments in
+/// order, all nine criteria — `IncrementalValue` being the one that asks
+/// whether it beat its classical baseline — and even then the capability is
+/// `Simulate`, paper and shadow only, never a verb that moves money.
+///
+/// The failure prevented: a "we used a quantum computer" result that skipped
+/// shadow, or that lost to the classical baseline, arriving as capability
+/// because the class was exotic enough that nobody wired the gate to it.
+///
+/// Mutation: in `promote`, drop the `campaign.is_complete()` check and the
+/// three-environment campaign is promoted; drop the failed-criteria check and
+/// the run that lost to its baseline is promoted.
+#[test]
+fn quantum_research_reaches_capability_only_through_every_environment_and_criterion() {
+    let us = set(&["US"]);
+    let started = |raised: &qip_expansion::gap::RaisedGap| {
+        let mut desk = desk_with(&[("quantum-backend", ToolKind::QuantumBackend)]);
+        let admission = desk.offer(raised.clone(), &set(&[]), &us);
+        assert!(
+            !matches!(admission, Admission::Refused { .. }),
+            "premise: the desk admits quantum research: {admission:?}"
+        );
+        let _ = desk.finish_sweep(budget(10));
+        assert_eq!(
+            desk.queue()
+                .entry(&question_for(raised))
+                .map(|e| e.state().clone()),
+            Some(State::Started),
+            "premise: the research ran"
+        );
+        desk
+    };
+    let raised = quantum_research_gap();
+    let question = question_for(&raised);
+
+    // Stopped before shadow: refused, whatever the evaluation says.
+    let mut three = ResearchCampaign::open(&question).unwrap_or_else(|e| panic!("{e}"));
+    for env in &Environment::ORDER[..3] {
+        three
+            .record(*env, provenance())
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let mut desk = started(&raised);
+    match desk.conclude(&three, &evaluation(&question, None)) {
+        Err(e) => assert!(e.to_string().contains("3 of 4"), "{e}"),
+        Ok(c) => panic!("quantum research promoted without shadow: {c:?}"),
+    }
+
+    // Lost to the classical baseline: refused, and the null is recorded.
+    let mut desk = started(&raised);
+    match desk.conclude(
+        &complete_campaign(&question),
+        &evaluation(&question, Some(Criterion::IncrementalValue)),
+    ) {
+        Err(e) => assert!(e.to_string().contains("IncrementalValue"), "{e}"),
+        Ok(c) => panic!("quantum research that lost to its baseline was promoted: {c:?}"),
+    }
+
+    // All four environments and all nine criteria: a simulation capability,
+    // paper and shadow only.
+    let mut desk = started(&raised);
+    let capability = desk
+        .conclude(&complete_campaign(&question), &evaluation(&question, None))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(capability.verb, CapabilityVerb::Simulate);
+    assert_eq!(capability.eligibility, "paper and shadow only");
+}
