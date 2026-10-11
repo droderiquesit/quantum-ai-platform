@@ -282,6 +282,45 @@ fn a_registration_produces_the_mesh_catalogue_entry_rather_than_a_second_catalog
     Ok(())
 }
 
+/// R12-DATA-2020: the catalogue owner is a named operator, never the
+/// process's own name. The kernel's configured default is `qip-platform`,
+/// and an entry owned by it names nobody anyone can ask about the source.
+#[test]
+fn a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused() -> Result<()>
+{
+    use qip_data_finder::operator::NamedOperator;
+
+    let (mut finder, mut probe) = registering_finder(11)?;
+    let decisions = finder.assess(
+        vec![candidate(
+            "attributed",
+            URL,
+            licensed_for(&[Usage::Research, Usage::Derive])?,
+            &["EU0001"],
+        )?],
+        &mut probe,
+        now(),
+    )?;
+    assert!(decisions[0].is_registered(), "premise: it registers");
+
+    let operator = NamedOperator::new("  Dana Ruiz, market-data desk ")?;
+    let entry = decisions[0].catalogue_entry_attributed(&operator)?;
+    assert_eq!(entry.owner, "Dana Ruiz, market-data desk");
+    assert!(
+        matches!(&entry.quality, qip_mesh::catalog::QualityState::Verified { checks, .. } if !checks.is_empty()),
+        "the legality assessment travels with the entry: {:?}",
+        entry.quality
+    );
+
+    for placeholder in ["qip-platform", "QIP-API", "system", "unknown", "N/A", "   "] {
+        assert!(
+            NamedOperator::new(placeholder).is_err(),
+            "`{placeholder}` was accepted as an operator"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn a_rejected_source_has_no_catalogue_entry_to_offer() -> Result<()> {
     let (mut finder, mut probe) = registering_finder(11)?;

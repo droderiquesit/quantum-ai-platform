@@ -84,6 +84,7 @@ pub mod ledger;
 pub mod legal;
 pub mod lifecycle;
 pub mod manipulation;
+pub mod operator;
 pub mod personal_data;
 pub mod probe;
 pub mod quality;
