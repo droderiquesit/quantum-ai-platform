@@ -1308,6 +1308,10 @@ pub mod names {
     pub const EDGE_EVENT_FABRIC_CONTROL_REFUSED: &str =
         "qip_edge_event_fabric_control_refused_total";
     pub const EDGE_EVENT_FABRIC_PASS_DURATION_MS: &str = "qip_edge_event_fabric_pass_duration_ms";
+    /// Feed to decision to action on one cell pass, in milliseconds, as the
+    /// node's pass meter times it: the series the reflex
+    /// `decision-latency-p99` and `-p99.9` objectives are read from.
+    pub const EDGE_DECISION_LATENCY_MS: &str = "qip_edge_decision_latency_ms";
 
     // Ledger metrics (ledgerd)
     pub const LEDGER_COMMITS: &str = "qip_ledger_commits_total";

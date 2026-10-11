@@ -195,6 +195,7 @@ impl PassLog {
 #[derive(Debug)]
 pub struct PassMeter {
     golden: GoldenSignals,
+    metrics: Arc<Metrics>,
     allowance_millis: f64,
 }
 
@@ -210,8 +211,14 @@ impl PassMeter {
                  it was zero; pass the request timeout the node serves under",
             ));
         }
+        metrics.describe(
+            qip_observability::metrics::names::EDGE_DECISION_LATENCY_MS,
+            "milliseconds from a pass reading the feed to its decisions acted on, per pass the \
+             cell ran; the reflex decision-latency objectives are read from it",
+        );
         Ok(Self {
-            golden: GoldenSignals::new(metrics),
+            golden: GoldenSignals::new(Arc::clone(&metrics)),
+            metrics,
             allowance_millis: allowance.as_secs_f64() * 1000.0,
         })
     }
@@ -234,6 +241,16 @@ impl PassMeter {
             Err(_) => Outcome::Failed,
         };
         self.golden.finished(millis, ended);
+        // Decision latency is a pass that *decided*: a halted turn decides
+        // nothing and an errored one is the error series' business, so
+        // neither is folded into the percentile the reflex objective reads.
+        if let Ok(PassOutcome::Ran { .. }) = &outcome {
+            self.metrics.observe_latency_ms(
+                qip_observability::metrics::names::EDGE_DECISION_LATENCY_MS,
+                qip_observability::metrics::Labels::new(),
+                millis,
+            );
+        }
         // The allowance was proven positive at construction and an elapsed
         // time is finite and non-negative, so the one refusal `saturation`
         // has cannot occur here.

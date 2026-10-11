@@ -3043,7 +3043,7 @@ fn every_metric_an_alert_policy_queries_is_one_the_platform_emits() {
 /// flat, and nobody chose it — so it is worth waking someone for, and a
 /// policy deleted as "it only fires when things are working" is the deletion
 /// this list exists to make somebody argue for.
-const SERIES_THAT_MUST_PAGE: [(&str, &str); 9] = [
+const SERIES_THAT_MUST_PAGE: [(&str, &str); 11] = [
     (
         "qip_kill_switch_tripped",
         "the platform has halted and no order will be sent until an operator clears it",
@@ -3081,6 +3081,16 @@ const SERIES_THAT_MUST_PAGE: [(&str, &str); 9] = [
         "qip_proposals_unsigned_total",
         "ACT signed nothing off, and the label says which control withheld; on liquidity-read it \
          means the book could not be priced and the desk is flat without having chosen to be",
+    ),
+    (
+        "qip_central_outcome_backlog_orders",
+        "outcomes reported sent have not reached the ledger; a backlog that never drains is fills \
+         nobody booked (RES-9173)",
+    ),
+    (
+        "qip_belief_brier_score",
+        "calibration is a production objective, and stated confidence worse than a coin flip is \
+         sizing on noise (OBS-3118)",
     ),
 ];
 

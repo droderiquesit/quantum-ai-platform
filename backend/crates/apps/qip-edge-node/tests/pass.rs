@@ -3572,3 +3572,48 @@ fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
         "main.rs runs a pass of its own beside the decision loop's, which nothing times"
     );
 }
+
+/// OBS-9144: decision p99 is a domain series of its own, not inferred from the
+/// generic service latency. Two passes that decided and one the gateway
+/// refused put exactly two observations in it — the refused pass decided
+/// nothing, so folding it in would let a failing node flatter its percentile.
+#[test]
+fn every_pass_that_decided_and_only_those_is_timed_into_the_decision_latency_series() -> Result<()>
+{
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let registry = Arc::clone(node.scrape_registry());
+    let meter = PassMeter::new(Arc::clone(&registry), std::time::Duration::from_secs(2))?;
+    let mut stats = PassStats::default();
+    assert!(
+        registry
+            .snapshot()
+            .histogram(names::EDGE_DECISION_LATENCY_MS, &Labels::new())
+            .is_none(),
+        "premise: no pass has run, so the series does not exist"
+    );
+    let mut pass_at = |now: Timestamp| {
+        meter.measure(|| {
+            run_pass(
+                &mut node.cell,
+                &mut gateway,
+                &mut feed,
+                None,
+                &mut stats,
+                now,
+            )
+        })
+    };
+    assert!(matches!(pass_at(t(10))?, PassOutcome::Ran { .. }));
+    assert!(
+        pass_at(t(5)).is_err(),
+        "premise: a backwards pass is refused"
+    );
+    assert!(matches!(pass_at(t(20))?, PassOutcome::Ran { .. }));
+
+    let after = registry.snapshot();
+    let decided = after
+        .histogram(names::EDGE_DECISION_LATENCY_MS, &Labels::new())
+        .expect("two passes decided, so the decision latency histogram exists");
+    assert_eq!(decided.count, 2, "the refused pass was timed as a decision");
+    Ok(())
+}

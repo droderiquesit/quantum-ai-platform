@@ -49,6 +49,13 @@ pub struct Slo {
     /// nothing to notice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ratio_floor: Option<f64>,
+    /// Ceiling a measured magnitude must stay at or under, for objectives that
+    /// bound a backlog — a count of things not yet done — rather than a
+    /// latency or a success rate. Carried as a number for the same reason as
+    /// [`Self::ratio_floor`]: a bound that lives only in prose is one nothing
+    /// can check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlog_ceiling: Option<f64>,
 }
 
 impl Slo {
@@ -67,6 +74,7 @@ impl Slo {
             window,
             latency_threshold_ms: None,
             ratio_floor: None,
+            backlog_ceiling: None,
         }
     }
 
@@ -92,6 +100,28 @@ impl Slo {
             window,
             latency_threshold_ms: None,
             ratio_floor: Some(floor),
+            backlog_ceiling: None,
+        }
+    }
+
+    /// Objective bounding a backlog from above: the fraction of observations
+    /// at which the backlog was at most `ceiling`.
+    pub fn backlog_at_most(
+        name: impl Into<String>,
+        service: impl Into<String>,
+        ceiling: f64,
+        target: f64,
+        window: SloWindow,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            service: service.into(),
+            description: format!("fraction of observations whose backlog was at most {ceiling}"),
+            target,
+            window,
+            latency_threshold_ms: None,
+            ratio_floor: None,
+            backlog_ceiling: Some(ceiling),
         }
     }
 
@@ -111,6 +141,7 @@ impl Slo {
             window,
             latency_threshold_ms: Some(threshold_ms),
             ratio_floor: None,
+            backlog_ceiling: None,
         }
     }
 
@@ -291,6 +322,28 @@ pub fn default_slos() -> Vec<Slo> {
         ),
         // OBS-031: Reflex SLOs — dropped feed messages — zero tolerance.
         Slo::availability("dropped-feed-messages-zero", "reflex", 1.0, SloWindow::Day),
+        // Order/fill integrity: the fraction of cell reports carrying fills in
+        // which every fill traced to an order the centre saw sent, inside the
+        // quantity it saw sent. A fill with no order behind it is a position
+        // nobody authorised, so the target is 1.0 and one such report misses
+        // the objective outright. Fed by `qip-kernel` at the seam where a
+        // cell's report is settled; see `blueprint_objectives::ORDER_FILL_INTEGRITY`.
+        Slo::availability("order-fill-integrity", "kernel", 1.0, SloWindow::Day),
+        // Fabric backlog as a product objective, not only an infrastructure
+        // gauge: sealed log segments not yet archived, as `qip-fabricd`'s
+        // archiver records on every pass (`qip_event_fabric_archive_lag_segments`).
+        // A sealed segment that is not archived is history that exists on one
+        // disk only, so a backlog that grows is a region whose rebuild-from-
+        // archive would lose it. The ceiling of two is this declaration's
+        // own: one segment sealed since the last pass is the archiver
+        // keeping up, and a third means it is falling behind sealing.
+        Slo::backlog_at_most(
+            "fabric-archive-backlog",
+            "fabric",
+            2.0,
+            0.99,
+            SloWindow::Hour,
+        ),
     ]
 }
 
