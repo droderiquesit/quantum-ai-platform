@@ -52,22 +52,24 @@ only there; the conformance tests in `qip-data-finder` and
   editions before them, page by page. The starting point for the v12.0
   decomposition.
 - [`reviews/`](reviews/) — the two reviews of ADR 0101.
+- [`v12-completion-plan.md`](v12-completion-plan.md) — the waves of work that take the
+  R12 register to COMPLETE, read from the register.
 
 ## The register
 
-**There is none at present.** The 1,601-row catalogue and its assessment
-scored the v11.6 decomposition and were removed on 2026-10-11 so that the
-next one is built from v12.0 and v3.0 alone. When it is, it goes back where
-`qip blueprint render` expects it — `requirements/*.json` and
-`assessment/*.json`, rendered to `requirements.md`, `traceability-matrix.md`
-and `v12-completeness-targets.md` — and nowhere else. Until then
-`qip blueprint render` refuses with "no requirements", which is the correct
-answer.
+`requirements/R12-*.json` (1,518 requirements decomposed from v12.0 and GCP
+v3.0 on 2026-10-11, ten slices M1–M7 and G1–G3) and `assessment/R12-*.json`
+(one row each, scored from code, tests and Terraform), rendered by
+`qip blueprint render` to [`requirements.md`](requirements.md),
+[`traceability-matrix.md`](traceability-matrix.md) and
+[`v12-completeness-targets.md`](v12-completeness-targets.md). Edit the JSON and
+re-render; never edit a view. The v11.6 catalogue and assessment it replaced
+are in history at `f65c2c48`.
 
 ## Requirement IDs
 
-`DOMAIN-NNN`. IDs are assigned in blueprint source order within a domain and
-are **never reused** — including the IDs the removed v11.6 catalogue used,
-which commits and ADRs still cite. A new catalogue starts each domain above
-the highest ID in history, or uses a new prefix. A requirement found to be
+`R12-<DOMAIN>-<N>`. The `R12-` prefix keeps every id clear of the retired
+`DOMAIN-NNN` ids that commits and ADRs still cite. N comes from a block per
+slice (M1 1001–1999 … M7 7001–7999, G1 8001–8999, G2 9001–9999, G3
+10001–10999), in source order within the slice, and is **never reused**. A requirement found to be
 wrong is marked `withdrawn` with a reason rather than deleted.
