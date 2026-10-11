@@ -310,6 +310,15 @@ pub struct AssessedCandidate {
     pub capital_lockup: Decimal,
     pub time_to_sale_days: u32,
     pub return_risk: Decimal,
+    /// The customs duty and the purchase tax inside `all_in_cost`, journaled
+    /// apart (R12-COMMERCE-1093): an all-in figure alone cannot say whether
+    /// a candidate died on its freight or on its border, and the two lead to
+    /// different research. Defaulted so a record journaled before they were
+    /// carried still decodes.
+    #[serde(default)]
+    pub duty: Decimal,
+    #[serde(default)]
+    pub purchase_tax: Decimal,
     /// Expected resale exceeds the all-in cost plus carry.
     pub viable: bool,
 }
@@ -382,6 +391,9 @@ pub struct CommerceResearch {
     day: u32,
     purchases: u32,
     cycles: Vec<CycleEvent>,
+    /// Sales settled and buyer returns taken, for the plan's return rate.
+    sales: i64,
+    returns_taken: i64,
 }
 
 impl CommerceResearch {
@@ -484,6 +496,8 @@ impl CommerceResearch {
             day: 0,
             purchases: 0,
             cycles: Vec::new(),
+            sales: 0,
+            returns_taken: 0,
         })
     }
 
@@ -497,6 +511,12 @@ impl CommerceResearch {
 
     pub fn ledger(&self) -> &Ledger {
         self.plane.ledger()
+    }
+
+    /// The ledger and the simulated marketplace together, so a settlement
+    /// can be read against the sale it nets.
+    pub fn plane(&self) -> &CommercePlane {
+        &self.plane
     }
 
     pub fn executor(&self) -> &PurchaseExecutor {
@@ -624,6 +644,8 @@ impl CommerceResearch {
             capital_lockup: assessment.capital_lockup,
             time_to_sale_days: assessment.time_to_sale_days,
             return_risk: assessment.return_risk,
+            duty: assessment.landed.duty,
+            purchase_tax: assessment.purchase_tax,
             viable,
         });
         if !viable {
@@ -756,13 +778,18 @@ impl CommerceResearch {
                 let sale = format!("sale-{unit}");
                 self.plane
                     .sell(&sale, &unit, "paper-buyer", listed.price, None)?;
-                let settlement = self.plane.settle(&sale)?.clone();
+                self.plane.settle(&sale)?;
+                let returned = self.take_return_owed(&sale)?;
+                let settlement = self
+                    .plane
+                    .settlement(&sale)
+                    .ok_or_else(|| Error::invalid(format!("sale {sale} settled and vanished")))?;
                 let event = CycleEvent {
                     sku: held.sku.clone(),
                     realised_cost: held.cost_basis,
                     resale_price: settlement.net_after_adjustments(),
                     days_to_sale: elapsed,
-                    returned: false,
+                    returned,
                 };
                 self.cycles.push(event.clone());
                 run.sold.push(event);
@@ -788,6 +815,36 @@ impl CommerceResearch {
             }
         }
         Ok(())
+    }
+
+    /// Take a buyer return on `sale` when the plan's return rate says one is
+    /// owed (R12-COMMERCE-1092). Counted, not drawn: the k-th return is
+    /// taken at the sale where `floor(sales × rate)` first reaches k, so the
+    /// realised rate tracks the stated one exactly and a replay of the log
+    /// takes the same returns. Before this the plan's rate priced
+    /// feasibility's return risk and no sale was ever returned, so the
+    /// settlement adjustment and the ledger's return record had no caller.
+    /// The unit goes back into the warehouse open-box and is not relisted by
+    /// this pass: a returned unit's resale is a decision about its
+    /// condition this plane has no inspection for.
+    fn take_return_owed(&mut self, sale: &str) -> Result<bool> {
+        self.sales = self.sales.saturating_add(1);
+        let owed = Decimal::from_int(self.sales)
+            .checked_mul(self.plan.terms.returns.rate)
+            .ok_or_else(|| Error::numeric("the returns owed overflowed"))?
+            .truncate_dp(0);
+        if owed <= Decimal::from_int(self.returns_taken) {
+            return Ok(false);
+        }
+        let warehouse = self
+            .logistics
+            .as_ref()
+            .map(|plan| plan.warehouse.clone())
+            .ok_or_else(|| Error::invalid("the logistics plan is missing"))?;
+        self.plane
+            .return_unit(sale, Condition::OpenBox, &warehouse, &self.plan.owner)?;
+        self.returns_taken = self.returns_taken.saturating_add(1);
+        Ok(true)
     }
 
     fn plane_apply(&mut self, event: LedgerEvent) -> Result<()> {
