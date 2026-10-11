@@ -25,13 +25,13 @@ resources:
 # stay in test's registry.
 images:
 - name: qip-api
-  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api
+  newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-api
   digest: TO-PIN
 - name: qip-fastbrain
-  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain
+  newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-fastbrain
   digest: TO-PIN
 - name: qip-deepbrain
-  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain
+  newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-deepbrain
   digest: TO-PIN
 - name: envoy
   newName: europe-west2-docker.pkg.dev/unprovisioned/qip-test/vendor/envoy

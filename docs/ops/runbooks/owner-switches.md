@@ -21,7 +21,7 @@ To turn it on, in this order:
 1. Uncomment `image_bake_subnet_cidr` in dev's tfvars, run `infra.yml`
    `action=plan`, read it, `action=up`.
 2. Dispatch `image.yml` for `c3-highcpu-8`. Its run prints `self_link`:
-   `projects/algorik-platform-dev/global/images/qip-execution-node-c3-highcpu-8-<commit12>-r<run>`.
+   `projects/algorik-qip-dev/global/images/qip-execution-node-c3-highcpu-8-<commit12>-r<run>`.
 3. In one reviewed diff: write that self-link into `boot_image`, write the
    allocation a person chose into `region_allocation` (ADR 0045 proposes one;
    proposing is not choosing), set `execution_nodes_enabled = true`.

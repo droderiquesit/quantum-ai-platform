@@ -23,8 +23,8 @@ patches:
         spec:
           vars:
           - name: registry
-            value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+            value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
           - name: warehouseRegistry
-            value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+            value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
           - name: argocdApplication
             value: qip-stage

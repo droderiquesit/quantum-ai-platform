@@ -487,6 +487,18 @@ jobs:
             echo "$tfvars carries no project_id/project_number" >&2
             exit 1
           }
+          # `project_number = 0` beside a real project id is the marker a tfvars
+          # carries between the project being declared and its number being recorded
+          # (ADR 0118): Google assigns the number at creation, so it cannot be
+          # committed before. Read through, it becomes `projects/0/…` and the OIDC
+          # exchange fails naming an audience, which sends an operator to workload
+          # identity federation for a problem that is one line in this file. The
+          # `unprovisioned` marker carries 0 too and has its own refusal below.
+          if [ "$number" = "0" ] && [ "$project" != "unprovisioned" ]; then
+            echo "$tfvars records project_number = 0: the number Google assigned to $project has not been recorded yet." >&2
+            echo "Run scripts/bootstrap-foundation.sh as the owner (docs/ops/runbooks/new-project-from-scratch.md), commit the number it writes, then dispatch this again." >&2
+            exit 1
+          fi
           if [ "$project" = "unprovisioned" ]; then
             echo "environment '${TARGET_ENVIRONMENT}' is not provisioned: its tfvars carry the 'unprovisioned' marker." >&2
             echo "Create a project for it, record the id and number in $tfvars, then bake." >&2

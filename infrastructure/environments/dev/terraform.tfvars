@@ -37,7 +37,16 @@
 # Each environment names a project of its own, or says it has none. Two
 # environments in one project share one IAM boundary, one KMS key ring and one
 # Binary Authorization attestor, whatever their name prefixes say.
-project_id = "algorik-platform-dev"
+#
+# Since 2026-10-11 (ADR 0118) dev is a new project, `<prefix>-dev`, created by
+# `infrastructure/foundation` inside the platform folder and applied once by
+# the owner with `scripts/bootstrap-foundation.sh`. `algorik-platform-dev`,
+# the project dev lived in until then, is retired by the owner once this one
+# is healthy (docs/ops/runbooks/new-project-from-scratch.md). If the prefix
+# the owner chooses is not `algorik-qip`, the bootstrap rewrites this id —
+# here and in every manifest under infrastructure/gitops that names it — and
+# prints the diff to commit.
+project_id = "algorik-qip-dev"
 
 # The project's numeric id, recorded so nothing has to ask for it. It is an
 # identifier like the id above, Google's service agents are named by it, and
@@ -45,7 +54,17 @@ project_id = "algorik-platform-dev"
 # file can construct its own authentication with no repository variable
 # involved, which matters because a variable set from a broken shell once
 # carried an install advisory where this number should have been.
-project_number = 523718313246
+#
+# 0 until the project exists: a project's number is assigned by Google at
+# creation and cannot be known before it, so this is the same "nothing to
+# authenticate with" value the unprovisioned environments carry. Every
+# workflow that derives an identity from this file refuses 0 by name, and the
+# platform root refuses it at plan time, so no run can reach Google with a
+# guessed audience. `scripts/bootstrap-foundation.sh` writes the real number
+# here and into the two manifests that embed it (gitops/envs/dev/invokers.yaml,
+# the IAP service agent; gitops/envs/dev/portal.yaml, the API's URL) after the
+# foundation apply, and the owner commits that diff.
+project_number = 0
 
 environment      = "dev"
 region           = "us-east4"
@@ -195,7 +214,7 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     container runtime, /usr/local/bin/{qip-edge-node,envoy,qip-fetch-secret},
 #     the Ops Agent). It has never been dispatched, so there is no self-link.
 #     The path it will be is fixed by the bake:
-#     `projects/algorik-platform-dev/global/images/qip-execution-node-c3-highcpu-8-<commit12>-r<run>`,
+#     `projects/algorik-qip-dev/global/images/qip-execution-node-c3-highcpu-8-<commit12>-r<run>`,
 #     printed by the run as `self_link`. The image is built for one machine
 #     shape — the isolated-core range is in its kernel command line — and the
 #     root's validation on `execution_nodes` refuses an image whose name
@@ -501,11 +520,16 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 # existed to authorize. The domains are the Cloud Run URLs a deploy actually
 # printed (never invented, per the variable's contract) plus localhost for
 # development against the real project.
+#
+# The two `algorik-{portal,landing}-rgxpsss2lq-uk.a.run.app` hostnames that
+# were here belonged to `algorik-platform-dev`: a Cloud Run URL carries a
+# per-project hash, so in the new project they name nothing. They return when
+# scripts/deploy-frontends.sh prints the new project's URLs, and not before —
+# an authorised domain nobody serves is a redirect target somebody else could
+# come to own.
 enable_identity_platform = true
 identity_authorized_domains = [
   "localhost",
-  "algorik-portal-rgxpsss2lq-uk.a.run.app",
-  "algorik-landing-rgxpsss2lq-uk.a.run.app",
 ]
 
 # --- The console's route to the platform (ADR 0018) --------------------------
@@ -591,7 +615,7 @@ gitops_kargo_hostname  = ""
 # gateway, then a port-forward:
 #
 #   gcloud container fleet memberships get-credentials qip-dev-gitops \
-#     --project algorik-platform-dev
+#     --project algorik-qip-dev
 #   kubectl -n argocd port-forward svc/argocd-server 8080:443
 #   kubectl -n kargo  port-forward svc/kargo-api     8081:443
 #
@@ -682,7 +706,7 @@ gitops_portal_hostname = ""
 # portal names the portal:
 #
 #   gcloud iap web add-iam-policy-binding \
-#     --project=algorik-platform-dev --resource-type=cloud-run \
+#     --project=algorik-qip-dev --resource-type=cloud-run \
 #     --region=us-east4 --service=qip-dev-portal \
 #     --role=roles/iap.httpsResourceAccessor \
 #     --member='user:YOU@example.com'

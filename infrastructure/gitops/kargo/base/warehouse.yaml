@@ -22,22 +22,22 @@ spec:
   interval: 5m0s
   freightCreationPolicy: Automatic
   freightCreationCriteria:
-    expression: imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api').Tag == imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain').Tag && imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain').Tag == imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain').Tag
+    expression: imageFrom('us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-api').Tag == imageFrom('us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-fastbrain').Tag && imageFrom('us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-fastbrain').Tag == imageFrom('us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-deepbrain').Tag
   subscriptions:
     - image:
-        repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api
+        repoURL: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-api
         imageSelectionStrategy: NewestBuild
         allowTagsRegexes:
           - ^[0-9a-f]{40}$
         discoveryLimit: 5
     - image:
-        repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain
+        repoURL: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-fastbrain
         imageSelectionStrategy: NewestBuild
         allowTagsRegexes:
           - ^[0-9a-f]{40}$
         discoveryLimit: 5
     - image:
-        repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain
+        repoURL: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-deepbrain
         imageSelectionStrategy: NewestBuild
         allowTagsRegexes:
           - ^[0-9a-f]{40}$
