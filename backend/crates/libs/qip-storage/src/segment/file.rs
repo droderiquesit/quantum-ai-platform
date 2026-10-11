@@ -175,7 +175,10 @@ pub(crate) fn scan(label: &str, path: &Path) -> Result<SegmentFileScan> {
 /// walk forward from the nearest sparse-index anchor to a target offset
 /// instead of rescanning a whole segment for one read.
 pub(crate) fn scan_from(label: &str, path: &Path, start_byte: u64) -> Result<SegmentFileScan> {
-    let bytes = std::fs::read(path).map_err(|e| {
+    // A read names its segment by an offset a caller supplied; the file it
+    // opens must still be the log directory's own (`qip_core::paths`).
+    let path = qip_core::paths::refuse_traversal(path)?;
+    let bytes = std::fs::read(&path).map_err(|e| {
         Error::io(format!(
             "cannot read segment {}, which a read expects to find: {e}",
             path.display()
@@ -224,7 +227,8 @@ fn scan_body(label: &str, bytes: &[u8], start: usize) -> Result<SegmentFileScan>
 /// calls (ADR 0100 §1's bounded-memory constraint: "no payload cache").
 pub(crate) fn read_extent(label: &str, path: &Path, extent: BatchExtent) -> Result<Batch> {
     use std::io::Read;
-    let mut file = File::open(path).map_err(|e| {
+    let path = qip_core::paths::refuse_traversal(path)?;
+    let mut file = File::open(&path).map_err(|e| {
         Error::io(format!(
             "cannot open segment {} to read a batch: {e}",
             path.display()
@@ -319,5 +323,52 @@ impl SegmentFile {
         self.file.sync_all()?;
         self.length = length;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A segment read opens the path it is given; a path carrying `..` must
+    /// be refused before the open, not after the bytes of whatever it named
+    /// have been read. The file the climbing path names exists, so a refusal
+    /// is the check firing rather than a missing file.
+    #[test]
+    fn a_segment_path_that_climbs_out_of_the_log_directory_is_refused_before_it_is_read() {
+        let root = std::env::temp_dir().join(format!("qip-segment-path-{}", std::process::id()));
+        let log = root.join("log");
+        assert!(std::fs::create_dir_all(&log).is_ok());
+        let outside = root.join("segment.00000000000000000000");
+        assert!(std::fs::write(&outside, file_header()).is_ok());
+        let climbing = log.join("..").join("segment.00000000000000000000");
+        assert!(
+            climbing.exists(),
+            "premise: the climbing path names a real file"
+        );
+
+        let scanned = scan_from("segment.0", &climbing, HEADER_LEN as u64);
+        assert!(
+            scanned
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.to_string().contains("parent-directory component")),
+            "scan_from read through `..`: {scanned:?}"
+        );
+        let extent = BatchExtent {
+            start: HEADER_LEN as u64,
+            end: HEADER_LEN as u64,
+        };
+        let read = read_extent("segment.0", &climbing, extent);
+        assert!(
+            read.as_ref()
+                .err()
+                .is_some_and(|error| error.to_string().contains("parent-directory component")),
+            "read_extent opened through `..`: {read:?}"
+        );
+
+        // The same file by its plain path scans, so the refusal is the `..`.
+        assert!(scan_from("segment.0", &outside, HEADER_LEN as u64).is_ok());
+        assert!(std::fs::remove_dir_all(&root).is_ok());
     }
 }

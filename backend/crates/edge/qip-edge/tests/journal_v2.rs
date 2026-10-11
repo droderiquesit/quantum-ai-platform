@@ -15,7 +15,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
 use qip_edge::cell::{Cell, CellConfig, PolledHalt};
-use qip_edge::journal::{Decision, Journal, JournalEntry, MemoryMirror, MirrorBatch, ship};
+use qip_edge::journal::{Decision, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch, ship};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 
@@ -341,5 +341,50 @@ fn a_journal_built_to_trim_on_ship_keeps_only_unshipped_entries_and_one_built_wi
         0,
         "the cell's journal was not built to trim"
     );
+    Ok(())
+}
+
+fn empty_batch() -> MirrorBatch {
+    MirrorBatch {
+        cell: "cell-test".to_owned(),
+        at: at(1, 0),
+        chains_onto: Journal::GENESIS.to_owned(),
+        entries: Vec::new(),
+        watermarks: Vec::new(),
+    }
+}
+
+/// A mirror path that climbs out of its directory must be refused before the
+/// file is opened, not after it has been created and appended to: a mirror
+/// configured as `spool/../../somewhere` would otherwise write wherever the
+/// path pointed.
+#[test]
+fn a_file_mirror_whose_path_climbs_out_of_its_directory_is_refused_before_anything_is_written()
+-> Result<()> {
+    let root = std::env::temp_dir().join(format!("qip-mirror-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("spool"))?;
+    let escaped = root.join("escaped.jsonl");
+    let _ = std::fs::remove_file(&escaped);
+
+    let refused = qip_edge::FileMirror::new(root.join("spool").join("..").join("escaped.jsonl"))
+        .ship(empty_batch());
+    assert!(
+        refused
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("parent-directory component")),
+        "the climbing path was not refused: {refused:?}"
+    );
+    assert!(
+        !escaped.exists(),
+        "the refused mirror still created its file"
+    );
+
+    // The same mirror under a plain path ships, so the refusal is about the
+    // `..` and not about mirrors in general.
+    let plain = root.join("spool").join("mirror.jsonl");
+    qip_edge::FileMirror::new(&plain).ship(empty_batch())?;
+    assert!(plain.exists());
+    std::fs::remove_dir_all(&root)?;
     Ok(())
 }

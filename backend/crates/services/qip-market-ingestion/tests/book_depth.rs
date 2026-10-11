@@ -1594,3 +1594,41 @@ fn the_venue_state_of_a_symbol_this_feed_does_not_carry_is_absent_rather_than_in
         "before the first poll there is no book, which is not the same as an empty one"
     );
 }
+
+/// Every pass refreshes every book over its own request, so the instrument
+/// list is the feed's working set and its pass duration; a list past
+/// `MAX_INSTRUMENTS` is refused at construction, and a list of exactly that
+/// many still builds.
+#[test]
+fn an_instrument_list_above_the_ceiling_is_refused_at_construction_and_the_ceiling_is_admitted() {
+    use qip_market_ingestion::depth::MAX_INSTRUMENTS;
+    let instruments = |count: usize| -> Vec<DepthInstrument> {
+        (0..count)
+            .map(|i| {
+                DepthInstrument::new(
+                    ObjectId::from_string(format!("obj-{i}")),
+                    format!("SYM{i}"),
+                    "XNAS",
+                    format!("depth-{i}"),
+                )
+            })
+            .collect()
+    };
+    let over = DepthFeedAdapter::new(
+        config("http://127.0.0.1:9"),
+        instruments(MAX_INSTRUMENTS + 1),
+    );
+    let text = over.err().map(|error| error.to_string());
+    assert!(
+        text.as_deref()
+            .is_some_and(|text| text.contains("holds at most")),
+        "a list past the ceiling built a feed: {text:?}"
+    );
+    let at_ceiling =
+        DepthFeedAdapter::new(config("http://127.0.0.1:9"), instruments(MAX_INSTRUMENTS));
+    assert!(
+        at_ceiling.is_ok(),
+        "the ceiling itself was refused: {:?}",
+        at_ceiling.err()
+    );
+}
