@@ -117,9 +117,31 @@ fn certificate(
     subject_key: &EcdsaKeyPair,
     extensions: Vec<Vec<u8>>,
 ) -> Vec<u8> {
+    certificate_over(
+        serial,
+        issuer,
+        issuer_key,
+        subject,
+        subject_key.public_key().as_ref(),
+        ("200101000000Z", "491231235959Z"),
+        extensions,
+    )
+}
+
+/// The general form: a certificate over any uncompressed P-256 `point`,
+/// valid between two `UTCTime`s (`YYMMDDHHMMSSZ`).
+fn certificate_over(
+    serial: u8,
+    issuer: &str,
+    issuer_key: &EcdsaKeyPair,
+    subject: &str,
+    subject_point: &[u8],
+    (not_before, not_after): (&str, &str),
+    extensions: Vec<Vec<u8>>,
+) -> Vec<u8> {
     let algorithm = sequence(&[oid(OID_ECDSA_SHA256)]);
     let mut point = vec![0x00];
-    point.extend_from_slice(subject_key.public_key().as_ref());
+    point.extend_from_slice(subject_point);
     let spki = sequence(&[
         sequence(&[oid(OID_EC_PUBLIC_KEY), oid(OID_P256)]),
         tlv(0x03, &point),
@@ -129,7 +151,10 @@ fn certificate(
         tlv(0x02, &[serial]),
         algorithm.clone(),
         name(issuer),
-        sequence(&[tlv(0x17, b"200101000000Z"), tlv(0x17, b"491231235959Z")]),
+        sequence(&[
+            tlv(0x17, not_before.as_bytes()),
+            tlv(0x17, not_after.as_bytes()),
+        ]),
         name(subject),
         spki,
         tlv(0xa3, &sequence(&extensions)),
@@ -183,4 +208,70 @@ pub(crate) fn leaf(ca: &Minted, serial: u8, dns_name: &str) -> Minted {
         pair,
         subject: dns_name.to_string(),
     }
+}
+
+/// A leaf over somebody else's public key — what a CA does with the key a
+/// workload sent it — valid between two `UTCTime`s (`YYMMDDHHMMSSZ`). DER.
+pub(crate) fn leaf_over(
+    ca: &Minted,
+    serial: u8,
+    dns_name: &str,
+    point: &[u8],
+    validity: (&str, &str),
+) -> Vec<u8> {
+    let extensions = vec![
+        extension(OID_BASIC_CONSTRAINTS, true, sequence(&[])),
+        extension(OID_KEY_USAGE, true, tlv(0x03, &[0x07, 0x80])),
+        extension(
+            OID_EXTENDED_KEY_USAGE,
+            false,
+            sequence(&[oid(OID_SERVER_AUTH), oid(OID_CLIENT_AUTH)]),
+        ),
+        extension(
+            OID_SUBJECT_ALT_NAME,
+            false,
+            sequence(&[tlv(0x82, dns_name.as_bytes())]),
+        ),
+    ];
+    certificate_over(
+        serial,
+        &ca.subject,
+        &ca.pair,
+        dns_name,
+        point,
+        validity,
+        extensions,
+    )
+}
+
+/// `UTCTime` text for an instant, as `leaf_over` takes it.
+pub(crate) fn utc_time(instant: qip_core::Timestamp) -> String {
+    let (year, month, day) = instant.civil_date();
+    let (hour, minute, second, _) = instant.civil_time();
+    format!(
+        "{:02}{month:02}{day:02}{hour:02}{minute:02}{second:02}Z",
+        year.rem_euclid(100)
+    )
+}
+
+/// A second handle on an authority, for a thread or a struct that must own
+/// one: the key pair is reloaded from its PKCS#8, which is all `ring` allows.
+pub(crate) fn authority_from(ca: &Minted) -> Minted {
+    let pair = EcdsaKeyPair::from_pkcs8(
+        &ECDSA_P256_SHA256_ASN1_SIGNING,
+        &ca.pkcs8,
+        &SystemRandom::new(),
+    )
+    .expect("a key this module made reloads");
+    Minted {
+        certificate_der: ca.certificate_der.clone(),
+        pkcs8: ca.pkcs8.clone(),
+        pair,
+        subject: ca.subject.clone(),
+    }
+}
+
+/// PEM armour for any DER.
+pub(crate) fn pem_of(label: &str, der: &[u8]) -> String {
+    pem(label, der)
 }

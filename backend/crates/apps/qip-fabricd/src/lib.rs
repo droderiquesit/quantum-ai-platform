@@ -65,10 +65,11 @@ use qip_storage::{BlobStore, CloudStorageBlobStore, CloudStorageConfig, FileBlob
 use qip_streaming::event_fabric::broker::Broker;
 use qip_streaming::event_fabric::managed::ManagedLog;
 use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
+use qip_transport::cas::CasIdentity;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
 use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
-use qip_transport::tls::{PeerNames, TlsServer, WorkloadIdentity};
+use qip_transport::tls::{PeerNames, TlsServer, TlsSource, WorkloadIdentity};
 
 use crate::config::{ArchiveTarget, Config, ManagedBackend, ManagedConfig};
 use crate::health::Health;
@@ -265,6 +266,11 @@ pub struct Running {
     stop_housekeeping: Arc<AtomicBool>,
     data_thread: Option<JoinHandle<()>>,
     other_threads: Vec<JoinHandle<()>>,
+    /// The listener's certificate and its renewal loop, under
+    /// `QIP_TLS_MODE=cas`. Held here because dropping it stops the loop, and
+    /// a broker whose loop stopped would serve until its certificate lapsed
+    /// and then refuse everyone with nothing renewing it.
+    issued: Option<CasIdentity>,
 }
 
 impl std::fmt::Debug for Running {
@@ -325,6 +331,9 @@ impl Running {
         stop_listener(&self.stop_health, &self.health_address);
         for thread in self.other_threads.drain(..) {
             let _ = thread.join();
+        }
+        if let Some(issued) = self.issued.take() {
+            issued.stop();
         }
     }
 
@@ -431,6 +440,29 @@ pub fn start_with_seams(
     archive: Option<Arc<dyn BlobStore>>,
     managed: Option<Arc<dyn ManagedLog>>,
 ) -> Result<Running> {
+    start_composed(config, clock, archive, managed, None)
+}
+
+/// [`start`] for a listener whose certificate Certificate Authority Service
+/// issues (`QIP_TLS_MODE=cas`, ADR 0112 §2). `issued` is the identity and
+/// renewal loop `main` started; the listener presents whatever certificate
+/// it holds at each handshake, so renewals reach new connections with no
+/// restart, and the broker reports not-ready whenever it holds none.
+pub fn start_issued(
+    config: &Config,
+    clock: Arc<dyn Clock>,
+    issued: CasIdentity,
+) -> Result<Running> {
+    start_composed(config, clock, None, None, Some(issued))
+}
+
+fn start_composed(
+    config: &Config,
+    clock: Arc<dyn Clock>,
+    archive: Option<Arc<dyn BlobStore>>,
+    managed: Option<Arc<dyn ManagedLog>>,
+    issued: Option<CasIdentity>,
+) -> Result<Running> {
     let catalogue_bytes = read_bounded(
         &config.catalogue,
         MAXIMUM_CATALOGUE_BYTES,
@@ -508,13 +540,36 @@ pub fn start_with_seams(
     // deployment it must. Loaded here — after storage is proven, before the
     // port is bound — and a certificate that will not load stops the broker:
     // there is no fallback to the plaintext listener below.
-    let data = match &config.listener_tls {
-        Some(paths) => Server::bind_tls(
+    //
+    // Under `cas` the identity is the one `main` started issuance for, and
+    // the readiness gate is its status: a broker with no current
+    // certificate refuses every handshake (the identity presents nothing)
+    // and says so on `/health`. A `cas` configuration handed no issued
+    // identity is refused rather than bound with no certificate source.
+    let server_config = match (&config.listener_tls, &issued) {
+        (Some(TlsSource::Files(paths)), _) => {
+            Some(WorkloadIdentity::from_files(paths)?.server_config()?)
+        }
+        (Some(TlsSource::Issued(_)), Some(issued)) => {
+            health.require_certificate(issued.status());
+            Some(issued.identity().server_config()?)
+        }
+        (Some(TlsSource::Issued(_)), None) => {
+            return Err(Error::invalid(
+                "QIP_TLS_MODE=cas and no issued identity was handed to the broker; start it \
+                 with `start_issued` after `qip_storage::gcp::workload_certificate::\
+                 workload_certificate`, as `main` does",
+            ));
+        }
+        (None, _) => None,
+    };
+    let data = match server_config {
+        Some(server_config) => Server::bind_tls(
             &config.listen,
             data_plane,
             data_limits,
             TlsServer {
-                config: WorkloadIdentity::from_files(paths)?.server_config()?,
+                config: server_config,
                 peers: PeerNames::new(config.admitted_peers.clone())?,
             },
         )?,
@@ -622,5 +677,6 @@ pub fn start_with_seams(
             .into_iter()
             .chain(lease_thread)
             .collect(),
+        issued,
     })
 }

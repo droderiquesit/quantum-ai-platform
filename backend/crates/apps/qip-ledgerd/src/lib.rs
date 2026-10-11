@@ -115,6 +115,9 @@ pub struct Running {
     stop_workers: Arc<AtomicBool>,
     server_thread: Option<JoinHandle<()>>,
     workers: Vec<JoinHandle<()>>,
+    /// The fabric link's issued certificate and its renewal loop, under
+    /// `cas`; held so the loop lives as long as the ledger does.
+    issued: Option<qip_transport::cas::CasIdentity>,
 }
 
 impl std::fmt::Debug for Running {
@@ -162,6 +165,9 @@ impl Running {
         let _ = TcpStream::connect(&self.address);
         if let Some(thread) = self.server_thread.take() {
             let _ = thread.join();
+        }
+        if let Some(issued) = self.issued.take() {
+            issued.stop();
         }
     }
 
@@ -238,10 +244,29 @@ pub fn start_with_access(
     connect: Connect,
     access: GcpAccess,
 ) -> Result<Running> {
+    start_with_link(config, clock, sleeper, connect, access, None)
+}
+
+/// [`start_with_access`] for a fabric link whose certificate Certificate
+/// Authority Service issues (`QIP_TLS_MODE=cas`, ADR 0112 §2). `issued` is
+/// the identity `connect`'s transports present and the loop renewing it;
+/// the ledger holds it for its life (dropping it stops renewal) and is
+/// ready only while it holds a current certificate.
+pub fn start_with_link(
+    config: &LedgerConfig,
+    clock: Arc<dyn Clock>,
+    sleeper: Arc<dyn Sleeper>,
+    connect: Connect,
+    access: GcpAccess,
+    issued: Option<qip_transport::cas::CasIdentity>,
+) -> Result<Running> {
     let metrics = Arc::new(Metrics::new("qip-ledgerd"));
     let telemetry = LedgerTelemetry::new(metrics.clone());
     let store = Arc::new(open_store(config, &clock, access, telemetry.clone())?);
     let readiness = Arc::new(Readiness::default());
+    if let Some(issued) = &issued {
+        readiness.require_certificate(issued.status());
+    }
     readiness.storage_proven();
 
     let statuses: Statuses = Arc::new(Mutex::new(BTreeMap::new()));
@@ -307,5 +332,6 @@ pub fn start_with_access(
         stop_workers,
         server_thread: Some(server_thread),
         workers,
+        issued,
     })
 }

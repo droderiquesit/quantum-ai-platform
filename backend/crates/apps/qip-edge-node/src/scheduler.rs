@@ -261,6 +261,9 @@ pub struct DecisionLoop {
     last_peer_turn: Option<PeerTurn>,
     peer_failures: u64,
     health: Option<(HealthSnapshot, HealthFacts)>,
+    /// The fabric link's issued certificate under `QIP_TLS_MODE=cas` (ADR
+    /// 0112 §2), reported in the health body as it is at each turn.
+    certificate: Option<Arc<qip_transport::cas::RenewalStatus>>,
     relay: Option<JournalRelay>,
     drain: Option<DrainThread>,
     meter: Option<PassMeter>,
@@ -322,6 +325,7 @@ impl DecisionLoop {
             last_peer_turn: None,
             peer_failures: 0,
             health: None,
+            certificate: None,
             relay: None,
             drain: None,
             meter: None,
@@ -401,6 +405,15 @@ impl DecisionLoop {
     #[must_use]
     pub fn with_health(mut self, snapshot: HealthSnapshot, facts: HealthFacts) -> Self {
         self.health = Some((snapshot, facts));
+        self
+    }
+
+    /// Report the fabric link's issued certificate in the health body. A
+    /// node whose certificate has lapsed keeps deciding — cells decide alone
+    /// (ADR 0008) — but its fabric sink's handshakes are refused, its
+    /// outcomes back up in the spool, and the body says why.
+    pub fn with_certificate(mut self, status: Arc<qip_transport::cas::RenewalStatus>) -> Self {
+        self.certificate = Some(status);
         self
     }
 
@@ -794,8 +807,12 @@ impl DecisionLoop {
             None => (0, 0, false),
         };
         let drain_running = self.drain.as_ref().is_some_and(DrainThread::is_running);
+        let workload_certificate = self
+            .certificate
+            .as_ref()
+            .map_or_else(|| "null".to_string(), |status| status.to_json().to_string());
         format!(
-            r#"{{"cell":"{}","region":"{}","halted":{},"fence":{fence},"peer_mesh":{peer_mesh},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_retained":{retained},"journal_shipped":{shipped},"journal_pressure":"{}","journal_handoffs_refused":{},"store_failures":{store_failures},"relay_running":{relay_running},"drain_running":{drain_running},"turns":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+            r#"{{"cell":"{}","region":"{}","halted":{},"fence":{fence},"peer_mesh":{peer_mesh},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_retained":{retained},"journal_shipped":{shipped},"journal_pressure":"{}","journal_handoffs_refused":{},"store_failures":{store_failures},"relay_running":{relay_running},"drain_running":{drain_running},"turns":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"workload_certificate":{workload_certificate},"started_at":{}}}"#,
             facts.cell,
             facts.region,
             cell.is_halted(),

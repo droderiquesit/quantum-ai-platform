@@ -80,6 +80,9 @@ pub mod auth;
 /// what made it possible here without a protocol stack.
 pub mod spanner;
 pub mod storage;
+/// Workload certificates from CA Service, named after the instance's
+/// service account (ADR 0112 §2).
+pub mod workload_certificate;
 
 pub use auth::{AccessToken, MetadataServerTokens, StaticToken, TokenFile, TokenSource};
 pub use storage::{CloudStorageBlobStore, CloudStorageConfig};
