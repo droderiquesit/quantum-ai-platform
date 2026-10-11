@@ -9,7 +9,7 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -67,7 +67,7 @@ fn arch_001_fast_reflex_and_slow_cognitive_systems_are_independently_deployable(
         timestamp(0),
     );
     assert!(
-        matches!(grant_v1, CapitalGrant::Full),
+        matches!(grant_v1, CapitalAdmission::Full),
         "The cell must admit orders using a valid signed package without the cognitive system"
     );
 
@@ -87,7 +87,7 @@ fn arch_001_fast_reflex_and_slow_cognitive_systems_are_independently_deployable(
         timestamp(100),
     );
     assert!(
-        matches!(grant_v2, CapitalGrant::Full),
+        matches!(grant_v2, CapitalAdmission::Full),
         "The cell must continue to work with updated signed packages without restart"
     );
 
@@ -144,7 +144,7 @@ fn arch_002_reflex_system_takes_packages_not_live_calls() -> Result<()> {
     );
 
     assert!(
-        matches!(admission_grant, CapitalGrant::Full),
+        matches!(admission_grant, CapitalAdmission::Full),
         "The cell must decide from cached packages without calling the center"
     );
 
@@ -221,7 +221,7 @@ fn arch_010_each_region_keeps_reflex_state_local() -> Result<()> {
     );
 
     assert!(
-        matches!(grant, CapitalGrant::Full),
+        matches!(grant, CapitalAdmission::Full),
         "The cell must make decisions from local state without remote store access"
     );
 
@@ -390,7 +390,7 @@ fn arch_075_no_job_is_synchronous_dependency_between_tick_and_order() -> Result<
     );
 
     assert!(
-        matches!(admission, CapitalGrant::Full),
+        matches!(admission, CapitalAdmission::Full),
         "Cell admission must succeed using only cached packages (no job dependency)"
     );
 
