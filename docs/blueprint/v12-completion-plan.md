@@ -114,6 +114,36 @@ code does not bear out:
 | R2.9 Catalogue says what it means | FABRIC-8086 | `streams.local.json` still declares `"quorum"`; replace with `archived` and stop accepting the alias silently. |
 | R2.10 Private build pool | CICD-9097 | Builds run on GitHub-hosted runners, not a Cloud Build private pool. |
 
+## Round 2 — what landed (2026-10-11)
+
+Thirteen lanes merged (quant, model, NOW lattice, ledger on Spanner, fabric
+P0/P1 managed path, edge Risk Gate, agency conduct gate, deep research,
+tick lake, breadth, capital and hedge, CI/CD and infrastructure, signing and
+mTLS), then 38 cross-lane test failures were fixed — five of them real
+defects (a restart that re-minted an event id, an mTLS server that dropped
+its own refusal, a CLI that told a caller how to repair a smuggled guard, a
+ledger that accepted contradictory deployment settings, an API holding the
+whole central plane) — and ADR 0116 resolved the one deliberate failure,
+MESH-013, by moving the peer protocol and wire to Lane 1.
+
+Gate on `d49b3899`: `cargo fmt --all --check` exit 0; `cargo clippy
+--workspace --all-targets -- -D warnings` exit 0; `cargo test --workspace
+--no-fail-fast` **9054 passed, 0 failed, 0 ignored** over 811 result lines;
+`check-dependencies.sh` "42 third-party package(s), all permitted";
+`check-secrets.sh` "nothing found".
+
+Five independent auditors re-graded the 159 rows round 2 touched: the
+register stands at **177 COMPLETE, 1133 PARTIAL, 151 MISSING, 55 BLOCKED,
+1 INCORRECT** of 1518. Their defects and an independent security review's
+seven findings are assigned to round-3 sessions (capital exposure, signed
+envelope bounds, trust infrastructure, agent controls, evidence and data,
+mesh, mutation verification). Round 4 runs ten sessions over the 469 rows
+whose code is built but unwired or untested.
+
+What code alone cannot close: 193 rows need a real deployment, drill or
+plan against a cloud project (owner approval for a dev apply), 22 need an
+owner decision, 55 are blocked by accepted ADRs.
+
 ## Decisions only the owner can take
 
 *Resolved 2026-10-11 by ADRs 0109–0115; kept for the record.* Each blocked
