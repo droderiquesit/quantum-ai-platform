@@ -208,18 +208,28 @@ impl Record {
 
 /// One model's record, by context.
 ///
+/// Named `ContextualReputation` and not `ModelReputation`, because the
+/// workspace had two types by that name and they were not the same thing:
+/// `qip_contracts::ambient::ModelReputation` is the contract-level snapshot a
+/// compute allocation carries — one cell, three basis-point figures — and this
+/// is the ledger that snapshot ought to be read from. Two types under one name
+/// let a reader take a snapshot for the ledger, or the ledger for a snapshot,
+/// and nothing in either said which they held. The contract type is the
+/// canonical `ModelReputation`; this one produces it through
+/// [`ContextualReputation::snapshot`] rather than shadowing it.
+///
 /// Deliberately not serialisable, like [`qip_ai::ModelRegistry`] itself. It is
 /// keyed on a struct, and the formats this platform serialises to want string
 /// keys — a derive here would compile and then fail at the first attempt to
 /// write it out. Reputation is rebuilt from the outcome record, which is the
 /// durable thing.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ModelReputation {
+pub struct ContextualReputation {
     model: String,
     records: BTreeMap<Conditions, Record>,
 }
 
-impl ModelReputation {
+impl ContextualReputation {
     /// `model` is a [`qip_ai::ModelCard::reference`] — `name@version`. Keyed on
     /// the version rather than the name because a retrained model is a
     /// different model, and inheriting the old version's record is how a
@@ -264,6 +274,50 @@ impl ModelReputation {
     pub fn contexts(&self) -> impl Iterator<Item = (&Conditions, &Record)> {
         self.records.iter()
     }
+
+    /// The canonical contract-level reputation for one cell, read from this
+    /// ledger.
+    ///
+    /// `accuracy_bp` is the raw hit rate and `forecast_skill_bp` the shrunk
+    /// competence — the hit rate with its sample size priced in, so a cell of
+    /// two lucky calls reads near a coin flip rather than near certainty.
+    /// `signal_quality_bp` is the caller's: this ledger counts right and wrong
+    /// calls and measures nothing about signal quality, and a figure filled in
+    /// here would be a number nobody computed. The contract refuses an empty
+    /// label or an out-of-range figure, and that refusal is passed through.
+    pub fn snapshot(
+        &self,
+        conditions: &Conditions,
+        signal_quality_bp: u32,
+    ) -> Result<qip_contracts::ambient::ModelReputation> {
+        let competence = self.competence(conditions);
+        qip_contracts::ambient::ModelReputation::new(
+            format!("{:?}/{}", conditions.asset_class, conditions.region),
+            conditions.horizon.as_str(),
+            format!(
+                "{}/{}",
+                conditions.regime.as_str(),
+                conditions.volatility.as_str()
+            ),
+            basis_points(self.record(conditions).hit_rate_f64(), "accuracy")?,
+            signal_quality_bp,
+            basis_points(competence.shrunk(), "forecast skill")?,
+        )
+    }
+}
+
+/// A fraction in `[0, 1]` as basis points. The one crossing from the ledger's
+/// `f64` statistics into the contract's integer figures, refused rather than
+/// clamped when the fraction is not one.
+fn basis_points(fraction: f64, name: &str) -> Result<u32> {
+    if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
+        return Err(Error::numeric(format!(
+            "the {name} fraction {fraction} is not in [0, 1]; the ledger produced a figure no \
+             reputation can carry, so it is refused rather than clamped"
+        )));
+    }
+    // In range by the check above, so the rounded value fits a u32.
+    Ok((fraction * 10_000.0).round() as u32)
 }
 
 /// A model, and how much it has earned the right to be believed here.
@@ -304,7 +358,7 @@ impl Rated<'_> {
 /// Every model's contextual record.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReputationBook {
-    models: BTreeMap<String, ModelReputation>,
+    models: BTreeMap<String, ContextualReputation>,
 }
 
 impl ReputationBook {
@@ -329,11 +383,11 @@ impl ReputationBook {
         let model = judgement.model();
         self.models
             .entry(model.to_string())
-            .or_insert_with(|| ModelReputation::new(model))
+            .or_insert_with(|| ContextualReputation::new(model))
             .observe(judgement, correct);
     }
 
-    pub fn reputation(&self, model: &str) -> Option<&ModelReputation> {
+    pub fn reputation(&self, model: &str) -> Option<&ContextualReputation> {
         self.models.get(model)
     }
 

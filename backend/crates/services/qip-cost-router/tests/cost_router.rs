@@ -1291,3 +1291,40 @@ fn a_card_with_no_name_or_no_version_cannot_mint_a_judgement_the_replay_would_re
     assert_eq!(refused, 1, "the nameless card must not mint one");
     Ok(())
 }
+#[test]
+fn the_ledger_produces_the_canonical_contract_reputation_with_the_sample_size_priced_in()
+-> Result<()> {
+    // There were two `ModelReputation` types, one a contract snapshot and one
+    // this ledger, and nothing said which a reader held. The ledger is now
+    // `ContextualReputation` and the contract type is read *from* it — so a
+    // snapshot of a two-for-two cell must read near a coin flip on skill,
+    // however perfect its raw accuracy, or the contract would carry the very
+    // overconfidence the ledger exists to remove.
+    let mut registry = ModelRegistry::new();
+    let reference = production_model(&mut registry, "dislocation-classifier", now())?;
+    let mut book = ReputationBook::new();
+    let under = conditions(MarketRegime::Crisis);
+    let judgement = judgement_for(&book, &registry, &reference, &under)?;
+    for _ in 0..2 {
+        book.observe(&judgement, true);
+    }
+    let ledger = book.reputation(&reference).expect("the model was observed");
+    // Premise: the raw record really is perfect.
+    assert_eq!(ledger.record(&under).correct, 2);
+
+    let snapshot = ledger.snapshot(&under, 6_000)?;
+    assert_eq!(snapshot.accuracy_bp(), 10_000);
+    assert!(
+        snapshot.forecast_skill_bp() < 6_000,
+        "two lucky calls became a skill of {} bp",
+        snapshot.forecast_skill_bp()
+    );
+    assert_eq!(snapshot.signal_quality_bp(), 6_000);
+    assert_eq!(snapshot.regime(), "crisis/normal");
+    assert_eq!(snapshot.horizon(), under.horizon.as_str());
+
+    // The contract's refusal passes through: a signal quality above the
+    // basis-point ceiling is refused, not clamped.
+    assert!(ledger.snapshot(&under, 10_001).is_err());
+    Ok(())
+}
