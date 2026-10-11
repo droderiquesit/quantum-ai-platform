@@ -15,6 +15,7 @@ const POLICY = JSON.parse(readFileSync(new URL("./agent-policy.json", import.met
 const lane = (id, owns, extra = {}) => ({
   id,
   role: "cloud-platform-engineer",
+  branch: `lane/${id}`,
   owns,
   depends_on: [],
   acceptance: ["terraform test"],
@@ -218,4 +219,24 @@ test("the spend command refuses an over-budget lane and a missing ledger", () =>
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// CICD-9082/9083: the round's committed plan is valid under the policy the
+// merge enforces. Mutation: give a lane a path its role may not edit, or
+// drop the ordering between the two lanes sharing docs/adr/README.md.
+test("the committed round-3 lane manifest validates, and every lane names its branch and gates", () => {
+  const manifest = JSON.parse(readFileSync(new URL("./lanes/round-3.json", import.meta.url), "utf8"));
+  assert.ok(manifest.lanes.length >= 3, "premise: the manifest declares lanes");
+  const { problems, waves } = validate(manifest, POLICY);
+  assert.deepEqual(problems, []);
+  assert.equal(waves.flat().length, manifest.lanes.length);
+  assert.equal(POLICY.lane_manifest.path, "scripts/lanes/round-3.json", "the guard reads the committed manifest");
+  // The overlap is real and ordered: remove the order and it is refused.
+  const unordered = structuredClone(manifest);
+  unordered.lanes.find((l) => l.id === "r3-agents-adr").depends_on = [];
+  assert.match(validate(unordered, POLICY).problems.join("\n"), /r3-agents-adr and r3-trust-adr own overlapping paths/);
+  // And a lane without a branch is refused.
+  const branchless = structuredClone(manifest);
+  delete branchless.lanes[0].branch;
+  assert.match(validate(branchless, POLICY).problems.join("\n"), /names no branch/);
 });

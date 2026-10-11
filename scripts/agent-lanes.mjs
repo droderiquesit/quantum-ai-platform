@@ -13,7 +13,7 @@
  * owns, the lanes it waits for, the commands that decide whether it is
  * done, and what it may spend.
  *
- *   { "lanes": [ { "id": "r2-infra", "role": "cloud-platform-engineer",
+ *   { "lanes": [ { "id": "r2-infra", "role": "cloud-platform-engineer", "branch": "lane/r2-infra",
  *       "owns": ["infrastructure/terraform/modules/build-pool/**"],
  *       "depends_on": [], "acceptance": ["terraform test"],
  *       "budget": { "minutes": 120, "usd": 10, "tokens": 400000 } } ] }
@@ -29,6 +29,7 @@
  * - **A lane with no acceptance command**, or with a budget that is zero,
  *   missing or above the policy's ceiling. "Done" with no criterion is a
  *   lane's own opinion, and an unbounded lane is a bill nobody approved.
+ * - **A lane with no branch.**
  * - **A lane owning a path its role may not edit** — the role table is the
  *   one `agent-guard.mjs` enforces on the pull request, so the plan cannot
  *   promise a lane what the merge will refuse it.
@@ -52,6 +53,7 @@ import { matchesAny } from "./agent-guard.mjs";
 import { PRICES, costMicroUsd, priceRow, usd as usdText, usdToMicro } from "./fleet/worker.mjs";
 
 const LANE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 
 /** The literal directory prefix of a glob: everything before its first wildcard. */
 export function literalPrefix(glob) {
@@ -116,6 +118,12 @@ export function validate(manifest, policy) {
       problems.push(`${id}'s budget.tokens must be a whole number in [0, ${limits.max_tokens}]`);
     }
     if (lane.depends_on !== undefined && !Array.isArray(lane.depends_on)) problems.push(`${id}'s depends_on is not a list`);
+    // The branch the lane pushes to. A lane with none cannot be dispatched to
+    // the sandbox, and a reviewer cannot tell which pull request is which
+    // lane's.
+    if (typeof lane.branch !== "string" || !BRANCH.test(lane.branch) || lane.branch.includes("..")) {
+      problems.push(`${id} names no branch, or one that is not a branch name`);
+    }
   }
   for (const [id, lane] of byId) {
     for (const dep of lane.depends_on ?? []) {

@@ -478,6 +478,11 @@ jobs:
       # network is the egress proxy and nothing else (SEC-9077). Judged by
       # the same function the tests above exercise, on the committed file.
       - run: node scripts/agent-guard.mjs sandbox .github/workflows/agent-sandbox.yml
+      # The round's lane plan, the one agent-guard.mjs holds `Agent-Lane:`
+      # commits to, is valid under the policy the merge enforces (CICD-9082,
+      # CICD-9083): every lane has a branch, gates and a bounded budget, owns
+      # only what its role may edit, and shares no path with an unordered lane.
+      - run: node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-3.json
 
   # The repository's change-management hooks ensure every change goes through
   # git commits and pull requests. The guard refuses destructive bypass

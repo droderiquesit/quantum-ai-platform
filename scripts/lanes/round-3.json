@@ -1,0 +1,169 @@
+{
+  "comment": "Round 3 of docs/blueprint/v12-completion-plan.md as lanes (CICD-9082, CICD-9083; ADR 0117). Each session's work is split by the role that may edit it, because a lane runs as one role and scripts/agent-policy.json's role table is what the merge enforces. Territories were taken from each branch's diff against a07946ac on 2026-10-11, not from intention. `scripts/agent-lanes.mjs validate` runs on this file in ci's scripts job; an agent commit carrying `Agent-Lane: <id>` is held to that lane's `owns` by agent-guard.mjs. Two overlaps are ordered rather than allowed: docs/adr/README.md, written by the trust and agents lanes (the 2026-09-14 collision's file), and nothing else. Not declarable, said rather than hidden: the trust session also changed backend/Cargo.lock, backend/crates/apps/qip-cli/{Cargo.toml,src/event_fabric/*} and backend/crates/apps/qip-ledgerd/{Cargo.toml,src/*}, and no role in the table may edit a composition root's source or the lockfile. Those paths have no lane here; under this manifest they are work only a person may do, until a role is given them in .claude/agents/ and the policy together.",
+  "lanes": [
+    {
+      "id": "r3-agents-tooling",
+      "role": "cloud-platform-engineer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-agents",
+      "owns": [
+        "scripts/agent-guard.mjs",
+        "scripts/agent-guard.test.mjs",
+        "scripts/agent-lanes.mjs",
+        "scripts/agent-lanes.test.mjs",
+        "scripts/agent-egress.mjs",
+        "scripts/agent-egress.test.mjs",
+        "scripts/agent-policy.json",
+        "scripts/lanes/**",
+        ".github/workflows/agent-boundary.yml",
+        ".github/workflows/agent-sandbox.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "node --test scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs",
+        "node scripts/agent-guard.mjs sandbox .github/workflows/agent-sandbox.yml",
+        "node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-3.json"
+      ],
+      "budget": { "minutes": 240, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-agents-tests",
+      "role": "test-engineer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-agents",
+      "owns": [
+        "backend/crates/tests/qip-acceptance/tests/model_gateway_boundary.rs",
+        "backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs"
+      ],
+      "depends_on": ["r3-agents-tooling", "r3-agents-adr"],
+      "acceptance": [
+        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test model_gateway_boundary --test blueprint_rules --test documentation"
+      ],
+      "budget": { "minutes": 120, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-agents-adr",
+      "role": "solution-architect",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-agents",
+      "owns": [
+        "docs/adr/0117-*.md",
+        "docs/adr/README.md"
+      ],
+      "depends_on": ["r3-trust-adr"],
+      "acceptance": [
+        "cd backend && cargo test -p qip-acceptance --test documentation"
+      ],
+      "budget": { "minutes": 60, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-agents-docs",
+      "role": "technical-writer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-agents",
+      "owns": [
+        "docs/ops/runbooks/development-agent-controls.md",
+        "docs/ops/runbooks/owner-switches.md"
+      ],
+      "depends_on": ["r3-agents-tooling"],
+      "acceptance": [
+        "cd backend && cargo test -p qip-acceptance --test documentation"
+      ],
+      "budget": { "minutes": 60, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-capital-code",
+      "role": "backend-engineer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-capital",
+      "owns": [
+        "backend/crates/edge/qip-edge/src/cell.rs",
+        "backend/crates/edge/qip-edge/src/risk_gate.rs",
+        "backend/crates/runtime/qip-kernel/src/survival.rs",
+        "backend/crates/services/qip-capital-fabric/src/journal.rs",
+        "backend/crates/services/qip-execution-engine/src/oms.rs",
+        "backend/crates/services/qip-risk-engine/src/pretrade.rs"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "cd backend && cargo test -p qip-edge -p qip-risk-engine -p qip-execution-engine -p qip-capital-fabric -p qip-kernel --no-fail-fast",
+        "cd backend && cargo test -p qip-acceptance --no-fail-fast --test compliance_proof --test security"
+      ],
+      "budget": { "minutes": 240, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-capital-tests",
+      "role": "test-engineer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-capital",
+      "owns": [
+        "backend/crates/apps/qip-edge-node/tests/allocation.rs",
+        "backend/crates/apps/qip-edge-node/tests/pass.rs",
+        "backend/crates/edge/qip-edge/tests/reservation.rs",
+        "backend/crates/edge/qip-edge/tests/risk_gate.rs",
+        "backend/crates/runtime/qip-kernel/tests/learning.rs",
+        "backend/crates/services/qip-capital-fabric/tests/journal.rs",
+        "backend/crates/services/qip-execution-engine/tests/execution.rs",
+        "backend/crates/services/qip-risk-engine/tests/risk_engine.rs",
+        "backend/crates/tests/qip-acceptance/tests/adversary.rs",
+        "backend/crates/tests/qip-acceptance/tests/order_route_risk_gate.rs"
+      ],
+      "depends_on": ["r3-capital-code"],
+      "acceptance": [
+        "cd backend && cargo test -p qip-edge-node -p qip-acceptance --no-fail-fast"
+      ],
+      "budget": { "minutes": 180, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-trust-code",
+      "role": "backend-engineer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-trust",
+      "owns": [
+        "backend/crates/edge/qip-edge/src/policy.rs",
+        "backend/crates/libs/qip-contracts/src/policy.rs",
+        "backend/crates/runtime/qip-kernel/src/model_serving.rs",
+        "backend/crates/runtime/qip-kernel/src/model_trust.rs"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "cd backend && cargo test -p qip-contracts -p qip-edge -p qip-kernel --no-fail-fast"
+      ],
+      "budget": { "minutes": 240, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-trust-tests",
+      "role": "test-engineer",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-trust",
+      "owns": [
+        "backend/crates/apps/qip-cli/tests/event_fabric_grant.rs",
+        "backend/crates/apps/qip-edge-node/tests/lane0.rs",
+        "backend/crates/apps/qip-ledgerd/tests/**",
+        "backend/crates/edge/qip-edge/tests/model_manifest.rs",
+        "backend/crates/edge/qip-edge/tests/model_release.rs",
+        "backend/crates/libs/qip-contracts/tests/contracts.rs",
+        "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs",
+        "backend/crates/libs/qip-transport/tests/support/certs.rs",
+        "backend/crates/runtime/qip-kernel/tests/release_packs.rs",
+        "backend/crates/services/qip-mesh/tests/control_frame_schemas.rs",
+        "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs",
+        "backend/crates/tests/qip-acceptance/tests/fabric_package_announcements.rs",
+        "backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs"
+      ],
+      "depends_on": ["r3-trust-code"],
+      "acceptance": [
+        "cd backend && cargo test -p qip-edge -p qip-contracts -p qip-kernel -p qip-acceptance --no-fail-fast"
+      ],
+      "budget": { "minutes": 180, "usd": 0, "tokens": 0 }
+    },
+    {
+      "id": "r3-trust-adr",
+      "role": "solution-architect",
+      "branch": "ccr-dc3c4d84-dayxv0-r3-trust",
+      "owns": [
+        "docs/adr/0110-*.md",
+        "docs/adr/README.md"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "cd backend && cargo test -p qip-acceptance --test documentation"
+      ],
+      "budget": { "minutes": 60, "usd": 0, "tokens": 0 }
+    }
+  ]
+}

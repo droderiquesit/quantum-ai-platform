@@ -17,7 +17,8 @@ repository, where each rule lives, and what none of it can see. Labels as in
 | `scripts/agent-lanes.mjs` | A lane plan with no acceptance command, no or an over-ceiling budget (minutes, USD, tokens), a cycle, a path the lane's role may not edit, or two lanes owning one boundary with no order between them; a lane's diff outside what it owns; an acceptance command running past the lane's minutes (killed); `spend`: a lane whose model-gateway ledger shows more tokens or USD than its budget, or a billed line whose spend cannot be read |
 | `scripts/agent-egress.mjs` | The sandbox's one way out: anything but HTTPS `CONNECT` on 443 to a host on `sandbox.egress_allow` (no model provider is listed), past 4,000 tunnels or 4 GiB; `verdict` fails the run on any refusal or a missing log |
 | `.github/workflows/agent-boundary.yml` | Runs `change` on every pull request and every review of one |
-| `deploy.yml`, gate job | Runs `change` again on the commit being deployed, against the pull request it was merged through — so the boundary holds whether or not branch protection requires `agent boundary` |
+| `deploy.yml`, gate job | Runs `gather` and `range` on every commit since the last successful deployment, each against its own files and the pull request it was merged through — so the boundary holds whether or not branch protection requires `agent boundary` (the owner's setting: `owner-switches.md`) |
+| `scripts/lanes/round-3.json` | The round's lane plan: each lane's role, branch, owned paths, order, gates and budget. ci validates it; an agent commit carrying `Agent-Lane: <id>` is refused outside that lane's paths |
 | `.github/workflows/agent-sandbox.yml` | Runs one lane's acceptance from a manifest on the default branch, within the lane's budget, with `contents: read` and nothing else, under the `lane-egress` group the runner's firewall confines to loopback (DNS included) with `no_new_privs`, so the root-run egress proxy is its only route out; the verdict is taken in the same step after the group's processes are killed. ci's `scripts` job holds it to the sandbox rule |
 | `qip-acceptance/tests/model_gateway_boundary.rs` | Platform code naming a model provider outside the declared adapter, a second `LanguageModel` implementation, a model invoked anywhere but `AgentRuntime::complete` (grant and budget first), the hosted adapter built outside the composition root, or the organisation convened before `qip-cost-router` places the decision (SEC-9078) |
 
@@ -52,8 +53,9 @@ exempt.
 
 A person reviews and approves the pull request's **current head**. A push
 after the approval needs a fresh approval; a later plain comment does not
-withdraw one; a request for changes does. Approvals by a `[bot]` account or a
-login matching the agent patterns do not count.
+withdraw one; a request for changes does. Approvals by a `[bot]` account, a
+login matching the agent patterns, or a reviewer without write access to the
+repository do not count.
 
 ## What none of this can see — read before relying on it
 

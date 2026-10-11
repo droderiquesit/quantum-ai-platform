@@ -302,22 +302,21 @@ jobs:
           fi
           echo "static analysis succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
 
-      # The agent boundary held for the commit being deployed (R12
-      # GOV-9067, SEC-9068). An agent-authored change that touched a
-      # protected path — a workflow, the agents' own instructions, a gate or
-      # its policy, the paper boundary's Terraform layer — is deployable
-      # only if a person approved the head of the pull request it arrived
-      # through; a change declaring an `Agent-Role` must lie inside that
-      # role's paths; and a protected change carrying no agent marker at all
-      # needs every non-merge commit signed by a person's registered key, or
-      # the same approval, because no marker is not proof of a person
-      # (GOV-9067, ADR 0117). `agent-boundary.yml` says the same on the pull request
-      # itself, but a repository setting decides whether that check is
-      # required before merge and this file cannot see the setting; this
-      # step is the half that holds whatever the setting is. The change is
-      # the diff from the commit's first parent, which for a merge commit is
-      # the whole pull request.
-      - name: the agent boundary held for this commit
+      # The agent boundary held for every commit this deployment ships (R12
+      # GOV-9067, SEC-9068, ADR 0117). Each commit since the last successful
+      # deployment is judged against its own files and the pull request it
+      # arrived through: an agent-authored change that touched a protected
+      # path — a workflow, the agents' own instructions, a gate or its
+      # policy, the paper boundary's Terraform layer — needs a writer's
+      # approval of that pull request's head; a commit declaring an
+      # `Agent-Role` must lie inside that role's paths; and a protected change
+      # with no agent marker needs a person's signature or the same approval.
+      # This judged only the deployed commit's first-parent diff until
+      # 2026-10-11, so when two pushes landed between deployments the earlier
+      # one shipped unexamined. `agent-boundary.yml` says the same on each pull
+      # request, but whether that check is required before merge is branch
+      # protection, which this file cannot see; this step holds either way.
+      - name: the agent boundary held for every commit since the last deployment
         env:
           GH_TOKEN: ${{ github.token }}
           THIS_REPOSITORY: ${{ github.repository }}
@@ -325,34 +324,34 @@ jobs:
           set -euo pipefail
           work="${RUNNER_TEMP}/agent-boundary"
           mkdir -p "$work"
-          parent="$(gh api "repos/${THIS_REPOSITORY}/commits/${DEPLOY_SHA}" --jq '.parents[0].sha // empty')"
-          case "$parent" in
-            *[!0-9a-f]*) echo "the first parent of ${DEPLOY_SHA} is not a commit sha" >&2; exit 1 ;;
-          esac
-          if [ -z "$parent" ]; then
-            echo "${DEPLOY_SHA} has no parent; the agent boundary has no change to judge."
-            exit 0
+          # The base: the newest successful deployment of a different commit
+          # that is an ancestor of this one. With none — a first deployment, or
+          # a redeploy of the same commit — the deployed commit's first parent,
+          # which was the whole of this check before.
+          # Read into a variable first: a failing command substitution inside
+          # `for … in $(…)` does not stop the step, and an API error would read
+          # as "no earlier deployment" and shrink the range to one change.
+          deployed="$(gh api "repos/${THIS_REPOSITORY}/actions/workflows/deploy.yml/runs?status=success&branch=main&per_page=30" --jq '.workflow_runs[].head_sha')"
+          base=""
+          for candidate in $deployed; do
+            case "$candidate" in *[!0-9a-f]*|"$DEPLOY_SHA") continue ;; esac
+            status="$(gh api "repos/${THIS_REPOSITORY}/compare/${candidate}...${DEPLOY_SHA}" --jq '.status')"
+            if [ "$status" = "ahead" ]; then base="$candidate"; break; fi
+          done
+          if [ -z "$base" ]; then
+            base="$(gh api "repos/${THIS_REPOSITORY}/commits/${DEPLOY_SHA}" --jq '.parents[0].sha // empty')"
+            case "$base" in *[!0-9a-f]*) echo "the first parent of ${DEPLOY_SHA} is not a commit sha" >&2; exit 1 ;; esac
+            if [ -z "$base" ]; then
+              echo "${DEPLOY_SHA} has no parent and no earlier deployment; the agent boundary has no change to judge."
+              exit 0
+            fi
+            echo "no earlier deployment is an ancestor of ${DEPLOY_SHA}; judging its first-parent change"
           fi
-          gh api "repos/${THIS_REPOSITORY}/compare/${parent}...${DEPLOY_SHA}" --jq '[.files[].filename]' > "$work/files.json"
-          gh api "repos/${THIS_REPOSITORY}/compare/${parent}...${DEPLOY_SHA}" --jq '.commits' > "$work/commits.json"
-          pr="$(gh api "repos/${THIS_REPOSITORY}/commits/${DEPLOY_SHA}/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty')"
-          head_sha="$DEPLOY_SHA"
-          head_ref=""
-          echo '[]' > "$work/reviews.json"
-          if [ -n "$pr" ]; then
-            case "$pr" in *[!0-9]*) echo "the pull request number is not a number" >&2; exit 1 ;; esac
-            head_sha="$(gh api "repos/${THIS_REPOSITORY}/pulls/${pr}" --jq '.head.sha')"
-            head_ref="$(gh api "repos/${THIS_REPOSITORY}/pulls/${pr}" --jq '.head.ref')"
-            # Every page, flattened into one list: an approval on page two
-            # is still an approval.
-            gh api --paginate --slurp "repos/${THIS_REPOSITORY}/pulls/${pr}/reviews?per_page=100" \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).flat())))' \
-              > "$work/reviews.json"
-          fi
-          node .agent-guard/scripts/agent-guard.mjs change \
-            --policy .agent-guard/scripts/agent-policy.json \
-            --head-ref "$head_ref" --head-sha "$head_sha" \
-            --files "$work/files.json" --commits "$work/commits.json" --reviews "$work/reviews.json"
+          echo "judging ${base}..${DEPLOY_SHA}"
+          node .agent-guard/scripts/agent-guard.mjs gather \
+            --repository "$THIS_REPOSITORY" --base "$base" --head "$DEPLOY_SHA" --out "$work/range.json"
+          node .agent-guard/scripts/agent-guard.mjs range \
+            --policy .agent-guard/scripts/agent-policy.json --range "$work/range.json"
 
   # One image per deployed artefact. Four of the five are workspace binaries
   # built from the one Dockerfile, so those four cannot drift apart.

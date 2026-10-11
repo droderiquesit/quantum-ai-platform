@@ -83,6 +83,17 @@ overrides either; editing them is a protected change.
   commit. No marker is no longer proof of a person where it matters most.
 - **New:** an agent committer under a person's author name (the committer
   is now read as well as the author).
+- **New:** an approval from a reviewer the repository does not give
+  write, maintain or admin access, as GitHub's own required-approval rule
+  reads it; a reviewer whose permission cannot be read does not count.
+- **New:** at deploy, any commit since the last successful deployment that
+  fails the rules above, each judged against its own files and its own pull
+  request (a commit pushed straight to the branch has no approval to show).
+  The gate judged only the deployed commit's first-parent diff before, so
+  the earlier of two pushes between deployments shipped unexamined.
+- **New:** an agent commit carrying `Agent-Lane: <id>` outside that lane's
+  `owns` in the round's committed manifest (`scripts/lanes/round-3.json`,
+  named by the policy and protected), or naming a lane the manifest lacks.
 - An agent actor dispatching `deploy.yml`, `infra.yml`, `fleet.yml`,
   `image.yml`, `vendor.yml` or `branch-cleanup.yml`.
 - A sandbox workflow that references a secret, can mint an OIDC token, names
@@ -139,7 +150,13 @@ test is what keeps it so.
   button writes one with the web-flow key. A merge commit crafted through the
   git data API with content of its own passes as a merge.
 - **Whether `agent boundary` is a required check** is branch protection,
-  which this tree cannot set; `deploy.yml`'s re-check holds without it.
+  which this tree cannot set; `deploy.yml`'s re-check holds without it, and
+  `docs/ops/runbooks/owner-switches.md` gives the owner the setting.
+- **The role table cannot describe a composition root.** No role may edit
+  `backend/crates/apps/**` source or `backend/Cargo.lock`; round 3's trust
+  lane changed both, so its manifest leaves them undeclared.
+- **The deploy range is bounded by the compare API's 250 commits**; a longer
+  range is refused, not judged in part.
 - **An admitted tunnel is opaque.** TLS is end to end, and every allowed
   registry accepts uploads with a credential; the sandbox holds none, but a
   lane can carry one in its own diff. The list is kept to registries for that

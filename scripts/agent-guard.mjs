@@ -24,7 +24,10 @@
  *    gates and their policies, the paper boundary's Terraform layer — is
  *    refused until a reviewer who is not an agent has approved the head
  *    commit. An approval of an earlier commit does not carry forward.
- * 3. **No agent merges or deploys.** `dispatch` refuses an agent actor for
+ * 3. **No agent merges or deploys.** An approval counts only from a
+ *    reviewer the repository gives write access (`--permissions`), and the
+ *    deploy gate judges every commit since the last deployment (`range`),
+ *    not only the last one. `dispatch` refuses an agent actor for
  *    every workflow that deploys, applies or reaches a cloud credential.
  *
  * 4. **No marker is not proof of a person, on a protected path** (GOV-9067).
@@ -41,7 +44,9 @@
  *
  * Dev tooling. Node built-ins only.
  */
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** A path glob as a whole-string regular expression: `**` crosses `/`, `*` does not. */
@@ -109,6 +114,31 @@ export function isAgentBranch(ref, markers) {
   return (markers.branch_prefixes ?? []).some((prefix) => name.startsWith(prefix));
 }
 
+/** The `Agent-Lane` a commit declares, or undefined. */
+export function laneOf(commit) {
+  const inner = commit?.commit ?? commit;
+  return trailers(inner?.message).find((t) => t.key === "agent-lane")?.value;
+}
+
+/**
+ * The lanes of the policy's manifest, by id, or `{ problem }`. Read relative
+ * to the repository the policy sits in, so the workflows' sparse checkout of
+ * `scripts/` from the default branch carries it, and a pull request cannot
+ * supply its own plan.
+ */
+export function loadLanes(policy, policyPath, read = (path) => readFileSync(path, "utf8")) {
+  const relative = policy?.lane_manifest?.path;
+  if (typeof relative !== "string" || relative.startsWith("/") || relative.includes("..")) {
+    return { problem: "agent-policy.json names no lane manifest, or one outside the repository" };
+  }
+  try {
+    const manifest = JSON.parse(read(join(dirname(policyPath), "..", relative)));
+    return { lanes: new Map((manifest.lanes ?? []).map((lane) => [lane.id, lane])) };
+  } catch (cause) {
+    return { problem: `the lane manifest ${relative} cannot be read: ${cause.message}` };
+  }
+}
+
 /**
  * Whether a commit carries a signature GitHub verified against a key a
  * person registered — and not GitHub's own web-flow key, which signs every
@@ -124,13 +154,24 @@ export function isPersonSigned(commit, unmarked) {
   return !(unmarked.web_flow_committer_emails ?? []).some((e) => lower(e) === committer);
 }
 
+/** The repository permissions whose holder's approval counts. */
+export const APPROVING_PERMISSIONS = ["admin", "maintain", "write"];
+
 /**
- * Whether a person who is not an agent has an approval standing on the head
- * commit. A reviewer's standing verdict is their latest approve,
- * request-changes or dismissal; a later plain comment does not withdraw an
- * approval, which is how GitHub itself reads them.
+ * Whether a person who is not an agent, and who holds write access to the
+ * repository, has an approval standing on the head commit. A reviewer's
+ * standing verdict is their latest approve, request-changes or dismissal; a
+ * later plain comment does not withdraw an approval, which is how GitHub
+ * itself reads them.
+ *
+ * `permissions` maps a reviewer's login to the permission the repository
+ * gives them, read from GitHub by the workflow (GOV-9067). Until it was
+ * read, any account that could open the pull request page could approve a
+ * protected agent change — GitHub's own required-approval rule counts only
+ * writers, and this guard was the weaker of the two. A login missing from
+ * the map is not a writer: an approval nobody could vouch for does not count.
  */
-export function approvedByAPerson(reviews, headSha, markers) {
+export function approvedByAPerson(reviews, headSha, markers, permissions) {
   const latest = new Map();
   for (const review of reviews) {
     const login = review?.user?.login;
@@ -142,7 +183,8 @@ export function approvedByAPerson(reviews, headSha, markers) {
       review.state === "APPROVED" &&
       review.commit_id === headSha &&
       review.user?.type !== "Bot" &&
-      !isAgentActor(review.user?.login, markers),
+      !isAgentActor(review.user?.login, markers) &&
+      APPROVING_PERMISSIONS.includes(lower(permissions?.[review.user?.login])),
   );
 }
 
@@ -157,7 +199,7 @@ export function roleOf(commit) {
  * commit objects; `reviews` GitHub review objects.
  * Returns `{ agent, refusals: string[] }`.
  */
-export function judgeChange({ policy, headRef, headSha, files, commits, reviews }) {
+export function judgeChange({ policy, headRef, headSha, files, commits, reviews, permissions, lanes }) {
   const markers = policy.agent_markers;
   const agentCommits = commits.filter((c) => isAgentCommit(c, markers));
   const agent = agentCommits.length > 0 || isAgentBranch(headRef, markers);
@@ -180,7 +222,7 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews 
       // — a merge commit carrying its own content — is named in ADR 0117.
       const isMerge = (c) => (c?.parents?.length ?? 0) >= 2;
       const unsigned = commits.filter((c) => !isMerge(c) && !isPersonSigned(c, unmarked));
-      if (unsigned.length > 0 && !approvedByAPerson(reviews, headSha, markers)) {
+      if (unsigned.length > 0 && !approvedByAPerson(reviews, headSha, markers, permissions)) {
         refusals.push(
           `a change with no agent marker touches protected paths, ${unsigned.length} of its ${commits.length} commit(s) carry no ` +
             `person's verified signature, and no person has approved commit ${headSha}: ${protectedTouched.join(", ")}. ` +
@@ -208,17 +250,133 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews 
     }
   }
 
+  // 1b. Lane territory (CICD-9083). A commit naming its lane is held to what
+  //     the round's manifest says that lane owns, so two lanes the plan kept
+  //     apart cannot meet in one file at merge time. The whole change is held
+  //     to every lane its commits declare, as for roles. A trailer naming a
+  //     lane the manifest lacks, or a manifest that cannot be read, refuses:
+  //     a lane boundary nobody can look up is not one.
+  const declaredLanes = [...new Set(agentCommits.map(laneOf).filter(Boolean))];
+  for (const id of declaredLanes) {
+    if (!lanes?.lanes) {
+      refusals.push(`a commit declares Agent-Lane: ${id} and ${lanes?.problem ?? "no lane manifest was given"}`);
+      continue;
+    }
+    const lane = lanes.lanes.get(id);
+    if (!lane) {
+      refusals.push(`a commit declares Agent-Lane: ${id}, which the round's lane manifest does not define`);
+      continue;
+    }
+    const outside = files.filter((f) => !matchesAny(f, lane.owns ?? []));
+    if (outside.length > 0) refusals.push(`the ${id} lane does not own: ${outside.join(", ")}`);
+  }
+
   // 2. Protected paths need a person's approval of the head commit. A
   //    signature does not stand in for it here: an agent's commit signed by
   //    its user's key is still an agent's commit.
   if (protectedTouched.length > 0) {
-    if (!approvedByAPerson(reviews, headSha, markers)) {
+    if (!approvedByAPerson(reviews, headSha, markers, permissions)) {
       refusals.push(
         `an agent-authored change touches protected paths and no person has approved commit ${headSha}: ${protectedTouched.join(", ")}`,
       );
     }
   }
   return { agent, refusals };
+}
+
+/**
+ * Judge every commit in a range, each against its own files and the pull
+ * request it arrived through (GOV-9067, CICD-9076). The deploy gate used to
+ * judge only the deployed commit's first-parent diff, so when several pull
+ * requests — or a direct push and a pull request — reached the default
+ * branch between two deployments, only the last was judged and an earlier
+ * agent change to a protected path deployed unexamined.
+ *
+ * Each entry is a GitHub commit object (as `compare` returns it) plus
+ * `files` (its own paths) and `pr` — `{ head_sha, head_ref, reviews,
+ * permissions }` for the pull request it was merged through, or null for a
+ * commit pushed straight to the branch, which then has no approval to show.
+ * Returns `{ agent, refusals }`, each refusal prefixed with its commit.
+ */
+export function judgeRange({ policy, entries, lanes }) {
+  const refusals = [];
+  let agent = false;
+  for (const entry of entries) {
+    const sha = String(entry?.sha ?? "");
+    if (!Array.isArray(entry?.files) || entry.files.some((f) => typeof f !== "string")) {
+      refusals.push(`${sha.slice(0, 12) || "a commit"}: its file list is missing or names something that is not a path`);
+      continue;
+    }
+    const pr = entry.pr ?? null;
+    const verdict = judgeChange({
+      policy,
+      headRef: pr?.head_ref ?? "",
+      headSha: pr?.head_sha ?? sha,
+      files: entry.files,
+      commits: [entry],
+      reviews: pr?.reviews ?? [],
+      permissions: pr?.permissions ?? {},
+      lanes,
+    });
+    agent ||= verdict.agent;
+    for (const refusal of verdict.refusals) refusals.push(`${sha.slice(0, 12)}: ${refusal}`);
+  }
+  return { agent, refusals };
+}
+
+const SHA = /^[0-9a-f]{40}$/;
+const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+
+/**
+ * `gh api` as a function: one call, JSON back, a timeout, and a refusal on
+ * any failure rather than an empty answer — an API error read as "no pull
+ * request" or "no files" would judge a commit as unreviewed nothing.
+ */
+export function ghApi(path, { paginate = false } = {}) {
+  const args = ["api", ...(paginate ? ["--paginate", "--slurp"] : []), path];
+  const run = spawnSync("gh", args, { encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
+  if (run.status !== 0) throw new Error(`gh api ${path} failed: ${(run.stderr || run.error?.message || "").trim()}`);
+  return JSON.parse(run.stdout);
+}
+
+/**
+ * The range `base..head` as `judgeRange` reads it, from the GitHub API.
+ * `api(path, { paginate })` is injectable for the tests. Refuses a range the
+ * compare endpoint truncated (it lists at most 250 commits), because judging
+ * the first 250 of a longer range is judging part of it and calling it all.
+ */
+export function gatherRange({ api, repository, base, head }) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? "")) throw new Error("the repository is not owner/name");
+  if (!SHA.test(base ?? "") || !SHA.test(head ?? "")) throw new Error("base and head must be commit shas");
+  const compare = api(`repos/${repository}/compare/${base}...${head}`);
+  const commits = compare?.commits ?? [];
+  if (!Array.isArray(commits) || commits.length !== compare.total_commits) {
+    throw new Error(`the range ${base.slice(0, 12)}..${head.slice(0, 12)} holds ${compare?.total_commits} commits and the API listed ${commits.length}; judge it in parts`);
+  }
+  const prs = new Map();
+  const pullRequest = (number) => {
+    if (prs.has(number)) return prs.get(number);
+    const detail = api(`repos/${repository}/pulls/${number}`);
+    const reviews = api(`repos/${repository}/pulls/${number}/reviews?per_page=100`, { paginate: true }).flat();
+    const permissions = {};
+    for (const login of new Set(reviews.filter((r) => r?.state === "APPROVED").map((r) => r?.user?.login))) {
+      if (!LOGIN.test(login ?? "")) continue;
+      try {
+        permissions[login] = api(`repos/${repository}/collaborators/${login}/permission`).permission;
+      } catch {
+        // Unreadable is not a writer: the approval simply does not count.
+      }
+    }
+    const pr = { head_sha: detail.head.sha, head_ref: detail.head.ref, reviews, permissions };
+    prs.set(number, pr);
+    return pr;
+  };
+  return commits.map((commit) => {
+    const pages = api(`repos/${repository}/commits/${commit.sha}`, { paginate: true });
+    const files = pages.flatMap((page) => (page.files ?? []).map((f) => f.filename));
+    const merged = api(`repos/${repository}/commits/${commit.sha}/pulls`).find((p) => p?.merged_at);
+    return { ...commit, files, pr: merged ? pullRequest(merged.number) : null };
+  });
 }
 
 /** Whether `actor` may start `workflow`. Returns a refusal string or undefined. */
@@ -292,8 +450,24 @@ function option(argv, name) {
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
 /** The command line, end to end. Returns the exit code. */
-export function main(argv, { out = console.log, err = console.error } = {}) {
+export function main(argv, { out = console.log, err = console.error, api = ghApi } = {}) {
   const [mode] = argv;
+  if (mode === "gather") {
+    const outPath = option(argv, "out");
+    if (!outPath) {
+      err("usage: agent-guard.mjs gather --repository <owner/name> --base <sha> --head <sha> --out <range.json>");
+      return 64;
+    }
+    try {
+      const entries = gatherRange({ api, repository: option(argv, "repository"), base: option(argv, "base"), head: option(argv, "head") });
+      writeFileSync(outPath, JSON.stringify(entries));
+      out(`gathered ${entries.length} commit(s)`);
+      return 0;
+    } catch (cause) {
+      err(`cannot gather the range: ${cause.message}`);
+      return 1;
+    }
+  }
   if (mode === "sandbox") {
     const paths = argv.slice(1);
     if (paths.length === 0) {
@@ -315,8 +489,8 @@ export function main(argv, { out = console.log, err = console.error } = {}) {
     return failed ? 1 : 0;
   }
   const policyPath = option(argv, "policy");
-  if (!policyPath || !["change", "dispatch"].includes(mode)) {
-    err("usage: agent-guard.mjs change|dispatch --policy <agent-policy.json> … | sandbox <workflow.yml>…");
+  if (!policyPath || !["change", "dispatch", "range"].includes(mode)) {
+    err("usage: agent-guard.mjs change|range|dispatch --policy <agent-policy.json> … | sandbox <workflow.yml>…");
     return 64;
   }
   let policy;
@@ -341,19 +515,46 @@ export function main(argv, { out = console.log, err = console.error } = {}) {
     out(`${actor} may start ${workflow}`);
     return 0;
   }
-  const paths = ["files", "commits", "reviews"].map((name) => option(argv, name));
+  if (mode === "range") {
+    const rangePath = option(argv, "range");
+    if (!rangePath) {
+      err("range needs --range, a JSON list of commits with their files and pull request");
+      return 64;
+    }
+    let entries;
+    try {
+      entries = readJson(rangePath);
+    } catch (cause) {
+      err(`cannot read the range: ${cause.message}`);
+      return 1;
+    }
+    if (!Array.isArray(entries) || entries.length === 0) {
+      // An empty range is not a clean one: it is a gather step that found
+      // nothing, and nothing is not evidence the boundary held.
+      err("the range holds no commit; there is nothing to vouch for");
+      return 1;
+    }
+    const { refusals } = judgeRange({ policy, entries, lanes: loadLanes(policy, policyPath) });
+    for (const refusal of refusals) err(refusal);
+    if (refusals.length > 0) return 1;
+    out(`each of ${entries.length} commit(s) in the range is inside the agent boundary`);
+    return 0;
+  }
+  const paths = ["files", "commits", "reviews", "permissions"].map((name) => option(argv, name));
   const headSha = option(argv, "head-sha");
   if (paths.some((p) => !p) || !headSha) {
-    err("change needs --head-sha, --files, --commits and --reviews");
+    err("change needs --head-sha, --files, --commits, --reviews and --permissions");
     return 64;
   }
   let files;
   let commits;
   let reviews;
+  let permissions;
   try {
     files = readJson(paths[0]).map((f) => (typeof f === "string" ? f : f.filename));
     commits = readJson(paths[1]);
     reviews = readJson(paths[2]);
+    permissions = readJson(paths[3]);
   } catch (cause) {
     err(`cannot read the change: ${cause.message}`);
     return 1;
@@ -362,7 +563,16 @@ export function main(argv, { out = console.log, err = console.error } = {}) {
     err("the change's file list names something that is not a path");
     return 1;
   }
-  const { agent, refusals } = judgeChange({ policy, headRef: option(argv, "head-ref"), headSha, files, commits, reviews });
+  const { agent, refusals } = judgeChange({
+    policy,
+    headRef: option(argv, "head-ref"),
+    headSha,
+    files,
+    commits,
+    reviews,
+    permissions,
+    lanes: loadLanes(policy, policyPath),
+  });
   for (const refusal of refusals) err(refusal);
   if (!agent) {
     if (refusals.length > 0) return 1;

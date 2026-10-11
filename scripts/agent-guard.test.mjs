@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeSandboxWorkflow, main, matchesAny } from "./agent-guard.mjs";
+import { gatherRange, globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeRange, judgeSandboxWorkflow, loadLanes, main, matchesAny } from "./agent-guard.mjs";
 
 const POLICY = JSON.parse(readFileSync(new URL("./agent-policy.json", import.meta.url), "utf8"));
 const HEAD = "a".repeat(40);
@@ -22,6 +22,8 @@ const agentCommit = (role) => ({
   },
 });
 const personCommit = { commit: { author: { name: "Dana", email: "dana@example.invalid" }, message: "Do a thing by hand\n" } };
+// What the workflow reads from GitHub for each reviewer.
+const PERMS = { dana: "write", erin: "admin", rita: "read" };
 const approval = (login, commit_id = HEAD, type = "User") => ({ user: { login, type }, state: "APPROVED", commit_id });
 
 test("globs cross directories only where they say so", () => {
@@ -47,7 +49,7 @@ test("an agent commit is recognised by its co-author trailer alone", () => {
 // role check.
 test("a planner role cannot land code", () => {
   const { agent, refusals } = judgeChange({
-    policy: POLICY, headRef: "claude/plan", headSha: HEAD,
+    policy: POLICY, permissions: PERMS, headRef: "claude/plan", headSha: HEAD,
     files: ["backend/crates/runtime/qip-kernel/src/cycle.rs"],
     commits: [agentCommit("chief-orchestrator")], reviews: [approval("dana")],
   });
@@ -60,7 +62,7 @@ test("a planner role cannot land code", () => {
 // nothing protected, needs nobody. Mutation: refuse every agent change.
 test("a coder inside its own paths is admitted without a review", () => {
   const { agent, refusals } = judgeChange({
-    policy: POLICY, headRef: "claude/x", headSha: HEAD,
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
     files: ["frontend/portal/src/app/page.tsx"], commits: [agentCommit("frontend-engineer")], reviews: [],
   });
   assert.ok(agent);
@@ -69,7 +71,7 @@ test("a coder inside its own paths is admitted without a review", () => {
 
 test("a coder outside its own paths is refused", () => {
   const { refusals } = judgeChange({
-    policy: POLICY, headRef: "claude/x", headSha: HEAD,
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
     files: ["frontend/portal/src/app/page.tsx", "infrastructure/terraform/main.tf"],
     commits: [agentCommit("frontend-engineer")], reviews: [],
   });
@@ -79,7 +81,7 @@ test("a coder outside its own paths is refused", () => {
 
 test("an undeclared role is refused rather than ignored", () => {
   const { refusals } = judgeChange({
-    policy: POLICY, headRef: "claude/x", headSha: HEAD,
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
     files: ["docs/x.md"], commits: [agentCommit("root")], reviews: [],
   });
   assert.match(refusals[0], /does not define/);
@@ -89,7 +91,7 @@ test("an undeclared role is refused rather than ignored", () => {
 // approval check.
 test("an agent change to a workflow needs a person's approval of the head commit", () => {
   const base = {
-    policy: POLICY, headRef: "claude/ci", headSha: HEAD,
+    policy: POLICY, permissions: PERMS, headRef: "claude/ci", headSha: HEAD,
     files: [".github/workflows/deploy.yml"], commits: [agentCommit("cloud-platform-engineer")],
   };
   // Premise: the role admits the path, so only the protection can refuse.
@@ -110,7 +112,7 @@ test("an agent change to a workflow needs a person's approval of the head commit
 // engineer's own territory. Mutation: drop it from protected_paths.
 test("the autonomy ceiling's validation file is protected", () => {
   const { refusals } = judgeChange({
-    policy: POLICY, headRef: "claude/x", headSha: HEAD,
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
     files: ["infrastructure/terraform/variables.tf"], commits: [agentCommit("cloud-platform-engineer")], reviews: [],
   });
   assert.equal(refusals.length, 1);
@@ -120,7 +122,7 @@ test("the autonomy ceiling's validation file is protected", () => {
 // needs nobody. Mutation: refuse every unmarked change.
 test("an unmarked change outside the protected paths is outside the agent boundary", () => {
   const { agent, refusals } = judgeChange({
-    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: ["backend/crates/runtime/qip-kernel/src/cycle.rs"], commits: [personCommit], reviews: [],
+    policy: POLICY, permissions: PERMS, headRef: "fix/x", headSha: HEAD, files: ["backend/crates/runtime/qip-kernel/src/cycle.rs"], commits: [personCommit], reviews: [],
   });
   assert.equal(agent, false);
   assert.deepEqual(refusals, []);
@@ -137,7 +139,7 @@ const signed = (email) => ({
 // as the guard did before.
 test("an unmarked change to a protected path needs a person's signature or a person's approval", () => {
   const judge = (commits, reviews = []) =>
-    judgeChange({ policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".github/workflows/deploy.yml"], commits, reviews });
+    judgeChange({ policy: POLICY, permissions: PERMS, headRef: "fix/x", headSha: HEAD, files: [".github/workflows/deploy.yml"], commits, reviews });
 
   const bare = judge([personCommit]);
   assert.equal(bare.agent, false);
@@ -153,7 +155,7 @@ test("an unmarked change to a protected path needs a person's signature or a per
 // Mutation: empty web_flow_committer_emails, or read `verified` alone.
 test("a commit signed by GitHub's web-flow key is not a person's signature", () => {
   const { refusals } = judgeChange({
-    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
+    policy: POLICY, permissions: PERMS, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
     commits: [signed("dana@example.invalid"), signed("noreply@github.com")], reviews: [],
   });
   assert.equal(refusals.length, 1);
@@ -161,13 +163,13 @@ test("a commit signed by GitHub's web-flow key is not a person's signature", () 
   // The merge button's own commit, web-flow signed, is not held against a
   // signed pull request. Mutation: drop the merge exemption.
   const merged = judgeChange({
-    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
+    policy: POLICY, permissions: PERMS, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
     commits: [signed("dana@example.invalid"), { ...signed("noreply@github.com"), parents: [{ sha: "c" }, { sha: "d" }] }], reviews: [],
   });
   assert.deepEqual(merged.refusals, []);
   // Nor is an approval of an earlier commit, the agent rule's own reading.
   const stale = judgeChange({
-    policy: POLICY, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
+    policy: POLICY, permissions: PERMS, headRef: "fix/x", headSha: HEAD, files: [".claude/settings.json"],
     commits: [personCommit], reviews: [approval("erin", "b".repeat(40))],
   });
   assert.equal(stale.refusals.length, 1);
@@ -187,7 +189,7 @@ test("an agent committer is recognised even under a person's author name", () =>
 test("an agent's protected change still needs approval even when signed", () => {
   const agentSigned = { commit: { ...agentCommit("technical-writer").commit, verification: { verified: true }, committer: { email: "dana@example.invalid" } } };
   const { agent, refusals } = judgeChange({
-    policy: POLICY, headRef: "claude/x", headSha: HEAD, files: [".claude/agents/technical-writer.md"], commits: [agentSigned], reviews: [],
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD, files: [".claude/agents/technical-writer.md"], commits: [agentSigned], reviews: [],
   });
   assert.ok(agent);
   assert.equal(refusals.length, 1);
@@ -335,13 +337,14 @@ test("the command refuses a protected agent change and admits it once approved",
     const commits = write("commits.json", [agentCommit("technical-writer")]);
     const none = write("none.json", []);
     const approved = write("approved.json", [approval("dana")]);
+    const perms = write("perms.json", PERMS);
     const quiet = { out: () => {}, err: () => {} };
-    const args = (reviews) => ["change", "--policy", policy, "--head-ref", "claude/x", "--head-sha", HEAD, "--files", files, "--commits", commits, "--reviews", reviews];
+    const args = (reviews) => ["change", "--policy", policy, "--head-ref", "claude/x", "--head-sha", HEAD, "--files", files, "--commits", commits, "--reviews", reviews, "--permissions", perms];
     // technical-writer may edit .claude/**/*.md only; settings.json is outside.
     assert.equal(main(args(none), quiet), 1);
     assert.equal(main(args(approved), quiet), 1, "approval does not widen a role");
     const md = write("md.json", [{ filename: ".claude/agents/technical-writer.md" }]);
-    const mdArgs = (reviews) => ["change", "--policy", policy, "--head-ref", "claude/x", "--head-sha", HEAD, "--files", md, "--commits", commits, "--reviews", reviews];
+    const mdArgs = (reviews) => ["change", "--policy", policy, "--head-ref", "claude/x", "--head-sha", HEAD, "--files", md, "--commits", commits, "--reviews", reviews, "--permissions", perms];
     assert.equal(main(mdArgs(none), quiet), 1, "protected and unapproved");
     assert.equal(main(mdArgs(approved), quiet), 0, "protected, inside the role, approved");
     assert.equal(main(["dispatch", "--policy", policy, "--actor", "claude-bot", "--workflow", "deploy.yml"], quiet), 1);
@@ -349,4 +352,145 @@ test("the command refuses a protected agent change and admits it once approved",
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// GOV-9067: an approval counts only from a writer. Mutation: drop the
+// permission clause in approvedByAPerson.
+test("an approval from a reviewer without write access, or one nobody could vouch for, does not count", () => {
+  const judge = (reviews, permissions) =>
+    judgeChange({
+      policy: POLICY, permissions, headRef: "claude/x", headSha: HEAD,
+      files: [".claude/agents/technical-writer.md"], commits: [agentCommit("technical-writer")], reviews,
+    }).refusals;
+  assert.deepEqual(judge([approval("dana")], PERMS), [], "premise: a writer's approval admits it");
+  assert.equal(judge([approval("rita")], PERMS).length, 1, "a read-only collaborator");
+  assert.equal(judge([approval("mallory")], PERMS).length, 1, "a login the workflow could not read");
+  assert.equal(judge([approval("dana")], undefined).length, 1, "no permission map at all");
+});
+
+const rangeEntry = (sha, commit, files, pr = null) => ({ sha, ...commit, files, pr });
+const pr = (reviews) => ({ head_sha: HEAD, head_ref: "claude/x", reviews, permissions: PERMS });
+
+// The deploy gate used to judge only the deployed commit's first-parent diff.
+// Mutation: judge only the last entry of the range.
+test("every commit in a deployed range is judged, not only the last", () => {
+  const clean = rangeEntry("b".repeat(40), personCommit, ["backend/crates/runtime/qip-kernel/src/cycle.rs"]);
+  const earlier = rangeEntry("c".repeat(40), agentCommit("cloud-platform-engineer"), ["infrastructure/terraform/variables.tf"], pr([]));
+  assert.deepEqual(judgeRange({ policy: POLICY, entries: [clean] }).refusals, [], "premise: a clean range passes");
+  const { agent, refusals } = judgeRange({ policy: POLICY, entries: [earlier, clean] });
+  assert.ok(agent);
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /^cccccccccccc: an agent-authored change touches protected paths/);
+  // The same commit, approved by a writer on its pull request's head, passes.
+  const approved = rangeEntry("c".repeat(40), agentCommit("cloud-platform-engineer"), ["infrastructure/terraform/variables.tf"], pr([approval("erin")]));
+  assert.deepEqual(judgeRange({ policy: POLICY, entries: [approved, clean] }).refusals, []);
+});
+
+// Mutation: let a commit with no PR borrow another commit's approval, or skip
+// an entry whose file list is missing.
+test("a commit pushed straight to the branch has no approval to show, and an entry without files is refused", () => {
+  const pushed = rangeEntry("d".repeat(40), personCommit, [".github/workflows/deploy.yml"]);
+  // Beside it, a pull request a writer approved on the same head sha: its
+  // approval must not be lent to the pushed commit.
+  const reviewed = rangeEntry("f".repeat(40), personCommit, [".github/workflows/ci.yml"], pr([approval("erin")]));
+  const { refusals } = judgeRange({ policy: POLICY, entries: [reviewed, pushed] });
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /^dddddddddddd: /);
+  const blind = { sha: "e".repeat(40), ...personCommit, pr: null };
+  assert.match(judgeRange({ policy: POLICY, entries: [blind] }).refusals[0], /file list is missing/);
+});
+
+test("the range command refuses an empty range and a protected agent commit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-guard-range-"));
+  try {
+    const policy = new URL("./agent-policy.json", import.meta.url).pathname;
+    const write = (name, value) => {
+      writeFileSync(join(dir, name), JSON.stringify(value));
+      return join(dir, name);
+    };
+    const quiet = { out: () => {}, err: () => {} };
+    const run = (path) => main(["range", "--policy", policy, "--range", path], quiet);
+    assert.equal(run(write("clean.json", [rangeEntry("b".repeat(40), personCommit, ["README.md"])])), 0);
+    assert.equal(run(write("empty.json", [])), 1);
+    assert.equal(run(write("bad.json", [rangeEntry("c".repeat(40), agentCommit("technical-writer"), [".claude/settings.json"], pr([]))])), 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A fake GitHub API: two commits, the first merged through PR 7. */
+function fakeApi({ total = 2 } = {}) {
+  const B = "b".repeat(40);
+  const C = "c".repeat(40);
+  const routes = {
+    [`repos/o/r/compare/${"0".repeat(40)}...${C}`]: { total_commits: total, commits: [{ sha: B, ...agentCommit("technical-writer") }, { sha: C, ...personCommit }] },
+    [`repos/o/r/commits/${B}`]: [{ files: [{ filename: ".claude/settings.json" }] }],
+    [`repos/o/r/commits/${C}`]: [{ files: [{ filename: "README.md" }] }],
+    [`repos/o/r/commits/${B}/pulls`]: [{ number: 7, merged_at: "2026-10-11T00:00:00Z" }],
+    [`repos/o/r/commits/${C}/pulls`]: [],
+    "repos/o/r/pulls/7": { head: { sha: HEAD, ref: "claude/x" } },
+    "repos/o/r/pulls/7/reviews?per_page=100": [[approval("dana"), approval("rita")]],
+    "repos/o/r/collaborators/dana/permission": { permission: "write" },
+  };
+  return (path) => {
+    if (!(path in routes)) throw new Error(`no route ${path}`);
+    return routes[path];
+  };
+}
+
+// Mutation: drop the truncation check, or attach the PR to the wrong commit,
+// or let an unreadable permission default to a writer's.
+test("a range is gathered commit by commit with each one's own pull request, and a truncated range is refused", () => {
+  const entries = gatherRange({ api: fakeApi(), repository: "o/r", base: "0".repeat(40), head: "c".repeat(40) });
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries[0].files, [".claude/settings.json"]);
+  assert.equal(entries[0].pr.head_ref, "claude/x");
+  assert.deepEqual(entries[0].pr.permissions, { dana: "write" }, "rita's permission could not be read and is absent");
+  assert.equal(entries[1].pr, null);
+  assert.throws(() => gatherRange({ api: fakeApi({ total: 300 }), repository: "o/r", base: "0".repeat(40), head: "c".repeat(40) }), /judge it in parts/);
+  // technical-writer may not touch settings.json even approved: the gathered
+  // range is refused for the earlier commit, which a first-parent check skipped.
+  const { refusals } = judgeRange({ policy: POLICY, entries });
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /^bbbbbbbbbbbb: the technical-writer role/);
+});
+
+// CICD-9083: the committed round-3 manifest is the one the guard reads, and
+// an agent commit naming its lane is held to that lane's territory.
+const LANES = loadLanes(POLICY, new URL("./agent-policy.json", import.meta.url).pathname);
+const laneCommit = (role, lane) => ({
+  commit: {
+    author: { name: "Claude", email: "noreply@anthropic.com" },
+    message: `Do a thing\n\nAgent-Role: ${role}\nAgent-Lane: ${lane}\nCo-Authored-By: Claude <noreply@anthropic.com>\n`,
+  },
+});
+
+// Mutation: drop the lane check (1b) in judgeChange.
+test("an agent commit outside its declared lane's territory is refused, and inside it is admitted", () => {
+  assert.ok(LANES.lanes?.has("r3-capital-code"), `premise: the committed manifest loads (${LANES.problem})`);
+  const judge = (files) =>
+    judgeChange({
+      policy: POLICY, permissions: PERMS, lanes: LANES, headRef: "ccr-dc3c4d84-dayxv0-r3-capital", headSha: HEAD,
+      files, commits: [laneCommit("backend-engineer", "r3-capital-code")], reviews: [],
+    }).refusals;
+  assert.deepEqual(judge(["backend/crates/services/qip-risk-engine/src/pretrade.rs"]), []);
+  // Inside the backend-engineer role, outside the capital lane: the trust
+  // lane's file. This is the overlap the plan ruled out, arriving anyway.
+  const refusals = judge(["backend/crates/runtime/qip-kernel/src/model_serving.rs"]);
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /the r3-capital-code lane does not own: backend\/crates\/runtime\/qip-kernel\/src\/model_serving\.rs/);
+});
+
+// Mutation: skip an unknown lane, or treat an unreadable manifest as no lanes.
+test("a commit naming a lane the manifest lacks, or with no readable manifest, is refused", () => {
+  const judge = (lanes, id) =>
+    judgeChange({
+      policy: POLICY, permissions: PERMS, lanes, headRef: "x", headSha: HEAD,
+      files: ["backend/crates/services/qip-risk-engine/src/pretrade.rs"], commits: [laneCommit("backend-engineer", id)], reviews: [],
+    }).refusals;
+  assert.match(judge(LANES, "r9-nobody")[0], /does not define/);
+  const unreadable = loadLanes(POLICY, "/nowhere/scripts/agent-policy.json");
+  assert.ok(unreadable.problem);
+  assert.match(judge(unreadable, "r3-capital-code")[0], /cannot be read/);
+  assert.ok(loadLanes({ lane_manifest: { path: "../etc/passwd" } }, "scripts/agent-policy.json").problem);
 });
