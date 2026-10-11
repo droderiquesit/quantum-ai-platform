@@ -841,10 +841,8 @@ mod tests {
             &SurvivalPolicy::default(),
             "premise: before the root applies it, the library default withholds nothing"
         );
-        super::apply_survival_policy_from(&mut platform, &|_| {
-            Err(std::env::VarError::NotPresent)
-        })
-        .expect("the root installs the shipped policy");
+        super::apply_survival_policy_from(&mut platform, &|_| Err(std::env::VarError::NotPresent))
+            .expect("the root installs the shipped policy");
         assert_eq!(platform.survival_policy(), &unset);
     }
 }

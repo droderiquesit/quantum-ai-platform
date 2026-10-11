@@ -156,7 +156,9 @@ fn an_identity_with_no_certificate_is_refused_beside_a_good_key_and_roots() {
     )
     .expect_err("an identity with no certificate loaded");
     assert!(
-        error.message().contains("certificate chain holds no certificate"),
+        error
+            .message()
+            .contains("certificate chain holds no certificate"),
         "refused for another reason: {}",
         error.message()
     );
