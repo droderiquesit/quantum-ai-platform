@@ -54,14 +54,26 @@ pub enum Direction {
 
 /// An account in the ledger, by the subledger it belongs to.
 ///
-/// Four kinds and no more: the trading subledger holds positions and cash
-/// per cell and strategy (LEDGER-007), the venue account is the counterparty
-/// a fill's two legs are exchanged with, the fees subledger holds what a
-/// venue charged (LEDGER-011), and the accruals subledger holds amounts earned
-/// or owed over time before cash moves (LEDGER-012). A structured enum rather
-/// than a string so a reader cannot mistake one kind for another by a prefix;
-/// [`fmt::Display`] renders the `kind:name` text form, which is unambiguous
-/// because [`LedgerEvent::new`] refuses a `:` or `/` inside any name.
+/// The fill subledgers: the trading subledger holds positions and cash per
+/// cell and strategy (LEDGER-007), the venue account is the counterparty a
+/// fill's two legs are exchanged with, the fees subledger holds what a venue
+/// charged (LEDGER-011), and the accruals subledger holds amounts earned or
+/// owed over time before cash moves (LEDGER-012).
+///
+/// The operation subledgers (R12-LEDGER-5005..5011, 5016..5021), posted only
+/// through [`crate::ledger_operation::LedgerOperation`]: treasury, custody,
+/// reserved inventory, physical inventory, collateral, margin, obligations,
+/// tax lots and their basis contra, private commitments, tax, and mandate
+/// ownership. Each is a subledger of the one double-entry journal, not a side
+/// table: its balance is a fold of postings and of nothing else, so the
+/// global trial balance closes in every unit whichever subledgers an event
+/// touched.
+///
+/// A structured enum rather than a string so a reader cannot mistake one
+/// kind for another by a prefix; [`fmt::Display`] renders the `kind:name`
+/// text form and [`std::str::FromStr`] reads exactly that form back, which is
+/// unambiguous because [`LedgerEvent::new`] refuses a `:` or `/` inside any
+/// name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Account {
@@ -73,26 +85,217 @@ pub enum Account {
     Fees { venue: String },
     /// `accrual:<accrual_type>` — amounts earned or owed over time (interest, funding, etc).
     Accrual { accrual_type: String },
+    /// `treasury:<treasury>` — the paper capital pool books are funded from
+    /// and mandates subscribe into (R12-LEDGER-5016).
+    Treasury { treasury: String },
+    /// `custody:<custodian>` — units held at a simulated custodian on the
+    /// platform's behalf (R12-LEDGER-5017).
+    Custody { custodian: String },
+    /// `reserved:<cell>/<strategy>` — trading inventory reserved and not
+    /// available to sell twice (R12-LEDGER-5005).
+    Reserved { cell: String, strategy: String },
+    /// `inventory:<location>` — physical or commerce units by where they sit
+    /// (R12-LEDGER-5018).
+    Inventory { location: String },
+    /// `collateral:<counterparty>` — units pledged to a counterparty
+    /// (R12-LEDGER-5009).
+    Collateral { counterparty: String },
+    /// `margin:<venue>` — the margin a venue requires, debited against the
+    /// obligation that requirement creates (R12-LEDGER-5009).
+    Margin { venue: String },
+    /// `obligation:<counterparty>` — what is owed to a counterparty: a margin
+    /// requirement, an undrawn commitment (R12-LEDGER-5006).
+    Obligation { counterparty: String },
+    /// `taxlot:<cell>/<strategy>/<lot>` — one tax lot's open quantity, in
+    /// the asset's unit, and its remaining cost basis, in the cost unit
+    /// (R12-LEDGER-5008).
+    TaxLot {
+        cell: String,
+        strategy: String,
+        lot: String,
+    },
+    /// `lotbasis:<cell>/<strategy>` — the contra every lot of a book is
+    /// opened against, so a lot's legs balance without moving the book's
+    /// own position.
+    LotBasis { cell: String, strategy: String },
+    /// `commitment:<commitment>` — the undrawn part of a private commitment
+    /// (R12-LEDGER-5020).
+    Commitment { commitment: String },
+    /// `tax:<jurisdiction>` — tax charged, kept apart from venue fees so a
+    /// fee report is never reconciled against a tax (R12-LEDGER-5019).
+    Tax { jurisdiction: String },
+    /// `mandate:<mandate>` — what the platform owes a mandate's owner for
+    /// the capital it subscribed (R12-LEDGER-5021).
+    Mandate { mandate: String },
 }
 
 impl Account {
     fn names(&self) -> Vec<&str> {
         match self {
-            Self::Trading { cell, strategy } => vec![cell, strategy],
-            Self::Venue { venue } | Self::Fees { venue } => vec![venue],
+            Self::Trading { cell, strategy }
+            | Self::Reserved { cell, strategy }
+            | Self::LotBasis { cell, strategy } => vec![cell, strategy],
+            Self::TaxLot {
+                cell,
+                strategy,
+                lot,
+            } => vec![cell, strategy, lot],
+            Self::Venue { venue } | Self::Fees { venue } | Self::Margin { venue } => vec![venue],
             Self::Accrual { accrual_type } => vec![accrual_type],
+            Self::Treasury { treasury } => vec![treasury],
+            Self::Custody { custodian } => vec![custodian],
+            Self::Inventory { location } => vec![location],
+            Self::Collateral { counterparty } | Self::Obligation { counterparty } => {
+                vec![counterparty]
+            }
+            Self::Commitment { commitment } => vec![commitment],
+            Self::Tax { jurisdiction } => vec![jurisdiction],
+            Self::Mandate { mandate } => vec![mandate],
         }
+    }
+
+    /// The subledger this account belongs to: the `kind` before the `:` in
+    /// its text form.
+    pub fn subledger(&self) -> &'static str {
+        match self {
+            Self::Trading { .. } => "trading",
+            Self::Venue { .. } => "venue",
+            Self::Fees { .. } => "fees",
+            Self::Accrual { .. } => "accrual",
+            Self::Treasury { .. } => "treasury",
+            Self::Custody { .. } => "custody",
+            Self::Reserved { .. } => "reserved",
+            Self::Inventory { .. } => "inventory",
+            Self::Collateral { .. } => "collateral",
+            Self::Margin { .. } => "margin",
+            Self::Obligation { .. } => "obligation",
+            Self::TaxLot { .. } => "taxlot",
+            Self::LotBasis { .. } => "lotbasis",
+            Self::Commitment { .. } => "commitment",
+            Self::Tax { .. } => "tax",
+            Self::Mandate { .. } => "mandate",
+        }
+    }
+
+    /// Whether the account holds a quantity that cannot go below zero: units
+    /// in custody, reserved, in inventory, pledged, required as margin, left
+    /// in a lot, or left undrawn on a commitment.
+    ///
+    /// The ledger writer refuses an event that would take one of these
+    /// negative. The failure it prevents is releasing more than was reserved,
+    /// or closing more of a lot than was opened, and booking the difference
+    /// as a negative holding nobody can explain.
+    pub fn holds_a_quantity(&self) -> bool {
+        matches!(
+            self,
+            Self::Custody { .. }
+                | Self::Reserved { .. }
+                | Self::Inventory { .. }
+                | Self::Collateral { .. }
+                | Self::Margin { .. }
+                | Self::TaxLot { .. }
+                | Self::Commitment { .. }
+        )
     }
 }
 
 impl fmt::Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Trading { cell, strategy } => write!(f, "trading:{cell}/{strategy}"),
-            Self::Venue { venue } => write!(f, "venue:{venue}"),
-            Self::Fees { venue } => write!(f, "fees:{venue}"),
-            Self::Accrual { accrual_type } => write!(f, "accrual:{accrual_type}"),
+        write!(f, "{}:{}", self.subledger(), self.names().join("/"))
+    }
+}
+
+impl std::str::FromStr for Account {
+    type Err = Error;
+
+    /// Read the `kind:name[/name…]` form [`fmt::Display`] writes, refusing —
+    /// never guessing at — anything else: an unknown kind, the wrong number
+    /// of names for the kind, or an empty name.
+    ///
+    /// The failure this prevents is the one `qip-ledgerd`'s removed
+    /// `import_state` had: a hand parser that split on every `:` and silently
+    /// skipped every key it could not read, which was every key
+    /// [`fmt::Display`] produces.
+    fn from_str(text: &str) -> Result<Self> {
+        let refuse = |why: &str| -> Result<Self> {
+            Err(Error::invalid(format!(
+                "`{text}` is not a ledger account: {why}; write `kind:name`, for example \
+                 `trading:<cell>/<strategy>` or `venue:<venue>`"
+            )))
+        };
+        let Some((kind, rest)) = text.split_once(':') else {
+            return refuse("it has no `kind:` prefix");
+        };
+        let names: Vec<String> = rest.split('/').map(str::to_string).collect();
+        if names
+            .iter()
+            .any(|name| name.is_empty() || name.contains(':'))
+        {
+            return refuse("a name is empty or contains `:`");
         }
+        let account = match (kind, names.as_slice()) {
+            ("trading", [cell, strategy]) => Self::Trading {
+                cell: cell.clone(),
+                strategy: strategy.clone(),
+            },
+            ("reserved", [cell, strategy]) => Self::Reserved {
+                cell: cell.clone(),
+                strategy: strategy.clone(),
+            },
+            ("lotbasis", [cell, strategy]) => Self::LotBasis {
+                cell: cell.clone(),
+                strategy: strategy.clone(),
+            },
+            ("taxlot", [cell, strategy, lot]) => Self::TaxLot {
+                cell: cell.clone(),
+                strategy: strategy.clone(),
+                lot: lot.clone(),
+            },
+            ("venue", [name]) => Self::Venue {
+                venue: name.clone(),
+            },
+            ("fees", [name]) => Self::Fees {
+                venue: name.clone(),
+            },
+            ("margin", [name]) => Self::Margin {
+                venue: name.clone(),
+            },
+            ("accrual", [name]) => Self::Accrual {
+                accrual_type: name.clone(),
+            },
+            ("treasury", [name]) => Self::Treasury {
+                treasury: name.clone(),
+            },
+            ("custody", [name]) => Self::Custody {
+                custodian: name.clone(),
+            },
+            ("inventory", [name]) => Self::Inventory {
+                location: name.clone(),
+            },
+            ("collateral", [name]) => Self::Collateral {
+                counterparty: name.clone(),
+            },
+            ("obligation", [name]) => Self::Obligation {
+                counterparty: name.clone(),
+            },
+            ("commitment", [name]) => Self::Commitment {
+                commitment: name.clone(),
+            },
+            ("tax", [name]) => Self::Tax {
+                jurisdiction: name.clone(),
+            },
+            ("mandate", [name]) => Self::Mandate {
+                mandate: name.clone(),
+            },
+            (
+                "trading" | "reserved" | "lotbasis" | "taxlot" | "venue" | "fees" | "margin"
+                | "accrual" | "treasury" | "custody" | "inventory" | "collateral" | "obligation"
+                | "commitment" | "tax" | "mandate",
+                _,
+            ) => return refuse("it has the wrong number of `/`-separated names for its kind"),
+            _ => return refuse("its kind is not a subledger this ledger keeps"),
+        };
+        Ok(account)
     }
 }
 

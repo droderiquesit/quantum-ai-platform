@@ -17,8 +17,9 @@
 use std::sync::Arc;
 
 use qip_core::SystemClock;
-use qip_ledgerd::config::{FABRIC_TOKEN, LedgerConfig};
+use qip_ledgerd::config::{FABRIC_TOKEN, LedgerConfig, LedgerStorage};
 use qip_ledgerd::consumer::{Connect, thread_sleeper};
+use qip_storage::{GcpAccess, gcp};
 use qip_transport::event_fabric::auth::BearerToken;
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
 
@@ -37,7 +38,35 @@ fn main() {
                 Box::new(HttpTransport::new(url.clone(), token));
             Ok(transport)
         });
-        qip_ledgerd::start(&config, Arc::new(SystemClock), thread_sleeper(), connect)
+        let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
+        // The Google endpoint and credential the Spanner store is reached
+        // through, read only when that is the store: a workstation run on
+        // the local store must not be refused over a credential it was
+        // never going to present. The access token goes through
+        // `qip_core::secret`, so it may arrive as a mounted file.
+        let access = match &config.storage {
+            LedgerStorage::Spanner { .. } => {
+                let plain = |name: &str| std::env::var(name).ok();
+                let token = qip_core::secret::resolve_from(
+                    gcp::TOKEN_VARIABLE,
+                    plain(gcp::TOKEN_VARIABLE),
+                    plain(&format!(
+                        "{}{}",
+                        gcp::TOKEN_VARIABLE,
+                        qip_core::secret::FILE_SUFFIX
+                    )),
+                )?;
+                GcpAccess::from_values(
+                    plain(gcp::ENDPOINT_VARIABLE).as_deref(),
+                    plain(gcp::METADATA_VARIABLE).as_deref(),
+                    plain(gcp::TOKEN_FILE_VARIABLE).as_deref(),
+                    token.as_deref(),
+                    clock.clone(),
+                )?
+            }
+            LedgerStorage::Local { .. } => GcpAccess::unconfigured(),
+        };
+        qip_ledgerd::start_with_access(&config, clock, thread_sleeper(), connect, access)
     });
     match started {
         Ok(running) => {
