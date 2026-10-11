@@ -724,7 +724,7 @@ jobs:
           if [ -n "${dockerfile}" ]; then
             recipe+=(--file "${dockerfile}")
           else
-            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}")
+            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}" --build-arg "QIP_SOURCE_COMMIT=${DEPLOY_SHA}")
           fi
           docker buildx build \
             "${recipe[@]}" \
@@ -765,6 +765,7 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}" \
             --file infrastructure/docker/Dockerfile \
             --build-arg "BINARY=${{ matrix.binary }}" \
+            --build-arg "QIP_SOURCE_COMMIT=${DEPLOY_SHA}" \
             --output "type=docker,rewrite-timestamp=true" \
             --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \

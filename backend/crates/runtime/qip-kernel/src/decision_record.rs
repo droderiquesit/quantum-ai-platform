@@ -32,6 +32,8 @@
 //! `None`.
 
 use crate::platform::Platform;
+use qip_core::deployment::Deployment;
+use qip_core::error::Error;
 use qip_core::{Result, Timestamp, sha256_hex};
 use qip_events::{EventBody, Topic};
 use qip_streaming::envelope::StreamEnvelope;
@@ -61,12 +63,67 @@ impl EventBody for DecisionVersions {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The source commit this build was stamped with, read at compile time.
+///
+/// `infrastructure/docker/Dockerfile` requires `QIP_SOURCE_COMMIT` as a build
+/// argument — the commit `deploy.yml` and the private pool build from, never
+/// a repository variable — and exports it into `cargo build`, so every image
+/// carries the commit it was built from. Until 2026-10-11 nothing set it,
+/// and every deployed `code_version` was the crate version alone: the same
+/// string for every commit since the version was last bumped.
+pub const SOURCE_COMMIT: Option<&str> = option_env!("QIP_SOURCE_COMMIT");
+
 /// This build.
 pub fn code_version() -> String {
-    match option_env!("QIP_SOURCE_COMMIT") {
+    match SOURCE_COMMIT {
         Some(commit) => format!("qip-kernel {} ({commit})", env!("CARGO_PKG_VERSION")),
         None => format!("qip-kernel {}", env!("CARGO_PKG_VERSION")),
     }
+}
+
+/// Refuse a deployed process whose build names no source commit.
+///
+/// R12-GOV-6121's `code_version` is the one version a person cannot
+/// recompute from the log: the limits, the graph, the log position and the
+/// controls are all on the record, the code is not. A deployment that cannot
+/// say which commit decided is one whose every decision is unreproducible,
+/// so it does not start. Only [`Deployment::Local`] — a developer's `cargo
+/// run` — may run unstamped. A stamp that is not a full 40-hex commit is
+/// refused too: an abbreviated or decorated id is one a later reader may not
+/// be able to resolve.
+pub fn check_source_commit(stamped: Option<&str>, deployment: Deployment) -> Result<()> {
+    if deployment == Deployment::Local {
+        return Ok(());
+    }
+    match stamped {
+        Some(commit)
+            if commit.len() == 40
+                && commit
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+        {
+            Ok(())
+        }
+        Some(commit) => Err(Error::denied(format!(
+            "this build is stamped with QIP_SOURCE_COMMIT={commit:?}, which is not a full \
+             lowercase commit sha, so its decisions would name code nobody can check out. Build \
+             it with --build-arg QIP_SOURCE_COMMIT=$(git rev-parse HEAD)"
+        ))),
+        None => Err(Error::denied(format!(
+            "QIP_DEPLOYMENT={deployment} and this build names no source commit, so every \
+             decision it journals would say `{}` and no more (R12-GOV-6121). Build the image \
+             through infrastructure/docker/Dockerfile, which requires QIP_SOURCE_COMMIT; only \
+             QIP_DEPLOYMENT=local may run unstamped",
+            code_version()
+        ))),
+    }
+}
+
+/// [`check_source_commit`] for this build. Called by every composition root
+/// that runs the cycle, once the deployment is known and before anything
+/// is served.
+pub fn require_source_commit(deployment: Deployment) -> Result<()> {
+    check_source_commit(SOURCE_COMMIT, deployment)
 }
 
 /// A digest of the world model's causal edges in force at `known_at`.

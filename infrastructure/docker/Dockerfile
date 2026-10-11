@@ -33,6 +33,7 @@ FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bda
 
 ARG BINARY
 ARG SOURCE_DATE_EPOCH
+ARG QIP_SOURCE_COMMIT
 
 # No package is installed here. musl-dev and gcc, the only build dependencies
 # (alpine's Rust images target musl, which is what makes the output static),
@@ -68,9 +69,18 @@ COPY backend/ .
 # clock: an image whose timestamp is the build's is an image nobody can
 # rebuild. The pipeline also builds every image twice and compares, so
 # whether this is enough is checked on every build rather than asserted here.
+#
+# QIP_SOURCE_COMMIT is required too, and is the full sha being built: the
+# kernel reads it at compile time into every decision record's
+# `code_version` (R12-GOV-6121), and a deployed central binary built without
+# it refuses to start. Nothing set it until 2026-10-11, so every deployed
+# decision named the crate version and no commit. It is a function of the
+# commit like the epoch, so both builds of one commit still agree.
 RUN test -n "$BINARY" \
   && test -n "$SOURCE_DATE_EPOCH" \
-  && export SOURCE_DATE_EPOCH \
+  && test "${#QIP_SOURCE_COMMIT}" -eq 40 \
+  && test -z "$(printf '%s' "$QIP_SOURCE_COMMIT" | tr -d '0-9a-f')" \
+  && export SOURCE_DATE_EPOCH QIP_SOURCE_COMMIT \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 

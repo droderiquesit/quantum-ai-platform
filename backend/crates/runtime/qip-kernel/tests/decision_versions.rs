@@ -268,3 +268,41 @@ fn an_episode_formed_by_the_cycle_carries_the_world_model_version() -> Result<()
     }
     Ok(())
 }
+
+/// R12-GOV-6121: a deployed process names the commit it was built from, or
+/// it does not start. The admitting halves first, so a check that refused
+/// everything fails here. Mutations: return `Ok(())` for an absent stamp,
+/// accept an abbreviated sha, or drop the `Local` exemption.
+#[test]
+fn a_deployed_build_without_a_full_source_commit_is_refused_and_a_local_one_is_not() {
+    use qip_core::deployment::Deployment;
+    let full = "0123456789abcdef0123456789abcdef01234567";
+    assert!(decision_record::check_source_commit(Some(full), Deployment::Dev).is_ok());
+    assert!(decision_record::check_source_commit(None, Deployment::Local).is_ok());
+    for deployment in [
+        Deployment::Dev,
+        Deployment::Test,
+        Deployment::Stage,
+        Deployment::Prod,
+    ] {
+        let absent = decision_record::check_source_commit(None, deployment).unwrap_err();
+        assert!(
+            absent.message().contains("names no source commit"),
+            "{deployment}: {}",
+            absent.message()
+        );
+    }
+    for stamp in [
+        "0123456",
+        "0123456789ABCDEF0123456789ABCDEF01234567",
+        "v1.2.3",
+        "",
+    ] {
+        let bad = decision_record::check_source_commit(Some(stamp), Deployment::Prod).unwrap_err();
+        assert!(
+            bad.message().contains("not a full"),
+            "{stamp}: {}",
+            bad.message()
+        );
+    }
+}

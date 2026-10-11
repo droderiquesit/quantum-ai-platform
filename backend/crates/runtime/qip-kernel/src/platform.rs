@@ -14908,11 +14908,22 @@ impl Platform {
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
         // R12-GOV-6121: the five versions this DECIDE ran under, on the
         // chain beside its decisions (`crate::decision_record`).
+        //
+        // Fail closed. Until 2026-10-11 a failure here was a problem line on
+        // the stage while the proposal it described stayed a draft, and ACT
+        // signed and released it on the same cycle: the platform acted on a
+        // decision it had just reported it could not reproduce. The
+        // proposal this stage pushed is now vetoed by the decision record
+        // itself, so ACT has nothing of this cycle's to sign, and the capital
+        // it held goes back to free at once rather than at the hold's expiry.
         if let Err(error) = crate::decision_record::journal(self, now) {
             outcome = outcome.with_problem(format!(
                 "the decision versions were not journaled, so this DECIDE cannot be \
                  reproduced: {error}"
             ));
+            for problem in self.withhold_unrecorded_decision(now, &error) {
+                outcome = outcome.with_problem(problem);
+            }
         }
         for problem in pre_positioning_problems {
             outcome = outcome.with_problem(problem);
@@ -14944,6 +14955,43 @@ impl Platform {
             )),
             None => outcome,
         }
+    }
+
+    /// Veto the draft this DECIDE just pushed, because the versions it ran
+    /// under could not be journaled (R12-GOV-6121), and hand back the capital
+    /// it held. Returns the problems met doing so. A proposal with no legs is
+    /// vetoed as well — it is cheap, and "this cycle decided nothing" is
+    /// still a decision the log could not attribute.
+    fn withhold_unrecorded_decision(&mut self, now: Timestamp, error: &Error) -> Vec<String> {
+        let mut problems = Vec::new();
+        let Some(proposal) = self.proposals.last_mut() else {
+            return problems;
+        };
+        if !matches!(proposal.status(), ProposalStatus::Draft) {
+            return problems;
+        }
+        let held = proposal.traded_notional().is_positive();
+        let id = proposal.proposal_id.as_str().to_string();
+        proposal.veto(
+            now,
+            "decision-record",
+            format!(
+                "the versions this decision ran under could not be journaled ({}); a decision \
+                 that cannot be reproduced from the log is not acted on",
+                error.message()
+            ),
+        );
+        problems.push(format!(
+            "{id} was vetoed and will not be signed or released, because its versions are not on \
+             the record"
+        ));
+        if held && let Err(release) = self.reservations.release(&id, now) {
+            problems.push(format!(
+                "the hold for {id} could not be returned after its veto: {}",
+                release.message()
+            ));
+        }
+        problems
     }
 
     fn stage_act(&mut self, now: Timestamp, correlation: &CorrelationId) -> StageOutcome {
@@ -21838,6 +21886,80 @@ mod decide_tests {
         // Nothing reached a real venue.
         assert!(!platform.orders.has_live_fills());
         assert!(!platform.is_live_capable());
+    }
+
+    /// R12-GOV-6121, fail closed: a DECIDE whose versions could not be
+    /// journaled leaves nothing for ACT to sign. The log is swapped for a
+    /// read-only one just before DECIDE, which is the one way an append
+    /// refuses without a disk fault — every append in the stage fails, the
+    /// versions record among them.
+    ///
+    /// Mutations: delete the `withhold_unrecorded_decision` call in
+    /// `stage_decide` — the proposal stays a draft and the veto assertion
+    /// fails (past it, ACT would sign and release it, which is what the
+    /// platform did before); or skip the hold's release — the capital
+    /// assertion fails.
+    #[test]
+    fn a_decision_whose_versions_could_not_be_journaled_is_vetoed_and_never_released() {
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(thesis("AAPL", 0.6));
+        platform.pending_theses.push(thesis("MSFT", -0.4));
+
+        // Not `std::env::temp_dir()`, for the reason
+        // `dormancy_boot_log_path` gives.
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-unrecorded-decision-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").expect("an empty log file");
+        platform.event_log = EventLog::inspect(&path).expect("a read-only log");
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let decided = platform.stage_decide(now);
+
+        // The premise: legs were sized and capital held, so a release below
+        // would be a real trade, and the journal really did fail.
+        let sized = platform.proposals.last().expect("a proposal is recorded");
+        assert!(!sized.is_empty(), "the premise failed: no legs were sized");
+        assert!(
+            decided
+                .problems
+                .iter()
+                .any(|p| p.contains("decision versions were not journaled")),
+            "the premise failed: the versions were journaled: {:?}",
+            decided.problems
+        );
+        assert!(
+            matches!(sized.status(), ProposalStatus::Vetoed { by, .. } if by == "decision-record"),
+            "the unrecorded decision was left {:?}",
+            sized.status()
+        );
+        let id = sized.proposal_id.as_str().to_string();
+        assert!(
+            platform.reservations.reservation(&id).is_none(),
+            "the vetoed proposal still holds capital"
+        );
+
+        let outcome = platform.stage_act(now, &CorrelationId::from_string("corr-unrecorded"));
+        assert_eq!(
+            outcome.produced, 0,
+            "an unrecorded decision was released: {}",
+            outcome.detail
+        );
+        assert!(
+            platform.proposals.iter().all(|p| !matches!(
+                p.status(),
+                ProposalStatus::Released { .. } | ProposalStatus::Approved { .. }
+            )),
+            "an unrecorded decision was signed"
+        );
+        assert_eq!(platform.orders.orders().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
