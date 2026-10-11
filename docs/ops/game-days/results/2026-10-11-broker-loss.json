@@ -1,0 +1,71 @@
+{
+  "schema": "qip.game-day.result/v1",
+  "scenario": "broker-loss",
+  "drill": "G3 §25 broker loss: qip-fabricd is killed under a running reflex cell; the cell keeps deciding on its own spool (RES-10124, REFLEX-7059), and the broker restarts from its data directory holding every record it acknowledged.",
+  "run_at": "2026-10-11T08:49:59.325Z",
+  "commit": "b6ee74ad",
+  "environment": "local",
+  "binaries": {
+    "qip-fabricd": "1743f071b337d73b11f11484237b4db1316054c32dc9fe19359ffd64b5a685ff",
+    "qip-edge-node": "6439c1584ca06a051b5a4497c7d6229754d637d269ddd5676bf36bd443db3881"
+  },
+  "objectives": {
+    "rto_ms": 10000,
+    "rpo_records": 0
+  },
+  "measurements": {
+    "detected_ms": 9,
+    "outage_ms": 5116,
+    "rto_ms": 115,
+    "rpo_records": 0
+  },
+  "checks": [
+    {
+      "phase": "steady",
+      "name": "every process became ready",
+      "passed": true,
+      "detail": "302 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the cell is running passes",
+      "passed": true,
+      "detail": "held after 3 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the broker holds journal records from the cell",
+      "passed": true,
+      "detail": "held after 3 ms"
+    },
+    {
+      "phase": "fault",
+      "name": "the broker no longer answers",
+      "passed": true,
+      "detail": "9 ms"
+    },
+    {
+      "phase": "during",
+      "name": "the cell keeps running passes with the broker down",
+      "passed": true,
+      "detail": "held for 5000 ms"
+    },
+    {
+      "phase": "during",
+      "name": "the cell does not halt for the broker",
+      "passed": true,
+      "detail": "held for 5000 ms"
+    },
+    {
+      "phase": "recovery",
+      "name": "every process ready again",
+      "passed": true,
+      "detail": "115 ms after the recovery action"
+    }
+  ],
+  "verdict": "met",
+  "notes": [
+    "durable position before the fault: 1",
+    "durable position when the recovered process first answered: 1"
+  ]
+}

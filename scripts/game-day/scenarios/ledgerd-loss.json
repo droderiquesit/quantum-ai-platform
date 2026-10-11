@@ -1,0 +1,152 @@
+{
+  "name": "ledgerd-loss",
+  "drill": "G3 §25 ledger outage: qip-ledgerd is killed while the reflex cell and the broker run; the cell keeps deciding, the broker keeps the P1 outcomes stream for the ledger to resume from, and the restarted ledger serves again (RES-10154, RES-10128).",
+  "hold_ms": 5000,
+  "timeout_ms": 30000,
+  "processes": [
+    {
+      "name": "fabricd",
+      "binary": "qip-fabricd",
+      "dirs": [
+        "${WORK}/fabric/data",
+        "${WORK}/fabric/archive"
+      ],
+      "files": [
+        {
+          "path": "${WORK}/fabric/identities",
+          "content": "reflex:cell-local ${SHA256:game-day-cell-credential-local-drills-only}\nledger ${SHA256:game-day-ledger-credential-local-drills-only}\noperator ${SHA256:game-day-operator-credential-local-drills-only}\n"
+        }
+      ],
+      "env": {
+        "QIP_EVENT_FABRIC_DATA_DIR": "${WORK}/fabric/data",
+        "QIP_EVENT_FABRIC_CATALOGUE": "${REPO}/infrastructure/event-fabric/streams.local.json",
+        "QIP_EVENT_FABRIC_IDENTITIES_FILE": "${WORK}/fabric/identities",
+        "QIP_EVENT_FABRIC_ARCHIVE_DIR": "${WORK}/fabric/archive",
+        "QIP_EVENT_FABRIC_LISTEN": "127.0.0.1:${PORT:fabric}",
+        "QIP_EVENT_FABRIC_HEALTH_LISTEN": "127.0.0.1:${PORT:fabric-health}",
+        "QIP_EVENT_FABRIC_PARTITIONS": "1"
+      },
+      "ready": {
+        "url": "http://127.0.0.1:${PORT:fabric-health}/health"
+      }
+    },
+    {
+      "name": "cell",
+      "binary": "qip-edge-node",
+      "dirs": [
+        "${WORK}/cell/journal",
+        "${WORK}/cell/control"
+      ],
+      "files": [
+        {
+          "path": "${WORK}/cell/capital-envelope-key",
+          "content": "a-game-day-envelope-key"
+        },
+        {
+          "path": "${WORK}/cell/fabric-token",
+          "content": "game-day-cell-credential-local-drills-only"
+        }
+      ],
+      "env": {
+        "QIP_CELL_ID": "cell-local",
+        "QIP_CELL_REGION": "us-east4",
+        "QIP_VENUES": "CX",
+        "QIP_VENUE_FEED": "simulated",
+        "QIP_REGION_ALLOCATION": "1000000",
+        "QIP_CAPITAL_ENVELOPE_KEY_FILE": "${WORK}/cell/capital-envelope-key",
+        "QIP_STORAGE_TARGET": "engine",
+        "QIP_STORAGE_ROOT": "${WORK}/cell/journal",
+        "QIP_HEALTH_PORT": "${PORT:cell-health}",
+        "QIP_HALT_FLAG_PATH": "${WORK}/cell/control/halt",
+        "QIP_FABRIC_URL": "http://127.0.0.1:${PORT:fabric}",
+        "QIP_FABRIC_TOKEN_FILE": "${WORK}/cell/fabric-token",
+        "QIP_FABRIC_PARTITION": "0"
+      },
+      "ready": {
+        "url": "http://127.0.0.1:${PORT:cell-health}/"
+      }
+    },
+    {
+      "name": "ledgerd",
+      "binary": "qip-ledgerd",
+      "dirs": [
+        "${WORK}/ledger/archive"
+      ],
+      "files": [
+        {
+          "path": "${WORK}/ledger/fabric-token",
+          "content": "game-day-ledger-credential-local-drills-only"
+        }
+      ],
+      "env": {
+        "QIP_LEDGER_ARCHIVE_PATH": "${WORK}/ledger/archive",
+        "QIP_LEDGER_LISTEN_ADDR": "127.0.0.1:${PORT:ledger}",
+        "QIP_LEDGER_FABRIC_CONSUMER_GROUP": "ledger",
+        "QIP_LEDGER_FABRIC_URL": "http://127.0.0.1:${PORT:fabric}",
+        "QIP_LEDGER_FABRIC_STREAM": "reflex-outcomes.local",
+        "QIP_LEDGER_FABRIC_PARTITIONS": "1",
+        "QIP_LEDGER_FABRIC_TOKEN_FILE": "${WORK}/ledger/fabric-token"
+      },
+      "ready": {
+        "url": "http://127.0.0.1:${PORT:ledger}/health"
+      }
+    }
+  ],
+  "steady": [
+    {
+      "name": "the cell is running passes",
+      "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+      "metric": {
+        "name": "qip_edge_work_passes_total",
+        "increases": true
+      }
+    },
+    {
+      "name": "the ledger is serving",
+      "url": "http://127.0.0.1:${PORT:ledger}/health",
+      "status": 200
+    }
+  ],
+  "fault": {
+    "kind": "kill",
+    "process": "ledgerd"
+  },
+  "detect": {
+    "name": "the ledger no longer answers",
+    "url": "http://127.0.0.1:${PORT:ledger}/health",
+    "status": 0
+  },
+  "during": [
+    {
+      "name": "the cell keeps running passes with the ledger down",
+      "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+      "metric": {
+        "name": "qip_edge_work_passes_total",
+        "increases": true
+      }
+    },
+    {
+      "name": "the broker keeps serving without its consumer",
+      "url": "http://127.0.0.1:${PORT:fabric-health}/health",
+      "status": 200
+    }
+  ],
+  "recovery": {
+    "kind": "restart",
+    "process": "ledgerd"
+  },
+  "after_recovery": [],
+  "rpo": {
+    "url": "http://127.0.0.1:${PORT:fabric-health}/metrics",
+    "metric": {
+      "name": "qip_event_fabric_high_watermark",
+      "labels": {
+        "stream": "reflex-outcomes.local"
+      }
+    }
+  },
+  "objectives": {
+    "rto_ms": 10000,
+    "rpo_records": 0
+  }
+}

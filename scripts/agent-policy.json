@@ -11,7 +11,7 @@
   },
 
   "protected_paths": {
-    "comment": "Paths an agent-authored change may touch only with an approving review from a person who is not an agent. These are the files that decide what every other check means: the workflows, the agents' own instructions and settings, the gates' scripts and policies, the paper-trading boundary's Terraform layer, and the dependency allow-list.",
+    "comment": "Paths an agent-authored change may touch only with an approving review from a person who is not an agent. These are the files that decide what every other check means: the workflows, the agents' own instructions and settings, the gates' scripts and policies, the paper-trading boundary's Terraform layer, the owner's switches (every environment's tfvars), and the dependency allow-list.",
     "globs": [
       ".github/**",
       ".claude/**",
@@ -27,7 +27,8 @@
       "scripts/sast-gate.mjs",
       "infrastructure/terraform/variables.tf",
       "infrastructure/terraform/execution-nodes-enabled.tf",
-      "infrastructure/environments/prod/**",
+      "infrastructure/terraform/build-pool.tf",
+      "infrastructure/environments/**",
       "docs/adr/**"
     ]
   },

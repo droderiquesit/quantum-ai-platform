@@ -1,0 +1,106 @@
+{
+  "name": "stale-policy",
+  "drill": "G3 §25 stale policy, the local half: the control wire the cell polls (the halt flag's directory) vanishes as a lost mount would, so its reading can no longer be trusted; the cell treats stale as engaged and halts rather than trading on its last good reading (§46.2), and runs again once the wire reads. The fabric-published policy's staleness needs a policy publisher, which no local binary is; that half is not drilled here.",
+  "hold_ms": 5000,
+  "timeout_ms": 30000,
+  "processes": [
+    {
+      "name": "cell",
+      "binary": "qip-edge-node",
+      "dirs": [
+        "${WORK}/cell/journal",
+        "${WORK}/cell/control"
+      ],
+      "files": [
+        {
+          "path": "${WORK}/cell/capital-envelope-key",
+          "content": "a-game-day-envelope-key"
+        }
+      ],
+      "env": {
+        "QIP_CELL_ID": "cell-local",
+        "QIP_CELL_REGION": "us-east4",
+        "QIP_VENUES": "CX",
+        "QIP_VENUE_FEED": "simulated",
+        "QIP_REGION_ALLOCATION": "1000000",
+        "QIP_CAPITAL_ENVELOPE_KEY_FILE": "${WORK}/cell/capital-envelope-key",
+        "QIP_STORAGE_TARGET": "engine",
+        "QIP_STORAGE_ROOT": "${WORK}/cell/journal",
+        "QIP_HEALTH_PORT": "${PORT:cell-health}",
+        "QIP_HALT_FLAG_PATH": "${WORK}/cell/control/halt"
+      },
+      "ready": {
+        "url": "http://127.0.0.1:${PORT:cell-health}/"
+      }
+    }
+  ],
+  "steady": [
+    {
+      "name": "the cell is running passes",
+      "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+      "metric": {
+        "name": "qip_edge_work_passes_total",
+        "increases": true
+      }
+    },
+    {
+      "name": "the polled wire reads as not halted",
+      "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+      "metric": {
+        "name": "qip_edge_halted",
+        "labels": {
+          "source": "polled"
+        },
+        "max": 0
+      }
+    }
+  ],
+  "fault": {
+    "kind": "remove_path",
+    "path": "${WORK}/cell/control"
+  },
+  "detect": {
+    "name": "the cell halts on the unreadable wire",
+    "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+    "metric": {
+      "name": "qip_edge_halted",
+      "labels": {
+        "source": "polled"
+      },
+      "min": 1
+    }
+  },
+  "during": [
+    {
+      "name": "the cell stays halted while the wire is unreadable",
+      "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+      "metric": {
+        "name": "qip_edge_halted",
+        "labels": {
+          "source": "polled"
+        },
+        "min": 1
+      }
+    }
+  ],
+  "recovery": {
+    "kind": "make_dir",
+    "path": "${WORK}/cell/control"
+  },
+  "after_recovery": [
+    {
+      "name": "the cell runs again once the wire reads",
+      "url": "http://127.0.0.1:${PORT:cell-health}/metrics",
+      "metric": {
+        "name": "qip_edge_halted",
+        "labels": {
+          "source": "polled"
+        },
+        "max": 0
+      }
+    }
+  ],
+  "objectives": {
+    "rto_ms": 10000
+  }
+}
