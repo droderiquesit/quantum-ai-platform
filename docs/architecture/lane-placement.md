@@ -60,7 +60,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-quant | 0 | statistics; deterministic |
 | qip-storage | 0 | local engine store with explicit timeouts; managed targets refuse at preflight |
 | qip-transport | 0 | bounded blocking sockets with explicit timeouts; refuses when full |
-| qip-tls | 0 | the mutual-TLS 1.3 policy on the `ring` provider, loaded from files the root names and refusing a missing identity; opens no socket, so its callers own every timeout; the one pin of `ring`, `rustls` and `rustls-webpki` |
+| qip-tls | 0 | the mutual-TLS 1.3 policy on the `ring` provider, loaded from files the root names or from a Certificate Authority Service issuance (the settings, names and in-memory key in `qip_tls::cas`; the REST client and renewal loop stay in `qip_transport::cas`) and refusing a missing identity; opens no socket, so its callers own every timeout; the one pin of `ring`, `rustls` and `rustls-webpki` |
 | qip-protocols | 0 | venue message codecs; local decode, no remote read |
 | qip-orderbook | 0 | local book update; no remote read |
 | qip-sequencing | 0 | local ordering and dedup; no remote read |

@@ -21,12 +21,10 @@ qip-observability.workspace = true
 
 [dev-dependencies]
 qip-streaming.workspace = true
-# Test-only: `qip-transport/tests/support/certs.rs` mints the throwaway CA and
-# workload certificates the read API's mutual-TLS test needs, with `ring`,
-# because committing PEM private keys as fixtures is forbidden. Already in
-# the lockfile and on the allow-list as `qip-transport`'s (ADR 0110), pinned
-# to the same version, so this adds no package — only a test-time edge.
-ring = { version = "=0.17.14", default-features = false }
+# No `ring` here, although the read API's mutual-TLS test mints certificates
+# with it through `qip-transport/tests/support/certs.rs`: that file names it
+# as `qip_transport::ring`, the re-export of the one pin in `qip-tls`, and
+# `cargo deny`'s workspace-duplicate check refuses a second pin.
 
 [lints]
 workspace = true

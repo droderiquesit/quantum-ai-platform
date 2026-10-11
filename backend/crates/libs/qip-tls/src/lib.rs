@@ -19,7 +19,8 @@
 //!   and the CA roots its peers chain to. Two sources fill it: **files** a
 //!   composition root names (a developer workstation, `QIP_TLS_MODE=mtls`),
 //!   or **Certificate Authority Service** (`QIP_TLS_MODE=cas`, ADR 0112 §2,
-//!   [`crate::cas`]), which issues a certificate of hours over a key
+//!   [`crate::cas`] for the settings and key, `qip_transport::cas` for the
+//!   client and the renewal loop), which issues a certificate of hours over a key
 //!   generated in memory and renews it at two-thirds of its life. Either
 //!   way the material sits in one swappable slot that every config built
 //!   from the identity reads at each handshake, so a renewal reaches the
@@ -52,6 +53,8 @@
 //! carried is kept on top for now, as authorisation — ADR 0112 says
 //! certificate identity replaces it, and that replacement is the broker's
 //! change, not this module's.
+
+pub mod cas;
 
 use crate::cas::{CasSettings, WorkloadKey};
 use qip_core::deployment::Deployment;
@@ -632,7 +635,11 @@ fn roots_from_pem(pem: &[u8]) -> Result<RootCertStore> {
     Ok(roots)
 }
 
-pub(crate) fn read(path: &Path, what: &str) -> Result<Vec<u8>> {
+/// Read a PEM file, naming `what` it was meant to hold when it cannot be.
+/// Public because `qip_transport::cas::CasIdentity::start` reads its two
+/// roots files through it; it was `pub(crate)` while both lived in one
+/// crate, and a second copy would be a second wording of the same refusal.
+pub fn read(path: &Path, what: &str) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|error| {
         Error::invalid(format!(
             "cannot read the {what} at {}: {error}",
@@ -783,7 +790,7 @@ pub enum TlsSource {
     Files(TlsPaths),
     /// Certificate Authority Service (`QIP_TLS_MODE=cas`, ADR 0112 §2): a
     /// short-lived certificate over a key generated in memory, renewed
-    /// without a restart by the loop in [`crate::cas`].
+    /// without a restart by the loop in `qip_transport::cas`.
     Issued(CasSettings),
 }
 

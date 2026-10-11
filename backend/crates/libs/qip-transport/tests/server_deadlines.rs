@@ -21,7 +21,7 @@ use qip_transport::server::{
     Handler, Request as ServerRequest, Response as ServerResponse, Server, ServerLimits,
 };
 use qip_transport::tls::{PeerNames, TlsServer, WorkloadIdentity};
-use qip_transport::{ClientLimits, HttpRequest, Method, TlsHttpClient};
+use qip_transport::{ClientLimits, HttpRequest, Method, TlsHttpClient, rustls};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
