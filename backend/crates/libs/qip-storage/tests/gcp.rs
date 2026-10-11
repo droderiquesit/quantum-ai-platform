@@ -404,6 +404,39 @@ fn the_metadata_server_source_sends_the_flavor_header_and_returns_the_token_it_i
     );
 }
 
+/// The name a workload certificate carries comes from the same server as
+/// the token that requests it. Mutation: drop the flavor header, read the
+/// token path instead of the email path, or return an empty body as an
+/// account, and an assertion here fails.
+#[test]
+fn the_metadata_server_names_the_service_account_a_workload_certificate_is_issued_to() {
+    let server = TestServer::script(vec![
+        Action::ok("qip-dev-fabricd@proj-1.iam.gserviceaccount.com\n"),
+        Action::ok(""),
+    ]);
+    let source = MetadataServerTokens::at(server.url(), "/token", fixed_clock());
+    assert_eq!(
+        source.service_account_email().expect("an account"),
+        "qip-dev-fabricd@proj-1.iam.gserviceaccount.com"
+    );
+    let requests = server.requests();
+    assert_eq!(
+        requests[0].target,
+        "/computeMetadata/v1/instance/service-accounts/default/email"
+    );
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("metadata-flavor")
+            .map(String::as_str),
+        Some("Google")
+    );
+    assert!(
+        source.service_account_email().is_err(),
+        "an instance with no account named a certificate after nobody"
+    );
+}
+
 #[test]
 fn the_metadata_server_source_caches_until_the_refresh_margin_and_then_refetches() {
     let server = TestServer::script(vec![

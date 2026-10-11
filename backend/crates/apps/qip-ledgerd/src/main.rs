@@ -19,10 +19,11 @@ use std::sync::Arc;
 use qip_core::SystemClock;
 use qip_ledgerd::config::{FABRIC_TOKEN, LedgerConfig, LedgerStorage};
 use qip_ledgerd::consumer::{Connect, thread_sleeper};
+use qip_storage::gcp::workload_certificate::workload_certificate;
 use qip_storage::{GcpAccess, gcp};
 use qip_transport::event_fabric::auth::BearerToken;
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
-use qip_transport::tls::{LinkSecurity, WorkloadIdentity};
+use qip_transport::tls::{LinkSecurity, TlsSource, WorkloadIdentity};
 
 fn main() {
     let started = LedgerConfig::from_environment().and_then(|config| {
@@ -32,15 +33,32 @@ fn main() {
         let direct = std::env::var(FABRIC_TOKEN).ok();
         let path = std::env::var(format!("{FABRIC_TOKEN}{}", qip_core::secret::FILE_SUFFIX)).ok();
         BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
+        let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
         // ADR 0112: the fabric link is mutual TLS with this workload's
-        // certificate unless a local deployment chose plaintext. Loaded once,
-        // here, so a certificate that will not load stops the ledger before
-        // a worker starts; there is no fallback. The read API serves under
-        // the same certificate (`qip_ledgerd::start` loads it for the
-        // listener), so this one line describes both links.
-        let link = match &config.workload_tls {
-            Some(paths) => LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?)),
-            None => LinkSecurity::Plaintext,
+        // certificate unless a local deployment chose plaintext, and the read
+        // API serves under the same one. Hand-placed
+        // files are loaded once, here, so one that will not load stops the
+        // ledger before a worker starts. Under `cas` the certificate is
+        // requested here and renewed on its own thread; a CA that cannot be
+        // reached leaves the ledger running not-ready, its handshakes
+        // refused, rather than reading over anything weaker. There is no
+        // fallback in either case.
+        let (link, issued) = match &config.workload_tls {
+            Some(TlsSource::Files(paths)) => (
+                LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?)),
+                None,
+            ),
+            Some(TlsSource::Issued(settings)) => {
+                let issued = workload_certificate(settings, "qip-ledgerd", Arc::clone(&clock))?;
+                if let Some(error) = issued.status().last_error() {
+                    eprintln!(
+                        "qip-ledgerd: no workload certificate yet; not ready, retrying. The CA \
+                         said: {error}"
+                    );
+                }
+                (LinkSecurity::issued(issued.identity()), Some(issued))
+            }
+            None => (LinkSecurity::Plaintext, None),
         };
         eprintln!("qip-ledgerd: fabric link and read API {}", link.describe());
         let url = config.fabric_url.clone();
@@ -50,7 +68,6 @@ fn main() {
                 Box::new(HttpTransport::over(&link, &url, token)?);
             Ok(transport)
         });
-        let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
         // The Google endpoint and credential the Spanner store is reached
         // through, read only when that is the store: a workstation run on
         // the local store must not be refused over a credential it was
@@ -78,7 +95,7 @@ fn main() {
             }
             LedgerStorage::Local { .. } => GcpAccess::unconfigured(),
         };
-        qip_ledgerd::start_with_access(&config, clock, thread_sleeper(), connect, access)
+        qip_ledgerd::start_with_link(&config, clock, thread_sleeper(), connect, access, issued)
     });
     match started {
         Ok(running) => {

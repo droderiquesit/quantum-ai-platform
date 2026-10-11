@@ -18,7 +18,9 @@ use std::path::PathBuf;
 
 use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
-use qip_transport::tls::{PeerNames, TLS_MODE_VARIABLE, TlsPaths, link_mode};
+#[cfg(test)]
+use qip_transport::tls::TLS_MODE_VARIABLE;
+use qip_transport::tls::{PeerNames, TlsSource, link_source};
 
 /// Which deployment this broker runs in (ADR 0110 decision 5, ADR 0112).
 /// Required: it decides whether the protocol listener may be plaintext,
@@ -168,7 +170,7 @@ pub struct Config {
     /// [`DEPLOYMENT`] is `local` and `QIP_TLS_MODE=plaintext` says so. The
     /// health listener is plaintext either way: a probe carries no
     /// certificate, and health on its own listener is FABRIC-073's point.
-    pub listener_tls: Option<TlsPaths>,
+    pub listener_tls: Option<TlsSource>,
     /// [`ADMITTED_PEERS`], validated as names a certificate can carry.
     pub admitted_peers: Vec<String>,
 }
@@ -434,11 +436,13 @@ impl Config {
         // deployment and the TLS variables; the identity itself is loaded by
         // `start`, after storage is proven and before the port is bound.
         let deployment = Deployment::parse(present(variables, DEPLOYMENT))?;
-        let listener_tls = link_mode(
-            deployment,
-            present(variables, TLS_MODE_VARIABLE),
-            TlsPaths::from_lookup(&|name| present(variables, name).map(str::to_string))?.as_ref(),
-        )?;
+        // `cas` (ADR 0112 §2) is decided here too, and its settings are
+        // validated here — pool, template, lifetime bounds, both roots — so a
+        // malformed pool stops the broker before storage is touched; the
+        // certificate itself is requested in `main`.
+        let listener_tls = link_source(deployment, &|name| {
+            present(variables, name).map(str::to_string)
+        })?;
         let admitted_peers: Vec<String> = present(variables, ADMITTED_PEERS)
             .map(|names| {
                 names
@@ -613,8 +617,45 @@ mod tests {
             tls.insert(name.to_string(), value.to_string());
         }
         let config = Config::parse(&tls).expect("a deployed broker with a certificate");
-        assert!(config.listener_tls.is_some());
+        assert!(matches!(config.listener_tls, Some(TlsSource::Files(_))));
         assert_eq!(config.admitted_peers.len(), 2);
+    }
+
+    /// ADR 0112 §2 at the broker: `cas` parses to an issued source with its
+    /// settings validated, and a malformed pool stops the parse. Mutation:
+    /// parse the broker's TLS with `link_mode` again (which cannot read the
+    /// pool) and the first assertion fails.
+    #[test]
+    fn a_broker_on_certificate_authority_service_is_validated_before_it_starts() {
+        let mut cas = complete();
+        cas.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (TLS_MODE_VARIABLE, "cas"),
+            (
+                qip_transport::cas::CA_POOL_VARIABLE,
+                "projects/p/locations/europe-west2/caPools/qip-prod-internal",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/pool-roots.pem",
+            ),
+            (
+                qip_transport::cas::GOOGLE_TLS_ROOTS_VARIABLE,
+                "/etc/qip/tls/google-roots.pem",
+            ),
+        ] {
+            cas.insert(name.to_string(), value.to_string());
+        }
+        let config = Config::parse(&cas).expect("a broker on CA Service");
+        assert!(matches!(config.listener_tls, Some(TlsSource::Issued(_))));
+        cas.insert(
+            qip_transport::cas::CA_POOL_VARIABLE.to_string(),
+            "qip-prod-internal".to_string(),
+        );
+        assert!(
+            Config::parse(&cas).is_err(),
+            "a malformed pool was accepted"
+        );
     }
 
     fn bucket() -> BTreeMap<String, String> {

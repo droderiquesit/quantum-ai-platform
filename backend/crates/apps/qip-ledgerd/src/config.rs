@@ -33,7 +33,9 @@
 use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_storage::gcp::spanner::{DEFAULT_TABLE, SpannerDatabase};
-use qip_transport::tls::{PeerNames, TLS_MODE_VARIABLE, TlsPaths, link_mode};
+#[cfg(test)]
+use qip_transport::tls::TLS_MODE_VARIABLE;
+use qip_transport::tls::{PeerNames, TlsSource, link_source};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -144,7 +146,8 @@ pub struct LedgerConfig {
     /// The fabric broker's scheme and authority. The scheme agrees with
     /// [`Self::workload_tls`]: `https` when it is `Some`, `http` when `None`.
     pub fabric_url: String,
-    /// This process's workload certificate (ADR 0112), and the one fact
+    /// This process's workload certificate (ADR 0112) — hand-placed files, or
+    /// issued and renewed in place by CA Service under `cas` (§2) — and the one fact
     /// both of its links are secured by: the fabric client presents it, and
     /// the read API's listener serves under it and requires a client
     /// certificate chained to the same roots. `None` is plaintext on both,
@@ -156,7 +159,7 @@ pub struct LedgerConfig {
     /// disagree, and the disagreement that matters — an encrypted fabric link
     /// beside a plaintext read API serving every balance — is exactly the one
     /// nobody would see on a dashboard that shows the fabric link.
-    pub workload_tls: Option<TlsPaths>,
+    pub workload_tls: Option<TlsSource>,
     /// [`ADMITTED_PEERS`]: the workloads the read API serves, checked
     /// against each client certificate's DNS names. Empty admits any
     /// certificate the roots chain, which leaves the CA pool's template as
@@ -248,11 +251,9 @@ impl LedgerConfig {
                 deployment.as_str()
             )));
         }
-        let workload_tls = link_mode(
-            deployment,
-            variables.get(TLS_MODE_VARIABLE).map(String::as_str),
-            TlsPaths::from_lookup(&|name| variables.get(name).cloned())?.as_ref(),
-        )?;
+        // `cas` (ADR 0112 §2) is validated here with the rest; `main` starts
+        // the issuance it describes.
+        let workload_tls = link_source(deployment, &|name| variables.get(name).cloned())?;
         let scheme = if workload_tls.is_some() {
             "https://"
         } else {
@@ -634,7 +635,7 @@ mod tests {
             "https://fabricd.internal:7100".to_string(),
         );
         let config = LedgerConfig::parse(&tls).expect("https on a TLS link");
-        assert!(config.workload_tls.is_some());
+        assert!(matches!(config.workload_tls, Some(TlsSource::Files(_))));
     }
 
     /// A reader list on a plaintext read API is refused: nothing could check
@@ -688,6 +689,45 @@ mod tests {
         assert!(
             LedgerConfig::parse(&tls).is_err(),
             "a name no certificate can carry was admitted"
+        );
+    }
+
+    /// ADR 0112 §2 at the ledger: `cas` is an issued source whose URL must
+    /// be `https`, and its lifetime is bounded at parse. Mutation: parse the
+    /// link with `link_mode` again and the first parse fails; drop the
+    /// bounds and the ten-minute lifetime is accepted.
+    #[test]
+    fn a_ledger_on_certificate_authority_service_is_validated_before_it_starts() {
+        let mut cas = deployed("staging");
+        for name in [
+            qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+            qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+        ] {
+            cas.remove(name);
+        }
+        for (name, value) in [
+            (TLS_MODE_VARIABLE, "cas"),
+            (
+                qip_transport::cas::CA_POOL_VARIABLE,
+                "projects/p/locations/europe-west2/caPools/qip-stage-internal",
+            ),
+            (
+                qip_transport::cas::GOOGLE_TLS_ROOTS_VARIABLE,
+                "/etc/qip/tls/google-roots.pem",
+            ),
+            (FABRIC_URL, "https://fabricd.internal:7100"),
+        ] {
+            cas.insert(name.to_string(), value.to_string());
+        }
+        let config = LedgerConfig::parse(&cas).expect("a ledger on CA Service");
+        assert!(matches!(config.workload_tls, Some(TlsSource::Issued(_))));
+        cas.insert(
+            qip_transport::cas::LIFETIME_VARIABLE.to_string(),
+            "600".to_string(),
+        );
+        assert!(
+            LedgerConfig::parse(&cas).is_err(),
+            "a ten-minute lifetime was accepted"
         );
     }
 }

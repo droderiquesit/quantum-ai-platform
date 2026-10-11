@@ -11,10 +11,18 @@
 //! What this module holds, and what it deliberately does not:
 //!
 //! * [`WorkloadIdentity`] — this process's certificate chain and private key
-//!   and the CA roots its peers chain to, **loaded from files** the
-//!   composition root names. In a deployment Certificate Authority Service
-//!   issues the certificate and something on the machine keeps the files
-//!   fresh; this crate reads, it never mints, and it never writes a key.
+//!   and the CA roots its peers chain to. Two sources fill it: **files** a
+//!   composition root names (a developer workstation, `QIP_TLS_MODE=mtls`),
+//!   or **Certificate Authority Service** (`QIP_TLS_MODE=cas`, ADR 0112 §2,
+//!   [`crate::cas`]), which issues a certificate of hours over a key
+//!   generated in memory and renews it at two-thirds of its life. Either
+//!   way the material sits in one swappable slot that every config built
+//!   from the identity reads at each handshake, so a renewal reaches the
+//!   next connection without rebuilding a server or restarting a process —
+//!   and a certificate outside its window is never presented: the slot
+//!   answers "nothing" and the handshake fails, rather than carrying an
+//!   expired certificate that each peer would refuse for its own reason.
+//!   This crate never writes a key anywhere.
 //! * [`LinkSecurity`] — the one decision a root makes per link: mutual TLS,
 //!   or plaintext. Plaintext exists only when configuration says so *and* the
 //!   deployment is [`Deployment::Local`]; there is no fallback from one to
@@ -40,18 +48,23 @@
 //! certificate identity replaces it, and that replacement is the broker's
 //! change, not this module's.
 
+use crate::cas::{CasSettings, WorkloadKey};
 use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
+use qip_core::{Clock, Duration, SystemClock, Timestamp};
+use rustls::client::ResolvesClientCert;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
+use rustls::{ClientConfig, RootCertStore, ServerConfig, SignatureScheme};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 /// The provider every config here is built on: `ring`, so the platform's TLS
 /// and its artefact verification share one implementation of the primitives
 /// (ADR 0110 §3).
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+pub(crate) fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
@@ -71,10 +84,124 @@ pub struct TlsPaths {
     pub trust_roots: PathBuf,
 }
 
+/// The validity window of an installed certificate, read from the leaf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Validity {
+    pub not_before: Timestamp,
+    pub not_after: Timestamp,
+}
+
+impl Validity {
+    /// The instant ADR 0112 renews at: two-thirds of the way through the
+    /// certificate's own window. Read from the certificate rather than from
+    /// the lifetime that was asked for, because a CA may shorten a requested
+    /// lifetime to its pool's maximum or to its own expiry, and a renewal
+    /// scheduled on the request would then fall after the real expiry.
+    pub fn renew_at(&self) -> Timestamp {
+        let span = self.not_after.since(self.not_before).as_nanos().max(0);
+        self.not_before
+            .saturating_add(Duration::from_nanos(span / 3 * 2))
+    }
+
+    /// Whether `now` is inside the window, as a peer's verifier judges it.
+    pub fn admits(&self, now: Timestamp) -> bool {
+        self.not_before <= now && now < self.not_after
+    }
+}
+
+/// One certificate and the key it certifies, as `rustls` presents them.
+#[derive(Clone)]
+struct Installed {
+    certified: Arc<CertifiedKey>,
+    validity: Validity,
+}
+
+/// The swappable cell every config built from one identity reads.
+///
+/// A `RwLock` rather than anything cleverer: a handshake takes the read lock
+/// for one `Arc` clone, and a renewal takes the write lock once every few
+/// hours.
+struct CertificateSlot {
+    installed: RwLock<Option<Installed>>,
+    clock: Arc<dyn Clock>,
+}
+
+impl CertificateSlot {
+    /// The certificate to present now, or nothing. Nothing when none has
+    /// been installed, and nothing when the installed one is outside its
+    /// window: ADR 0112's fail-closed rule is that a process without a valid
+    /// certificate stops making and accepting mutual-TLS connections, and
+    /// presenting an expired one would be making them.
+    fn current(&self) -> Option<Arc<CertifiedKey>> {
+        let now = self.clock.now();
+        let guard = self
+            .installed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard
+            .as_ref()
+            .filter(|installed| installed.validity.admits(now))
+            .map(|installed| Arc::clone(&installed.certified))
+    }
+
+    fn validity(&self) -> Option<Validity> {
+        self.installed
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|installed| installed.validity)
+    }
+
+    fn replace(&self, installed: Installed) {
+        *self
+            .installed
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(installed);
+    }
+}
+
+// Neither the key nor the certificate is printed: the slot is reachable from
+// every config, and a `Debug` that walked into it would put a signing key's
+// description into whatever log formatted the config.
+impl std::fmt::Debug for CertificateSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CertificateSlot")
+            .field("validity", &self.validity())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The resolver both config halves are built on: whatever the slot holds at
+/// the instant of the handshake. This is what makes a renewal reach a server
+/// that was built once — `rustls` asks the resolver per connection, where
+/// `with_single_cert` fixed the certificate for the config's whole life and
+/// a renewal meant rebuilding the server.
+#[derive(Debug)]
+struct Presented(Arc<CertificateSlot>);
+
+impl ResolvesServerCert for Presented {
+    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        self.0.current()
+    }
+}
+
+impl ResolvesClientCert for Presented {
+    fn resolve(
+        &self,
+        _root_hint_subjects: &[&[u8]],
+        _sigschemes: &[SignatureScheme],
+    ) -> Option<Arc<CertifiedKey>> {
+        self.0.current()
+    }
+
+    fn has_certs(&self) -> bool {
+        self.0.current().is_some()
+    }
+}
+
 /// This process's certificate, its key, and the roots it trusts.
 pub struct WorkloadIdentity {
-    chain: Vec<CertificateDer<'static>>,
-    key: PrivateKeyDer<'static>,
+    slot: Arc<CertificateSlot>,
     roots: Arc<RootCertStore>,
 }
 
@@ -84,7 +211,7 @@ pub struct WorkloadIdentity {
 impl std::fmt::Debug for WorkloadIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkloadIdentity")
-            .field("chain_length", &self.chain.len())
+            .field("validity", &self.slot.validity())
             .field("roots", &self.roots.len())
             .field("key", &"<redacted>")
             .finish()
@@ -95,27 +222,52 @@ impl WorkloadIdentity {
     /// Parse PEM material, refusing an empty chain, a missing key or an
     /// empty root set — each would build a config that fails every
     /// handshake, which is better found at start-up than on the first call.
+    /// Refused for the same reason: a key that does not match the leaf, and
+    /// a leaf already past its not-after.
     pub fn from_pem(chain_pem: &[u8], key_pem: &[u8], roots_pem: &[u8]) -> Result<Self> {
+        Self::from_pem_at(chain_pem, key_pem, roots_pem, Arc::new(SystemClock))
+    }
+
+    /// [`Self::from_pem`] judged by `clock`, which decides from then on
+    /// whether the certificate is still presented.
+    pub fn from_pem_at(
+        chain_pem: &[u8],
+        key_pem: &[u8],
+        roots_pem: &[u8],
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
         let chain = CertificateDer::pem_slice_iter(chain_pem)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| tls_error("the workload certificate chain does not parse", error))?;
-        if chain.is_empty() {
+        let Some(leaf) = chain.first() else {
             return Err(Error::invalid(
                 "the workload certificate chain holds no certificate; a TLS link cannot present \
                  an identity it does not have",
             ));
-        }
+        };
+        let validity = validity_of(leaf)?;
         let key = PrivateKeyDer::from_pem_slice(key_pem).map_err(|error| {
             // The error from the PEM reader names a section kind, never the
             // key's bytes, so it is safe to carry.
             tls_error("the workload private key does not parse", error)
         })?;
         let roots = roots_from_pem(roots_pem)?;
-        Ok(Self {
-            chain,
-            key,
-            roots: Arc::new(roots),
-        })
+        let certified = CertifiedKey::from_der(chain, key, &provider())
+            .map_err(|error| tls_error("the workload certificate and key do not match", error))?;
+        if clock.now() >= validity.not_after {
+            return Err(Error::invalid(format!(
+                "the workload certificate expired at {}; every peer would refuse it. Replace \
+                 the certificate files, or let Certificate Authority Service issue one \
+                 ({TLS_MODE_VARIABLE}=cas)",
+                validity.not_after
+            )));
+        }
+        let identity = Self::awaiting_issuance_with_roots(roots, clock);
+        identity.slot.replace(Installed {
+            certified: Arc::new(certified),
+            validity,
+        });
+        Ok(identity)
     }
 
     /// Read the three files and parse them.
@@ -127,8 +279,146 @@ impl WorkloadIdentity {
         )
     }
 
+    /// An identity holding the pool's roots and no certificate yet: every
+    /// handshake through a config built from it fails until
+    /// [`Self::install`] succeeds. A composition root on Certificate
+    /// Authority Service builds this, binds its listener and hands the
+    /// identity to the renewal loop, so the listener refuses every peer
+    /// until the first certificate arrives — ADR 0112's fail-closed start,
+    /// rather than a window in which it serves without one.
+    pub fn awaiting_issuance(roots_pem: &[u8], clock: Arc<dyn Clock>) -> Result<Self> {
+        Ok(Self::awaiting_issuance_with_roots(
+            roots_from_pem(roots_pem)?,
+            clock,
+        ))
+    }
+
+    fn awaiting_issuance_with_roots(roots: RootCertStore, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            slot: Arc::new(CertificateSlot {
+                installed: RwLock::new(None),
+                clock,
+            }),
+            roots: Arc::new(roots),
+        }
+    }
+
+    /// Install a freshly issued certificate over `key`, replacing whatever
+    /// the slot held, after checking the three things whose absence would
+    /// let a wrong certificate be presented without anyone noticing:
+    ///
+    /// * **The leaf certifies `key`.** A CA, or anything answering for it,
+    ///   that returned a certificate over another public key would hand this
+    ///   process an identity it cannot sign for — or one somebody else can.
+    /// * **The chain verifies to this identity's roots, for both server and
+    ///   client authentication, now.** The roots are the CA pool's
+    ///   certificates; a chain ending anywhere else would be refused by every
+    ///   peer, and finding that here keeps the old certificate in place
+    ///   instead of swapping in one nobody accepts.
+    /// * **The window is the one `webpki` enforces.** The not-after is read
+    ///   from the leaf by a small DER walk and then checked against `webpki`
+    ///   itself: a certificate `webpki` still accepts one second after the
+    ///   not-after this module read would mean the walk misread it, and a
+    ///   renewal scheduled on a misread expiry is one that comes too late.
+    ///
+    /// On refusal the slot is untouched: a renewal that fails leaves the
+    /// previous certificate serving until its own expiry.
+    pub fn install(
+        &self,
+        key: &WorkloadKey,
+        chain: Vec<CertificateDer<'static>>,
+    ) -> Result<Validity> {
+        let Some(leaf_der) = chain.first() else {
+            return Err(Error::denied(
+                "the issued certificate chain is empty; there is nothing to install",
+            ));
+        };
+        let leaf = webpki::EndEntityCert::try_from(leaf_der).map_err(|error| {
+            Error::denied(format!(
+                "the issued certificate does not parse as an end-entity certificate: {error}"
+            ))
+        })?;
+        if leaf.subject_public_key_info().as_ref() != key.spki_der() {
+            return Err(Error::denied(
+                "the issued certificate certifies a different public key from the one this \
+                 process generated and sent; it is discarded rather than presented, because \
+                 this process cannot sign for it and whoever can is not this process",
+            ));
+        }
+        let now = self.slot.clock.now();
+        let verify_at = |instant: Timestamp| -> std::result::Result<(), webpki::Error> {
+            let time = UnixTime::since_unix_epoch(std::time::Duration::from_secs(
+                u64::try_from(instant.as_secs()).unwrap_or(0),
+            ));
+            let algorithms = provider().signature_verification_algorithms.all;
+            for usage in [
+                webpki::KeyUsage::server_auth(),
+                webpki::KeyUsage::client_auth(),
+            ] {
+                leaf.verify_for_usage(
+                    algorithms,
+                    &self.roots.roots,
+                    &chain[1..],
+                    time,
+                    usage,
+                    None,
+                    None,
+                )?;
+            }
+            Ok(())
+        };
+        verify_at(now).map_err(|error| {
+            Error::denied(format!(
+                "the issued certificate does not verify, now, to the configured CA pool roots \
+                 for both server and client authentication: {error:?}. Check that \
+                 {TLS_TRUST_ROOTS_VARIABLE} holds the pool's CA certificates and that the \
+                 certificate is neither expired nor not yet valid"
+            ))
+        })?;
+        let validity = validity_of(leaf_der)?;
+        if !validity.admits(now) {
+            return Err(Error::denied(format!(
+                "the issued certificate is valid from {} to {}, which does not include now; it \
+                 is not installed",
+                validity.not_before, validity.not_after
+            )));
+        }
+        if verify_at(validity.not_after.saturating_add(Duration::from_secs(1))).is_ok() {
+            return Err(Error::invalid(format!(
+                "the issued certificate's not-after was read as {}, and webpki still accepts the \
+                 certificate a second later; the window was misread, and a renewal scheduled on \
+                 it could fall after the real expiry",
+                validity.not_after
+            )));
+        }
+        let certified = CertifiedKey::new(chain, key.signing_key());
+        certified.keys_match().map_err(|error| {
+            Error::denied(format!(
+                "rustls cannot confirm the issued certificate matches this process's key: \
+                 {error}"
+            ))
+        })?;
+        self.slot.replace(Installed {
+            certified: Arc::new(certified),
+            validity,
+        });
+        Ok(validity)
+    }
+
+    /// Whether a handshake now would present a certificate.
+    pub fn is_current(&self) -> bool {
+        self.slot.current().is_some()
+    }
+
+    /// The installed certificate's window, expired or not; `None` before
+    /// the first installation.
+    pub fn validity(&self) -> Option<Validity> {
+        self.slot.validity()
+    }
+
     /// A server config that **requires** a client certificate chained to
-    /// this identity's roots, over TLS 1.3 only.
+    /// this identity's roots, over TLS 1.3 only, presenting whatever
+    /// certificate the identity holds at each handshake.
     pub fn server_config(&self) -> Result<Arc<ServerConfig>> {
         let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
             Arc::clone(&self.roots),
@@ -136,26 +426,150 @@ impl WorkloadIdentity {
         )
         .build()
         .map_err(|error| tls_error("cannot build the client-certificate verifier", error))?;
-        let config = ServerConfig::builder_with_provider(provider())
+        let mut config = ServerConfig::builder_with_provider(provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .map_err(|error| tls_error("cannot select TLS 1.3", error))?
             .with_client_cert_verifier(verifier)
-            .with_single_cert(self.chain.clone(), self.key.clone_key())
-            .map_err(|error| tls_error("the workload certificate and key do not match", error))?;
+            .with_cert_resolver(Arc::new(Presented(Arc::clone(&self.slot))));
+        // No session resumption, in either half. A TLS 1.3 resumed session
+        // presents no certificate: it carries forward the identity the
+        // original handshake proved. With resumption on, a client whose
+        // certificate had lapsed kept being served on its ticket, and a
+        // server kept "presenting" the certificate it had before a renewal
+        // — `a_server_built_once_presents_the_renewed_certificate_to_the_next_connection`
+        // and the expiry test both failed that way before this. Every
+        // connection proving a certificate that is current *now* is the
+        // property ADR 0112's fail-closed rule needs; the cost is a full
+        // handshake per connection, which keep-alive amortises.
+        config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        config.send_tls13_tickets = 0;
         Ok(Arc::new(config))
     }
 
     /// A client config that presents this identity and verifies the server
-    /// against the same roots, over TLS 1.3 only.
+    /// against the same roots, over TLS 1.3 only. Like the server half, it
+    /// reads the identity's slot at each handshake.
     pub fn client_config(&self) -> Result<Arc<ClientConfig>> {
-        let config = ClientConfig::builder_with_provider(provider())
+        let mut config = ClientConfig::builder_with_provider(provider())
             .with_protocol_versions(&[&rustls::version::TLS13])
             .map_err(|error| tls_error("cannot select TLS 1.3", error))?
             .with_root_certificates(Arc::clone(&self.roots))
-            .with_client_auth_cert(self.chain.clone(), self.key.clone_key())
-            .map_err(|error| tls_error("the workload certificate and key do not match", error))?;
+            .with_client_cert_resolver(Arc::new(Presented(Arc::clone(&self.slot))));
+        // See `server_config`: a resumed session would skip the certificate
+        // this identity is supposed to prove current on every connection.
+        config.resumption = rustls::client::Resumption::disabled();
         Ok(Arc::new(config))
     }
+}
+
+/// The validity window of a DER certificate.
+///
+/// A deliberately small walk: `Certificate ::= SEQUENCE { tbsCertificate
+/// SEQUENCE { [0] version OPTIONAL, serialNumber INTEGER, signature
+/// SEQUENCE, issuer SEQUENCE, validity SEQUENCE { notBefore Time, notAfter
+/// Time }, … } … }` (RFC 5280 §4.1), where `Time` is `UTCTime` or
+/// `GeneralizedTime`. `webpki` parses the same field but does not expose it,
+/// and the renewal schedule needs it; [`WorkloadIdentity::install`] checks
+/// what this reads against `webpki`'s own verdict.
+fn validity_of(certificate: &[u8]) -> Result<Validity> {
+    let refuse = || {
+        Error::invalid(
+            "the certificate's validity cannot be read; it is not a DER X.509 certificate",
+        )
+    };
+    let (_, certificate, _) = der_element(certificate, Some(0x30)).ok_or_else(refuse)?;
+    let (_, tbs, _) = der_element(certificate, Some(0x30)).ok_or_else(refuse)?;
+    let mut rest = tbs;
+    if rest.first() == Some(&0xa0) {
+        rest = der_element(rest, Some(0xa0)).ok_or_else(refuse)?.2;
+    }
+    // serialNumber, signature, issuer.
+    for tag in [0x02, 0x30, 0x30] {
+        rest = der_element(rest, Some(tag)).ok_or_else(refuse)?.2;
+    }
+    let (_, validity, _) = der_element(rest, Some(0x30)).ok_or_else(refuse)?;
+    let (before_tag, before, rest) = der_element(validity, None).ok_or_else(refuse)?;
+    let (after_tag, after, _) = der_element(rest, None).ok_or_else(refuse)?;
+    Ok(Validity {
+        not_before: der_time(before_tag, before).ok_or_else(refuse)?,
+        not_after: der_time(after_tag, after).ok_or_else(refuse)?,
+    })
+}
+
+/// One DER element: its tag, its contents, and what follows it. `None` on a
+/// truncated or indefinite-length element, or a tag other than `expected`.
+fn der_element(input: &[u8], expected: Option<u8>) -> Option<(u8, &[u8], &[u8])> {
+    let (&tag, rest) = input.split_first()?;
+    if expected.is_some_and(|expected| expected != tag) {
+        return None;
+    }
+    let (&first, rest) = rest.split_first()?;
+    let (length, rest) = if first < 0x80 {
+        (usize::from(first), rest)
+    } else {
+        let count = usize::from(first & 0x7f);
+        if count == 0 || count > 4 || rest.len() < count {
+            return None;
+        }
+        let length = rest[..count]
+            .iter()
+            .fold(0usize, |length, byte| (length << 8) | usize::from(*byte));
+        (length, &rest[count..])
+    };
+    if rest.len() < length {
+        return None;
+    }
+    Some((tag, &rest[..length], &rest[length..]))
+}
+
+/// `UTCTime` (`YYMMDDHHMMSSZ`; RFC 5280 §4.1.2.5.1 reads `YY` below 50 as
+/// 20YY) or `GeneralizedTime` (`YYYYMMDDHHMMSSZ`): the only two forms RFC
+/// 5280 permits in a certificate, and only with seconds and `Z`.
+fn der_time(tag: u8, text: &[u8]) -> Option<Timestamp> {
+    let digits = |range: std::ops::Range<usize>| -> Option<i64> {
+        let slice = text.get(range)?;
+        if !slice.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(slice).ok()?.parse().ok()
+    };
+    let (year, offset) = match (tag, text.len()) {
+        (0x17, 13) => {
+            let short = digits(0..2)?;
+            (
+                if short < 50 {
+                    2000 + short
+                } else {
+                    1900 + short
+                },
+                2,
+            )
+        }
+        (0x18, 15) => (digits(0..4)?, 4),
+        _ => return None,
+    };
+    if text.last() != Some(&b'Z') {
+        return None;
+    }
+    let month = digits(offset..offset + 2)?;
+    let day = digits(offset + 2..offset + 4)?;
+    let hour = digits(offset + 4..offset + 6)?;
+    let minute = digits(offset + 6..offset + 8)?;
+    let second = digits(offset + 8..offset + 10)?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    let date = Timestamp::from_civil_checked(
+        i32::try_from(year).ok()?,
+        u32::try_from(month).ok()?,
+        u32::try_from(day).ok()?,
+    )?;
+    Some(date.saturating_add(Duration::from_secs(hour * 3600 + minute * 60 + second)))
 }
 
 /// A client config that authenticates the server only, against a pinned
@@ -193,7 +607,7 @@ fn roots_from_pem(pem: &[u8]) -> Result<RootCertStore> {
     Ok(roots)
 }
 
-fn read(path: &Path, what: &str) -> Result<Vec<u8>> {
+pub(crate) fn read(path: &Path, what: &str) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|error| {
         Error::invalid(format!(
             "cannot read the {what} at {}: {error}",
@@ -317,11 +731,105 @@ pub fn link_mode(
                 mode.unwrap_or("unset, which means mtls")
             ))),
         },
+        // `cas` is a mode, but not one this function can satisfy: its
+        // identity is issued by a renewal loop the composition root runs,
+        // not read from paths. Answering `mtls` here would send a caller
+        // looking for files that, under `cas`, nobody places.
+        Some(TLS_MODE_CAS) => Err(Error::invalid(format!(
+            "{TLS_MODE_VARIABLE}=cas: this link's certificate is issued by Certificate \
+             Authority Service, which this caller does not run. Decide the link with \
+             `tls::link_source` and take the identity the composition root's renewal loop \
+             holds (`cas::CasIdentity::identity`)"
+        ))),
         Some(other) => Err(Error::invalid(format!(
-            "{TLS_MODE_VARIABLE}={other:?} is not a link mode; use `mtls`, or `plaintext` on a \
-             developer machine"
+            "{TLS_MODE_VARIABLE}={other:?} is not a link mode; use `cas`, `mtls` with \
+             hand-placed files, or `plaintext` on a developer machine"
         ))),
     }
+}
+
+/// `QIP_TLS_MODE`'s value selecting Certificate Authority Service issuance.
+pub const TLS_MODE_CAS: &str = "cas";
+
+/// Where a mutual-TLS link's identity comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TlsSource {
+    /// Hand-placed files (`QIP_TLS_MODE=mtls`): a workstation, or a test.
+    Files(TlsPaths),
+    /// Certificate Authority Service (`QIP_TLS_MODE=cas`, ADR 0112 §2): a
+    /// short-lived certificate over a key generated in memory, renewed
+    /// without a restart by the loop in [`crate::cas`].
+    Issued(CasSettings),
+}
+
+impl TlsSource {
+    /// One phrase for a start-up banner.
+    pub const fn describe(&self) -> &'static str {
+        match self {
+            Self::Files(_) => "mutual TLS 1.3 with a hand-placed workload certificate",
+            Self::Issued(_) => {
+                "mutual TLS 1.3 with a workload certificate Certificate Authority Service \
+                 issues and renews (ADR 0112)"
+            }
+        }
+    }
+}
+
+/// [`link_mode`] with the `cas` arm: `None` for plaintext, or where the
+/// identity comes from. Pure and file-free, like [`link_mode`], so a root
+/// validates its whole configuration before it opens anything.
+///
+/// Two settings that name one fact refuse rather than pick: `cas` with a
+/// certificate or key path set, and a `QIP_CAS_*` setting under any mode
+/// but `cas`. Either is a configuration that believes two different things
+/// about where its certificate comes from, and whichever one won would be a
+/// guess.
+pub fn link_source(
+    deployment: Deployment,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<TlsSource>> {
+    let set = |name: &str| {
+        lookup(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let mode = set(TLS_MODE_VARIABLE);
+    if mode.as_deref() == Some(TLS_MODE_CAS) {
+        let placed: Vec<&str> = [TLS_CERTIFICATE_CHAIN_VARIABLE, TLS_PRIVATE_KEY_VARIABLE]
+            .into_iter()
+            .filter(|name| set(name).is_some())
+            .collect();
+        if !placed.is_empty() {
+            return Err(Error::invalid(format!(
+                "{TLS_MODE_VARIABLE}=cas and {} set; under `cas` Certificate Authority Service \
+                 issues the certificate over a key that never leaves memory, so a hand-placed \
+                 certificate or key is a second answer to the same question. Unset {}",
+                placed.join(" and "),
+                placed.join(" and ")
+            )));
+        }
+        return Ok(Some(TlsSource::Issued(CasSettings::from_lookup(lookup)?)));
+    }
+    let stray: Vec<&str> = crate::cas::CAS_VARIABLES
+        .iter()
+        .copied()
+        .filter(|name| set(name).is_some())
+        .collect();
+    if !stray.is_empty() {
+        return Err(Error::invalid(format!(
+            "{} set but {TLS_MODE_VARIABLE} is {}; a CA pool nothing requests from reads as \
+             issuance. Set {TLS_MODE_VARIABLE}=cas, or unset {}",
+            stray.join(", "),
+            mode.as_deref().unwrap_or("unset"),
+            stray.join(", ")
+        )));
+    }
+    Ok(link_mode(
+        deployment,
+        mode.as_deref(),
+        TlsPaths::from_lookup(lookup)?.as_ref(),
+    )?
+    .map(TlsSource::Files))
 }
 
 /// The variable naming a link's mode, and the three naming its files. The
@@ -378,12 +886,23 @@ impl LinkSecurity {
         deployment: Deployment,
         lookup: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self> {
+        let mode = lookup(TLS_MODE_VARIABLE);
+        // Under `cas` only the roots path is set, so reading the paths first
+        // would refuse with "half configured" — true, and pointing at the
+        // wrong fix. `link_mode` names the right one.
+        if mode.as_deref().map(str::trim) == Some(TLS_MODE_CAS) {
+            return Self::configure(deployment, mode.as_deref().map(str::trim), None);
+        }
         let paths = TlsPaths::from_lookup(lookup)?;
-        Self::configure(
-            deployment,
-            lookup(TLS_MODE_VARIABLE).as_deref(),
-            paths.as_ref(),
-        )
+        Self::configure(deployment, mode.as_deref(), paths.as_ref())
+    }
+
+    /// Mutual TLS with an identity a composition root already holds — the
+    /// one Certificate Authority Service issued and the renewal loop keeps
+    /// current. The `Arc` is shared, not copied, so every link built from it
+    /// presents the newest certificate.
+    pub const fn issued(identity: Arc<WorkloadIdentity>) -> Self {
+        Self::MutualTls(identity)
     }
 
     /// Decide a link's security from the raw configuration a root read.
@@ -503,6 +1022,119 @@ mod tests {
                 .expect("none set")
                 .is_none()
         );
+    }
+
+    fn variables<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        }
+    }
+
+    const CAS: [(&str, &str); 4] = [
+        (TLS_MODE_VARIABLE, "cas"),
+        (
+            crate::cas::CA_POOL_VARIABLE,
+            "projects/p/locations/europe-west2/caPools/qip-dev-internal",
+        ),
+        (TLS_TRUST_ROOTS_VARIABLE, "/etc/qip/pool-roots.pem"),
+        (crate::cas::GOOGLE_TLS_ROOTS_VARIABLE, "/etc/qip/google.pem"),
+    ];
+
+    /// Premise first: complete `cas` settings are an issued source, in every
+    /// deployment including `local`. Mutation: let a hand-placed key path
+    /// through under `cas`, or ignore a stray pool under `mtls`, and a
+    /// refusal below does not fire.
+    #[test]
+    fn cas_is_its_own_source_and_never_shares_the_question_with_files() {
+        for deployment in Deployment::ALL {
+            assert!(
+                matches!(
+                    link_source(deployment, &variables(&CAS)),
+                    Ok(Some(TlsSource::Issued(_)))
+                ),
+                "cas was not an issued source in {deployment}"
+            );
+        }
+        let mut with_key = CAS.to_vec();
+        with_key.push((TLS_PRIVATE_KEY_VARIABLE, "/etc/qip/key.pem"));
+        let error = link_source(Deployment::Dev, &variables(&with_key))
+            .expect_err("cas with a hand-placed key was accepted");
+        assert!(
+            error.message().contains(TLS_PRIVATE_KEY_VARIABLE),
+            "{error}"
+        );
+
+        let files = [
+            (TLS_MODE_VARIABLE, "mtls"),
+            (TLS_CERTIFICATE_CHAIN_VARIABLE, "/c"),
+            (TLS_PRIVATE_KEY_VARIABLE, "/k"),
+            (TLS_TRUST_ROOTS_VARIABLE, "/r"),
+        ];
+        assert!(matches!(
+            link_source(Deployment::Dev, &variables(&files)),
+            Ok(Some(TlsSource::Files(_)))
+        ));
+        let mut stray = files.to_vec();
+        stray.push((crate::cas::LIFETIME_VARIABLE, "28800"));
+        let error = link_source(Deployment::Dev, &variables(&stray))
+            .expect_err("a CAS lifetime under mtls was accepted");
+        assert!(
+            error.message().contains(crate::cas::LIFETIME_VARIABLE),
+            "{error}"
+        );
+        // Plaintext is still local-only through this path.
+        let plain = [(TLS_MODE_VARIABLE, "plaintext")];
+        assert!(matches!(
+            link_source(Deployment::Local, &variables(&plain)),
+            Ok(None)
+        ));
+        assert!(link_source(Deployment::Prod, &variables(&plain)).is_err());
+    }
+
+    /// A caller that cannot run issuance must say so, not ask for files.
+    /// Mutation: drop the `cas` arm from `link_mode` (it falls to "not a
+    /// link mode") or the early return in `from_lookup` (it says "half
+    /// configured"), and the message check fails.
+    #[test]
+    fn a_caller_without_issuance_refuses_cas_by_naming_link_source() {
+        let error = LinkSecurity::from_lookup(Deployment::Dev, &variables(&CAS))
+            .expect_err("from_lookup brought up a cas link it cannot issue for");
+        assert!(error.message().contains("link_source"), "{error}");
+    }
+
+    /// RFC 5280's two time forms and UTCTime's century pivot. Mutation: read
+    /// `YY` 49 as 1949, or accept a time without seconds, and this fails.
+    #[test]
+    fn certificate_times_are_read_in_both_forms_with_the_rfc_5280_pivot() {
+        assert_eq!(
+            der_time(0x17, b"491231235959Z"),
+            Some(Timestamp::from_civil(2050, 1, 1).saturating_sub(Duration::from_secs(1)))
+        );
+        assert_eq!(
+            der_time(0x17, b"500101000000Z"),
+            Some(Timestamp::from_civil(1950, 1, 1))
+        );
+        assert_eq!(
+            der_time(0x18, b"20301231120000Z"),
+            Some(Timestamp::from_civil(2030, 12, 31).saturating_add(Duration::from_hours(12)))
+        );
+        for bad in [
+            &b"4912312359Z"[..],
+            b"491231235959",
+            b"491331235959Z",
+            b"49123123595AZ",
+        ] {
+            assert_eq!(
+                der_time(0x17, bad),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        assert_eq!(der_time(0x18, b"491231235959Z"), None);
     }
 
     /// Mutation: accept an empty PEM as an empty root store and this fails.

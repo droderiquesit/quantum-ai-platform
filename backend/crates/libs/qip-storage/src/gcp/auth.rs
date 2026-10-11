@@ -66,6 +66,11 @@ pub const DEFAULT_METADATA_BASE: &str = "http://169.254.169.254";
 pub const DEFAULT_METADATA_TOKEN_PATH: &str =
     "/computeMetadata/v1/instance/service-accounts/default/token";
 
+/// Path of the default service account's email on the metadata server: the
+/// identity a workload certificate is named after (ADR 0112 §1).
+pub const DEFAULT_METADATA_EMAIL_PATH: &str =
+    "/computeMetadata/v1/instance/service-accounts/default/email";
+
 /// The header the metadata server requires on every request.
 ///
 /// Its presence is what proves the request came from code running on the
@@ -317,6 +322,40 @@ impl MetadataServerTokens {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
+    /// The attached service account's email, from the same server the token
+    /// comes from — so the name a workload certificate carries and the
+    /// credential that requests it are, by construction, one account. A
+    /// name read from configuration could disagree with the token, and the
+    /// CA would then be asked, under one account's authority, for a
+    /// certificate naming another.
+    pub fn service_account_email(&self) -> Result<String> {
+        let target = format!(
+            "{}{DEFAULT_METADATA_EMAIL_PATH}",
+            self.base_url.trim_end_matches('/')
+        );
+        let request = HttpRequest::new(Method::Get, &target)
+            .map_err(Error::from)?
+            .with_header(METADATA_FLAVOR_HEADER, "Google");
+        let response = self.client.send(&request).map_err(Error::from)?;
+        if !response.is_success() {
+            return Err(Error::denied(format!(
+                "the metadata server at {target} answered HTTP {} when asked for this \
+                 instance's service account: {}. A workload certificate is named after that \
+                 account, so none can be requested without it",
+                response.status,
+                response.body_excerpt()
+            )));
+        }
+        let email = response.body_as_str().map_err(Error::from)?.trim();
+        if email.is_empty() {
+            return Err(Error::denied(format!(
+                "the metadata server at {target} returned an empty service account; this \
+                 instance has none attached"
+            )));
+        }
+        Ok(email.to_string())
+    }
+
     fn fetch(&self) -> Result<(AccessToken, Timestamp)> {
         let target = format!(
             "{}{}",
@@ -377,6 +416,17 @@ impl TokenSource for MetadataServerTokens {
         let (token, usable_until) = self.fetch()?;
         *guard = Some((token.clone(), usable_until));
         Ok(token)
+    }
+}
+
+/// The same tokens as the bearer `qip-transport`'s Google clients present
+/// (Cloud KMS, CA Service). Implemented here, where the type lives, because
+/// `qip-transport` cannot depend on this crate (this one depends on it); one
+/// impl beside the type rather than an adapter newtype in every composition
+/// root that needs it.
+impl qip_transport::kms::BearerSource for MetadataServerTokens {
+    fn bearer(&self) -> Result<String> {
+        Ok(self.token()?.expose().to_string())
     }
 }
 

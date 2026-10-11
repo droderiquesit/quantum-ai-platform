@@ -50,9 +50,23 @@ use qip_transport::server::{Handler, Method, Request, Response};
 pub struct Readiness {
     storage_proven: AtomicBool,
     serving: AtomicBool,
+    /// The fabric link's issued certificate, under `QIP_TLS_MODE=cas` (ADR
+    /// 0112 §2). A ledger with no current certificate cannot fetch a single
+    /// outcome — its handshakes are refused — so it is not ready, however
+    /// healthy its store.
+    certificate: std::sync::OnceLock<Arc<qip_transport::cas::RenewalStatus>>,
 }
 
 impl Readiness {
+    /// Gate readiness on an issued certificate from now on.
+    pub fn require_certificate(&self, status: Arc<qip_transport::cas::RenewalStatus>) {
+        let _ = self.certificate.set(status);
+    }
+
+    fn certificate_json(&self) -> Option<serde_json::Value> {
+        self.certificate.get().map(|status| status.to_json())
+    }
+
     pub fn storage_proven(&self) {
         self.storage_proven.store(true, Ordering::SeqCst);
     }
@@ -61,10 +75,17 @@ impl Readiness {
         self.serving.store(serving, Ordering::SeqCst);
     }
 
-    /// Both: the store took a write and gave it back, and the listener is
-    /// bound. Never before either.
+    /// All of: the store took a write and gave it back, the listener is
+    /// bound, and — under `cas` — the fabric link holds a certificate it can
+    /// present now (read at the probe, so a lapse shows at once). Never
+    /// before any of them.
     pub fn is_ready(&self) -> bool {
-        self.storage_proven.load(Ordering::SeqCst) && self.serving.load(Ordering::SeqCst)
+        self.storage_proven.load(Ordering::SeqCst)
+            && self.serving.load(Ordering::SeqCst)
+            && self
+                .certificate
+                .get()
+                .is_none_or(|status| status.is_current())
     }
 }
 
@@ -177,6 +198,7 @@ impl ReadApi {
             "parked_cells": parked.as_ref().ok(),
             "parked_error": parked.as_ref().err().map(ToString::to_string),
             "partitions": partitions,
+            "workload_certificate": self.readiness.certificate_json(),
         });
         Response::json(if ready { 200 } else { 503 }, body.to_string())
     }
@@ -353,6 +375,51 @@ mod tests {
         // The other half: a malformed format is rejected.
         assert!(parse_account("invalid:format").is_err());
         assert!(parse_account("trading:cell-only").is_err());
+    }
+
+    /// A CA certificate `openssl req -x509` made for this test; its key was
+    /// deleted unread. Public material, enough for an identity that holds
+    /// roots and no certificate.
+    const FIXTURE_ROOT: &str = "-----BEGIN CERTIFICATE-----
+MIIBqzCCAVOgAwIBAgIUYT43nsbEcR277bc6CUkHAo5ZbjowCgYIKoZIzj0EAwIw
+IzEhMB8GA1UEAwwYcWlwIHJlYWRpbmVzcyBmaXh0dXJlIENBMCAXDTI2MTAxMTEx
+MDEwOFoYDzIxMjYwOTE3MTEwMTA4WjAjMSEwHwYDVQQDDBhxaXAgcmVhZGluZXNz
+IGZpeHR1cmUgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATQZpXAff4IZ68a
+48wN/d71sb6foGUd8b+/60TuL8tLKMU3W8WOGutofeSFvdbum2VcgSIKSG5iAW4B
+oZz5lLOuo2MwYTAdBgNVHQ4EFgQUW/eoZJFiL/VbokTiODWFqzpfZx8wHwYDVR0j
+BBgwFoAUW/eoZJFiL/VbokTiODWFqzpfZx8wDwYDVR0TAQH/BAUwAwEB/zAOBgNV
+HQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDRgAwQwIfAxe48XHniN3HVZAeq+yZXgUP
+y+tWW22AN6xQlVPo3gIgJH4TQbQ5DbBEaFi8NBD1YPhsi93qd8LFwl7M9NuVuYo=
+-----END CERTIFICATE-----
+";
+
+    /// ADR 0112's fail-closed rule at the ledger's probe: a fabric link with
+    /// no current certificate fetches nothing, so the ledger is not ready.
+    /// Mutation: leave the certificate out of `Readiness::is_ready` and the
+    /// second status is 200; this fails.
+    #[test]
+    fn a_ledger_whose_fabric_certificate_is_not_current_is_not_ready() {
+        let api = api();
+        api.readiness.storage_proven();
+        api.readiness.set_serving(true);
+        assert_eq!(
+            api.handle(&get("/health", &[])).status,
+            200,
+            "premise: ready with no certificate gate"
+        );
+        let identity = qip_transport::tls::WorkloadIdentity::awaiting_issuance(
+            FIXTURE_ROOT.as_bytes(),
+            Arc::new(qip_core::SystemClock),
+        )
+        .expect("the fixture root loads");
+        api.readiness
+            .require_certificate(Arc::new(qip_transport::cas::RenewalStatus::new(Arc::new(
+                identity,
+            ))));
+        let response = api.handle(&get("/health", &[]));
+        assert_eq!(response.status, 503);
+        let body: serde_json::Value = serde_json::from_slice(&response.body).expect("json");
+        assert_eq!(body["workload_certificate"]["current"], false);
     }
 
     /// Readiness is earned, never assumed: `/health` answers 503 until the

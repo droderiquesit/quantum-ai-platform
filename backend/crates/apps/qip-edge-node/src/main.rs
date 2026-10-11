@@ -987,17 +987,47 @@ fn run() -> Result<()> {
         retention,
         lake_codec,
     )?)];
+    // The fabric link's issued certificate under `cas`, held for the life
+    // of `run` — which never returns while the node runs — because dropping
+    // it stops its renewal loop.
+    let mut issued: Option<qip_transport::cas::CasIdentity> = None;
     match config.fabric.take() {
         Some(fabric) => {
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said
-            // `plaintext`. No fallback: a certificate that will not load
-            // stops the node here.
-            let link = qip_transport::tls::LinkSecurity::from_lookup(config.deployment, &|name| {
+            // `plaintext`. No fallback: hand-placed files that will not load
+            // stop the node here; under `cas` the certificate is requested
+            // here and renewed on its own thread, off the decision thread,
+            // and a CA that cannot be reached leaves the sink's handshakes
+            // refused — outcomes wait in the spool — never a plaintext link.
+            use qip_transport::tls::{LinkSecurity, TlsSource, WorkloadIdentity};
+            let source = qip_transport::tls::link_source(config.deployment, &|name| {
                 std::env::var(name).ok()
             })
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            let link = match &source {
+                Some(TlsSource::Files(paths)) => {
+                    LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?))
+                }
+                Some(TlsSource::Issued(settings)) => {
+                    let started = qip_storage::gcp::workload_certificate::workload_certificate(
+                        settings,
+                        "qip-edge-node",
+                        Arc::clone(&clock),
+                    )?;
+                    if let Some(error) = started.status().last_error() {
+                        eprintln!(
+                            "qip-edge-node: no workload certificate yet; the fabric link refuses \
+                             until one arrives. The CA said: {error}"
+                        );
+                    }
+                    let link = LinkSecurity::issued(started.identity());
+                    issued = Some(started);
+                    link
+                }
+                None => LinkSecurity::Plaintext,
+            };
             println!(
                 "qip-edge-node: fabric at {} over {}",
                 fabric.url,
@@ -1066,6 +1096,7 @@ fn run() -> Result<()> {
         durable: config.storage.is_durable(),
         started_secs: started.as_secs(),
     };
+    let certificate = issued.as_ref().map(qip_transport::cas::CasIdentity::status);
     let snapshot = HealthSnapshot::new(r#"{"turns":0}"#);
     let mut decisions = DecisionLoop::new(
         cell,
@@ -1083,6 +1114,9 @@ fn run() -> Result<()> {
     .with_threads(Some(relay), Some(drain))
     .with_health(snapshot.clone(), health_facts)
     .with_meter(PassMeter::new(Arc::clone(metrics), PASS_INTERVAL)?);
+    if let Some(status) = certificate {
+        decisions = decisions.with_certificate(status);
+    }
     if let Some(feed) = feed {
         decisions = decisions.with_feed(feed, requoter);
     }
