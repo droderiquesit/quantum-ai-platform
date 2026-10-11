@@ -245,6 +245,12 @@ jobs:
       # On the manual path there is no triggering run to inspect, so ask for
       # the commit's own history. A dispatch against a commit whose tests never
       # passed is exactly the case this exists to refuse.
+      #
+      # `event=push`, because a pull request's ci run has the pull request's
+      # head as its `head_sha` and succeeds like any other: without the
+      # filter a dispatch naming a fork's commit found that run and went on
+      # to sign the fork's code, the hole the workflow_run step above closes
+      # on the automatic path (R12 CICD-9066).
       - name: ci succeeded for this commit
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -253,7 +259,7 @@ jobs:
         run: |
           set -euo pipefail
           runs=$(gh api \
-            "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success" \
+            "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success&event=push" \
             --jq '.total_count')
           if [ "$runs" -lt 1 ]; then
             echo "no successful ci run for ${DEPLOY_SHA}; nothing is deployed." >&2
@@ -278,7 +284,7 @@ jobs:
           run_id="${TRIGGER_RUN_ID:-}"
           if [ -z "$run_id" ]; then
             run_id=$(gh api \
-              "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success" \
+              "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success&event=push" \
               --jq '.workflow_runs[0].id // empty')
           fi
           case "$run_id" in

@@ -563,3 +563,80 @@ fn the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal()
     assert!(err.contains("`budget` is not declared"), "{err}");
     assert!(!out.contains("outcome"), "{out}");
 }
+
+/// R12-GOV-6123: the revocation path is reachable from the shipped binary.
+/// A tool the operator's policy revokes is refused on the next pass, and the
+/// refusal is journaled with the hash of the policy that revoked it; a
+/// revocation naming no registered tool stops the binary instead of leaving
+/// the tool it meant live.
+///
+/// Mutation: in `Session::open`, drop the `guard.revoke` loop — the revoked
+/// pass is shadowed and exits zero, and the typo is accepted.
+#[test]
+fn a_tool_the_operator_revokes_is_refused_on_the_next_pass_and_the_refusal_is_journaled() {
+    let scratch = Scratch::new("revoked");
+    // Premise: the same pass under the unrevoked policy is shadowed.
+    let (out, err, code) = shadow(&scratch, "live", &request(1));
+    assert_eq!(code, 0, "premise: stdout {out} stderr {err}");
+    assert!(out.contains("outcome: shadowed"), "{out}");
+
+    let mut revoked = policy_document();
+    revoked["revoked_tools"] = json!(["quoter"]);
+    let policy = scratch.write("revoked-policy.json", &revoked);
+    let journal = scratch.dir.join("revoked.jsonl");
+    let pass = scratch.write("revoked-pass.json", &request(1));
+    let (out, err, code) = qip(
+        &[&policy, &journal, &pass],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(
+        code, 3,
+        "a revoked tool's pass was not withheld: {out} {err}"
+    );
+    assert!(out.contains("tool is revoked"), "{out}");
+    assert!(!out.contains("outcome: shadowed"), "{out}");
+
+    let policy_hash = format!(
+        "sha256:{}",
+        qip_core::sha256_hex(std::fs::read_to_string(&policy).unwrap().as_bytes())
+    );
+    let concluded: Vec<_> = records(&journal)
+        .into_iter()
+        .filter_map(|record| match record {
+            AgencyRecord::PassConcluded {
+                outcome,
+                detail,
+                provenance,
+                ..
+            } => Some((outcome, detail, provenance.policy_version)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(concluded.len(), 1, "{concluded:?}");
+    let (outcome, detail, version) = &concluded[0];
+    assert_ne!(outcome, "shadowed", "{concluded:?}");
+    assert!(detail.contains("tool is revoked"), "{concluded:?}");
+    assert_eq!(
+        version, &policy_hash,
+        "the refusal is not attributed to the policy that revoked the tool"
+    );
+
+    let mut typo = policy_document();
+    typo["revoked_tools"] = json!(["qouter"]);
+    let typo = scratch.write("typo-policy.json", &typo);
+    let fresh = scratch.dir.join("typo.jsonl");
+    let (out, err, code) = qip(
+        &[&typo, &fresh, &pass],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(
+        code, 1,
+        "a revocation naming no tool was accepted: {out} {err}"
+    );
+    assert!(
+        err.contains("revokes `qouter`, which it does not register"),
+        "{err}"
+    );
+}

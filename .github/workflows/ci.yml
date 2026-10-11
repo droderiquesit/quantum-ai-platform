@@ -472,7 +472,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs
+      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/rule-citation.test.mjs
       # The agent sandbox holds no secret, no credential and no write, every
       # job in it is time-limited (R12 SEC-9068, SEC-9084), and the lane's
       # network is the egress proxy and nothing else (SEC-9077). Judged by
@@ -483,6 +483,31 @@ jobs:
       # CICD-9083): every lane has a branch, gates and a bounded budget, owns
       # only what its role may edit, and shares no path with an unordered lane.
       - run: node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest scripts/lanes/round-3.json
+
+  # A pull request that changes a rule names it (R12 GOV-9080). The body is
+  # read from the event file rather than an expression, because a pull
+  # request's body is text a stranger wrote; the changed paths are the diff
+  # against the base commit this run was opened on. `scripts/rule-citation.mjs`
+  # says what counts as a rule and why each refusal fails closed.
+  rule-citation:
+    name: a changed rule is cited
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: every changed rule file is named in the pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/changed.txt"
+          node scripts/rule-citation.mjs --event "$GITHUB_EVENT_PATH" --changed "$RUNNER_TEMP/changed.txt"
 
   # The repository's change-management hooks ensure every change goes through
   # git commits and pull requests. The guard refuses destructive bypass
