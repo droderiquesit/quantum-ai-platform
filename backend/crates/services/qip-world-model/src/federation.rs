@@ -27,6 +27,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_contracts::expansion::EffectAttribution;
+use qip_contracts::forecast::{
+    Calibration as ForecastCalibration, Forecast, ForecastFields, OutcomeDistribution, OutcomeMass,
+    TailMass, TailSide, UncertaintyDecomposition,
+};
+use qip_contracts::validated::Contract;
+use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -231,6 +237,10 @@ struct Node {
     last_state_at: Option<Timestamp>,
     briers: Vec<f64>,
     expiry_recorded: bool,
+    /// The §9.14 [`Forecast`] each current view was admitted as, by
+    /// proposition. Replaced with the view, so bounded by the propositions a
+    /// member holds views on.
+    forecasts: BTreeMap<String, Forecast>,
 }
 
 /// One live member's standing on all four dimensions.
@@ -510,6 +520,7 @@ impl Federation {
                 last_state_at: None,
                 briers: Vec::new(),
                 expiry_recorded: false,
+                forecasts: BTreeMap::new(),
             },
         );
         Ok(())
@@ -547,9 +558,21 @@ impl Federation {
             return Err(Error::invalid("an assessment names its proposition"));
         }
         let node = self.live_node_mut(id)?;
+        // R2.5: every member view is a §9.14 forecast or it is not admitted.
+        // A view the contract refuses — one whose expiry the member's own
+        // cadence cannot place after it, say — is refused here rather than
+        // admitted as a probability nobody could read as a forecast.
+        let forecast = view_forecast(&node.spec, &node.briers, &a)?;
         node.last_state_at = Some(a.at);
+        node.forecasts.insert(a.proposition.clone(), forecast);
         node.views.insert(a.proposition.clone(), a);
         Ok(())
+    }
+
+    /// The §9.14 forecast a member's current view on `proposition` was
+    /// admitted as.
+    pub fn forecast(&self, id: &str, proposition: &str) -> Result<Option<&Forecast>> {
+        Ok(self.node(id)?.forecasts.get(proposition))
     }
 
     /// Branch a live node into a competing hypothesis. The branch inherits
@@ -944,4 +967,82 @@ pub fn lineage_from_journal(journal: &[Event]) -> BTreeMap<String, Lineage> {
         }
     }
     tree
+}
+
+/// A member's view as lane H's §9.14 [`Forecast`] (R2.5).
+///
+/// A view is a probability that its proposition holds, so the distribution is
+/// categorical over `holds`/`fails`. Its variance is the Bernoulli `p(1-p)`,
+/// split by the member's own stated uncertainty: that share is epistemic (the
+/// member's ignorance, worth buying data to reduce) and the rest aleatoric.
+/// The member's evidence fit is the confidence that the regime it assumes is
+/// in force — the one self-reported dimension about its premises — and its
+/// calibration is its measured Brier once anything has resolved. The
+/// forecast speaks to the member's declared horizon and expires one update
+/// cadence after the view, when the member is due to restate it. The
+/// expected impact is zero because nothing acts on a member view: the
+/// federation is advisory, and an impact figure here would be a claim about
+/// a position this crate cannot see.
+fn view_forecast(spec: &WorldModelSpec, briers: &[f64], a: &Assessment) -> Result<Forecast> {
+    let bp = |x: f64| -> u32 {
+        // Statistic to integer: a unit-interval fraction to basis points.
+        // `assess` has already refused anything outside [0, 1].
+        (x * 10_000.0).round() as u32
+    };
+    let holds = bp(a.probability);
+    let variance = a.probability * (1.0 - a.probability);
+    let decimal = |x: f64| {
+        Decimal::from_f64(x).ok_or_else(|| {
+            Error::numeric(format!(
+                "`{}` states a figure with no decimal form",
+                spec.id
+            ))
+        })
+    };
+    let calibration = if briers.is_empty() {
+        ForecastCalibration::Uncalibrated
+    } else {
+        ForecastCalibration::Measured {
+            method: "brier".to_string(),
+            score: decimal(briers.iter().sum::<f64>() / briers.len() as f64)?,
+            resolved: briers.len() as u64,
+            evaluated_at: a.at,
+        }
+    };
+    Forecast::new(ForecastFields {
+        schema_version: ForecastFields::SCHEMA_VERSION,
+        forecast_id: format!("{}/{}/{}", spec.id, a.proposition, a.at.as_nanos()),
+        model: spec.id.clone(),
+        target: a.proposition.clone(),
+        issued_at: a.at,
+        horizon: spec.scope.horizon,
+        distribution: OutcomeDistribution::Categorical {
+            outcomes: vec![
+                OutcomeMass {
+                    outcome: "holds".to_string(),
+                    probability_bp: holds,
+                },
+                OutcomeMass {
+                    outcome: "fails".to_string(),
+                    probability_bp: 10_000 - holds,
+                },
+            ],
+        },
+        uncertainty: UncertaintyDecomposition {
+            epistemic: decimal(variance * a.uncertainty)?,
+            aleatoric: decimal(variance * (1.0 - a.uncertainty))?,
+        },
+        tail: TailMass {
+            side: TailSide::Above,
+            threshold: decimal(0.5)?,
+            probability_bp: holds,
+        },
+        models_consulted: 1,
+        model_disagreement: Decimal::ZERO,
+        regime_confidence_bp: bp(a.evidence_fit),
+        expected_impact: Decimal::ZERO,
+        calibration,
+        evidence_lineage: spec.evidence_lineage.clone(),
+        expires_at: a.at.saturating_add(spec.update_cadence),
+    })
 }

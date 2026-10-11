@@ -488,6 +488,12 @@ pub struct Platform {
     /// UNDERSTAND pass by `crate::federation_stage`. Advisory: nothing on the
     /// order path reads it, and its record is the event log.
     federation: crate::federation_stage::FederationStage,
+    /// The NOW Brain (blueprint §9.6), stepped every UNDERSTAND pass by
+    /// `crate::now_stage`. Advisory: nothing on the order path reads it.
+    now_brain: crate::now_stage::NowStage,
+    /// The Temporal Forecast Lattice (blueprint §9.7), run every UNDERSTAND
+    /// pass after the NOW Brain by `crate::lattice_stage`. Advisory.
+    lattice: crate::lattice_stage::LatticeStage,
     /// Failure clusters raised as research prompts (MODEL-046).
     research: qip_learning_engine::research::ResearchLedger,
     /// What the LEARN stage calibrated this cycle, for the journal. Cleared
@@ -4756,6 +4762,8 @@ impl Platform {
             last_calibration: None,
             self_model: SelfModel::new(),
             federation: crate::federation_stage::FederationStage::new(),
+            now_brain: crate::now_stage::NowStage::new()?,
+            lattice: crate::lattice_stage::LatticeStage::new()?,
             research: qip_learning_engine::research::ResearchLedger::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
@@ -10702,6 +10710,10 @@ impl Platform {
         // forecasts scored, disagreement arbitrated and journaled. Advisory;
         // see `crate::federation_stage` for why nothing downstream reads it.
         let (federation_detail, federation_problems) = self.understand_federation(now);
+        // Blueprint §9.6 and §9.7: the NOW Brain's latent state, then the
+        // forecast lattice over it. Advisory; see `crate::now_stage` and
+        // `crate::lattice_stage` for why nothing downstream reads either.
+        let (now_detail, now_problems) = self.understand_now(now);
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
@@ -10709,7 +10721,8 @@ impl Platform {
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
                   {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
-                 {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}",
+                 {second_order_detail}{statistics_detail}{routing_detail}{federation_detail}\
+                 {now_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -10730,7 +10743,253 @@ impl Platform {
         for problem in federation_problems {
             outcome = outcome.with_problem(problem);
         }
+        for problem in now_problems {
+            outcome = outcome.with_problem(problem);
+        }
         outcome
+    }
+
+    /// Gather what the NOW Brain and the forecast lattice read, run both,
+    /// record their series and journal their reviews — blueprint §9.6 and
+    /// §9.7. Here rather than in the two stage modules only because the
+    /// inputs are private to `Platform`; the modules hold every decision.
+    ///
+    /// Every reading is cut at `now` in both time dimensions: a bar that
+    /// closes after the pass is not read, and the world model is asked what
+    /// was true *and known* at `now`, so neither stage can see the future.
+    fn understand_now(&mut self, now: Timestamp) -> (String, Vec<String>) {
+        use crate::lattice_stage::{LatticeInputs, LatticeTarget};
+        use crate::now_stage::{InstrumentReading, NOW_MIN_VOLATILITY_RETURNS, NowInputs};
+        use qip_world_model::lattice::LatticeHorizon;
+        use qip_world_model::now::{Domain, PartitionKey, Scope, ScopeKind, VariableKey};
+        let positions = self.positions_at_cost();
+        let mut instruments = Vec::new();
+        let mut targets = Vec::new();
+        let mut thin = 0_usize;
+        for (subject, bars) in &self.bar_history {
+            let closes: Vec<(Timestamp, f64)> = bars
+                .iter()
+                .filter(|b| b.close_time() <= now)
+                .map(|b| (b.close_time(), b.close.to_f64()))
+                .collect();
+            let Some(&(close_time, _)) = closes.last() else {
+                continue;
+            };
+            let levels: Vec<f64> = closes.iter().map(|(_, c)| *c).collect();
+            let returns = Self::returns_of(&levels);
+            if returns.len() < NOW_MIN_VOLATILITY_RETURNS {
+                thin += 1;
+            }
+            let axes = self.exposure_axes_for(subject);
+            let regime = self.regime_label(subject);
+            // Money to statistic: the held quantity, for an expected-move
+            // figure on an advisory record.
+            let held_quantity = positions.get(subject).map_or(0.0, |(q, _)| q.to_f64());
+            instruments.push(InstrumentReading {
+                subject: subject.clone(),
+                returns,
+                close_time,
+                spread_ratio: self.spread_ratio(subject),
+                sector: axes.get("sector").cloned(),
+                country: axes.get("country").cloned(),
+                venue: axes.get("venue").cloned(),
+            });
+            targets.push(LatticeTarget {
+                subject: subject.clone(),
+                closes,
+                regime: format!("{}/{}", regime.market, regime.volatility),
+                held_quantity,
+                now_return: None,
+            });
+        }
+        // Money to statistic: gross exposure and cash become one fraction.
+        let gross: f64 = positions
+            .values()
+            .map(|(q, p)| (q.to_f64() * p.to_f64()).abs())
+            .sum();
+        let cash = self.cash().to_f64().max(0.0);
+        let exposure_fraction = (gross + cash > 0.0).then(|| gross / (gross + cash));
+        let priced = instruments.len();
+        let (macro_surprises, company_features) = {
+            let world = self.world.read();
+            (
+                qip_world_model::now::macro_surprises(&world, now),
+                qip_world_model::now::company_features(&world, now),
+            )
+        };
+        let regions: BTreeMap<String, String> = instruments
+            .iter()
+            .map(|i: &InstrumentReading| {
+                (
+                    i.subject.clone(),
+                    i.country.clone().unwrap_or_else(|| HOME_REGION.to_string()),
+                )
+            })
+            .collect();
+        let inputs = NowInputs {
+            cycle: self.cycle,
+            home_region: HOME_REGION.to_string(),
+            instruments,
+            exposure_fraction,
+            halted: self.autonomy.kill_switch().is_globally_tripped(),
+            blind_spot_share: (priced > 0).then(|| thin as f64 / priced as f64),
+            macro_surprises,
+            company_features,
+        };
+        let review = self.now_brain.run(inputs, now);
+        let mut problems: Vec<String> = Vec::new();
+        for surprise in &review.surprises {
+            self.telemetry.metrics.count(
+                crate::now_stage::NOW_SURPRISES_TOTAL,
+                labels([("domain", surprise.partition.domain.as_str())]),
+            );
+        }
+        // Unlabelled: a worker id is whatever its implementation names
+        // itself, and a label must be bounded by an enum or a literal. Which
+        // worker failed is in the journaled review.
+        let failures: usize = review.worker_failures.values().sum();
+        self.telemetry.metrics.increment(
+            crate::now_stage::NOW_WORKER_FAILURES_TOTAL,
+            labels([]),
+            failures as u64,
+        );
+        for kind in ScopeKind::ALL {
+            self.telemetry.metrics.gauge(
+                crate::now_stage::NOW_VARIABLES,
+                labels([("scope", kind.as_str())]),
+                review
+                    .variables_by_scope
+                    .get(kind.as_str())
+                    .copied()
+                    .unwrap_or(0) as f64,
+            );
+        }
+        let now_detail = review.detail();
+        if let Err(error) = self.journal_record(review, "kernel/now-brain", now) {
+            problems.push(format!(
+                "the NOW Brain's review was computed and not journalled: {}",
+                error.message()
+            ));
+        }
+
+        // The lattice reads the NOW Brain's latent return per instrument:
+        // the higher-level state constraining every horizon below it.
+        for target in &mut targets {
+            let region = regions
+                .get(&target.subject)
+                .cloned()
+                .unwrap_or_else(|| HOME_REGION.to_string());
+            let (Ok(scope), Ok(partition)) = (
+                Scope::new(ScopeKind::Instrument, target.subject.as_str()),
+                PartitionKey::new(Domain::Markets, region),
+            ) else {
+                continue;
+            };
+            let Ok(key) = VariableKey::new(scope, "return") else {
+                continue;
+            };
+            if let Ok(reading) = self.now_brain.brain().read(&partition, &key, now) {
+                target.now_return = Some((
+                    reading.variable.mean,
+                    reading.variable.uncertainty,
+                    reading.confidence_bp,
+                ));
+            }
+        }
+        let lattice = self.lattice.run(
+            LatticeInputs {
+                cycle: self.cycle,
+                targets,
+                surprised: self.now_brain.surprised_instruments().clone(),
+            },
+            now,
+        );
+        for forecast in &lattice.issued {
+            let horizon = LatticeHorizon::of(forecast.horizon);
+            self.telemetry.metrics.count(
+                crate::lattice_stage::LATTICE_ISSUED_TOTAL,
+                labels([("horizon", horizon.as_str())]),
+            );
+        }
+        for horizon in LatticeHorizon::ALL {
+            let Some(card) = self.lattice.calibrator().scorecard(horizon).copied() else {
+                continue;
+            };
+            if let (Some(brier), Some(pinball), Some(coverage)) =
+                (card.brier(), card.pinball(), card.coverage())
+            {
+                for (name, value) in [
+                    (crate::lattice_stage::LATTICE_BRIER, brier),
+                    (crate::lattice_stage::LATTICE_PINBALL, pinball),
+                    (crate::lattice_stage::LATTICE_COVERAGE, coverage),
+                ] {
+                    self.telemetry.metrics.gauge(
+                        name,
+                        labels([("horizon", horizon.as_str())]),
+                        value,
+                    );
+                }
+            }
+        }
+        for inconsistency in &lattice.inconsistencies {
+            self.telemetry.metrics.count(
+                crate::lattice_stage::LATTICE_INCONSISTENCIES_TOTAL,
+                labels([(
+                    "kind",
+                    match inconsistency.kind {
+                        qip_world_model::lattice::InconsistencyKind::Narrowing => "narrowing",
+                        qip_world_model::lattice::InconsistencyKind::MedianOutside => {
+                            "median_outside"
+                        }
+                    },
+                )]),
+            );
+        }
+        self.telemetry.metrics.gauge(
+            crate::lattice_stage::LATTICE_WEIGHTS_FROZEN,
+            labels([("stage", "understand")]),
+            if self.lattice.calibrator().frozen() {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        let lattice_detail = lattice.detail();
+        // The calibrator's output is durable only once the log holds it; a
+        // pass whose scores did not reach the log freezes the weights on the
+        // next pass rather than moving influence on a record nobody kept.
+        let journalled = self.journal_record(lattice, "kernel/forecast-lattice", now);
+        self.lattice.set_calibrator_available(journalled.is_ok());
+        if let Err(error) = journalled {
+            problems.push(format!(
+                "the forecast lattice's review was computed and not journalled, so its \
+                 ensemble weights freeze next pass: {}",
+                error.message()
+            ));
+        }
+        (format!("{now_detail}{lattice_detail}"), problems)
+    }
+
+    /// The NOW Brain as the UNDERSTAND stage runs it.
+    pub fn now_brain(&self) -> &crate::now_stage::NowStage {
+        &self.now_brain
+    }
+
+    /// The NOW Brain, mutably — for a composition root or a test removing an
+    /// estimator to model a worker outage.
+    pub fn now_brain_mut(&mut self) -> &mut crate::now_stage::NowStage {
+        &mut self.now_brain
+    }
+
+    /// The forecast lattice as the UNDERSTAND stage runs it.
+    pub fn lattice(&self) -> &crate::lattice_stage::LatticeStage {
+        &self.lattice
+    }
+
+    /// The forecast lattice, mutably — for marking the strategic service up
+    /// or down.
+    pub fn lattice_mut(&mut self) -> &mut crate::lattice_stage::LatticeStage {
+        &mut self.lattice
     }
 
     /// Gather what the federation's members read, run the pass, and journal
