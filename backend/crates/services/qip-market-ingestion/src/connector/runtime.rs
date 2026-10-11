@@ -181,6 +181,13 @@ pub struct PollReport {
     pub evidence: Vec<CheckedEvidence>,
     /// What this poll changed in what the fabric believes.
     pub knowledge_delta: KnowledgeDelta,
+    /// The delta as a knowledge pack, when it changed anything.
+    pub knowledge_pack: Option<qip_contracts::knowledge_pack::KnowledgePack>,
+    /// The encoded pack's size beside the fetched body's — the durable
+    /// knowledge layer is meant to be smaller than the source it was
+    /// derived from (R12-DATA-1041), and this is where that is measured
+    /// rather than asserted. `(pack bytes, body bytes)`.
+    pub knowledge_footprint: Option<(u64, u64)>,
 }
 
 impl PollReport {
@@ -198,6 +205,8 @@ impl PollReport {
             unreferenced: false,
             evidence: Vec::new(),
             knowledge_delta: KnowledgeDelta::default(),
+            knowledge_pack: None,
+            knowledge_footprint: None,
         }
     }
 }
@@ -686,6 +695,7 @@ impl ConnectorRuntime {
         // ledger; two SHA-256 passes over one bounded body is the price of
         // keeping the digest an observation that cannot gate the poll.
         let body_hash = qip_core::sha256_hex(response.body.as_bytes());
+        let version_before = self.evidence.lock().map_or(0, |fabric| fabric.version());
         let mut cursor_newest: Option<Timestamp> = None;
         let mut subjects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for event in &events {
@@ -729,6 +739,29 @@ impl ConnectorRuntime {
         if report.digest.is_none() && !events.is_empty() {
             report.unreferenced = true;
             self.stats.unreferenced = self.stats.unreferenced.saturating_add(1);
+        }
+
+        if !report.knowledge_delta.is_empty() {
+            let version_after = self
+                .evidence
+                .lock()
+                .map_or(version_before, |fabric| fabric.version());
+            let pack = report.knowledge_delta.to_pack(
+                format!(
+                    "{}:{}:{}",
+                    self.manifest.source_id,
+                    at.as_nanos(),
+                    &body_hash[..12]
+                ),
+                at,
+                version_before,
+                version_after,
+            );
+            if let Ok(encoded) = pack.encode() {
+                report.knowledge_footprint =
+                    Some((encoded.len() as u64, response.body.len() as u64));
+            }
+            report.knowledge_pack = Some(pack);
         }
 
         let position = cursor_newest.map_or_else(

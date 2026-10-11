@@ -208,6 +208,55 @@ fn a_re_fetch_after_an_unwind_reuses_its_verdict_rather_than_corroborating_itsel
 }
 
 #[test]
+fn a_poll_that_changes_knowledge_carries_it_as_a_measured_pack_holding_keys_not_text() -> Result<()>
+{
+    let text = body(&[
+        ("e1", "2026-08-24T14:59:00Z", "101.25"),
+        ("e2", "2026-08-24T14:59:30Z", "101.50"),
+    ]);
+    let mut runtime = runtime(manifest(), None)?;
+    let mut connector = TestConnector::new(manifest());
+    let report = runtime.poll(&mut connector, &mut serving(&text), now())?;
+    assert_eq!(
+        report.knowledge_delta.new_keys.len(),
+        2,
+        "premise: two new keys"
+    );
+
+    let Some(pack) = report.knowledge_pack.clone() else {
+        panic!("a delta that changed knowledge produced no pack");
+    };
+    let decoded = qip_contracts::knowledge_pack::KnowledgePack::decode(&pack.encode()?)?;
+    assert_eq!(decoded, pack, "the pack round-trips through its own schema");
+    let qip_contracts::knowledge_pack::PackBody::WorldModelDelta {
+        from_version,
+        to_version,
+        added,
+        ..
+    } = &pack.body
+    else {
+        panic!("not a world-model delta: {:?}", pack.body);
+    };
+    assert_eq!((*from_version, *to_version), (0, 2));
+    assert_eq!(added.len(), 2);
+    assert!(added.iter().all(|key| key.starts_with("asserted:")));
+    let encoded = String::from_utf8(pack.encode()?).unwrap_or_default();
+    assert!(
+        !encoded.contains("reports"),
+        "a claim's statement text leaked into the pack: {encoded}"
+    );
+    assert_eq!(
+        report.knowledge_footprint.map(|(_, body)| body),
+        Some(text.len() as u64)
+    );
+
+    // A re-served page changes nothing and packs nothing.
+    let again = runtime.poll(&mut connector, &mut serving(&text), now())?;
+    assert!(again.knowledge_pack.is_none());
+    Ok(())
+}
+
+#[test]
 fn a_digest_carries_the_sources_etag_its_parser_and_the_cursor_the_poll_left() -> Result<()> {
     let text = body(&[("e1", "2026-08-24T14:59:00Z", "101.25")]);
     let mut emulator = SourceEmulator::new(vec![

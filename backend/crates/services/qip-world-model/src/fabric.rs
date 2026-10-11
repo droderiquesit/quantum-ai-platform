@@ -393,6 +393,41 @@ impl KnowledgeDelta {
             && self.inadmissible == 0
     }
 
+    /// This delta as a knowledge pack (R12-DATA-1036, 1041): the compact,
+    /// schema-checked artifact derived knowledge is stored in, carrying
+    /// which claim keys were asserted, contested and resolved between two
+    /// fabric versions — never a claim's text or the document it came from.
+    pub fn to_pack(
+        &self,
+        id: impl Into<String>,
+        created: Timestamp,
+        from_version: u64,
+        to_version: u64,
+    ) -> qip_contracts::knowledge_pack::KnowledgePack {
+        let key = |prefix: &str, key: &ClaimKey| {
+            format!(
+                "{prefix}:{}/{}@{}",
+                key.subject,
+                key.attribute,
+                key.instant.as_nanos()
+            )
+        };
+        let mut added: Vec<String> = self.new_keys.iter().map(|k| key("asserted", k)).collect();
+        added.extend(self.contested.iter().map(|k| key("contested", k)));
+        added.extend(self.resolved.iter().map(|k| key("resolved", k)));
+        let created_ms = u64::try_from(created.as_nanos() / 1_000_000).unwrap_or(0);
+        qip_contracts::knowledge_pack::KnowledgePack::new(
+            id,
+            created_ms,
+            qip_contracts::knowledge_pack::PackBody::WorldModelDelta {
+                from_version,
+                to_version,
+                added,
+                removed: Vec::new(),
+            },
+        )
+    }
+
     /// Fold one verdict in.
     pub fn absorb(
         &mut self,
@@ -448,6 +483,9 @@ pub struct EvidenceFabric {
     graph: ProvenanceGraph,
     contests: BTreeMap<ClaimKey, Contest>,
     sources: BTreeMap<String, SourceHistory>,
+    /// Claims admitted since the fabric was made; the version a knowledge
+    /// pack's delta runs between.
+    version: u64,
 }
 
 impl Default for EvidenceFabric {
@@ -460,6 +498,7 @@ impl Default for EvidenceFabric {
             graph: ProvenanceGraph::default(),
             contests: BTreeMap::new(),
             sources: BTreeMap::new(),
+            version: 0,
         }
     }
 }
@@ -518,6 +557,11 @@ impl EvidenceFabric {
 
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Claims admitted so far, evicted ones included.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn held(&self) -> impl Iterator<Item = &HeldEvidence> {
@@ -737,6 +781,7 @@ impl EvidenceFabric {
             verdict: verdict.clone(),
             statement_fingerprint: fingerprint,
         });
+        self.version = self.version.saturating_add(1);
         self.evict();
         Ok((verdict, outcome))
     }
