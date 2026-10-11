@@ -486,4 +486,34 @@ impl ResearchQueue {
         }
         Ok(self.entries.remove(at))
     }
+
+    /// Remove an item that was never started — queued, deferred or blocked —
+    /// because what raised it has stopped being observed.
+    ///
+    /// Without this a queue fed every cycle fills with blocked items whose
+    /// tool nobody builds and questions nobody asks any more, and at
+    /// [`MAX_QUEUE`] it refuses the next real gap. A started item is refused
+    /// here: it has a result coming and leaves through [`Self::close`].
+    pub fn withdraw(&mut self, question: &str) -> Result<Entry> {
+        let at = self
+            .entries
+            .iter()
+            .position(|e| e.item.research_question.trim() == question.trim())
+            .ok_or_else(|| Error::not_found(format!("`{question}` is not in the queue")))?;
+        if self.entries[at].state == State::Started {
+            return Err(Error::invalid(format!(
+                "`{question}` was started; close it on its result rather than withdrawing it"
+            )));
+        }
+        Ok(self.entries.remove(at))
+    }
+
+    /// How many items the queue holds, in any state.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }

@@ -10,12 +10,28 @@
 //! Nothing here acts. A started item is a record that it may run within this
 //! round's budget; it fetches nothing, registers no tool and reaches no venue.
 //!
-//! Status: library only. No composition root constructs a queue yet, because
-//! no detector in the tree states a severity or an economic value for what it
-//! finds, and no measure exists for most of the eleven criteria. Wiring it
-//! would mean inventing those numbers, so the register rows this closes carry
-//! `integrated = false`.
+//! The loop, in the order it runs:
+//!
+//! * [`detectors`] reads plain-data readings of platform state and states
+//!   what is wanting, with a measured severity and its origin;
+//! * [`gap`] classifies each into one of nine classes or refuses it;
+//! * [`desk`] derives the eleven ranking inputs from what it measured
+//!   ([`desk::criteria_for`]), admits, schedules, closes and withdraws;
+//! * [`plan`] names the acquisition, the derivation and the research plan
+//!   each item carries;
+//! * [`promotion`] holds the four-environment campaign, the nine-criterion
+//!   evaluation, and the only road from closed research to a capability.
+//!
+//! Status: `qip-deepbrain`'s research loop holds an [`desk::ExpansionDesk`]
+//! and sweeps platform state into it every cycle. The promotion road has no
+//! production caller: nothing in the tree yet produces a nine-criterion
+//! evaluation, and inventing one to exercise the road would be the failure
+//! [`promotion`] exists to refuse.
 
 pub mod campaigns;
 pub mod curriculum;
+pub mod desk;
+pub mod detectors;
 pub mod gap;
+pub mod plan;
+pub mod promotion;

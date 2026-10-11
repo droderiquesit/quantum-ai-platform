@@ -1318,4 +1318,54 @@ pub mod names {
     pub const LEDGER_UNBALANCED_REFUSED: &str = "qip_ledger_unbalanced_refused_total";
     pub const LEDGER_LAG: &str = "qip_ledger_lag_records";
     pub const LEDGER_STORE_RETRIES: &str = "qip_ledger_store_retries_total";
+
+    // The deep brain's research, ambient and operations loops
+    // (`qip-deepbrain/src/{research,operations}.rs`). Every label is an enum
+    // rendered by a fixed `as_str` — gap class, admission outcome, close
+    // reason, pathway, disposition, runbook action — or an objective name
+    // from `critical_paths::critical_path_slos`, never a subject, question
+    // or instrument.
+
+    /// Gaps the research loop raised and offered to its desk, by gap class
+    /// and admission outcome (`queued`, `blocked`, `duplicate`, `refused`).
+    pub const RESEARCH_GAPS: &str = "qip_research_gaps_total";
+    /// Observations a detector made that could not be classified, by
+    /// trigger. Counted rather than dropped: a detector that cannot say what
+    /// is missing is a finding about the detector.
+    pub const RESEARCH_UNCLASSIFIED: &str = "qip_research_unclassified_total";
+    /// Items in the research queue after a sweep, in any state.
+    pub const RESEARCH_QUEUE_ITEMS: &str = "qip_research_queue_items";
+    /// Research items started within a sweep's budget.
+    pub const RESEARCH_ITEMS_STARTED: &str = "qip_research_items_started_total";
+    /// Research items closed, by reason.
+    pub const RESEARCH_ITEMS_CLOSED: &str = "qip_research_items_closed_total";
+    /// Unstarted research items withdrawn because their gap went quiet.
+    pub const RESEARCH_ITEMS_WITHDRAWN: &str = "qip_research_items_withdrawn_total";
+    /// Tick-replay campaigns the research loop opened, by trigger.
+    pub const TICK_CAMPAIGNS_OPENED: &str = "qip_tick_campaigns_opened_total";
+    /// Ambient attention decisions, by pathway and disposition.
+    pub const AMBIENT_ATTENTION: &str = "qip_ambient_attention_total";
+    /// Value-of-information requests, by outcome (`launched`, `halted`).
+    pub const INFO_REQUESTS: &str = "qip_info_requests_total";
+    /// The NOW estimate per domain, and its standard deviation.
+    pub const NOW_STATE: &str = "qip_now_state";
+    pub const NOW_UNCERTAINTY: &str = "qip_now_uncertainty";
+    /// Incidents the operations loop opened on a level shift.
+    pub const AIOPS_INCIDENTS: &str = "qip_aiops_incidents_total";
+    /// Remediations attempted, by action and outcome (`applied`, `refused`,
+    /// `failed`).
+    pub const AIOPS_REMEDIATIONS: &str = "qip_aiops_remediations_total";
+    /// Entities the operations graph holds.
+    pub const AIOPS_ENTITIES: &str = "qip_aiops_entities";
+    /// A critical-path objective's error budget consumed, and the
+    /// observations it was evaluated on, by objective. Zero observations is
+    /// unmeasured, never met.
+    pub const SLO_BUDGET_CONSUMED: &str = "qip_slo_budget_consumed";
+    pub const SLO_OBSERVATIONS: &str = "qip_slo_observations";
+    /// Quantum solver attempts, by outcome (`succeeded`, `failed`). Only an
+    /// attempt is counted; a cycle the router kept classical is not a job.
+    pub const QUANTUM_JOBS: &str = "qip_quantum_jobs_total";
+    /// Promoted model packages, by whether the artifact the promotion names
+    /// was written where serving reads it (`written`, `failed`).
+    pub const MODEL_PACKAGES: &str = "qip_model_packages_total";
 }

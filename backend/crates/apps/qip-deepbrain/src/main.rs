@@ -52,6 +52,7 @@ use qip_kernel::central::{CentralConfig, HorizonPolicy};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
+use qip_observability::metrics::{labels, names};
 use qip_risk::limits::{LimitSet, RISK_LIMITS_PATH_VARIABLE};
 use qip_risk_engine::autonomy::AutonomyLevel;
 use qip_storage::ChainArchive;
@@ -115,6 +116,10 @@ fn run() -> Result<()> {
     // nothing could reach.
     let telemetry = Telemetry::foreground("qip-deepbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
+    // A third handle on the same registry, for the cycle-line closure: the
+    // model-package series is recorded where the artifact is written, which
+    // is in this root and outside the platform the run loop borrows.
+    let package_metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the
     // cycle writes to. A `Telemetry::new` of its own would export an empty
@@ -209,6 +214,9 @@ fn run() -> Result<()> {
     // platform exists — see `load_universe` for why an unset path is a
     // refusal and not an empty universe.
     let catalogue = load_universe(&config.storage, started)?;
+    // The coverage detector's view of the universe, taken before the
+    // universe moves into the platform, which does not hand it back.
+    let research_coverage = qip_deepbrain::research::coverage_map(&catalogue.universe);
     // The language model the organisation narrates through (ADR 0037): the
     // hosted adapter first when the configuration names one *and* the
     // preconditions in `language.rs` are met — a provider pinned, its terms
@@ -611,7 +619,37 @@ fn run() -> Result<()> {
     // log the archive below seals — and nowhere else. A second copy in the
     // node's key-value store was two claims about one fact.
 
-    let run = node::run(
+    // The research loop (expansion engine, ambient mesh, value of
+    // information) and the operations loop (AIOps graph, incidents,
+    // runbook-only remediation, critical-path objectives). See
+    // `research.rs` and `operations.rs` for what each may and may not do;
+    // neither holds a `&mut Platform`.
+    let research_config =
+        qip_deepbrain::research::ResearchConfig::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    println!(
+        "  research:         {}",
+        if research_config.every_cycles == 0 {
+            "disabled (QIP_DEEPBRAIN_RESEARCH_EVERY=0)".to_string()
+        } else {
+            format!(
+                "every {} cycle(s) under jurisdiction {}, {} compute unit(s) a sweep; outputs \
+                 advisory, nothing promoted",
+                research_config.every_cycles,
+                research_config.jurisdiction,
+                research_config.compute_per_sweep
+            )
+        }
+    );
+    let mut research =
+        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?;
+    let mut operations = qip_deepbrain::operations::Operations::new(started)?;
+    println!(
+        "  operations:       level shifts in iteration time open an incident; the one runbook \
+         may switch off research until restart"
+    );
+
+    let run = node::run_with(
         &mut platform,
         &archive,
         &config,
@@ -620,6 +658,10 @@ fn run() -> Result<()> {
         &clock,
         inherited,
         Some(&mut evolution),
+        node::Loops {
+            research: Some(&mut research),
+            operations: Some(&mut operations),
+        },
         |outcome| {
             println!();
             println!("{}", outcome.report.summarise());
@@ -645,15 +687,23 @@ fn run() -> Result<()> {
                 // says it is.
                 if let Some(published) = round.promotion.as_ref().and_then(|p| p.published()) {
                     match write_model_artifact(model_artifacts.as_ref(), published) {
-                        Ok(()) => println!(
-                            "  model artifact written: {MODEL_ARTIFACTS_NAMESPACE}/{}",
-                            published.file_name
-                        ),
-                        Err(error) => println!(
-                            "  model artifact NOT written ({}): {}",
-                            published.file_name,
-                            error.message()
-                        ),
+                        Ok(()) => {
+                            package_metrics
+                                .count(names::MODEL_PACKAGES, labels([("outcome", "written")]));
+                            println!(
+                                "  model artifact written: {MODEL_ARTIFACTS_NAMESPACE}/{}",
+                                published.file_name
+                            );
+                        }
+                        Err(error) => {
+                            package_metrics
+                                .count(names::MODEL_PACKAGES, labels([("outcome", "failed")]));
+                            println!(
+                                "  model artifact NOT written ({}): {}",
+                                published.file_name,
+                                error.message()
+                            );
+                        }
                     }
                 }
                 // Named individually, not summed. An operator needs to know
@@ -687,6 +737,15 @@ fn run() -> Result<()> {
                             .join(", ")
                     );
                 }
+            }
+            if let Some(round) = &outcome.research {
+                println!("  {}", round.describe());
+            }
+            if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {
+                println!("  {line}");
+            }
+            for failure in &outcome.side_failures {
+                println!("  not run: {failure}");
             }
             if let Some(assessment) = &outcome.discovery {
                 println!(
