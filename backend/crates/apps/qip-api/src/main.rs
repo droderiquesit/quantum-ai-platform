@@ -27,6 +27,7 @@ use qip_core::time::Duration;
 use qip_core::{Clock, SystemClock};
 use qip_data_finder::registration::RegistrationRecord;
 use qip_kernel::central::{ArbitragePolicy, CentralConfig, CentralPlane};
+use qip_kernel::compute_routing::ComputeSettings;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
@@ -157,9 +158,15 @@ fn run() -> Result<()> {
     // differences are visible and attributable (CICD-096).
     verify_config_signature()?;
 
-    let mut config = PlatformConfig::default()
-        .with_live_ceiling(ceiling)
-        .with_venue_registrations(venue_registrations);
+    // The compute router's arms, read here as the deep brain reads them, so
+    // the platform `POST /cycle` drives sizes through the same router shape.
+    // Unset is the classical router; an unknown value stops the process.
+    let compute = ComputeSettings::from_lookup(&|name| std::env::var(name).ok())?;
+    let mut config = compute.apply(
+        PlatformConfig::default()
+            .with_live_ceiling(ceiling)
+            .with_venue_registrations(venue_registrations),
+    );
     config.central.arbitrage = arbitrage;
     config.central.region_dark_after = region_dark_after;
 
@@ -593,6 +600,7 @@ fn run() -> Result<()> {
     }
     println!("  arbitrage desk:   {arbitrage_banner}");
     println!("  region darkness:  {region_dark_banner}");
+    println!("  compute routing:  {}", compute.describe());
     println!("  wallet statement: {statement_banner}");
     println!("  capital fabric:   {fabric_banner}");
     match &mesh {

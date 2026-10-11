@@ -38,6 +38,7 @@ pub mod blueprint_objectives;
 pub mod capacity_review;
 pub mod causal_review;
 pub mod central;
+pub mod compute_routing;
 pub mod confidence;
 pub mod config;
 pub mod counterfactual_trial;

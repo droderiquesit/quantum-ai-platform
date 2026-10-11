@@ -133,7 +133,8 @@ pub enum Formulation {
     ExhaustiveEnumeration,
     /// Classical simulated annealing over the binary encoding; a heuristic.
     SimulatedAnnealing,
-    /// QUBO/Ising, the form a QAOA provider accepts. Never classical.
+    /// QUBO/Ising, the form a QAOA provider accepts and the quantum-inspired
+    /// rung searches. Never the classical baseline.
     Qubo,
 }
 
@@ -300,6 +301,27 @@ pub struct InformationValue {
     pub cost_micros: u64,
     /// Whether the estimate cleared the policy's bars, so a dispatch was made.
     pub cleared: bool,
+    /// The substrate the estimate is about. Defaults to the QPU on a record
+    /// written before the quantum-inspired rung existed, which is the only
+    /// substrate an estimate was then made for.
+    #[serde(default = "qpu")]
+    pub substrate: Substrate,
+    /// The share of trials whose answer verified; `None` before the first.
+    /// A substrate that answers rarely is not repeatable however good its
+    /// answers are when they come.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeatability: Option<f64>,
+    /// Mean cycles from asking to reading an answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_latency_cycles: Option<f64>,
+    /// The Brier score of the router's past estimates at this size: how well
+    /// it knew in advance whether the substrate would pay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration_brier: Option<f64>,
+}
+
+const fn qpu() -> Substrate {
+    Substrate::Qpu
 }
 
 /// The compute decision record: what the task was, where it ran, where it
@@ -312,6 +334,26 @@ pub struct ComputeDecision {
     /// Present whenever the quantum arm reached the estimate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub information_value: Option<InformationValue>,
+    /// The quantum-inspired rung's estimate, present whenever that rung was
+    /// enabled and the task eligible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspired_information_value: Option<InformationValue>,
+    /// One measurement per run this decision accounted for — the baseline,
+    /// any candidate judged, any job abandoned — with its quality, cost and
+    /// latency (R12-QUANT-4053). What the router's learning is folded from,
+    /// live and on replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub measurements: Vec<crate::learning::SolverMeasurement>,
+    /// Every candidate as an ensemble feature, not as authority (§11.4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ensemble: Vec<crate::research::EnsembleFeature>,
+    /// The §11.3 research domain the task belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_domain: Option<crate::research::ResearchDomain>,
+    /// Whether a QPU result would count as advantage here, and what is unmet
+    /// (§11.5).
+    #[serde(default)]
+    pub advantage: crate::research::AdvantageStanding,
 }
 
 impl ComputeDecision {

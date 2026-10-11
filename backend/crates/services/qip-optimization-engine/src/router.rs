@@ -53,16 +53,23 @@ use crate::compute::{
     CompiledTask, ComputeDecision, Formulation, InformationValue, Substrate, SubstrateRole,
     SubstrateVerdict, TaskClass, TaskSpec,
 };
+use crate::learning::{MeasurementOutcome, RoutingLearning, SolverMeasurement, SubstrateRecord};
 use crate::problem::{PortfolioProblem, QuboEncoding};
+use crate::research::{
+    AdvantageBoundary, AdvantageEvidence, EnsembleFeature, ResearchDomain, selection_overlap,
+};
 use qip_core::error::{Error, Result};
 use qip_core::rng::Xoshiro256;
 use qip_core::time::Duration;
 use qip_numerics::anneal::{AnnealSettings, Qubo, anneal, solve_exact};
 use qip_numerics::qp::{QpSettings, solve as solve_qp};
+use qip_quantum::benchmark::ClassicalValidator;
 use qip_quantum::foundry::{FamilyKind, FamilyStatus, Foundry, JobClass};
 use qip_quantum::gateway::{Delivery, GatewayLimits, JobPoll, JobTicket, QuantumGateway};
 use qip_quantum::provider::QuantumProvider;
 use qip_quantum::qaoa::{QaoaResult, QaoaSettings};
+use qip_quantum::registry::{SolverObservation, SolverRegistry, SolverStanding};
+use qip_quantum::solver::{ClassicalSolver, QuantumInspiredSolver, SolverEffort, SolverKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -92,6 +99,10 @@ pub enum Solver {
     ExactEnumeration,
     /// QAOA on a quantum provider.
     Quantum,
+    /// Path-integral quantum annealing over the same QUBO, run through the
+    /// solver registry. A classical algorithm on this CPU: never a quantum
+    /// result, and never the baseline.
+    QuantumInspired,
 }
 
 impl Solver {
@@ -101,6 +112,18 @@ impl Solver {
             Self::SimulatedAnnealing => "simulated_annealing",
             Self::ExactEnumeration => "exact_enumeration",
             Self::Quantum => "quantum",
+            Self::QuantumInspired => "quantum_inspired",
+        }
+    }
+
+    /// The substrate the solver runs on (§11.1).
+    pub const fn substrate(&self) -> Substrate {
+        match self {
+            Self::QuadraticProgram | Self::SimulatedAnnealing | Self::ExactEnumeration => {
+                Substrate::Cpu
+            }
+            Self::Quantum => Substrate::Qpu,
+            Self::QuantumInspired => Substrate::QuantumInspired,
         }
     }
 
@@ -123,8 +146,29 @@ impl Solver {
             Self::Quantum => Err(Error::invalid(
                 "the quantum solver cannot be the classical baseline (ADR 0006)",
             )),
+            Self::QuantumInspired => Err(Error::invalid(
+                "the quantum-inspired search is a candidate measured against the baseline, and a \
+                 candidate measured against itself measures nothing (ADR 0006)",
+            )),
         }
     }
+}
+
+/// The registry name of the quantum-inspired rung: the name
+/// [`QuantumInspiredSolver`] reports, so the registry runs it by the name it
+/// records it under.
+pub const QUANTUM_INSPIRED_SOLVER: &str = "quantum-inspired-path-integral";
+
+/// The §11.3 research domain every problem this router solves belongs to:
+/// allocation is capital placement.
+const ROUTED_DOMAIN: ResearchDomain = ResearchDomain::CapitalPlacement;
+
+/// The win rate at or above which a measured QPU record is ahead more often
+/// than not — the §11.5 boundary's second half.
+const ADVANTAGE_WIN_RATE: f64 = 0.5;
+
+fn default_advantage_minimum_trials() -> u32 {
+    AdvantageBoundary::default().minimum_trials
 }
 
 /// One solver's attempt.
@@ -322,6 +366,21 @@ pub struct RoutingPolicy {
     /// Cycles a quantum job may stay pending before it is abandoned.
     #[serde(default = "default_patience")]
     pub quantum_patience_cycles: u32,
+    /// Whether the quantum-inspired rung may run (§11.1). Off by default:
+    /// a deployment opts in at its composition root, and a router nobody
+    /// configured behaves as it always has.
+    ///
+    /// The rung runs only where the quantum arm could — a discrete task whose
+    /// classical baseline is a heuristic — because against an exhaustive
+    /// baseline a candidate can at best tie, and a tie is never adopted. It
+    /// runs synchronously, in process, at no declared price; its answer is
+    /// verified classically and adopted only by the same margin rule.
+    #[serde(default)]
+    pub quantum_inspired: bool,
+    /// Trials at a problem size before a QPU win rate can count as advantage
+    /// (§11.5).
+    #[serde(default = "default_advantage_minimum_trials")]
+    pub advantage_minimum_trials: u32,
 }
 
 impl Default for RoutingPolicy {
@@ -336,6 +395,8 @@ impl Default for RoutingPolicy {
             minimum_win_probability: default_minimum_win_probability(),
             max_quantum_job_cost_micros: 0,
             quantum_patience_cycles: default_patience(),
+            quantum_inspired: false,
+            advantage_minimum_trials: default_advantage_minimum_trials(),
         }
     }
 }
@@ -382,7 +443,20 @@ impl RoutingPolicy {
                 "quantum_patience_cycles is zero, which abandons every job before it can return",
             ));
         }
+        if self.advantage_minimum_trials == 0 {
+            return Err(Error::invalid(
+                "advantage_minimum_trials is zero, which would let one lucky answer count as \
+                 quantum advantage; set the number of trials a win rate needs to mean anything",
+            ));
+        }
         Ok(())
+    }
+
+    fn advantage_boundary(&self) -> AdvantageBoundary {
+        AdvantageBoundary {
+            minimum_trials: self.advantage_minimum_trials,
+            minimum_win_rate: ADVANTAGE_WIN_RATE,
+        }
     }
 
     /// Refuse a policy that can never send a problem to this provider.
@@ -405,26 +479,6 @@ impl RoutingPolicy {
     }
 }
 
-/// One problem size's measured record on the quantum arm.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Tally {
-    trials: u32,
-    wins: u32,
-}
-
-impl Tally {
-    fn win_probability(&self) -> f64 {
-        (f64::from(self.wins) + 1.0) / (f64::from(self.trials) + 2.0)
-    }
-
-    fn record(&mut self, won: bool) {
-        self.trials = self.trials.saturating_add(1);
-        if won {
-            self.wins = self.wins.saturating_add(1);
-        }
-    }
-}
-
 #[derive(Debug)]
 struct PendingJob {
     ticket: JobTicket,
@@ -434,15 +488,131 @@ struct PendingJob {
     /// The QUBO the provider was given, which its claimed energy is checked
     /// against.
     qubo: Qubo,
+    /// What the job was billed when it was sent, carried to the measurement
+    /// of its outcome so the run is costed where it is judged.
+    cost_micros: u64,
+    /// The win probability the router estimated when it sent the job, which
+    /// the outcome scores the router's calibration against.
+    predicted_win_probability: f64,
 }
 
 #[derive(Debug, Default)]
 struct ArmState {
     pending: Option<PendingJob>,
-    /// Measured record per problem size. A `BTreeMap` because it is read
-    /// into a record whose order must not move between replays.
-    record: BTreeMap<usize, Tally>,
     spent_micros: u64,
+}
+
+/// What the router has measured, held behind one lock: the learned routing
+/// state per substrate and size, and the solver registry's standings per
+/// solver. Updated together by [`Learned::absorb`] and by nothing else, so
+/// the two views cannot disagree about which runs happened.
+#[derive(Debug)]
+struct Learned {
+    learning: RoutingLearning,
+    registry: SolverRegistry,
+}
+
+impl Learned {
+    fn new(seed: u64) -> Self {
+        // The registry holds the one rung it runs itself — the
+        // quantum-inspired search — beside a classical searcher it never
+        // selects for the router (the router's baseline is its own, solved
+        // first), and declares the router's own rungs so each run's outcome
+        // has a name to be recorded against.
+        let registry = SolverRegistry::builder(Arc::new(ClassicalSolver::annealing(
+            seed,
+            AnnealSettings::default(),
+        )))
+        .with_solver(Arc::new(QuantumInspiredSolver::new(seed)))
+        .with_declared(Solver::QuadraticProgram.as_str(), SolverKind::Classical)
+        .with_declared(Solver::SimulatedAnnealing.as_str(), SolverKind::Classical)
+        .with_declared(Solver::ExactEnumeration.as_str(), SolverKind::Classical)
+        .with_declared(Solver::Quantum.as_str(), SolverKind::Quantum)
+        .build();
+        Self {
+            learning: RoutingLearning::default(),
+            registry,
+        }
+    }
+
+    /// Fold one decision's measurements into both views, as a replay does.
+    ///
+    /// The live solve applies the same two per-measurement folds —
+    /// [`RoutingLearning::absorb`] and [`Self::record_registry`] — but folds
+    /// a harvested QPU outcome into the learning before it estimates the
+    /// next dispatch, so the estimate already knows how the last job ended.
+    /// Both folds are per measurement and order-free within a decision, so
+    /// the state a replay of the whole decision reaches is the state the
+    /// live solve reached.
+    fn absorb(&mut self, measurements: &[SolverMeasurement]) -> Result<()> {
+        for measurement in measurements {
+            self.record_registry(measurement)?;
+        }
+        self.learning.absorb(measurements);
+        Ok(())
+    }
+
+    fn record_registry(&mut self, measurement: &SolverMeasurement) -> Result<()> {
+        self.registry.record(
+            &measurement.solver,
+            &SolverObservation {
+                problem_size: measurement.problem_size,
+                quality: if measurement.quality.is_finite() {
+                    measurement.quality
+                } else {
+                    0.0
+                },
+                verified: measurement.verified,
+                won: measurement.used,
+                cost_micros: measurement.cost_micros,
+                latency_cycles: measurement.latency_cycles,
+            },
+        )
+    }
+}
+
+/// The name the registry records a router rung under.
+fn registry_name(solver: Solver) -> &'static str {
+    match solver {
+        Solver::QuantumInspired => QUANTUM_INSPIRED_SOLVER,
+        other => other.as_str(),
+    }
+}
+
+/// A QPU job's outcome as a measurement. `judged` is `(feasible, (beat the
+/// baseline by the margin, improvement))` where an answer was scored.
+fn quantum_measurement(
+    pending: &PendingJob,
+    outcome: MeasurementOutcome,
+    judged: Option<(bool, (bool, f64))>,
+    latency_cycles: u32,
+) -> SolverMeasurement {
+    let (verified, beat_baseline, quality) = match judged {
+        Some((feasible, (beat, gain))) => (feasible, beat, if feasible { gain } else { 0.0 }),
+        None => (false, false, 0.0),
+    };
+    SolverMeasurement {
+        solver: Solver::Quantum.as_str().to_string(),
+        substrate: Substrate::Qpu,
+        problem_size: pending.qubo.n,
+        outcome,
+        verified,
+        beat_baseline,
+        used: false,
+        quality,
+        cost_micros: pending.cost_micros,
+        latency_cycles,
+        predicted_win_probability: Some(pending.predicted_win_probability),
+    }
+}
+
+/// What the solve hands the decision record beyond the verdict inputs.
+struct Extras {
+    inspired_note: String,
+    inspired_information_value: Option<InformationValue>,
+    measurements: Vec<SolverMeasurement>,
+    ensemble: Vec<EnsembleFeature>,
+    advantage: crate::research::AdvantageStanding,
 }
 
 #[derive(Debug)]
@@ -480,6 +650,7 @@ impl QuantumArm {
 pub struct ComputeRouter {
     policy: RoutingPolicy,
     quantum: Option<QuantumArm>,
+    learned: Mutex<Learned>,
     seed: u64,
 }
 
@@ -489,8 +660,60 @@ impl ComputeRouter {
         Self {
             policy: RoutingPolicy::default(),
             quantum: None,
+            learned: Mutex::new(Learned::new(seed)),
             seed,
         }
+    }
+
+    fn learned(&self) -> Result<MutexGuard<'_, Learned>> {
+        self.learned.lock().map_err(|_| {
+            Error::guard(
+                "the router's learned routing state was poisoned by a panicking holder; a \
+                 dispatch estimated from a half-written record is a guess, so the solve stops",
+            )
+        })
+    }
+
+    /// Fold recorded decisions into the router's learning and its solver
+    /// registry, as a restarted process does over its journal
+    /// (R12-QUANT-4047). The same fold the live solve applies, so a replayed
+    /// router holds what the live one held.
+    ///
+    /// Refuses a measurement naming a solver this router does not know,
+    /// rather than skipping it: a record the router cannot account for is a
+    /// record written by a different router, and learning half of a history
+    /// is a history nobody wrote.
+    pub fn replay<'a>(
+        &self,
+        decisions: impl IntoIterator<Item = &'a ComputeDecision>,
+    ) -> Result<usize> {
+        let mut learned = self.learned()?;
+        let mut folded = 0usize;
+        for decision in decisions {
+            learned.absorb(&decision.measurements)?;
+            folded += 1;
+        }
+        Ok(folded)
+    }
+
+    /// The learned record for a substrate at a problem size.
+    pub fn learned_record(
+        &self,
+        substrate: Substrate,
+        problem_size: usize,
+    ) -> Result<SubstrateRecord> {
+        Ok(self.learned()?.learning.record(substrate, problem_size))
+    }
+
+    /// The solver registry's measured standing for a solver, by the name the
+    /// registry records it under, or `None` before its first run.
+    pub fn solver_standing(&self, solver: &str) -> Result<Option<SolverStanding>> {
+        Ok(self.learned()?.registry.standing(solver).copied())
+    }
+
+    /// Every standing the registry holds, in name order.
+    pub fn solver_standings(&self) -> Result<BTreeMap<String, SolverStanding>> {
+        Ok(self.learned()?.registry.standings().clone())
     }
 
     /// Replace the policy, refusing one that is invalid on its own or that
@@ -632,14 +855,16 @@ impl ComputeRouter {
     /// quantum provider.
     pub fn solve(&self, problem: &PortfolioProblem) -> Result<RoutingDecision> {
         problem.validate()?;
+        let size = problem.dimension();
         let mut runs = Vec::new();
 
         // The classical baseline is not optional. It is the answer this cycle
-        // uses unless a verified quantum candidate beats it.
+        // uses unless a verified candidate beats it.
         let classical = self.solve_classical(problem)?;
         let classical_objective = classical.objective;
         let classical_solver = classical.solver;
         let classical_weights = classical.weights.clone();
+        let baseline_weights = classical.weights.clone();
         let classical_usable = classical.is_usable();
         runs.push(classical);
 
@@ -649,6 +874,22 @@ impl ComputeRouter {
         let mut quantum_failure: Option<String> = None;
         let mut information_value: Option<InformationValue> = None;
         let mut qpu_declined = quantum_note.clone();
+        // Every run this solve accounts for, the baseline first. `used` is
+        // settled once the selection is known.
+        let mut measurements = vec![SolverMeasurement {
+            solver: classical_solver.as_str().to_string(),
+            substrate: Substrate::Cpu,
+            problem_size: size,
+            outcome: MeasurementOutcome::Answered,
+            verified: classical_usable,
+            beat_baseline: false,
+            used: false,
+            quality: 0.0,
+            cost_micros: 0,
+            latency_cycles: 0,
+            predicted_win_probability: None,
+        }];
+        let mut learned = self.learned()?;
 
         if let Some(arm) = &self.quantum {
             let mut state = arm.lock()?;
@@ -656,6 +897,7 @@ impl ComputeRouter {
 
             // Harvest: read the one job that may be out, without waiting.
             if let Some(pending) = state.pending.take() {
+                let mut harvested: Option<SolverMeasurement> = None;
                 match arm.gateway.poll(pending.ticket) {
                     Ok(JobPoll::Pending { polls }) => {
                         dispatch.pending = Some(pending.ticket.id());
@@ -679,11 +921,12 @@ impl ComputeRouter {
                             pending.ticket.id()
                         ));
                         // An answer that never came is a trial without a win.
-                        state
-                            .record
-                            .entry(pending.qubo.n)
-                            .or_default()
-                            .record(false);
+                        harvested = Some(quantum_measurement(
+                            &pending,
+                            MeasurementOutcome::Abandoned,
+                            None,
+                            polls,
+                        ));
                     }
                     Ok(JobPoll::Completed { polls, result }) => {
                         dispatch.harvested = Some(pending.ticket.id());
@@ -694,12 +937,23 @@ impl ComputeRouter {
                                  encoding; the answer is stale and is dropped unread",
                                 pending.ticket.id()
                             ));
+                            harvested = Some(quantum_measurement(
+                                &pending,
+                                MeasurementOutcome::Stale,
+                                None,
+                                polls,
+                            ));
                         } else {
                             let simulated = arm.gateway.provider().capabilities().simulated;
                             match self.judge(problem, &pending.qubo, result, simulated) {
                                 Ok(run) => {
-                                    let (won, _) = self.adopts(&run, classical_objective);
-                                    state.record.entry(pending.qubo.n).or_default().record(won);
+                                    let judged = self.adopts(&run, classical_objective);
+                                    harvested = Some(quantum_measurement(
+                                        &pending,
+                                        MeasurementOutcome::Answered,
+                                        Some((run.is_usable(), judged)),
+                                        polls,
+                                    ));
                                     dispatch.notes.push(format!(
                                         "quantum job {} answered after {polls} cycle(s) and was \
                                          re-scored on this cycle's problem",
@@ -708,11 +962,12 @@ impl ComputeRouter {
                                     runs.push(run);
                                 }
                                 Err(error) => {
-                                    state
-                                        .record
-                                        .entry(pending.qubo.n)
-                                        .or_default()
-                                        .record(false);
+                                    harvested = Some(quantum_measurement(
+                                        &pending,
+                                        MeasurementOutcome::Refused,
+                                        None,
+                                        polls,
+                                    ));
                                     quantum_failure = Some(error.message().to_string());
                                 }
                             }
@@ -725,20 +980,34 @@ impl ComputeRouter {
                             pending.ticket.id(),
                             error.message()
                         ));
+                        harvested = Some(quantum_measurement(
+                            &pending,
+                            MeasurementOutcome::Lost,
+                            None,
+                            0,
+                        ));
                     }
+                }
+                // Folded into the learning before the dispatch below reads
+                // it, so the estimate this cycle makes already knows how the
+                // last job ended. The registry is updated at the end with
+                // every other run, once `used` is known; the fold is
+                // per-measurement, so the order changes nothing a replay of
+                // the whole decision would not also reach.
+                if let Some(measurement) = harvested {
+                    learned.learning.absorb(std::slice::from_ref(&measurement));
+                    measurements.push(measurement);
                 }
             }
 
             // Dispatch: one fresh job for a later cycle, where the estimate
             // clears the policy's bars.
             if attempt_quantum && state.pending.is_none() {
-                let tally = state
-                    .record
-                    .get(&problem.dimension())
-                    .copied()
-                    .unwrap_or_default();
+                let record = learned.learning.record(Substrate::Qpu, size);
                 let cost = arm.gateway.provider().capabilities().cost_per_job_micros;
-                let (estimate, refusal) = self.estimate(tally, task.classical, cost);
+                let (estimate, refusal) =
+                    self.estimate(Substrate::Qpu, record, task.classical, cost);
+                let predicted = estimate.win_probability;
                 information_value = Some(estimate);
                 match refusal {
                     Some(reason) => qpu_declined = reason,
@@ -761,7 +1030,13 @@ impl ComputeRouter {
                                      against that cycle's baseline",
                                     ticket.id()
                                 ));
-                                state.pending = Some(PendingJob { ticket, key, qubo });
+                                state.pending = Some(PendingJob {
+                                    ticket,
+                                    key,
+                                    qubo,
+                                    cost_micros: cost,
+                                    predicted_win_probability: predicted,
+                                });
                             }
                             Err(error) => {
                                 qpu_declined =
@@ -774,10 +1049,51 @@ impl ComputeRouter {
             }
         }
 
-        // Selection. The classical answer wins unless a quantum answer is
+        // The quantum-inspired rung (§11.1): synchronous, in process, on the
+        // same QUBO, and only where its estimate clears the same bars.
+        let mut inspired_information_value: Option<InformationValue> = None;
+        let inspired_note: String;
+        let mut inspired_measurement: Option<SolverMeasurement> = None;
+        if !self.policy.quantum_inspired {
+            inspired_note =
+                "the quantum-inspired rung is not enabled in this deployment's routing \
+                             policy; path-integral annealing stays benchmarked in qip-quantum"
+                    .to_string();
+        } else if task.quantum.is_none() {
+            inspired_note = "the compiled task has no QUBO formulation for the quantum-inspired \
+                             search to run on"
+                .to_string();
+        } else {
+            let record = learned.learning.record(Substrate::QuantumInspired, size);
+            let (estimate, refusal) =
+                self.estimate(Substrate::QuantumInspired, record, task.classical, 0);
+            let predicted = estimate.win_probability;
+            inspired_information_value = Some(estimate);
+            match refusal {
+                Some(reason) => inspired_note = reason,
+                None => {
+                    let (run, measurement, note) = self.run_quantum_inspired(
+                        &learned.registry,
+                        problem,
+                        classical_objective,
+                        predicted,
+                    )?;
+                    inspired_note = note;
+                    inspired_measurement = Some(measurement);
+                    if let Some(run) = run {
+                        runs.push(run);
+                    }
+                }
+            }
+        }
+
+        // Selection. The classical answer wins unless a candidate is
         // feasible and better by more than the margin.
         let quantum_run = runs.iter().find(|run| run.solver.is_quantum()).cloned();
-        let (chosen, weights, objective, rationale) = match (quantum_failure, quantum_run) {
+        let (mut chosen, mut weights, mut objective, mut rationale) = match (
+            quantum_failure,
+            quantum_run,
+        ) {
             (Some(failure), _) => (
                 classical_solver,
                 classical_weights,
@@ -833,6 +1149,74 @@ impl ComputeRouter {
                 },
             ),
         };
+        // The quantum-inspired candidate is held to the same rule, and
+        // replaces whatever stands only by beating the baseline by the margin
+        // *and* the standing answer outright.
+        if let Some(inspired) = runs
+            .iter()
+            .find(|run| run.solver == Solver::QuantumInspired)
+            .cloned()
+        {
+            let (adopt, gain) = self.adopts(&inspired, classical_objective);
+            if adopt && inspired.objective < objective {
+                rationale = format!(
+                    "the quantum-inspired answer improved on the classical baseline by {:.2}%, \
+                     above the {:.2}% margin required{}",
+                    gain * 100.0,
+                    self.policy.quantum_margin * 100.0,
+                    if chosen.is_quantum() {
+                        ", and beat the quantum answer outright"
+                    } else {
+                        ""
+                    }
+                );
+                chosen = Solver::QuantumInspired;
+                weights = inspired.weights.clone();
+                objective = inspired.objective;
+            }
+        }
+
+        // Settle which run was used, then fold everything not yet folded.
+        if let Some(measurement) = inspired_measurement {
+            measurements.push(measurement);
+        }
+        let used = registry_name(chosen);
+        for measurement in &mut measurements {
+            measurement.used =
+                measurement.solver == used && measurement.outcome == MeasurementOutcome::Answered;
+        }
+        let unfolded: Vec<SolverMeasurement> = measurements
+            .iter()
+            .filter(|m| m.substrate != Substrate::Qpu)
+            .cloned()
+            .collect();
+        learned.learning.absorb(&unfolded);
+        for measurement in &measurements {
+            learned.record_registry(measurement)?;
+        }
+
+        let ensemble = runs
+            .iter()
+            .map(|run| EnsembleFeature {
+                substrate: run.solver.substrate(),
+                solver: run.solver.as_str().to_string(),
+                objective: run.objective,
+                gap_to_baseline: improvement(classical_objective, run.objective),
+                selection_overlap: selection_overlap(&run.weights, &baseline_weights),
+                feasible: run.is_usable(),
+            })
+            .collect();
+        let qpu_record = learned.learning.record(Substrate::Qpu, size);
+        let advantage = self.policy.advantage_boundary().assess(AdvantageEvidence {
+            qpu_answer_used: chosen.is_quantum(),
+            simulated: self
+                .quantum
+                .as_ref()
+                .map(|arm| arm.gateway.provider().capabilities().simulated),
+            trials: qpu_record.trials,
+            wins: qpu_record.wins,
+        });
+        drop(learned);
 
         let compute = self.compute_decision(
             task,
@@ -841,6 +1225,13 @@ impl ComputeRouter {
             &dispatch,
             qpu_declined,
             information_value,
+            Extras {
+                inspired_note,
+                inspired_information_value,
+                measurements,
+                ensemble,
+                advantage,
+            },
         );
 
         Ok(RoutingDecision {
@@ -856,13 +1247,93 @@ impl ComputeRouter {
         })
     }
 
-    /// Whether a quantum run would be adopted over this baseline, and its
+    /// Run the quantum-inspired search through the solver registry, verify
+    /// its claimed energy classically, and score it on the real problem.
+    ///
+    /// A run that fails, or whose claim does not verify, returns no
+    /// [`SolverRun`] and a `Refused` measurement: a trial without a win.
+    fn run_quantum_inspired(
+        &self,
+        registry: &SolverRegistry,
+        problem: &PortfolioProblem,
+        classical_objective: f64,
+        predicted: f64,
+    ) -> Result<(Option<SolverRun>, SolverMeasurement, String)> {
+        let mut measurement = SolverMeasurement {
+            solver: QUANTUM_INSPIRED_SOLVER.to_string(),
+            substrate: Substrate::QuantumInspired,
+            problem_size: problem.dimension(),
+            outcome: MeasurementOutcome::Refused,
+            verified: false,
+            beat_baseline: false,
+            used: false,
+            quality: 0.0,
+            cost_micros: 0,
+            latency_cycles: 0,
+            predicted_win_probability: Some(predicted),
+        };
+        let encoding = self.encoding_for(problem);
+        let qubo = problem.to_qubo(&encoding)?;
+        let effort = SolverEffort::default().with_seed(self.seed);
+        let candidate = match registry.solve(&qubo, QUANTUM_INSPIRED_SOLVER, &effort) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                let note = format!(
+                    "the quantum-inspired search failed ({}); the baseline stands",
+                    error.message()
+                );
+                return Ok((None, measurement, note));
+            }
+        };
+        // The same classical gate a QPU answer goes through: the claimed
+        // energy recomputed from the assignment, refused beyond tolerance.
+        let validated = match ClassicalValidator::new(ENERGY_TOLERANCE)?.validate(&qubo, &candidate)
+        {
+            Ok(validated) => validated,
+            Err(error) => {
+                let note = format!(
+                    "the quantum-inspired answer failed classical verification ({}) and is \
+                     refused",
+                    error.message()
+                );
+                return Ok((None, measurement, note));
+            }
+        };
+        let weights = encoding.to_weights(validated.assignment());
+        let run = self.score(
+            problem,
+            Solver::QuantumInspired,
+            weights,
+            candidate.evaluations,
+            true,
+            vec![
+                encoding.describe(),
+                "quantum-inspired path-integral annealing over the QUBO: a classical algorithm \
+                 on this CPU, and not evidence of quantum advantage"
+                    .to_string(),
+            ],
+        );
+        let (beat, gain) = self.adopts(&run, classical_objective);
+        measurement.outcome = MeasurementOutcome::Answered;
+        measurement.verified = run.is_usable();
+        measurement.beat_baseline = beat;
+        measurement.quality = if run.is_usable() { gain } else { 0.0 };
+        let note = format!(
+            "ran on the same QUBO, verified classically and re-scored on the real problem: {:.2}% \
+             against the baseline{}",
+            gain * 100.0,
+            if run.is_usable() { "" } else { ", infeasible" }
+        );
+        Ok((Some(run), measurement, note))
+    }
+
+    /// Whether a candidate would be adopted over this baseline, and its
     /// improvement. One predicate for the selection and for the measured
     /// record, so the record cannot count as a win what the selection refused.
-    fn adopts(&self, quantum: &SolverRun, classical_objective: f64) -> (bool, f64) {
-        let gain = improvement(classical_objective, quantum.objective);
+    fn adopts(&self, candidate: &SolverRun, classical_objective: f64) -> (bool, f64) {
+        let gain = improvement(classical_objective, candidate.objective);
         (
-            quantum.is_usable() && gain > self.policy.quantum_margin,
+            candidate.is_usable() && gain > self.policy.quantum_margin,
             gain,
         )
     }
@@ -871,26 +1342,30 @@ impl ComputeRouter {
     /// declined when it is.
     fn estimate(
         &self,
-        tally: Tally,
+        substrate: Substrate,
+        record: SubstrateRecord,
         classical: Formulation,
         cost_micros: u64,
     ) -> (InformationValue, Option<String>) {
         let win_probability = if classical.is_exact() {
             0.0
         } else {
-            tally.win_probability()
+            record.win_probability()
+        };
+        let what = match substrate {
+            Substrate::Qpu => "quantum",
+            _ => substrate.as_str(),
         };
         let refusal = if classical.is_exact() {
-            Some(
+            Some(format!(
                 "the classical baseline is exhaustive and provably optimal at this size, so a \
-                 quantum answer can at best tie and a tie is never adopted; no job is sent"
-                    .to_string(),
-            )
+                 {what} answer can at best tie and a tie is never adopted; no job is sent"
+            ))
         } else if win_probability < self.policy.minimum_win_probability {
             Some(format!(
-                "the quantum arm has won {} of {} trial(s) at this size, a measured win rate of \
+                "the {what} arm has won {} of {} trial(s) at this size, a measured win rate of \
                  {:.3} below the {:.3} the policy requires; it stops being tried",
-                tally.wins, tally.trials, win_probability, self.policy.minimum_win_probability
+                record.wins, record.trials, win_probability, self.policy.minimum_win_probability
             ))
         } else if cost_micros > self.policy.max_quantum_job_cost_micros {
             Some(format!(
@@ -902,12 +1377,16 @@ impl ComputeRouter {
         };
         (
             InformationValue {
-                trials: tally.trials,
-                wins: tally.wins,
+                trials: record.trials,
+                wins: record.wins,
                 win_probability,
                 expected_gain: win_probability * self.policy.quantum_margin,
                 cost_micros,
                 cleared: refusal.is_none(),
+                substrate,
+                repeatability: record.repeatability(),
+                mean_latency_cycles: record.mean_latency_cycles(),
+                calibration_brier: record.calibration_brier(),
             },
             refusal,
         )
@@ -1011,6 +1490,13 @@ impl ComputeRouter {
                 "a candidate replaces the classical baseline only when better by more than the \
                  policy's margin"
                     .to_string(),
+                // §11.3: the research domain's required classical check, on
+                // the record beside the candidates it was applied to.
+                format!(
+                    "{}: {}",
+                    ROUTED_DOMAIN.as_str(),
+                    ROUTED_DOMAIN.required_check()
+                ),
             ]),
             classical: Some(classical.classical_formulation()?),
             // The router discretises a continuous problem when the policy
@@ -1029,13 +1515,19 @@ impl ComputeRouter {
         dispatch: &QuantumDispatch,
         qpu_declined: String,
         information_value: Option<InformationValue>,
+        extras: Extras,
     ) -> ComputeDecision {
         let quantum_chosen = chosen.is_quantum();
+        let inspired_chosen = chosen == Solver::QuantumInspired;
+        let inspired_ran = extras
+            .ensemble
+            .iter()
+            .any(|feature| feature.substrate == Substrate::QuantumInspired);
         let mut verdicts = Vec::with_capacity(Substrate::ALL.len());
         for substrate in Substrate::ALL {
             let (role, reason) = match substrate {
                 Substrate::Cpu => (
-                    if quantum_chosen {
+                    if quantum_chosen || inspired_chosen {
                         SubstrateRole::Baseline
                     } else {
                         SubstrateRole::Answered
@@ -1045,20 +1537,32 @@ impl ComputeRouter {
                         classical_solver.as_str()
                     ),
                 ),
+                // Declined, no device: a valid verdict, and the only honest
+                // one. No in-tree backend drives an accelerator, so nothing
+                // is routed to one and nothing claims acceleration it did not
+                // get.
                 Substrate::Gpu | Substrate::Tpu => (
                     SubstrateRole::Declined,
                     format!(
-                        "no {} backend is attached to this workspace; nothing is routed to a \
-                         substrate that cannot be reached",
+                        "declined, no device: no {} backend is attached to this workspace; \
+                         nothing is routed to a substrate that cannot be reached",
                         substrate.as_str()
                     ),
                 ),
-                Substrate::QuantumInspired => (
-                    SubstrateRole::Declined,
-                    "path-integral annealing is benchmarked in qip-quantum and is not a rung of \
-                     this router; the classical annealer is its heuristic baseline"
-                        .to_string(),
-                ),
+                Substrate::QuantumInspired => {
+                    if inspired_chosen {
+                        (
+                            SubstrateRole::Answered,
+                            format!(
+                                "a verified quantum-inspired answer beat the baseline by more \
+                                 than the margin; {}",
+                                extras.inspired_note
+                            ),
+                        )
+                    } else {
+                        (SubstrateRole::Declined, extras.inspired_note.clone())
+                    }
+                }
                 Substrate::Qpu => {
                     if quantum_chosen {
                         (
@@ -1091,6 +1595,13 @@ impl ComputeRouter {
                              it; the ensemble is resolved when the job returns"
                         ),
                     ),
+                    None if inspired_ran => (
+                        SubstrateRole::Declined,
+                        "the CPU baseline and the quantum-inspired search ran side by side on the \
+                         same QUBO; their outputs are recorded as ensemble features and are not \
+                         combined into an answer (§11.4)"
+                            .to_string(),
+                    ),
                     None => (
                         SubstrateRole::Declined,
                         "only one substrate was asked this cycle".to_string(),
@@ -1107,6 +1618,11 @@ impl ComputeRouter {
             task,
             verdicts,
             information_value,
+            inspired_information_value: extras.inspired_information_value,
+            measurements: extras.measurements,
+            ensemble: extras.ensemble,
+            research_domain: Some(ROUTED_DOMAIN),
+            advantage: extras.advantage,
         }
     }
 

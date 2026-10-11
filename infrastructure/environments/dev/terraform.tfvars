@@ -712,3 +712,13 @@ dns_zone_domain = ""
 # type, which is not a reason. Raise it when the addresses have been stable for
 # a while.
 dns_record_ttl_seconds = 300
+
+# The deep brain's compute router (qip_kernel::compute_routing): the in-tree
+# simulator behind the asynchronous quantum gateway, and the quantum-inspired
+# rung through the solver registry, so the dispatch gate, the gateway and the
+# classical verification of a returned candidate run in a deployed process
+# rather than only in tests. A classical baseline is solved first on every
+# problem (ADR 0006) and a simulated answer is never evidence of advantage.
+# Stage and prod leave both null, which is the binary's own default of off.
+deepbrain_quantum_provider = "simulated"
+deepbrain_quantum_inspired = "on"

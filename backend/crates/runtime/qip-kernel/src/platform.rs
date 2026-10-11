@@ -4609,6 +4609,10 @@ impl Platform {
         if config.quantum_enabled {
             router = router.with_quantum(Arc::new(SimulatedProvider::new(config.seed)))?;
         }
+        // What the router learned before this process started, folded back
+        // from the log's solver benchmarks before it sizes anything
+        // (R12-QUANT-4047; see `compute_routing`).
+        let router = crate::compute_routing::resume(router, &event_log)?;
 
         let mut central = CentralPlane::with_reproducible_key(
             &central_signing_secret(config.seed),
@@ -8621,6 +8625,12 @@ impl Platform {
 
     pub fn telemetry(&self) -> &Telemetry {
         &self.telemetry
+    }
+
+    /// The compute router DECIDE sizes through: which arms it carries and
+    /// what it has learned (see `compute_routing`).
+    pub fn compute_router(&self) -> &ComputeRouter {
+        self.constructor.router()
     }
 
     pub fn autonomy(&self) -> &AutonomyController {
@@ -13172,7 +13182,11 @@ impl Platform {
             instance_size: outcome.routing.weights.len(),
             comparison,
         };
-        if let Err(error) = self.journal_record(benchmark, "kernel/solver-benchmark", now) {
+        if let Err(error) = self.journal_record(
+            benchmark,
+            crate::compute_routing::SOLVER_BENCHMARK_ORIGIN,
+            now,
+        ) {
             self.capture_problems.push(format!(
                 "the solver benchmark was computed and not journalled: {}",
                 error.message()

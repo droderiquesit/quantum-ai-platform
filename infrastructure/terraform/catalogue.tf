@@ -526,6 +526,16 @@ locals {
         var.deepbrain_discover_every == null ? {} : {
           QIP_DEEPBRAIN_DISCOVER_EVERY = var.deepbrain_discover_every
         },
+        # The compute router's arms (`qip_kernel::compute_routing`). Unset,
+        # the binary runs the classical router; dev and test name the
+        # simulator so the asynchronous quantum path runs in a deployed
+        # process, and stage and prod leave both null.
+        var.deepbrain_quantum_provider == null ? {} : {
+          QIP_QUANTUM_PROVIDER = var.deepbrain_quantum_provider
+        },
+        var.deepbrain_quantum_inspired == null ? {} : {
+          QIP_QUANTUM_INSPIRED = var.deepbrain_quantum_inspired
+        },
         # The catalogued connectors this node polls beside its own stream, or
         # nothing. Both keys or neither: `DeepBrainConfig` refuses half a
         # configuration by name, and the root variable's type makes half

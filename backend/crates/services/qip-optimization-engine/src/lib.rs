@@ -149,8 +149,10 @@
 pub mod compute;
 pub mod families;
 pub mod horizons;
+pub mod learning;
 pub mod problem;
 pub mod regime;
+pub mod research;
 pub mod router;
 pub mod tiers;
 pub mod universe;
@@ -168,8 +170,12 @@ pub use horizons::{
     HorizonRegister, HorizonSource, ReconciledPlan, SettledHorizons, family_horizons,
     family_horizons_settled, reconcile,
 };
+pub use learning::{MeasurementOutcome, RoutingLearning, SolverMeasurement, SubstrateRecord};
 pub use problem::{Objective, PortfolioConstraint, PortfolioProblem, QuboEncoding};
 pub use regime::{AllocationRegime, Stance};
+pub use research::{
+    AdvantageBoundary, AdvantageEvidence, AdvantageStanding, EnsembleFeature, ResearchDomain,
+};
 pub use router::{
     ComputeRouter, QuantumDispatch, RoutingDecision, RoutingPolicy, Solver, SolverRun,
 };

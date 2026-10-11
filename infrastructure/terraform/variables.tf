@@ -758,6 +758,50 @@ variable "deepbrain_discover_every" {
   }
 }
 
+variable "deepbrain_quantum_provider" {
+  description = <<-EOT
+    The quantum provider the deep brain attaches to its compute router, read
+    as `QIP_QUANTUM_PROVIDER`, or null to leave the binary's own default of
+    off — the classical router every deployment ran before — in force.
+
+    "simulated" attaches the in-tree statevector simulator behind the
+    asynchronous gateway, so the dispatch gate, the gateway and the classical
+    verification of a returned candidate run in the deployed process. A
+    classical baseline is solved first on every problem regardless (ADR 0006)
+    and a simulated answer is never evidence of advantage. "hosted" is not
+    accepted here because no composition root wires the IBM Quantum adapter;
+    the binary refuses it by name too. Set in dev and test, null in stage and
+    prod.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_quantum_provider == null ? true : can(regex("^(off|simulated)$", var.deepbrain_quantum_provider))
+    error_message = "The deep brain's quantum provider is off or simulated; the hosted adapter is not wired into any composition root."
+  }
+}
+
+variable "deepbrain_quantum_inspired" {
+  description = <<-EOT
+    Whether the deep brain's compute router runs the quantum-inspired rung
+    (path-integral annealing through the solver registry), read as
+    `QIP_QUANTUM_INSPIRED`, or null for the binary's default of off. A
+    classical algorithm on the same CPU, verified classically and adopted
+    only by the router's margin rule. Set in dev and test, null in stage and
+    prod.
+  EOT
+
+  type    = string
+  default = null
+
+  validation {
+    condition     = var.deepbrain_quantum_inspired == null ? true : can(regex("^(off|on)$", var.deepbrain_quantum_inspired))
+    error_message = "The quantum-inspired rung is on or off."
+  }
+}
+
 variable "region_dark_after" {
   description = <<-EOT
     How many seconds every cell of a region may be silent before the centre

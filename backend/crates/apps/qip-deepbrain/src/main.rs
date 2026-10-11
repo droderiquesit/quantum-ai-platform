@@ -49,6 +49,7 @@ use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
 use qip_kernel::central::{CentralConfig, HorizonPolicy};
+use qip_kernel::compute_routing::ComputeSettings;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::journal::StreamJournal;
 use qip_observability::Telemetry;
@@ -170,12 +171,22 @@ fn run() -> Result<()> {
         horizons: load_central_horizons()?,
         ..CentralConfig::default()
     };
-    let platform_config = PlatformConfig::default()
-        .with_event_log(config.event_log.clone())
-        .with_central(central)
-        .with_live_ceiling(AutonomyLevel::deployable(
-            std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
-        )?);
+    // The compute router's arms (R12-QUANT-4052, 7016, 7206): read here, the
+    // one root that runs the slow lane, and nowhere else — the fast brain is
+    // the reflex path and attaches nothing. Unset is the classical router
+    // every deployment ran before; `simulated` attaches the in-tree
+    // simulator behind the asynchronous gateway, so the dispatch gate, the
+    // gateway and the classical verification of a returned candidate run in
+    // this process. An unknown value stops it, exit 78.
+    let (platform_config, compute) = with_compute_settings(
+        &|name| std::env::var(name).ok(),
+        PlatformConfig::default()
+            .with_event_log(config.event_log.clone())
+            .with_central(central)
+            .with_live_ceiling(AutonomyLevel::deployable(
+                std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
+            )?),
+    )?;
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape
     // time, and a router asked for a latency budget from the wall clock
@@ -324,6 +335,7 @@ fn run() -> Result<()> {
     // When a provider was named and withheld, this line is where an operator
     // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
+    println!("  compute routing:  {}", compute.describe());
     println!("  tool registry:    {}", language_model.describe_tools());
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
@@ -923,6 +935,27 @@ fn relabel(error: &Error, message: String) -> Error {
         Error::Guard(_) => Error::Guard(message),
         Error::Timeout(_) => Error::Timeout(message),
     }
+}
+
+/// The compute router's arms, read through `lookup` and applied to `base`.
+///
+/// The two variables are `QUANTUM_PROVIDER_VARIABLE` and
+/// `QUANTUM_INSPIRED_VARIABLE` from `qip_kernel::compute_routing`, read by
+/// `ComputeSettings::from_lookup` and by nothing else; the catalogue sets
+/// them for this workload from `deepbrain_quantum_provider` and
+/// `deepbrain_quantum_inspired`, non-null in dev and test only.
+///
+/// A function of its own, rather than two lines in `run`, so the test below
+/// drives exactly the code the process runs: the settings this root reads,
+/// applied to the configuration it builds the platform from. Before it, no
+/// root set `quantum_enabled`, and the gateway, the dispatch gate and the
+/// classical verification of a quantum candidate ran in no shipped binary.
+fn with_compute_settings(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    base: PlatformConfig,
+) -> Result<(PlatformConfig, ComputeSettings)> {
+    let compute = ComputeSettings::from_lookup(lookup)?;
+    Ok((compute.apply(base), compute))
 }
 
 /// What this process will do, before it does any of it.
@@ -1545,6 +1578,133 @@ mod tests {
             error.message().contains("source-candidate"),
             "the refusal does not say what kind of document was expected: {}",
             error.message()
+        );
+    }
+
+    use qip_kernel::compute_routing::{QUANTUM_INSPIRED_VARIABLE, QUANTUM_PROVIDER_VARIABLE};
+
+    /// A discrete problem the default routing policy admits to the quantum
+    /// arm: 23 names, one over the exhaustive limit so the baseline is a
+    /// heuristic, and within the simulator's 24 qubits.
+    fn eligible_problem() -> Result<qip_optimization_engine::PortfolioProblem> {
+        let n = 23;
+        let assets: Vec<String> = (0..n).map(|i| format!("obj-A{i}")).collect();
+        let covariance: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| if i == j { 0.04 } else { 0.012 }).collect())
+            .collect();
+        Ok(
+            qip_optimization_engine::PortfolioProblem::new(assets, covariance)?
+                .with_objective(qip_optimization_engine::Objective::MeanVariance)
+                .with_expected_returns((0..n).map(|i| 0.05 + 0.001 * i as f64).collect())
+                .with_risk_aversion(5.0)
+                .with_bounds(vec![0.0; n], vec![0.3; n])
+                .fully_invested(1.0)
+                .with_cardinality(4),
+        )
+    }
+
+    fn platform_from(
+        pairs: &[(&str, &str)],
+    ) -> Result<(Platform, qip_kernel::compute_routing::ComputeSettings)> {
+        let map: std::collections::BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let (config, settings) =
+            with_compute_settings(&|name| map.get(name).cloned(), PlatformConfig::default())?;
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        Ok((platform, settings))
+    }
+
+    /// R2.6 (R12-QUANT-4052, 7016, 7206, 1076): the settings this root reads
+    /// attach the simulated provider to the very router the platform sizes
+    /// through, and an eligible problem is dispatched through the
+    /// asynchronous gateway — submitted, not waited on, with the classical
+    /// baseline answering the cycle that asked. Unset, no gateway exists.
+    ///
+    /// Mutation: in `with_compute_settings`, return `(base, compute)` instead
+    /// of `(compute.apply(base), compute)` — no gateway is attached and the
+    /// `quantum_gateway()` assertion fires. In `ComputeSettings::apply`,
+    /// delete `config = config.with_quantum();` — the same assertion fires.
+    #[test]
+    fn the_deep_brains_compute_settings_attach_the_simulator_and_dispatch_through_the_gateway()
+    -> Result<()> {
+        let (unset, settings) = platform_from(&[])?;
+        assert!(
+            unset.compute_router().quantum_gateway().is_none(),
+            "premise: with nothing set the router is classical, as every deployment was"
+        );
+        assert!(settings.describe().contains("off"));
+
+        let (platform, settings) = platform_from(&[
+            (QUANTUM_PROVIDER_VARIABLE, "simulated"),
+            (QUANTUM_INSPIRED_VARIABLE, "on"),
+        ])?;
+        let router = platform.compute_router();
+        let gateway = router
+            .quantum_gateway()
+            .ok_or_else(|| Error::invalid("the simulated provider was not attached"))?;
+        assert!(gateway.provider().capabilities().simulated);
+        assert!(settings.describe().contains("simulated"));
+
+        let problem = eligible_problem()?;
+        let (eligible, note) = router.quantum_assessment(&problem);
+        assert!(
+            eligible,
+            "premise: the default policy admits this problem: {note}"
+        );
+
+        let decision = router.solve(&problem)?;
+        assert!(
+            decision.quantum_dispatch.submitted.is_some(),
+            "the gateway was not asked: {:?}",
+            decision.quantum_dispatch
+        );
+        assert!(
+            !decision.chosen.is_quantum(),
+            "the cycle that asked adopted a quantum answer, so the call was inline"
+        );
+        assert_eq!(gateway.stats()?.submitted, 1);
+        // ADR 0006: the classical baseline was solved first, and whatever
+        // answered is no worse than it.
+        assert!(
+            !decision.runs[0].solver.is_quantum()
+                && decision.runs[0].solver != qip_optimization_engine::Solver::QuantumInspired,
+            "the first run is not the classical baseline"
+        );
+        assert!(decision.objective <= decision.classical_objective);
+        // The quantum-inspired rung the same settings turned on ran beside
+        // it, through the solver registry, from this root's configuration.
+        assert!(
+            decision
+                .run_for(qip_optimization_engine::Solver::QuantumInspired)
+                .is_some(),
+            "the quantum-inspired rung the settings enabled did not run"
+        );
+        Ok(())
+    }
+
+    /// An unknown provider value stops the process with the configuration
+    /// prefix `main` exits 78 on, rather than starting classical.
+    ///
+    /// Mutation: in `ComputeSettings::from_lookup`, make the `Some(other)`
+    /// arm return `QuantumProviderChoice::Off` — the `expect_err` fires.
+    #[test]
+    fn an_unknown_quantum_provider_value_stops_the_deep_brain_rather_than_starting_classical() {
+        let refusal = platform_from(&[(QUANTUM_PROVIDER_VARIABLE, "qpu")])
+            .map(|_| ())
+            .expect_err("an unknown provider value was accepted");
+        assert!(
+            refusal.message().starts_with("configuration:"),
+            "{}",
+            refusal.message()
         );
     }
 }
