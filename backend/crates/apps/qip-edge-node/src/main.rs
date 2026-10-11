@@ -49,6 +49,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, Duration, SystemClock};
 use qip_edge::cell::{CellConfig, Placer, PricingPolicy};
+use qip_edge::fencing::Fence;
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{
@@ -81,6 +82,10 @@ use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
 use qip_edge_node::scheduler::{DecisionLoop, HealthFacts, InstantClock, MarkerFacts, Outbox};
 use qip_edge_node::share::RegionShareStatus;
+use qip_edge_node::standby::{
+    FileLeaseStore, LEASE_VARIABLE, LeaseKeeper, LeaseThread, LeaseTiming, NAME_VARIABLE,
+    ROLE_VARIABLE, SimulatedSessions, StandbySettings,
+};
 use qip_edge_node::strategies::{
     MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
     parse_pricing,
@@ -235,6 +240,10 @@ struct NodeConfig {
     /// read or names a limit the cell cannot evaluate stops the process —
     /// see `qip_edge_node::risk`.
     risk_limits: CellRiskLimits,
+    /// The fencing lease this process holds or stands by for, when it runs
+    /// as one of a primary/standby pair. `None` is a node with no standby,
+    /// announced — see `qip_edge_node::standby`.
+    standby: Option<StandbySettings>,
 }
 
 impl NodeConfig {
@@ -367,6 +376,11 @@ impl NodeConfig {
         }
 
         let fabric = read_fabric(&|name| std::env::var(name).ok())?;
+        let standby = StandbySettings::read(
+            std::env::var(LEASE_VARIABLE).ok().as_deref(),
+            std::env::var(ROLE_VARIABLE).ok().as_deref(),
+            std::env::var(NAME_VARIABLE).ok().as_deref(),
+        )?;
         let risk_limits = CellRiskLimits::read(
             std::env::var(RISK_LIMITS_VARIABLE).ok().as_deref(),
             |path| std::fs::read_to_string(path),
@@ -393,6 +407,7 @@ impl NodeConfig {
             quote_limits,
             fabric,
             risk_limits,
+            standby,
         })
     }
 }
@@ -539,6 +554,43 @@ fn run() -> Result<()> {
         println!("{line}");
     }
     let mut gateway = NodeGateway::open(&choice, gateway_venue.clone(), started)?;
+
+    // The fencing lease, before the feed and before anything is served: a
+    // standby that reported healthy before its fence was installed would be
+    // a second owner for as long as that took. Refused on any adapter but
+    // the simulator, because the venue-session check a promotion requires
+    // exists only for the simulator, whose session is its process.
+    let lease_thread = match &config.standby {
+        Some(settings) => {
+            if !matches!(choice, VenueChoice::Simulated { .. }) {
+                return Err(Error::invalid(format!(
+                    "configuration: {LEASE_VARIABLE} is set on a node whose venue adapter is not                      the simulator; a standby promotes only once every venue reports the old                      holder's session ended, and no adapter but the simulator can answer that                      yet"
+                )));
+            }
+            let fence = Fence::new();
+            cell.install_fence(fence.clone());
+            let store = FileLeaseStore::at(&settings.path)?;
+            let keeper = LeaseKeeper::new(
+                &settings.name,
+                settings.role,
+                LeaseTiming::deployed()?,
+                Arc::new(store),
+                fence,
+                config.venues.clone(),
+                Box::new(SimulatedSessions),
+            )?;
+            println!(
+                "qip-edge-node: fencing lease at {} as {} `{}`: ttl {:?}, margin {:?}; this cell                  places nothing until it holds the epoch. The file store is correct on one host                  only: a standby in another zone needs a store with a conditional write, which                  this tree does not have",
+                settings.path.display(),
+                settings.role.as_str(),
+                settings.name,
+                keeper.timing().ttl,
+                keeper.timing().margin,
+            );
+            Some(LeaseThread::spawn(keeper, Arc::clone(&clock))?)
+        }
+        None => None,
+    };
 
     // The feed, bound to the cell before anything is served. Refused here,
     // and not at the first pass, if the gateway it would price is not the
@@ -705,6 +757,7 @@ fn run() -> Result<()> {
         &gateway,
         &strategies,
         requoter.is_some(),
+        lease_thread.is_some(),
     ) {
         println!("qip-edge-node: awaiting {requirement}");
     }
@@ -991,6 +1044,7 @@ fn missing_production_requirements(
     gateway: &NodeGateway,
     strategies: &StrategyInstaller,
     has_requoter: bool,
+    has_lease: bool,
 ) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
@@ -1061,6 +1115,15 @@ fn missing_production_requirements(
             "{REPRICE_VARIABLE} for the requote threshold: without it a resting order stays where \
              it was sent until its time to live however far the touch moves; set \
              `<tick>:<ticks>:<bps>`"
+        ));
+    }
+    if !has_lease {
+        // A node with no lease is the only owner of its session by
+        // assumption, and a standby started beside it with no lease would
+        // be a second owner; said here so nobody adds one without a lease.
+        missing.push(format!(
+            "{LEASE_VARIABLE} for a fenced standby: without it this node runs alone, a restart \
+             is its only recovery, and a second node for this cell must not be started"
         ));
     }
     if !has_halt_flag {

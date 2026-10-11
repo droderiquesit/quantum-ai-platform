@@ -53,6 +53,9 @@ pub mod risk;
 pub mod scheduler;
 /// The cell's share of its region's grant, as the health body reports it.
 pub mod share;
+/// The warm standby and the fencing lease that keeps it from being a second
+/// owner of the venue session.
+pub mod standby;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
 pub mod tape;

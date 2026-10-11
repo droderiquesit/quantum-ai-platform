@@ -1367,6 +1367,10 @@ pub struct Cell {
     /// as it always did — a composition root asserts it installed one through
     /// [`Cell::risk_gate`] rather than this field promising it.
     risk_gate: Option<crate::risk_gate::CellRiskGate>,
+    /// The fencing epoch this cell places under, when it runs beside a
+    /// standby (R12-REFLEX-8069; see [`crate::fencing`]). `None` is a cell
+    /// with no standby, which places as it always did.
+    fence: Option<crate::fencing::Fence>,
     /// The §31.1 cross-region mirrors this cell takes part in, if an
     /// operator installed any.
     ///
@@ -1559,6 +1563,7 @@ impl Cell {
             metrics: CellMetrics::silent(),
             mode_gate: None,
             risk_gate: None,
+            fence: None,
             mirror: None,
             region_allocation: None,
             budget,
@@ -1658,6 +1663,25 @@ impl Cell {
     /// asserted rather than trusted.
     pub fn risk_gate(&self) -> Option<&crate::risk_gate::CellRiskGate> {
         self.risk_gate.as_ref()
+    }
+
+    /// Place only under the fencing epoch `fence` admits. Contraction only:
+    /// the fence can refuse an order the cell would otherwise have sent and
+    /// admits nothing another gate refused. See [`crate::fencing`] for why
+    /// the check sits here rather than in whatever keeps the lease.
+    pub fn with_fence(mut self, fence: crate::fencing::Fence) -> Self {
+        self.fence = Some(fence);
+        self
+    }
+
+    /// [`Self::with_fence`] on a cell already assembled.
+    pub fn install_fence(&mut self, fence: crate::fencing::Fence) {
+        self.fence = Some(fence);
+    }
+
+    /// The installed fence, if any.
+    pub fn fence(&self) -> Option<&crate::fencing::Fence> {
+        self.fence.as_ref()
     }
 
     /// Bound everything this cell commits by one amount.
@@ -5278,6 +5302,10 @@ impl Cell {
             );
             return Err(error);
         }
+        // The fence, before the risk gate: a process that does not own the
+        // venue session has no business asking whether an order is within
+        // limits, and the refusal should say which it was.
+        self.fence_admit(now)?;
         // The deterministic Risk Gate, last of the checks and before the
         // sequence advances, so a refused order burns no order number. Its
         // state is the cell's own; see `Cell::risk_admit`.
@@ -5335,7 +5363,30 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
     ) -> Result<()> {
+        self.fence_admit(now)?;
         self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// Refuse under [`crate::fencing::GATE_FENCED`] when an installed fence
+    /// does not admit an order at `now`. Journaled and counted here, as the
+    /// live-venue refusal is, because both callers sit outside any report.
+    fn fence_admit(&mut self, now: Timestamp) -> Result<()> {
+        let Some(fence) = &self.fence else {
+            return Ok(());
+        };
+        let Err(status) = fence.admits(now) else {
+            return Ok(());
+        };
+        let reason = format!("the cell places nothing: {}", status.describe());
+        self.metrics.refusal(crate::fencing::GATE_FENCED);
+        self.journal.record(
+            Decision::Refused {
+                gate: crate::fencing::GATE_FENCED.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// The deterministic Risk Gate over the cell's own book: confirmed

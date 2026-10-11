@@ -500,7 +500,7 @@ impl DecisionLoop {
             }
         }
         if let Some((snapshot, facts)) = &self.health {
-            snapshot.publish(self.health_body(facts, pressure, retained));
+            snapshot.publish(self.health_body(facts, pressure, retained, now));
         }
         Ok(Turn {
             pressure,
@@ -655,8 +655,23 @@ impl DecisionLoop {
         facts: &HealthFacts,
         pressure: JournalPressure,
         retained: usize,
+        now: Timestamp,
     ) -> String {
         let cell = &self.cell;
+        // The fencing epoch, when the node runs as one of a pair: a standby
+        // reads `fenced` or `unowned` here and an operator can see which
+        // process owns the venue session without reading the lease file.
+        let fence = cell.fence().map_or_else(
+            || "null".to_string(),
+            |fence| {
+                let status = fence.status(now);
+                format!(
+                    r#"{{"state":"{}","admits":{}}}"#,
+                    crate::standby::fence_word(&status),
+                    status.admits()
+                )
+            },
+        );
         let gateway = &self.gateway;
         let stats = &self.stats;
         let mesh = match self.mesh_health {
@@ -715,7 +730,7 @@ impl DecisionLoop {
         };
         let drain_running = self.drain.as_ref().is_some_and(DrainThread::is_running);
         format!(
-            r#"{{"cell":"{}","region":"{}","halted":{},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_retained":{retained},"journal_shipped":{shipped},"journal_pressure":"{}","journal_handoffs_refused":{},"store_failures":{store_failures},"relay_running":{relay_running},"drain_running":{drain_running},"turns":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+            r#"{{"cell":"{}","region":"{}","halted":{},"fence":{fence},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_retained":{retained},"journal_shipped":{shipped},"journal_pressure":"{}","journal_handoffs_refused":{},"store_failures":{store_failures},"relay_running":{relay_running},"drain_running":{drain_running},"turns":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
             facts.cell,
             facts.region,
             cell.is_halted(),
