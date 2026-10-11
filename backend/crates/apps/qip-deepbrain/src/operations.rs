@@ -49,11 +49,6 @@ pub const GRAPH_RETENTION: usize = 64;
 /// on an incident's timeline. The research loop's residual threshold.
 pub const VENUE_BEHAVIOUR_BPS: f64 = crate::research::RESIDUAL_BPS;
 
-/// The router's own words when it attempts QAOA
-/// (`qip_optimization_engine::router::ComputeRouter::quantum_assessment`).
-/// A text coupling, and the reason a test pins it: the journal records the
-/// note and the runs, not a separate attempted flag.
-pub const QUANTUM_ATTEMPT_PREFIX: &str = "attempting QAOA";
 /// `Solver::Quantum.as_str()`, as journalled in `SolverRoutingJournal::ran`.
 pub const QUANTUM_SOLVER: &str = "quantum";
 
@@ -162,19 +157,28 @@ impl OperationsRound {
     }
 }
 
-/// The quantum outcome a cycle's journalled routing records, if it attempted
-/// one: an attempt that produced a run succeeded, one that did not failed.
+/// The quantum outcome a cycle's journalled routing records, if a job
+/// resolved in it.
+///
+/// Since the quantum arm went submit-and-poll, the cycle that attempts QAOA
+/// is not the cycle that learns how it went: a submission or a job still out
+/// is not an outcome, and counting it as a failure — what reading the
+/// "attempting QAOA" note did — would page operations for every job in
+/// flight. So the outcome is read from the typed dispatch record: a harvested
+/// job whose answer was judged and ran succeeded; a harvested job dropped as
+/// stale or refused by the judge, an abandoned one and a lost one failed.
 pub fn quantum_outcome(
     routing: &qip_kernel::platform::SolverRoutingJournal,
 ) -> Option<&'static str> {
-    if !routing.quantum_note.starts_with(QUANTUM_ATTEMPT_PREFIX) {
-        return None;
+    let dispatch = &routing.quantum_dispatch;
+    if dispatch.harvested.is_some() {
+        return Some(if routing.ran.iter().any(|s| s == QUANTUM_SOLVER) {
+            "succeeded"
+        } else {
+            "failed"
+        });
     }
-    Some(if routing.ran.iter().any(|s| s == QUANTUM_SOLVER) {
-        "succeeded"
-    } else {
-        "failed"
-    })
+    (dispatch.abandoned.is_some() || dispatch.lost.is_some()).then_some("failed")
 }
 
 #[derive(Debug)]

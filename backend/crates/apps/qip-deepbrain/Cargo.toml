@@ -81,6 +81,9 @@ qip-expansion.workspace = true
 # frames is the one that reads them back. A dev-dependency and not a
 # dependency: the node never decodes its own log.
 qip-streaming.workspace = true
+# The operations tests build the router's typed quantum dispatch record, which
+# the kernel journals but does not re-export.
+qip-optimization-engine.workspace = true
 
 [lints]
 workspace = true

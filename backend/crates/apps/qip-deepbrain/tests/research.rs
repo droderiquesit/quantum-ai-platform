@@ -11,9 +11,7 @@ use qip_contracts::ambient::AcquisitionStatus;
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::node::{self, Loops};
-use qip_deepbrain::operations::{
-    CapabilitySwitch, IterationFacts, Operations, QUANTUM_ATTEMPT_PREFIX, quantum_outcome,
-};
+use qip_deepbrain::operations::{CapabilitySwitch, IterationFacts, Operations, quantum_outcome};
 use qip_deepbrain::research::{ResearchConfig, ResearchLoop};
 use qip_deepbrain::status::NodeStatus;
 use qip_financial::quality::DataQuality;
@@ -25,6 +23,7 @@ use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::aiops::{Effector, EntityKey, SignalClass};
 use qip_observability::metrics::{labels, names};
+use qip_optimization_engine::QuantumDispatch;
 use qip_risk::limits::LimitSet;
 use qip_storage::{ChainArchive, MemoryKeyValueStore};
 use std::collections::{BTreeMap, BTreeSet};
@@ -366,7 +365,7 @@ fn the_effector_carries_out_nothing_but_disabling_this_nodes_own_research() {
     assert!(switch.is_disabled("research"));
 }
 
-fn routing(note: &str, ran: &[&str]) -> SolverRoutingJournal {
+fn routing(dispatch: QuantumDispatch, ran: &[&str]) -> SolverRoutingJournal {
     SolverRoutingJournal {
         chosen: "classical".into(),
         ran: ran.iter().map(|s| (*s).to_string()).collect(),
@@ -374,26 +373,65 @@ fn routing(note: &str, ran: &[&str]) -> SolverRoutingJournal {
         classical_objective: 1.0,
         improvement_over_classical: 0.0,
         measured_quantum_advantage: None,
-        quantum_note: note.into(),
+        quantum_note: "attempting QAOA on ibm, a simulator".into(),
+        quantum_dispatch: dispatch,
+        compute: None,
     }
 }
 
+/// Since the quantum arm went submit-and-poll, a cycle that submits a job, or
+/// finds one still out, has not learned how it went; counting either as a
+/// failure would page operations for every job in flight. Mutation: make
+/// `quantum_outcome` return `Some("failed")` for a submitted or pending job
+/// (the note-reading rule it replaced), and the first two assertions fail.
 #[test]
-fn only_an_attempted_quantum_solve_is_a_job_and_one_with_no_run_failed() {
-    let attempted = format!("{QUANTUM_ATTEMPT_PREFIX} on ibm, a simulator");
+fn only_a_job_that_resolved_this_cycle_is_an_outcome_and_one_that_did_not_run_failed() {
+    let submitted = QuantumDispatch {
+        submitted: Some(7),
+        ..QuantumDispatch::default()
+    };
     assert_eq!(
-        quantum_outcome(&routing(
-            "no quantum provider is configured",
-            &["exact_enumeration"]
-        )),
+        quantum_outcome(&routing(submitted, &["exact_enumeration"])),
         None
     );
+    let pending = QuantumDispatch {
+        pending: Some(7),
+        ..QuantumDispatch::default()
+    };
     assert_eq!(
-        quantum_outcome(&routing(&attempted, &["exact_enumeration", "quantum"])),
+        quantum_outcome(&routing(pending, &["exact_enumeration"])),
+        None
+    );
+
+    let harvested = QuantumDispatch {
+        harvested: Some(7),
+        ..QuantumDispatch::default()
+    };
+    assert_eq!(
+        quantum_outcome(&routing(
+            harvested.clone(),
+            &["exact_enumeration", "quantum"]
+        )),
         Some("succeeded")
     );
     assert_eq!(
-        quantum_outcome(&routing(&attempted, &["exact_enumeration"])),
-        Some("failed")
+        quantum_outcome(&routing(harvested, &["exact_enumeration"])),
+        Some("failed"),
+        "a harvested answer dropped as stale or refused by the judge is a failed trial"
     );
+    for resolved_without_answer in [
+        QuantumDispatch {
+            abandoned: Some(7),
+            ..QuantumDispatch::default()
+        },
+        QuantumDispatch {
+            lost: Some(7),
+            ..QuantumDispatch::default()
+        },
+    ] {
+        assert_eq!(
+            quantum_outcome(&routing(resolved_without_answer, &["exact_enumeration"])),
+            Some("failed")
+        );
+    }
 }

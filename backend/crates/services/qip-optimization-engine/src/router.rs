@@ -179,6 +179,13 @@ pub struct QuantumDispatch {
     /// A job still out after this solve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<u64>,
+    /// The job given up on this solve because it ran past its patience: a
+    /// trial that produced no answer, and so a failed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandoned: Option<u64>,
+    /// The job the gateway no longer holds: also an outcome, and a failed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost: Option<u64>,
     /// What the job submitted this solve cost, in USD micro-units.
     #[serde(default)]
     pub cost_micros: u64,
@@ -664,6 +671,7 @@ impl ComputeRouter {
                         state.pending = Some(pending);
                     }
                     Ok(JobPoll::Abandoned { polls }) => {
+                        dispatch.abandoned = Some(pending.ticket.id());
                         dispatch.notes.push(format!(
                             "quantum job {} was abandoned after {polls} cycle(s) without an \
                              answer; whatever it returns later is discarded, and the classical \
@@ -711,6 +719,7 @@ impl ComputeRouter {
                         }
                     }
                     Err(error) => {
+                        dispatch.lost = Some(pending.ticket.id());
                         dispatch.notes.push(format!(
                             "the gateway no longer holds quantum job {}: {}",
                             pending.ticket.id(),
