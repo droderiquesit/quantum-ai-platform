@@ -84,6 +84,7 @@ use qip_edge_node::pass::PassMeter;
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
+use qip_edge_node::rollback::{ROLLBACK_VARIABLE, RollbackRequest, RollbackWire};
 use qip_edge_node::scheduler::{DecisionLoop, HealthFacts, InstantClock, MarkerFacts, Outbox};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::standby::{
@@ -207,6 +208,10 @@ struct NodeConfig {
     /// `None` is a node with no halt flag either, which can never be told
     /// that a peer region has gone dark.
     region_wire: Option<DarkRegionWire>,
+    /// The operator's rollback request (REFLEX-8071), when the deployment
+    /// names one. `None` is a node whose resident previous payload can be
+    /// returned to by nobody — see `qip_edge_node::rollback`.
+    rollback: Option<RollbackRequest>,
     /// The strategy whose grant funds the arbitrage desk, when this node
     /// runs one. `None` installs no desk and is named in the production
     /// requirements — see `qip_edge_node::arbitrage`.
@@ -365,6 +370,18 @@ impl NodeConfig {
         let region_wire = halt_flag
             .as_ref()
             .and_then(|flag| DarkRegionWire::beside(flag.path()));
+        // Set but unusable is refused, as the halt flag is; unset is a node
+        // with no rollback control, which is how every node ran before it.
+        let rollback = match std::env::var(ROLLBACK_VARIABLE) {
+            Ok(value) if !value.trim().is_empty() => Some(RollbackRequest::at(value.trim())?),
+            Ok(value) if !value.is_empty() => {
+                return Err(Error::invalid(format!(
+                    "configuration: {ROLLBACK_VARIABLE} is whitespace; name an absolute path, \
+                     or unset it to run with no rollback control"
+                )));
+            }
+            _ => None,
+        };
 
         let arbitrage_strategy = match std::env::var(STRATEGY_VARIABLE) {
             Ok(value) if !value.trim().is_empty() => Some(StrategyId::new(value.trim())),
@@ -452,6 +469,7 @@ impl NodeConfig {
             mesh,
             halt_flag,
             region_wire,
+            rollback,
             arbitrage_strategy,
             arbitrage_search,
             feed,
@@ -1147,6 +1165,20 @@ fn run() -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         decisions = decisions.with_poller(poller);
+    }
+    match config.rollback.clone() {
+        Some(request) => {
+            println!(
+                "qip-edge-node: policy rollback request at {} ({ROLLBACK_VARIABLE}; write the \
+                 sequence to roll away from)",
+                request.path().display()
+            );
+            decisions = decisions.with_rollback(RollbackWire::spawn(request, POLL_INTERVAL)?);
+        }
+        None => println!(
+            "qip-edge-node: no policy rollback control ({ROLLBACK_VARIABLE} unset): the previous \
+             payload stays resident and only the centre can move the cell off the current one"
+        ),
     }
     if let Some(link) = link {
         decisions = decisions.with_mesh(MeshWorker::spawn(

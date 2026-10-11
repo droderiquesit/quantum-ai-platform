@@ -1020,3 +1020,69 @@ fn a_running_funded_cell_authorises_legs_within_its_free_capital_and_a_halted_on
     );
     Ok(())
 }
+
+/// REFLEX-8071: the previous payload is resident in the cell, and the node's
+/// rollback request is what reaches it. Driven through `DecisionLoop::turn`,
+/// the call the binary's timer makes, with the wire `main.rs` builds from
+/// `QIP_POLICY_ROLLBACK_PATH` reading a real file on its own thread.
+///
+/// Mutation: drop the `apply_rollback` call from `DecisionLoop::turn` and the
+/// cell is still serving sequence 2 after the turn.
+#[test]
+fn an_operator_rollback_request_returns_the_cell_to_its_previous_payload_on_the_next_turn()
+-> Result<()> {
+    use qip_edge_node::rollback::{RollbackReading, RollbackRequest, RollbackWire};
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let Rig { decisions, .. } = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let dir = temp_dir("rollback");
+    let path = dir.join("rollback");
+    let wire = RollbackWire::spawn(
+        RollbackRequest::at(&path)?,
+        std::time::Duration::from_millis(5),
+    )?;
+    let mut decisions = decisions.with_rollback(wire);
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(20));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(20),
+    );
+    let policy = VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(20))?;
+    decisions.cell_mut().apply_policy(policy, t(20))?;
+    // Premise: with no request on disk, a turn leaves the cell where it is.
+    drive(&mut decisions, 21, 2);
+    assert_eq!(decisions.cell().policy_sequence(), Some(2));
+
+    std::fs::write(&path, "2\n").expect("the request can be written");
+    let rollback = decisions_wire_reading(&path);
+    assert_eq!(rollback, RollbackReading::AwayFrom(2));
+    let waited = std::time::Instant::now();
+    while decisions.cell().policy_sequence() == Some(2) {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the rollback request never reached the cell through the decision loop"
+        );
+        decisions.turn(t(30))?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "the cell left sequence 2 for something other than its previous payload"
+    );
+    // The request stays on disk and acts once: further turns keep sequence 1.
+    drive(&mut decisions, 31, 3);
+    assert_eq!(decisions.cell().policy_sequence(), Some(1));
+    Ok(())
+}
+
+/// What the request file reads as, through the same type the wire reads it
+/// with — so the premise above is about the file the reader thread sees.
+fn decisions_wire_reading(path: &std::path::Path) -> qip_edge_node::rollback::RollbackReading {
+    qip_edge_node::rollback::RollbackRequest::at(path)
+        .expect("an absolute path is accepted")
+        .read()
+}

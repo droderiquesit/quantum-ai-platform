@@ -53,6 +53,9 @@ pub mod reprice;
 /// The cell's deterministic Risk Gate: the limits it evaluates, and the one
 /// way this node obtains them.
 pub mod risk;
+/// The operator's rollback request: return to the previous policy payload
+/// without a fetch (REFLEX-8071).
+pub mod rollback;
 pub mod scheduler;
 /// The cell's share of its region's grant, as the health body reports it.
 pub mod share;
