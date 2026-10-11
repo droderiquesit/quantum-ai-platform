@@ -3352,13 +3352,14 @@
   {
     "id": "R12-RES-10153",
     "status": "PARTIAL",
-    "current": "In-process: priority tests in the edge node and bounded admission in qip-streaming's broker; the acceptance test for bounded broker memory asserts fixtures. No drill.",
+    "current": "Stream quotas and lag limits refuse a producer while a checkpointed group trails its lag limit (services/qip-streaming/tests/event_fabric_quota.rs:159) and sink failures are isolated (tests/qip-acceptance/tests/event_fabric_scaling.rs:596). The game-day harness has four scenarios (broker-loss, ledgerd-loss, region-isolation, stale-policy; scripts/game-day/scenarios/) and none freezes a sink or measures broker memory.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/priority.rs",
-      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_configuration.rs:333 fabric_063 (fixture-only)"
+      "services/qip-streaming/tests/event_fabric_quota.rs::a_refuse_producer_stream_stops_accepting_while_a_checkpointed_group_trails_its_lag_limit",
+      "tests/qip-acceptance/tests/event_fabric_scaling.rs::fabric_097_each_sink_failure_and_backpressure_isolated_from_others",
+      "scripts/game-day/harness.mjs",
+      "docs/ops/game-days/README.md"
     ],
-    "gap": "Drill on a deployed broker.",
+    "gap": "A frozen-sink scenario in the harness measuring broker memory and P0/P1 priority, run and recorded.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3376,12 +3377,13 @@
   {
     "id": "R12-RES-10154",
     "status": "PARTIAL",
-    "current": "Unit/property-level: ledgerd idempotency and sink retry; no drill.",
+    "current": "scripts/game-day/scenarios/ledgerd-loss.json kills qip-ledgerd under a running cell; the committed result is verdict 'inconclusive' with rpo_records null because the outcomes stream was empty — the simulated cell deployed no strategy (docs/ops/game-days/results/2026-10-11-ledgerd-loss.json; README 'Results so far'). Ledger dedup across restart is unit-tested (apps/qip-ledgerd/tests/fabric.rs:407).",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
-      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs"
+      "docs/ops/game-days/results/2026-10-11-ledgerd-loss.json",
+      "scripts/game-day/scenarios/ledgerd-loss.json",
+      "apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Drill.",
+    "gap": "Run the drill with a strategy plan so outcomes exist, denying ledger writes, and record no lost/doubled outcomes and capital-freshness degradation.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3394,7 +3396,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: A drill record exists but does not show what the row asks: it is inconclusive by its own verdict."
   },
   {
     "id": "R12-RES-10155",
@@ -4132,10 +4134,15 @@
   },
   {
     "id": "R12-RES-10186",
-    "status": "MISSING",
-    "current": "No game-day schedule, harness or RTO/RPO measurement in code or workflows.",
-    "evidence": [],
-    "gap": "Schedule + harness.",
+    "status": "PARTIAL",
+    "current": "docs/ops/game-days/README.md defines a schedule (per-change, weekly, monthly, quarterly) and RTO/RPO fields, and four local drills were run on 2026-10-11 with committed results validated by scripts/game-day/harness.test.mjs. Every deployed row is 'not run', the per-change cadence is not enforced in CI, and components such as the API, brains, venue adapter and standby have no scenario.",
+    "evidence": [
+      "docs/ops/game-days/README.md",
+      "scripts/game-day/harness.mjs",
+      "scripts/game-day/harness.test.mjs",
+      "docs/ops/game-days/results/2026-10-11-broker-loss.json"
+    ],
+    "gap": "Scenarios for every critical component, deployed runs on the schedule, and RTO/RPO or a documented reason per component.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -4149,7 +4156,7 @@
     "verification": "game-day records",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
   },
   {
     "id": "R12-WORLD-10187",

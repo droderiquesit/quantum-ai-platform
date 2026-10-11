@@ -24,15 +24,15 @@
   },
   {
     "id": "R12-REFLEX-8002",
-    "status": "PARTIAL",
-    "current": "modules/execution-node provisions a reservation-backed instance template + zonal IGM, gVNIC, TIER_1, no external IP, shielded; machine_type validation admits C4/C4D but also C3/C3D shapes. Not instantiated: execution_nodes = {} in every environment tfvars.",
+    "status": "INCORRECT",
+    "current": "The execution-node module admits C3 and C3D shapes alongside C4/C4D (infrastructure/terraform/modules/execution-node/variables.tf:150-164), its description still argues from §41.4's 'c3-highcpu-8 to -22' (variables.tf:132-147), and the one node declared anywhere is a c3-highcpu-8 (infrastructure/environments/dev/terraform.tfvars:217-222). It is not provisioned: execution_nodes_enabled = false (dev tfvars:245; infrastructure/terraform/main.tf:662). The MIG exists (modules/execution-node/main.tf:494) with no load balancer.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/variables.tf:118-150 machine_type allows c3/c3d as well as c4/c4d",
-      "infrastructure/terraform/modules/execution-node/main.tf:351 instance template; :411 nic_type GVNIC; :493 instance group manager",
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh",
-      "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {}"
+      "infrastructure/terraform/modules/execution-node/variables.tf:132-165",
+      "infrastructure/environments/dev/terraform.tfvars:217-245",
+      "infrastructure/terraform/execution-nodes-enabled.tf:22-60",
+      "infrastructure/terraform/modules/execution-node/main.tf:494"
     ],
-    "gap": "Restrict machine_type to C4/C4D (or record why C3 stays); declare at least one node in an environment and show the plan.",
+    "gap": "Refuse C3/C3D/N2 at plan (allow only C4/C4D), move the dev node to a C4/C4D shape, enable it, and show the plan.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -43,7 +43,7 @@
     "verification": "terraform plan with a populated execution_nodes map; cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "S",
-    "notes": "Validation message cites §41.4 of an older blueprint allowing C3; v3.0 says C4D/C4."
+    "notes": "Round-2 independent audit, 2026-10-11: PARTIAL->INCORRECT: the verification requires a C3 shape to be refused at plan; the validation accepts it and the only declared node is C3. Separately unverified: whether c4-highcpu-22 is a real GCE shape."
   },
   {
     "id": "R12-MESH-8003",
@@ -142,13 +142,17 @@
   {
     "id": "R12-LEDGER-8007",
     "status": "PARTIAL",
-    "current": "qip-ledgerd keeps balances, chain tails and offsets in the in-tree DurableStore (local WAL); Terraform declares a gated Spanner instance with no edition set and no Rust adapter exists.",
+    "current": "A Spanner backend exists. In deployed environments qip-ledgerd claims a fenced writer row and commits each delivery's postings, dedup record and cursor in one Spanner transaction (apps/qip-ledgerd/src/lib.rs:212-228; spanner.rs; backend.rs:77-85). LedgerConfig refuses `local` storage in any deployed environment (apps/qip-ledgerd/src/config.rs:301-320). Terraform declares google_spanner_instance.global (processing_units 100, config nam-eur-asea) and a `positions` database with no `edition` argument (infrastructure/terraform/modules/data/main.tf:380-410). enable_spanner=false in every environment, prod included (infrastructure/environments/prod/terraform.tfvars:114). The ledger is a key-value table, not a positions/obligations/capital-grant schema.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:352-372 LedgerStore::open/apply on qip_storage::DurableStore",
-      "infrastructure/terraform/modules/data/main.tf:380-395 google_spanner_instance, processing_units = 100, no edition",
-      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner refused"
+      "backend/crates/apps/qip-ledgerd/src/lib.rs:212",
+      "backend/crates/apps/qip-ledgerd/src/config.rs:301",
+      "infrastructure/terraform/modules/data/main.tf:380",
+      "infrastructure/environments/prod/terraform.tfvars:114",
+      "apps/qip-ledgerd/tests/spanner.rs::a_ledger_on_spanner_books_each_delivery_in_one_transaction_and_holds_what_the_local_store_holds",
+      "apps/qip-ledgerd/tests/spanner.rs::a_second_writer_claiming_the_spanner_ledger_fences_the_first_out",
+      "apps/qip-ledgerd/tests/spanner.rs::a_deployed_ledger_starts_only_on_a_spanner_database_it_can_reach"
     ],
-    "gap": "Spanner adapter, ENTERPRISE_PLUS edition, migration of ledger state, positions/obligations/capital-grant schemas.",
+    "gap": "(1) ENTERPRISE_PLUS edition on the instance. (2) Spanner enabled where the ledger runs. (3) Positions, obligations and capital grants as Spanner-held financial truth; capital grants and positions still live in the kernel and cell. (4) A deployed qip-ledgerd: variables.tf says null in every environment.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -161,7 +165,7 @@
     "verification": "integration test against Spanner emulator or instance",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: Adapter, single-transaction commit and the production refusal are real and tested against a fake Spanner REST server."
   },
   {
     "id": "R12-CICD-8008",
@@ -524,12 +528,14 @@
   {
     "id": "R12-LEDGER-8024",
     "status": "COMPLETE",
-    "current": "apply checks the chain tail/cursor and writes postings, balances, tail and cursor in one WriteBatch under the writer lock.",
+    "current": "LedgerStore::apply builds one LedgerBatch holding the postings, balance rows, per-cell chain tail, park changes and the partition cursor, and commits it once (apps/qip-ledgerd/src/store.rs:698-930; commit at the end of apply). A repeated offset/hash, or a repeated sequence with the same digest, moves nothing; a different hash at a held offset is an integrity break. apply is reached from qip-ledgerd main via the partition workers (apps/qip-ledgerd/src/consumer.rs:1-20, lib.rs start).",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:378 writer lock; :372-600 single batch per delivery",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 duplication/crash property",
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:399 restart books once",
-      "backend/crates/apps/qip-ledgerd/src/lib.rs:169 start from main"
+      "backend/crates/apps/qip-ledgerd/src/store.rs:698",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:1",
+      "apps/qip-ledgerd/tests/store.rs::for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery",
+      "apps/qip-ledgerd/tests/store.rs::a_record_that_repeats_a_committed_sequence_with_the_same_digest_moves_nothing",
+      "apps/qip-ledgerd/tests/store.rs::the_same_offset_arriving_with_a_different_record_hash_is_an_integrity_break_never_a_skip",
+      "apps/qip-ledgerd/tests/history.rs::a_redelivered_operation_moves_nothing_and_a_different_one_under_its_id_is_refused"
     ],
     "gap": "",
     "implemented": true,
@@ -542,7 +548,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": "qip-ledgerd cannot start: main returns serve()'s unavailable error. ADR 0100 describes it as the ledger's sole writer. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. apply is now reached from qip-ledgerd main via the partition workers."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged from the prior COMPLETE. The old note that 'qip-ledgerd cannot start' is stale: main.rs:27-80 calls start_with_access."
   },
   {
     "id": "R12-RES-8025",
@@ -1504,12 +1510,18 @@
   {
     "id": "R12-REFLEX-8069",
     "status": "PARTIAL",
-    "current": "Terraform declares a standby template, subnet, placement and health check (tested). No Rust fencing-epoch or session-ownership logic exists for node takeover.",
+    "current": "qip_edge::fencing::Fence is checked in Cell::send and Cell::admit_replacement before the risk gate (backend/crates/edge/qip-edge/src/cell.rs:5308, :5366; fencing.rs:1-60). qip-edge-node's LeaseKeeper does CAS renewal/promotion with liveness (ttl+margin), venue-session and epoch checks (apps/qip-edge-node/src/standby.rs:11-55) and is installed when QIP_FENCING_LEASE is set (apps/qip-edge-node/src/main.rs:605-635). A property test enumerates interleavings. But the only store is FileLeaseStore, which the code itself says is single-host and not a cross-zone store (standby.rs:44-55); the venue-session check is SimulatedSessions returning true (standby.rs:271-287); and the Terraform standby VM runs the same startup template, which sets no QIP_FENCING_LEASE/QIP_NODE_ROLE.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/main.tf:726-800 standby",
-      "infrastructure/terraform/modules/execution-node/tests/standby.tftest.hcl"
+      "backend/crates/edge/qip-edge/src/fencing.rs:1-60",
+      "backend/crates/edge/qip-edge/src/cell.rs:5305-5312",
+      "backend/crates/apps/qip-edge-node/src/standby.rs:11-55",
+      "backend/crates/apps/qip-edge-node/src/standby.rs:266-287",
+      "backend/crates/apps/qip-edge-node/src/main.rs:605-635",
+      "apps/qip-edge-node/tests/standby.rs::at_most_one_fence_admits_at_any_instant_over_every_interleaving",
+      "apps/qip-edge-node/tests/standby.rs::a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places_nothing_after",
+      "infrastructure/terraform/modules/execution-node/main.tf:724-731"
     ],
-    "gap": "Fencing token/lease implementation in qip-edge-node with property test; activation procedure.",
+    "gap": "A cross-zone lease store with a conditional write (ADR 0111/0113); Terraform passing the lease, role and name to primary and standby; a real venue-session check.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1520,7 +1532,7 @@
     "verification": "property test over takeover interleavings",
     "work_item": "",
     "size": "L",
-    "notes": "Terraform comment says the standby 'monitors the primary's liveness via a fencing token'; no code implements a fencing token."
+    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no code implements a fencing token' is no longer true. Latent defect: setting standby_enabled=true today boots the standby with the primary's startup template and no lease variable, so it would run unfenced as a second primary; the 'monitors the primary's liveness via a fencing token' comment at modules/execution-node/main.tf:726-727 is still not what the infrastructure does."
   },
   {
     "id": "R12-REFLEX-8070",
@@ -1634,12 +1646,12 @@
   {
     "id": "R12-FABRIC-8075",
     "status": "MISSING",
-    "current": "Leader epoch persisted locally per broker; no membership, partition map service or leases. leader_for (rendezvous) is called only from tests.",
+    "current": "No metadata service or quorum. Partition leadership is a Spanner lease row (ADR 0111); membership, partition maps, consumer leases and quotas are held per broker/catalogue file, not in a replicated quorum. ADR 0111 lists 8075 as 'Not addressed and still open'.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:69 next_leader_epoch",
-      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:140 leader_for (tests only)"
+      "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md",
+      "backend/crates/apps/qip-fabricd/src/spanner.rs:60-70"
     ],
-    "gap": "Metadata service and quorum.",
+    "gap": "A replicated metadata store (Spanner tables or a superseding Raft ADR) holding membership, partition maps, epochs, consumer leases and quotas, with a minority-loss test.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1650,7 +1662,7 @@
     "verification": "property test over meta node loss",
     "work_item": "",
     "size": "XL",
-    "notes": "event_fabric_infrastructure.rs:9 fabric_065 is a fixture-only test."
+    "notes": "Round-2 independent audit, 2026-10-11: Consumer committed offsets do go through the ManagedLog port (commit_offset) under the managed configuration, which is a fragment, not the metadata quorum."
   },
   {
     "id": "R12-FABRIC-8076",
@@ -1720,18 +1732,18 @@
   },
   {
     "id": "R12-FABRIC-8079",
-    "status": "PARTIAL",
-    "current": "qip-fabricd archives sealed segments with content-addressed manifests to a directory or Cloud Storage target; ArchiveReader::hydrate verifies and hydrates but has no production caller.",
+    "status": "COMPLETE",
+    "current": "Broker::read_batch serves an offset below the high watermark whose local segment is gone from the archive reader, verified against its manifest, and refuses a batch stamped for another offset (broker.rs:1504-1535); qip-fabricd installs the archive reader on every broker it starts (lib.rs:446-450) from main. The archive refuses tampered objects.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:136 open_archive (Directory | CloudStorage); :454 archive thread",
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:568 hydrate re-verifies manifest",
-      "backend/crates/libs/qip-storage/tests/segment_archive.rs:507 tamper mutation",
-      "grep ArchiveReader outside qip-storage src/tests: no production caller"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1504-1535",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:446-450",
+      "qip-streaming/tests/event_fabric_hydrate.rs::retained_history_is_hydrated_from_the_archive_byte_for_byte_and_a_tampered_object_is_refused",
+      "qip-storage/tests/segment_archive.rs::reading_from_offset_zero_across_archive_and_hot_log_equals_the_original_byte_for_byte"
     ],
-    "gap": "A fetch/replay path in qip-fabricd or a consumer that hydrates from the archive.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1739,7 +1751,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. GCS target added; hydrate still unreached from any binary."
+    "notes": "Round-2 independent audit, 2026-10-11: PARTIAL->COMPLETE. qip-fabricd is a shipped binary but not deployed (ADR 0099 C8); the hydrate test drives the Broker directly, not through qip-fabricd's start."
   },
   {
     "id": "R12-FABRIC-8080",
@@ -1853,13 +1865,19 @@
   {
     "id": "R12-FABRIC-8085",
     "status": "PARTIAL",
-    "current": "Keyed partitioning is used by Broker::produce and property-tested; rendezvous leader_for exists but only tests call it; no followers.",
+    "current": "Records are routed by an explicit key: Broker::produce computes partition::partition_for(key, count) (services/qip-streaming/src/event_fabric/broker.rs:680; partition.rs:109-124, SHA-256 prefix mod count, refuses count 0). A rendezvous (highest-random-weight) leader function exists, partition.rs:140-170 (leader_for), but nothing outside tests calls it: leadership in the shipped binary is a Spanner lease contended by every seated instance (broker.rs:1145-1180 tend_leases, called from apps/qip-fabricd/src/lib.rs:490 and :584), not rendezvous placement. Non-leaders follow the committed managed log onto their own disks (broker.rs:1145-1178 catch_up), only for P0/P1 managed_majority streams and only when QIP_EVENT_FABRIC_MANAGED_LOG=spanner. The deployable is one broker in one zone (infrastructure/terraform/modules/event-fabric-broker/main.tf:14-21; module variables.tf:143-144 refuses more than one address) and null in every environment (infrastructure/terraform/variables.tf:1682-1700); fabricd is outside the image matrix (apps/qip-fabricd/src/lib.rs:38-39).",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:109 partition_for, :140 leader_for",
-      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:480 for_any_interleaving_of_keys_every_key_stays_in_one_partition_and_in_produce_order",
-      "backend/crates/services/qip-streaming/tests/event_fabric_leader.rs"
+      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:109",
+      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:140",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:680",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1145",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:30",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:584",
+      "services/qip-streaming/tests/event_fabric_leader.rs",
+      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143"
     ],
-    "gap": "Leader placement in a multi-broker cluster; replication.",
+    "gap": "Leader placement by rendezvous in a running multi-broker group (leader_for has no production caller; the lease race decides instead), followers placed in other zones in Terraform (module caps at one broker in one zone), and replication for P2-P4 (ADR 0111 §2 keeps them RF1).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1872,19 +1890,25 @@
     "verification": "cargo test -p qip-streaming --test event_fabric_broker",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: leader_for is a tested library function with no production caller; the property 'leader assignment stable under broker list order' is proven of a function the broker never uses. ADR 0111 replaced in-tree replication with a Spanner-lease model for P0/P1; whether lease contention satisfies 'rendezvous leaders' is an owner/register call."
   },
   {
     "id": "R12-FABRIC-8086",
-    "status": "INCORRECT",
-    "current": "Replication is refused (RF1 only). The profile was renamed Archived, but the committed catalogue still declares \"ack_profile\": \"quorum\" on replication_factor 1 streams and the parser silently reads \"quorum\" as Archived (one broker plus an archive copy).",
+    "status": "PARTIAL",
+    "current": "The INCORRECT verdict no longer holds. AckProfile::Archived replaces the old Quorum and the spelling `quorum` now deserialises only to ManagedMajority (backend/crates/libs/qip-events/src/event_fabric/policy.rs:170-205). StreamPolicy::new admits ManagedMajority only for P0/P1 at replication factor 3 and refuses any RF other than 1 otherwise (policy.rs:419-449). The broker refuses a managed_majority stream when no managed log is configured, and refuses a local P0/P1 stream when one is (services/qip-streaming/src/event_fabric/broker.rs:547-575). produce_managed commits the batch in a Spanner transaction under the partition lease before answering (broker.rs:839-880; apps/qip-fabricd/src/spanner.rs). The committed catalogue infrastructure/event-fabric/streams.local.json now says `archived` at RF1 for the durable classes (lines 9-12, 32-35), not quorum. However, no committed catalogue declares any managed_majority stream. The fabricd managed path is off unless QIP_EVENT_FABRIC_MANAGED_LOG=spanner (apps/qip-fabricd/src/config.rs:251-290). enable_spanner=false in every tfvars (e.g. infrastructure/environments/prod/terraform.tfvars:114), and fabricd is not deployed (apps/qip-fabricd/src/lib.rs:38-39). Cross-region mirroring is refused outright (policy.rs Mirroring::None check), not built as an asynchronous mirror.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs:226 \"archived\" | \"quorum\" => AckProfile::Archived",
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:184 #[serde(alias = \"quorum\")] Archived",
-      "infrastructure/event-fabric/streams.local.json:12 \"ack_profile\": \"quorum\" with \"replication_factor\": 1 (also :35)",
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:384 RF != 1 refused"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:204",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:419",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:547",
+      "backend/crates/apps/qip-fabricd/src/config.rs:252",
+      "infrastructure/event-fabric/streams.local.json:12",
+      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "apps/qip-fabricd/tests/managed.rs::a_managed_majority_producer_refuses_an_acknowledgement_from_a_local_broker",
+      "apps/qip-fabricd/tests/managed.rs::a_seated_broker_refuses_a_local_p1_stream_and_a_local_broker_refuses_a_managed_one",
+      "apps/qip-fabricd/tests/chaos.rs::seeded_kills_and_partitions_lose_no_acknowledged_record_and_never_split_an_epoch",
+      "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md"
     ],
-    "gap": "RF3 with majority ack; meanwhile refuse (not alias) a \"quorum\" declaration and correct streams.local.json.",
+    "gap": "Steps still needed: (1) A committed catalogue that declares P0/P1 managed_majority at RF3. (2) A deployed fabricd seated on Spanner, with enable_spanner on. (3) Evidence that Spanner's majority commit stands in for 'RF3 across zones' (ADR 0111 leaves this to the register). (4) An asynchronous cross-region mirror, which is refused today (C8/ADR 0113).",
     "implemented": false,
     "tested": true,
     "integrated": false,
@@ -1895,7 +1919,7 @@
     "verification": "property test killing replicas",
     "work_item": "",
     "size": "XL",
-    "notes": "The 'Quorum' name contradicts the blueprint's definition; acceptance tests event_fabric_stream_classes.rs and event_fabric_delivery_semantics.rs:156 assert on local fixture structs and would pass with no fabric at all. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->INCORRECT. Still INCORRECT: a committed config that says quorum is accepted and delivered as single-broker durability."
+    "notes": "Round-2 independent audit, 2026-10-11: Prior INCORRECT finding is resolved: a committed config no longer says quorum while delivering one broker; a `quorum` declaration on RF1 is now refused. The tests run on an in-memory managed log, so 'killing a replica' kills a fabricd instance, not a Spanner replica. The Spanner-replica property is assumed from the vendor, not tested."
   },
   {
     "id": "R12-FABRIC-8087",
@@ -2100,11 +2124,15 @@
   {
     "id": "R12-FABRIC-8096",
     "status": "PARTIAL",
-    "current": "Broker module caps broker_count at 1 and is not instantiated by the root module.",
+    "current": "Root instantiates modules/event-fabric-broker (infrastructure/terraform/fabric.tf:79). The module creates at most one broker: broker_count = enabled ? 1 : 0 (modules/event-fabric-broker/main.tf:14). Its variables.tf:143-144 refuses more than one broker_internal_addresses, citing ADR 0100 §3 RF1. Every machine sits in a single var.zone, the machine type defaults to c3-standard-4 (module variables.tf:57-61; root variables.tf:1694), and event_fabric_broker is null in every environment (root variables.tf:1682-1700).",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16-20"
+      "infrastructure/terraform/fabric.tf:79",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:14",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143",
+      "infrastructure/terraform/variables.tf:1682",
+      "tests/qip-acceptance/tests/gcp_placement.rs::every_machine_the_repository_defines_boots_with_secure_boot_a_vtpm_and_integrity_monitoring"
     ],
-    "gap": "Multi-broker group across zones; root instantiation.",
+    "gap": "A prod plan with five C4D/C4 broker instances across three zones. Today the module refuses a second broker, places every broker in one zone and uses c3, and nothing is enabled in prod.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2117,7 +2145,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: The Terraform cap of one broker is stale against ADR 0111, which seats two or three fabricd instances per region on a Spanner lease. The broker code supports that (broker.rs with_managed_log/tend_leases), but the module still refuses a second address, citing RF1. ADR 0111 specifies 2-3 instances, not five, so whether ADR 0111's shape satisfies 8096 needs an owner decision."
   },
   {
     "id": "R12-FABRIC-8097",
@@ -2187,13 +2215,19 @@
   },
   {
     "id": "R12-SEC-8100",
-    "status": "MISSING",
-    "current": "Fabric identity is a bearer token from an identities file; policy/envelope keys are HMAC secrets mounted from Secret Manager; KMS used for data-at-rest keys only.",
+    "status": "PARTIAL",
+    "current": "mTLS exists in code. qip-transport/src/tls.rs (ADR 0112, rustls/ring, TLS 1.3 only) builds a server config that always requires a client certificate chained to the configured roots (tls.rs:132), plus a PeerNames SAN allow-list (tls.rs:212). qip-fabricd serves with it when configured (apps/qip-fabricd/src/lib.rs:517), and qip-ledgerd and qip-edge-node choose LinkSecurity (ledgerd main.rs:40, edge-node main.rs:997). KMS signing of policy, halt and envelope artefacts exists as qip_transport::kms::KmsSigner, selected in qip-api main.rs:306 when QIP_ARTEFACT_SIGNER=kms. CAS is declared in infrastructure/terraform/security.tf:111-216 (30-day leaf-only pool, requester IAM) but is null in every environment.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/event_fabric/auth.rs:1-79",
-      "infrastructure/terraform/modules/execution-node/main.tf:228 capital_envelope_key secret"
+      "backend/crates/libs/qip-transport/src/tls.rs:132",
+      "backend/crates/libs/qip-transport/tests/mtls.rs::a_client_with_no_certificate_never_reaches_a_handler",
+      "backend/crates/libs/qip-transport/tests/mtls.rs::a_certificate_from_another_authority_is_refused_at_the_handshake",
+      "backend/crates/libs/qip-transport/tests/mtls.rs::the_fabric_transport_over_a_mutual_tls_link_is_answered_by_a_tls_broker",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:517",
+      "infrastructure/terraform/security.tf:111",
+      "infrastructure/terraform/tests/security.tftest.hcl:71",
+      "backend/crates/apps/qip-api/src/signing.rs:1-30"
     ],
-    "gap": "CAS issuance, mTLS verification, KMS-backed signing.",
+    "gap": "(1) CAS is off everywhere and nothing issues certificates to a workload. No startup template or Terraform fetches a CAS leaf, and the execution-node test sets QIP_TLS_MODE=plaintext (modules/execution-node/tests/deployment.tftest.hcl:54). (2) Broker identity is not mapped to a GCP service account/IAM: the bearer token is still the authorisation (tls.rs:38-41). (3) Policy keys are not KMS-held anywhere: Terraform declares no ADR 0110 policy/halt/envelope ASYMMETRIC_SIGN key (only the Binary Authorization attestor, modules/binaryauthorization/main.tf:57), and the default signer is still the shared HMAC key until 2027-01-31 (libs/qip-transport/src/trust.rs:99).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2204,7 +2238,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: Old status MISSING undercounted the code: the mTLS refusal and the KMS signer are real and tested. The tests use in-test minted PKI, not CAS-issued certificates."
   },
   {
     "id": "R12-FABRIC-8101",
@@ -2252,12 +2286,14 @@
   },
   {
     "id": "R12-RES-8103",
-    "status": "MISSING",
-    "current": "Single broker; template uses create_before_destroy only.",
+    "status": "PARTIAL",
+    "current": "Leadership is a lease with epoch fencing (fabricd managed mode, config.rs:59-90), so a broker taken down for upgrade is replaced by a peer after the lease TTL without losing acknowledged P0/P1 records (tests/managed.rs). There is no voluntary drain/lease release, no replica-health check between steps, no rolling-upgrade automation or runbook, and no drill.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:83-85"
+      "backend/crates/apps/qip-fabricd/src/config.rs:59-90",
+      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md:165-168"
     ],
-    "gap": "Drain/leadership transfer and upgrade runbook automation.",
+    "gap": "Leadership drain (lease release), health verification, one-at-a-time upgrade automation, and a game day showing P0/P1 produce stays available.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2270,7 +2306,7 @@
     "verification": "game day",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL on the lease-based takeover only; ADR 0111 itself says the upgrade runbook automation is separate work."
   },
   {
     "id": "R12-GCP-8104",
@@ -2463,12 +2499,14 @@
   },
   {
     "id": "R12-API-8113",
-    "status": "PARTIAL",
-    "current": "Cloud Run services are internal-ingress only (tested); no internal ALB or mTLS.",
+    "status": "BLOCKED",
+    "current": "Every catalogue Cloud Run service declares ingress INGRESS_TRAFFIC_INTERNAL_ONLY (infrastructure/gitops/envs/*/api.yaml:27, fastbrain.yaml:27, deepbrain.yaml:27) and invocation is granted to named principals only (infrastructure/gitops/envs/dev/invokers.yaml, e.g. qip-dev-console -> qip-dev-api). No internal Application Load Balancer or GKE Gateway with mTLS exists in Terraform (only EXTERNAL_MANAGED schemes, modules/iap-edge/main.tf:239, modules/public-edge/main.tf:304).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569"
+      "infrastructure/gitops/envs/dev/api.yaml:27",
+      "infrastructure/gitops/envs/dev/invokers.yaml",
+      "docs/adr/0112-mtls-through-rustls-where-the-platform-owns-the-socket-iam-invocation-on-cloud-run-and-quic-only-where-measured.md"
     ],
-    "gap": "Internal ALB or IAM-authenticated invocation between services.",
+    "gap": "The requirement's mechanism (internal ALB/GKE Gateway with mTLS) is rejected by accepted ADR 0112 (§1 table and 'Alternatives rejected': mTLS into Cloud Run is not possible in-container and an internal LB adds a hop IAM already authenticates); ADR 0114 keeps workloads off GKE. Unblocking needs the owner to amend ADR 0112 or the requirement to be restated as IAM-authenticated invocation, after which the substitute still needs proof (an applied plan and an unauthenticated call refused).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2479,7 +2517,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: ADR 0112 claims to 'unblock' API-8113 via IAM invocation; that substitutes a different mechanism rather than satisfying 'Plan shows internal LB'. Nothing shows the invoker manifests applied or an anonymous call refused."
   },
   {
     "id": "R12-GCP-8114",
@@ -2589,13 +2627,13 @@
   {
     "id": "R12-GCP-8119",
     "status": "PARTIAL",
-    "current": "No mesh anywhere; execution nodes refused behind LB/mesh; in-tree client has explicit timeouts and breaker. No mTLS.",
+    "current": "No service mesh is declared. gcp_placement.rs::no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh walks every Terraform resource and refuses a machine behind a proxy or mesh hop (tests/qip-acceptance/tests/gcp_placement.rs:150-160, :277). In-tree fabric clients carry explicit timeouts and a circuit breaker (backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:143,237; producer.rs:53,82). ADR 0112 rejects a mesh and puts warm (Cloud Run) hops on IAM-authenticated invocation, with mTLS only between Compute Engine processes. No Rust code fetches an audience-bound ID token from the metadata server for service-to-service calls: grep for 'audience'/'identity?audience' in libs/qip-transport, libs/qip-storage and apps/*/src finds nothing.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
-      "backend/crates/libs/qip-transport/src/breaker.rs",
-      "backend/crates/libs/qip-transport/tests/breaker.rs"
+      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:237",
+      "docs/adr/0112-mtls-through-rustls-where-the-platform-owns-the-socket-iam-invocation-on-cloud-run-and-quic-only-where-measured.md"
     ],
-    "gap": "mTLS between warm services.",
+    "gap": "Authenticated transport between warm services: mTLS or, per ADR 0112, IAM-authenticated invocation with an ID token. No warm-to-warm caller presents one today.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2606,7 +2644,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: The 'never through mesh sidecars' half holds structurally, since no mesh exists anywhere. ADR 0112 reinterprets the mTLS clause for Cloud Run as IAM invocation, and that is not implemented in any client."
   },
   {
     "id": "R12-DATA-8120",

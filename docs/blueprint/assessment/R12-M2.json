@@ -678,12 +678,18 @@
   {
     "id": "R12-EVID-2031",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:142 evidence_of builds an EvidenceRecord per admitted connector event; backend/crates/libs/qip-evidence/src/fabric.rs:628 admit refuses incomplete provenance",
+    "current": "Every connector-admitted record gets an EvidenceRecord (source identity, timestamps, location, extraction method, authenticity signal, licence, confidence) built by evidence_of (connector/evidence.rs:150-196); EvidenceRecord::new refuses blank source, method, licence or statement (qip-evidence/src/evidence.rs:62-118); an event whose evidence cannot be formed or is on an impossible timeline is quarantined (connector/runtime.rs:918-970). The evidence is now forwarded into the world model's fabric by Platform::absorb_evidence (evidence_intake.rs:103-150) from qip-fastbrain node.rs:137 and qip-deepbrain connectors.rs:365. But the record still enters the world model via platform.observe(batch.accepted) (fastbrain node.rs:138) independently of whether the world fabric admitted its evidence (refusals are only counted, evidence_intake.rs:140-147), the observed facts carry no link to their evidence id, and non-connector feeds (synthetic, replay, tape, live) forward no evidence at all (fastbrain feed.rs:580-588).",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:45 every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence and backend/crates/services/qip-world-model/src/world.rs:199 absorb_evidence have no production caller"
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:150-196",
+      "backend/crates/libs/qip-evidence/src/evidence.rs:62-118",
+      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:918-970",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150",
+      "backend/crates/apps/qip-fastbrain/src/node.rs:137-138",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:580-588",
+      "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
+      "qip-evidence/src/evidence.rs::tests::an_evidence_record_refuses_empty_license"
     ],
-    "gap": "Evidence is held only in each connector runtime's private fabric; the world model's fabric is never fed, so claims reaching the world model are not linked to their evidence object.",
+    "gap": "Gate a record's entry into the world model on its evidence being admitted (or link each world-model fact to its evidence id), wrap claims from the live/tape feeds, and a test that fails when a claim reaches the world model without evidence.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -696,17 +702,20 @@
     "verification": "an integration test that a narrative poll produces EvidenceRecords",
     "work_item": "",
     "size": "L",
-    "notes": "Two parallel evidence types exist; the complete one is unused. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence now built on the production poll path; not forwarded to the world model."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop."
   },
   {
     "id": "R12-EVID-2032",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:361 corroborates/contradicts links filled by admit",
+    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts and writes the ids onto the new record and Corroborates/Contradicts edges into the provenance graph (fabric.rs:657-765). The world fabric is now fed in production (evidence_intake.rs:103-150). Links are recorded on the new claim only: the earlier claim's corroborates/contradicts lists are not updated (fabric.rs:760-765 push onto `record`, the incoming one). The fabric is in-memory, bounded and evicts (fabric.rs:812-838); nothing journals it, and the intake module states durability is not claimed (evidence_intake.rs:33-38).",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:46 a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence and backend/crates/services/qip-world-model/src/world.rs:199 absorb_evidence have no production caller"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:657-765",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:812-838",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:33-38",
+      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
+      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
     ],
-    "gap": "Links live in an in-memory fabric and are not persisted to the event log; no replay test.",
+    "gap": "Record the relation on both records, persist links to the event log, and a replay test proving links survive.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -724,12 +733,13 @@
   {
     "id": "R12-EVID-2033",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:628 admit records a claim -> document -> source provenance graph",
+    "current": "The world fabric's ProvenanceGraph links Claim -DerivedFrom-> Document(hash) -PublishedBy-> Source, plus claim-to-claim edges (fabric.rs:59-150, :738-758), and ProvenanceGraph::sources_of walks claim to sources (fabric.rs:126). The world fabric is now fed by both brains (evidence_intake.rs:103). Nothing links a belief (NOW variable, thesis, world-model fact) into the graph, and sources_of/graph() have no production reader (grep for sources_of( and .graph() outside qip-evidence finds none in kernel/apps).",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:46 corroboration across documents",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence and backend/crates/services/qip-world-model/src/world.rs:199 absorb_evidence have no production caller"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:59-150",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:738-758",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150"
     ],
-    "gap": "No walk from a belief to its source documents; beliefs are not linked into the graph; fabric not fed into the world model.",
+    "gap": "Link beliefs to the claims they rest on and provide/test a walk from a belief to every source document hash.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -747,12 +757,16 @@
   {
     "id": "R12-EVID-2034",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:628 authenticity credits a hash only if it matches the fetched document and a TLS domain only for the source's host; signatures never credited",
+    "current": "assess_authenticity credits a hash matching the fetched document, a TLS domain equal to the source host, an identity in a trusted registry, and an official release only from a registered identity; it flags spoofing on mismatch and never credits a signature claim (fabric.rs:184-275). Authenticity multiplies into belief_weight (fabric.rs:719-723). In production the connector attaches only HashVerified with hash = the document hash it was given (connector/evidence.rs:184-187), so the check compares the body hash with itself and is always credited (+0.3, score 0.5); the world fabric is built with EvidenceFabric::default() and no trusting_registry call (world.rs:108; trusting_registry has no caller), so registered-issuer credit cannot occur; belief_weight is read by nothing outside qip-evidence.",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:224 a_hash_is_credited_only_when_it_matches_the_fetched_document_and_a_mismatch_is_spoofing",
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:290 a_signature_claim_is_recorded_and_never_credited"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:184-275",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:719-723",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:184-187",
+      "backend/crates/services/qip-world-model/src/world.rs:108",
+      "qip-world-model/tests/evidence_fabric.rs::a_hash_is_credited_only_when_it_matches_the_fetched_document_and_a_mismatch_is_spoofing",
+      "qip-world-model/tests/evidence_fabric.rs::a_signature_claim_is_recorded_and_never_credited"
     ],
-    "gap": "No signature or issuer-identity verification (stated by design); the verdict weight feeds no belief in production.",
+    "gap": "Production signals that are independent of the fetch (TLS identity from the transport, a published issuer hash or signature, a trusted registry configured), signature/issuer verification, and the resulting weight feeding a belief.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -765,16 +779,19 @@
     "verification": "a test that authenticity changes evidence weight",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Authenticity now affects fabric weight; signed/issuer verification absent."
+    "notes": "Round-2 independent audit, 2026-10-11: Defect: the production HashVerified signal is tautological (the hash credited is the hash it is compared with). The comment at fabric.rs:265-267 says 'no in-tree signing, ADR 0043', but commit 56f2c191 added ring-based P-256 verification in qip_transport::trust, so 'cannot verify a signature' is no longer a capability limit."
   },
   {
     "id": "R12-EVID-2035",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:20 corroboration only across independent origins; shared document or normalised text collapses copies",
+    "current": "admit does not count a same-origin claim (same statement fingerprint or document hash) as corroboration (fabric.rs:667-679), and independent_origins collapses copies by document hash or text (fabric.rs:595-622). The world fabric now spans sources in production (evidence_intake.rs:103). Neither independent_origins nor the fabric's corroboration/contests is read by any production path (grep for independent_origins and .contests() outside qip-evidence finds no caller); REASON does not weigh it.",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:95 ten_copies_of_one_press_release_count_as_one_origin"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:595-622",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:667-679",
+      "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin",
+      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not"
     ],
-    "gap": "The REASON path does not read fabric corroboration; each connector runtime has its own fabric so cross-source corroboration is not seen in production; re-bylined wire stories with altered text are not detected.",
+    "gap": "Have the decision path weigh corroboration by independent origins; detect near-duplicate (re-bylined) text rather than only exact fingerprints; a property test over generated copy sets.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -785,18 +802,22 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged status: property holds in the fabric but is not what production weighs."
+    "notes": "Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based."
   },
   {
     "id": "R12-EVID-2036",
-    "status": "COMPLETE",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:628 admit runs the temporal check; backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:957 an impossible timeline quarantines the event before release on every connector poll",
+    "status": "PARTIAL",
+    "current": "check_temporal_consistency marks a claim dated after its publication, ingested before publication, preceding its declared cause, or contradicting earlier-known state (qip-evidence/src/evidence.rs:189-250); the fabric runs it on admit and holds an impossible-timeline claim at zero weight (fabric.rs:646-653), and the connector runtime quarantines it (connector/runtime.rs:957-962) on every connector poll from both brains. But production evidence never declares a cause: evidence_of sets claimed_at and location and never calls with_cause (connector/evidence.rs:170-196; grep for with_cause/caused_by outside qip-evidence finds no evidence caller), so the event-ordering arm cannot fire in production.",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:200 a_claim_ingested_before_it_was_published_is_inadmissible_and_weighs_nothing",
-      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:864 check_evidence on every admitted event",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:130 feed.poll in a composition root"
+      "backend/crates/libs/qip-evidence/src/evidence.rs:189-250",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:646-653",
+      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:957-962",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:170-196",
+      "qip-evidence/src/evidence.rs::tests::a_claim_dated_after_its_source_was_published_is_flagged",
+      "qip-evidence/src/evidence.rs::tests::a_claim_that_precedes_its_cause_names_the_cause",
+      "qip-evidence/src/evidence.rs::tests::a_claim_ingested_before_its_source_published_violates_the_physical_timeline"
     ],
-    "gap": "",
+    "gap": "Populate caused_by on production claims so the ordering check can fire, and a runtime-level test of the quarantine branch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -809,18 +830,19 @@
     "verification": "cargo test -p qip-world-model --lib evidence",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: the check runs on every connector-ingested claim in production and acts (quarantine). No runtime-level test of the quarantine branch itself."
+    "notes": "Round-2 independent audit, 2026-10-11: COMPLETE->PARTIAL: the prior COMPLETE overlooked that the 'before its declared cause' half is vacuous on the production path, the same reason EVID-2037 is PARTIAL. A PrecedesCause result is recorded but does not make a claim inadmissible (fabric.rs:648-651)."
   },
   {
     "id": "R12-EVID-2037",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:628 geographic check (routing, jurisdiction, co-location) in admit",
+    "current": "check_geographic_consistency records location/routing/weather/jurisdiction disagreement (evidence.rs:293-360) and the fabric runs it on admit (fabric.rs:647). On the production path every claim's location is its source manifest's region (connector/evidence.rs:183, `region:{:?}`), so two claims about one entity can never carry incompatible coordinates from the evidence itself.",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:329 a_vessel_reported_on_two_continents_an_hour_apart_violates_routing",
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:360 two_sources_placing_one_subject_apart_at_one_instant_contradict_and_one_source_conflicts_with_itself",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:183 production location is the manifest region, not the claim's"
+      "backend/crates/libs/qip-evidence/src/evidence.rs:293-360",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:647",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:183",
+      "qip-evidence/src/evidence.rs::tests::a_record_with_geographic_location_contradiction_records_the_specific_violation"
     ],
-    "gap": "On the production path every claim's location is its source manifest's region, so the check cannot detect a real geospatial disagreement.",
+    "gap": "Extract claim locations from the content (or a geo source) so the check can detect a real disagreement in production.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -838,12 +860,15 @@
   {
     "id": "R12-EVID-2038",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-evidence/src/fabric.rs:628 disagreeing values kept as competing hypotheses until a later authentic claim resolves them",
+    "current": "The fabric keeps every hypothesis for a claim key and resolves a contest only when a later claim with authenticity >= RESOLVING_AUTHENTICITY (0.6) arrives, recording the resolving id and keeping losers (fabric.rs:56, :657-704). The world fabric is now fed across sources, so cross-source contests open in production (evidence_intake.rs:121-131). On production evidence a contest can never resolve: the only signal attached is the tautological HashVerified (connector/evidence.rs:184-187), giving 0.2+0.3=0.5 < 0.6, and no registry is trusted (world.rs:108). Hypotheses are dropped on capacity eviction (fabric.rs:812-826). Nothing downstream reads contests.",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:139 disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
-      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:140 two_sources_disagreeing_about_one_print_through_a_shared_fabric_are_kept_as_a_contest"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:657-704",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
+      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
     ],
-    "gap": "Production runtimes each hold a private fabric (no with_evidence_fabric caller), so cross-source contests are not seen; nothing downstream reads the contest.",
+    "gap": "Production evidence able to reach the resolving threshold (real authenticity signals), a consumer of contests, and contest retention that survives eviction/restart.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -856,18 +881,20 @@
     "verification": "cargo test -p qip-reasoning-engine contradiction",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Mechanism exists; not effective in production."
+    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either."
   },
   {
     "id": "R12-EVID-2039",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-world-model/src/poisoning.rs:115 detect_poisoning (coordination, poisoning, spoofing, synthetic, spam) over WorldModel::evidence()",
+    "current": "detect_poisoning scans the world fabric for coordinated manipulation, source poisoning, spoofing, synthetic content and spam (world-model poisoning.rs:39-50); Platform::evidence_poisoning runs it and counts findings (evidence_intake.rs:157-175); the deep brain's research loop calls it every sweep and raises each finding as a data gap (research.rs:854-858), on by default (ResearchConfig::default every_cycles 1, research.rs:232-241; main.rs:718-750). The fabric it reads is now fed (fastbrain node.rs:137, deepbrain connectors.rs:365). On production evidence the Spoofing class cannot fire (the only signal is a self-matching hash, connector/evidence.rs:184-187) and SourcePoisoning depends on contest resolutions that cannot occur (see EVID-2038).",
     "evidence": [
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:428 a_coordinated_campaign_of_identical_text_from_distinct_fetches_is_detected",
-      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:458 a_clean_episode_of_independent_agreeing_sources_produces_no_findings",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence and backend/crates/services/qip-world-model/src/world.rs:199 absorb_evidence have no production caller"
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:157-175",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:854-858",
+      "backend/crates/apps/qip-fastbrain/src/node.rs:137",
+      "qip-kernel/tests/evidence_intake.rs::a_coordinated_campaign_forwarded_from_connectors_is_found_by_the_poisoning_detector",
+      "qip-deepbrain/tests/research_market.rs::a_poisoned_feed_in_the_world_fabric_becomes_a_data_gap_naming_its_sources"
     ],
-    "gap": "The world model fabric the detector reads is never fed in production, so it always reports no data.",
+    "gap": "Production evidence carrying independent authenticity signals so spoofing and source-poisoning are detectable; the coordinated-campaign path only fires where statement text matches exactly (connector statements embed the source id, connector/evidence.rs:157-168, so only News headlines can coincide).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -880,7 +907,7 @@
     "verification": "a test feeding a coordinated campaign through PoisoningDetector::analyse",
     "work_item": "",
     "size": "L",
-    "notes": "The poisoning tests are vacuous: deleting PoisoningDetector would not fail them. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Real detector now exists; its input is empty in every binary."
+    "notes": "Round-2 independent audit, 2026-10-11: The old note's 'input empty in every binary' is no longer true: the fabric is fed. The coordinated-campaign verification itself is met via Platform."
   },
   {
     "id": "R12-EVID-2040",
@@ -1260,12 +1287,16 @@
   },
   {
     "id": "R12-TICK-2057",
-    "status": "BLOCKED",
-    "current": "Lake explicitly does not compress: 'it needs a codec and the workspace has two dependencies'.",
+    "status": "PARTIAL",
+    "current": "zstd is admitted under ADR 0113 (scripts/dependency-allowlist.txt:21-35; qip-storage/Cargo.toml:35). qip_storage::lake_codec::SegmentCodec has Identity and Zstd{level} variants. Zstd writes checksummed frames, decoding is bounded at 512 MiB, and canonical_sha256 stays over the uncompressed bytes (lake_codec.rs:1-60). qip-edge-node main.rs:967 parses QIP_TICK_LAKE_CODEC into the drain (event_fabric/drain.rs:437), but the default is Identity, which stores segments uncompressed. qip-deepbrain tick_desk can run measure_partitions.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/lake.rs:20-23 compression not done"
+      "backend/crates/libs/qip-storage/src/lake_codec.rs:59",
+      "backend/crates/libs/qip-storage/tests/lake_codec.rs::a_zstd_segment_is_smaller_than_its_input_and_reads_back_byte_for_byte",
+      "backend/crates/libs/qip-storage/tests/lake_codec.rs::the_codec_is_off_by_default_and_a_default_lake_stores_canonical_bytes_as_written",
+      "backend/crates/apps/qip-edge-node/src/main.rs:967",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:437"
     ],
-    "gap": "A codec (dependency ADR or in-tree implementation).",
+    "gap": "Lake segments are not compressed by default anywhere. The ADR 0113 §3 measurement has not been committed and no deployment sets QIP_TICK_LAKE_CODEC (no reference in infrastructure/). The owner decision ADR 0113 defers is what moves this to COMPLETE.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1278,7 +1309,7 @@
     "verification": "a round-trip compression test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Round-2 independent audit, 2026-10-11: BLOCKED->PARTIAL: the codec dependency now exists and is reachable from the edge-node composition root. Only the default and the measurement remain."
   },
   {
     "id": "R12-TICK-2058",

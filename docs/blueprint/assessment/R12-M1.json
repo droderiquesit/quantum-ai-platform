@@ -871,12 +871,20 @@
   {
     "id": "R12-DATA-1039",
     "status": "PARTIAL",
-    "current": "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes market ticks under RecordClass::Market partitioned by entitlement, opened in edge-node main (backend/crates/apps/qip-edge-node/src/main.rs:805); own outcomes sealed separately by ChainArchive (backend/crates/libs/qip-storage/src/chain.rs:225)",
+    "current": "The lake partitions by RecordClass (Market/Internal, closed enum) and by entitlement in the path (lake.rs:73-80, :101-181); raw bytes are stored only when the partition's entitlement permits and the hash kept either way (lake.rs:291-322). Retention is now policy-driven: TickLakeWriter refuses an event whose entitlement has no retention right or a no-retention right (tick_capture.rs:131-150), and qip-deepbrain builds the policy per licensing class from QIP_DEEPBRAIN_TICK_LAKE_RETENTION (connectors.rs:96-157, main.rs:595-647; unset = no capture). The connector feed captures released market records under its licensing class (connector_feed.rs:506-523). But the production capture sets raw: None and raw_sha256: None (connector/evidence.rs:251-252), so no raw venue bytes or their hash ever reach the lake on the production path; internal records are always sealed with raw_retention_permitted false regardless of legal obligation (lake.rs:346-384).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:496 raw_retention_permitted hard-coded false",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489 market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture_time_and_sequence"
+      "backend/crates/libs/qip-storage/src/lake.rs:291-322",
+      "backend/crates/libs/qip-storage/src/tick_capture.rs:131-170",
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:506-523",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:251-252",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs:96-157",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:595-647",
+      "qip-storage/tests/tick_capture.rs::raw_bytes_are_kept_only_where_the_right_permits_and_their_hash_either_way",
+      "qip-storage/tests/tick_capture.rs::an_entitlement_without_a_retention_right_is_refused_and_counted",
+      "qip-storage/tests/lake.rs::raw_bytes_are_kept_only_where_the_entitlement_permits_and_the_hash_is_kept_either_way",
+      "qip-deepbrain/src/connectors.rs::tests::a_tick_lake_retention_list_admits_only_what_it_names"
     ],
-    "gap": "Retention of normalised ticks is not conditioned on venue rights or legal/policy rules (always written; raw always refused by a constant, not a policy); no node is deployed.",
+    "gap": "Carry raw venue bytes (or at least their hash) from the connector into CapturedMarketEvent so the hash-only rule is exercised in production; condition retention of the platform's own records on legal/policy obligations rather than a constant; rights per venue rather than per licensing class; a deployment that sets the retention variable (none does).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -887,7 +895,7 @@
     "verification": "cargo test -p qip-storage --test lake --test outcome_lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Lake now opened from a root; retention is not policy-driven."
+    "notes": "Round-2 independent audit, 2026-10-11: Old gap 'raw always refused by a constant' is now partly closed: the right is operator policy per licensing class. The entitlement is the licensing class string (connector_feed.rs:507), not a venue-specific right."
   },
   {
     "id": "R12-AMBIENT-1040",
@@ -1238,15 +1246,23 @@
   {
     "id": "R12-AGENCY-1056",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:250 check_factual_support: requires citations with an evidence id and in-range confidence, plus no_false_claims phrase list; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Truthfulness is check_factual_support (conduct_brain.rs:250-279): non-empty content needs at least one citation with a non-blank evidence_id and confidence in 0..=10000, plus the mandatory no_false_claims phrase rule (FALSE_CLAIM_PHRASES, conduct_brain.rs:101-116). No claim is checked against the cited evidence.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:250 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:68 factual_support_check_blocks_when_missing_evidence",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:250-279",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:101-116",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_factual_support_blocks_when_no_citations",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_citation_with_no_evidence_id_or_an_impossible_confidence_is_not_factual_support"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "Truthfulness is a citation-shape check: a fabricated evidence_id under an authorised source passes; nothing resolves the citation against the evidence store or compares the claim with it. The guard-level test (agency.rs:1548) has no factual-support or no_false_claims case, so replacing check_factual_support with pass-always fails only conduct_brain unit tests, not a before-adapter test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1257,20 +1273,26 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Truthfulness is citation presence plus a phrase list, not verification of the claim against evidence; gate wired in library but not in a binary. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Old gap (no binary composes the guard / guard optional) is now closed by qip-cli (commit 567f8248, 5d9aca21). Grade held at PARTIAL on the substance of the check, not on wiring. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1057",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:282 check_provenance: every cited source must be in the authorised list; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). check_provenance (conduct_brain.rs:282-301) fails any citation whose source_id is not in the policy's authorized_sources.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:282 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 each_guard_check_alone_withholds_the_plan_before_any_adapter_call (provenance case, asserts adapter.calls empty)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:282-301",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_provenance_blocks_when_source_unauthorized"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "Provenance is a membership test on a source_id string the requester types into the draft; nothing establishes that the cited evidence_id exists or came from that source. A draft with no citations passes provenance outright (the `find` returns None, conduct_brain.rs:287-301). Needs citations resolved against the evidence store/manifest before the source is trusted.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1281,23 +1303,30 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Substantive and tested before the adapter; still no composition root composes the guard. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Binary wiring and the before-adapter guard test ('provenance' case, agency.rs:1569-1576) are now real; graded down to PARTIAL (taking the lower grade) because the check verifies a declaration, not provenance. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1058",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:305 check_identity plus guard identity match (draft sender == registered tool identity == goal identity); ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "status": "COMPLETE",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Identity is checked twice: the conduct check_identity requires draft.sender_identity in the policy's authorized_identities (conduct_brain.rs:305-320; ConductGate::new refuses an empty list, :485-487), and preflight refuses any step whose draft sender, the tool's operator-registered acting_identity and the goal's acting identity differ (guard.rs:290-302). An approver equal to the acting identity is refused (guard.rs:369-376).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:305 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 each_guard_check_alone_withholds_the_plan_before_any_adapter_call (fabricated identity case)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:305-320",
+      "backend/crates/services/qip-agency/src/guard.rs:290-302",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_identity_blocks_when_unauthorized"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1305,20 +1334,27 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Substantive and tested; not integrated in a binary. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: The guard-level 'fabricated identity' case exercises guard.rs:290, not check_identity (it adds desk-agent-2 to authorized_identities); a pass-always check_identity is caught only by the conduct_brain unit test. Approver names in ApprovalDecl (guard.rs:57-63) are unauthenticated strings from the request document, so 'approver is not the actor' compares two self-declared names. qip-cli is not a deployed image (deploy.yml:375)."
   },
   {
     "id": "R12-AGENCY-1059",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:325 check_disclosures: each required kind present with non-blank text; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). check_disclosures (conduct_brain.rs:325-345) fails when a kind named in the policy's required_disclosures is absent or has blank text.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:325 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:147 disclosures_check_blocks_when_required_missing",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:325-345",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_disclosures_blocks_when_required_missing",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_required_disclosure_present_by_kind_with_blank_text_discloses_nothing"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "No before-adapter test drives a missing disclosure: the guard test's fixture sets required_disclosures: [] (agency.rs:971) and the case list has no disclosure case. ConductGate::new accepts an empty required_disclosures (conduct_brain.rs:477-490 refuses empty identities and jurisdictions only), so a policy can configure the check to never fire, and the CLI's own test policy does (qip-cli/tests/agency.rs:30).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1329,20 +1365,28 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Substantive at library level; the guard-level test list has no disclosure case and no binary composes the guard. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Binary composition now present; disclosure remains unexercised at the guard and can be configured inert. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1060",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:395 check_market_conduct: closed rule vocabulary, mandatory rules enforced at construction, whole-word matching; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). check_market_conduct (conduct_brain.rs:395-411) evaluates the policy's conduct rules as whole-word phrase matches on the draft text; four rules are mandatory (ConductGate::new, conduct_brain.rs:491-500), and unknown rule names are refused (:191-210).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:395 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 (no_manipulation, no_fake_consensus, no_rumour_engineering cases) and backend/crates/services/qip-agency/tests/agency.rs:1629 whole-word test",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:395-411",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:166-240",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_rules_given_decide_the_market_conduct_verdict",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_whole_word_conduct_rule_does_not_withhold_a_quote_whose_words_merely_contain_one"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "Market conduct is judged only from the vocabulary of the draft text (MANIPULATION_PHRASES, qip-contracts/src/action.rs:111, and the lists at conduct_brain.rs:101-160). The step itself (tool, exposure, sequence) is never evaluated against a conduct rule, so manipulative conduct described without a listed phrase passes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1353,23 +1397,30 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "A substring heuristic presented as the market-conduct check; it passes any manipulative text that avoids one word. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. Moved INCORRECT->PARTIAL: substring matching replaced by whole-word, mandatory rules; still phrase lists and not composed by a binary."
+    "notes": "Round-2 independent audit, 2026-10-11: The guard-level test does fire on no_manipulation/no_fake_consensus/no_rumour_engineering before the adapter, and the binary now composes it. Held at PARTIAL because a lexical filter on message text is not a market-conduct rule check on the action. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1061",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:350 check_audience_permissions: unconfigured channel or audience outside the channel list fails; registry also checks tool channels; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "status": "COMPLETE",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Channel permissions are checked at three points before the adapter: check_audience_permissions fails an unconfigured channel and an audience the channel's list does not name (conduct_brain.rs:350-371); the registry refuses a step on a channel outside the tool's registered channels (registry.admits_all, guard.rs:330-334); both run in preflight.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:350 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 (audience_permissions and outside the tool's channels cases)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:350-371",
+      "backend/crates/services/qip-agency/src/guard.rs:330-334",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_audience_list_a_channel_maps_to_decides_the_verdict"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1377,23 +1428,29 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Passes when the channel exists in the policy map regardless of the allowed-audience list it maps to. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. Moved INCORRECT->PARTIAL: check now fails closed on audience and channel; not composed by a binary."
+    "notes": "Round-2 independent audit, 2026-10-11: Guard test cases 'audience_permissions' and 'outside the tool's channels' (agency.rs:1566-1569, 1593-1595) each withhold with zero adapter calls. The draft's channel and audience are request-declared. qip-cli is an operator tool, not a deployed image (deploy.yml:375)."
   },
   {
     "id": "R12-AGENCY-1062",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:375 check_jurisdiction: draft jurisdiction must be in the permitted list; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "status": "COMPLETE",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). check_jurisdiction fails a draft whose jurisdiction is outside the policy's permitted list (conduct_brain.rs:375-389; empty list refused at :488-490), and the binary separately asks the eligibility register for every subject in every goal jurisdiction (Governance.eligibility, agency.rs:343-345).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:375 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 (jurisdiction case)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:375-389",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_jurisdiction_blocks_when_not_permitted"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1401,23 +1458,30 @@
     "verification": "cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Substantive and tested; not integrated in a binary. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Guard case 'jurisdiction' (agency.rs:1577-1580) withholds before the adapter; the CLI test proves the eligibility half in the binary (qip-cli/tests/agency.rs:458-479). qip-cli is not a deployed image (deploy.yml:375)."
   },
   {
     "id": "R12-AGENCY-1063",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:419 identity check plus check_coordinated_voices (one message under several identities refused); ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "status": "COMPLETE",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). preflight refuses any step whose draft speaks under a name other than the tool's registered identity and the goal's acting identity, naming it a fabricated identity (guard.rs:290-302); check_identity refuses unauthorised senders (conduct_brain.rs:305-320); check_coordinated_voices refuses one message under several identities (conduct_brain.rs:419-445).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:419 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 (fabricated identity case)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/guard.rs:290-302",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:419-445",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_same_message_under_two_identities_is_fake_consensus_and_under_one_is_not"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1425,20 +1489,26 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Control exists in front of the adapter in the library; no binary composes it. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Guard case 'fabricated identity' (agency.rs:1581-1585) asserts the reason and zero adapter calls. 'Order pattern' is not separately covered: orders on the edge carry no sender identity a strategy can choose, so nothing there is to refuse. qip-cli is not a deployed image (deploy.yml:375)."
   },
   {
     "id": "R12-AGENCY-1064",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:121 FAKE_CONSENSUS_PHRASES rule (mandatory) and check_coordinated_voices across drafts; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Fake consensus is refused by the mandatory no_fake_consensus phrase rule (FAKE_CONSENSUS_PHRASES, conduct_brain.rs:118-139) and by check_coordinated_voices across one pass's drafts (conduct_brain.rs:419-445, via campaign_failures :560-571).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:121 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 (no_fake_consensus case)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:118-139",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:419-445"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "The cross-identity check sees only one pass's drafts; the same message under different acting identities in different passes (or invocations) is never compared, and the journal is not consulted. Inside one pass the guard already forces a single identity (guard.rs:290), so check_coordinated_voices cannot fire in the guard at all. The remaining detector is a 15-phrase list.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1449,20 +1519,26 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: phrase-list rule and cross-draft voice check now exist and refuse before the adapter; not integrated in a binary."
+    "notes": "Round-2 independent audit, 2026-10-11: Binary composition now present. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1065",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:225 no_false_claims / no_manipulation rules plus deceptive-method infeasibility in planning; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Deceptive methods are refused at plan time: Method::is_deceptive (qip-contracts/src/action.rs:59-61) makes a plan with a deceptive tool edge anywhere in it infeasible whatever its estimate (agency tests). Deceptive content is otherwise only the mandatory no_false_claims phrase list (conduct_brain.rs:101-116).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:225 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:573 a_plan_with_a_deceptive_step_anywhere_in_it_is_infeasible_whatever_its_expected_effect",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/libs/qip-contracts/src/action.rs:59-61",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_plan_with_a_deceptive_step_anywhere_in_it_is_infeasible_whatever_its_expected_effect"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "A tool's Method is declared by whoever builds the affordance graph (the request document), so a deceptive action declared as Method::Communication passes classification; the content check is 13 promissory phrases and has no before-adapter test case (no no_false_claims case in agency.rs:1550-1606).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1473,20 +1549,26 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Phrase lists and method classification only; not integrated in a binary. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Binary composition now present. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
   },
   {
     "id": "R12-AGENCY-1066",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:325 check_disclosures refuses a blank disclosure text; promotion is caught only if the policy lists a promotion disclosure as required; ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Undisclosed promotion is caught only if the operator lists a disclosure kind in required_disclosures and the draft lacks it or leaves its text blank (conduct_brain.rs:325-345).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:325 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:147 disclosures_check_blocks_when_required_missing",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:325-345",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_required_disclosure_present_by_kind_with_blank_text_discloses_nothing"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "No detector of promotion exists: a promotional draft passes whenever required_disclosures is empty, which ConductGate::new permits (conduct_brain.rs:477-490) and the CLI's own test policy uses (qip-cli/tests/agency.rs:30). No test drives a promotional action to refusal before the adapter.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1497,7 +1579,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. No detector of promotion itself; depends on configured required_disclosures; not integrated. Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged in substance; binary composition now present."
   },
   {
     "id": "R12-EXEC-1067",
@@ -1542,15 +1624,20 @@
   {
     "id": "R12-AGENCY-1069",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/conduct_brain.rs:143 RUMOUR_PHRASES rule (no_rumour_engineering, mandatory); ConductGate runs inside ActionGuard::preflight (backend/crates/services/qip-agency/src/guard.rs:190) which engine::execute calls before any adapter (backend/crates/services/qip-agency/src/engine.rs:299)",
+    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). The mandatory no_rumour_engineering rule refuses a draft containing any of 15 hearsay phrases as whole words (RUMOUR_PHRASES, conduct_brain.rs:141-160).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:143 check implementation",
-      "backend/crates/services/qip-agency/src/guard.rs:190 campaign_failures refuses the plan before any adapter call",
-      "backend/crates/services/qip-agency/src/engine.rs:299 authority with no guard is refused",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 (no_rumour_engineering case)",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
+      "backend/crates/apps/qip-cli/src/main.rs:73",
+      "backend/crates/apps/qip-cli/src/agency.rs:227",
+      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
+      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
+      "backend/crates/services/qip-agency/src/engine.rs:316-349",
+      "backend/crates/services/qip-agency/src/guard.rs:264-336",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:141-160"
     ],
-    "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root.",
+    "gap": "Phrase list only: 'per people close to the matter', 'reportedly', 'chatter suggests' and similar pass. No structural check (e.g. a claim not backed by an evidence item) ties rumour to the absence of evidence.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1561,7 +1648,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: rumour rule exists and refuses before the adapter; phrase list only and not integrated in a binary."
+    "notes": "Round-2 independent audit, 2026-10-11: Guard case 'no_rumour_engineering' and the CLI rumour test (qip-cli/tests/agency.rs:442-454) do refuse before the adapter, and the binary now composes it."
   },
   {
     "id": "R12-ARCH-1070",
@@ -1693,12 +1780,18 @@
   {
     "id": "R12-QUANT-1076",
     "status": "PARTIAL",
-    "current": "PortfolioAllocation family with encoding/baseline/benchmark exists; Foundry::platform is called from ComputeRouter::with_quantum, which runs only when quantum_enabled.",
+    "current": "Foundry::platform registers FamilyKind::PortfolioAllocation with a classical baseline, an objective and a promotion margin and records every other family NotBuilt (backend/crates/libs/qip-quantum/src/foundry.rs:166-186). It is now reached from a binary: qip-deepbrain reads QIP_QUANTUM_PROVIDER via with_compute_settings (backend/crates/apps/qip-deepbrain/src/main.rs:181, :1074), ComputeSettings::apply sets quantum_enabled (backend/crates/runtime/qip-kernel/src/compute_routing.rs:147-156), Platform::new attaches the provider (platform.rs:4650-4652), and ComputeRouter::with_quantum refuses unless the foundry registers the family (backend/crates/services/qip-optimization-engine/src/router.rs:741-754). dev/test tfvars set deepbrain_quantum_provider=\"simulated\" (infrastructure/environments/dev/terraform.tfvars:749). Every DECIDE solve journals a SolverBenchmarked record under the family (platform.rs:13724).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4609 if config.quantum_enabled { router.with_quantum(...) }",
-      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)"
+      "backend/crates/libs/qip-quantum/src/foundry.rs:48-53",
+      "backend/crates/libs/qip-quantum/src/foundry.rs:166-186",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:741-754",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4650-4656",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13720-13737",
+      "libs/qip-quantum/tests/foundry.rs::no_blueprint_family_is_silently_absent_from_the_platform_foundry",
+      "apps/qip-deepbrain/src/main.rs::tests::the_deep_brains_compute_settings_attach_the_simulator_and_dispatch_through_the_gateway",
+      "infrastructure/environments/dev/terraform.tfvars:749-750"
     ],
-    "gap": "A composition root that enables the quantum arm.",
+    "gap": "The verification names an encoding: FamilyDeclaration has no encoding field (foundry.rs:48-53) and the registration's baseline/objective are free-text strings not bound to the code the router runs; register the QUBO encoding and bind the declaration to it. Only the in-tree simulator can be attached (hosted refused, compute_routing.rs:118-124).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1709,7 +1802,7 @@
     "verification": "cargo test -p qip-quantum",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: No binary reaches it: quantum_enabled defaults false (config.rs:534), with_quantum is called only in tests, Foundry::platform has no production caller. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: still unreachable from any binary."
+    "notes": "Round-2 independent audit, 2026-10-11: Old note 'no binary reaches it' is no longer true: qip-deepbrain reaches Foundry::platform through ComputeRouter::with_quantum when QIP_QUANTUM_PROVIDER=simulated (set in dev/test). Graded PARTIAL rather than COMPLETE only on the missing encoding declaration, taking the lower grade."
   },
   {
     "id": "R12-QUANT-1077",
