@@ -17,3 +17,20 @@ serde_core       # ADR 0002 — serde 1.0.229 split its core traits into this cr
 itoa             # ADR 0002 — serde_json integer formatting
 zmij             # ADR 0002 — serde_json float formatting
 memchr           # ADR 0002 — serde_json byte search
+
+# Cold-tier compression (ADR 0113 §3, admitted under ADR 0109): qip-storage
+# compresses sealed tick segments with zstd after the size measurement the ADR
+# required. zstd-sys builds the reference C library, so its build closure is
+# listed too; none of the build-only packages reach a shipped binary's code.
+zstd             # ADR 0113 — tick-segment compression in qip-storage
+zstd-safe        # ADR 0113 — zstd's safe wrapper over the C library
+zstd-sys         # ADR 0113 — the reference zstd C library, built from source
+cc               # ADR 0113 — build-only: compiles zstd-sys's C sources
+find-msvc-tools  # ADR 0113 — build-only: cc's Windows toolchain probe
+jobserver        # ADR 0113 — build-only: cc's parallel-build coordination
+shlex            # ADR 0113 — build-only: cc's flag parsing
+pkg-config       # ADR 0113 — build-only: zstd-sys's system-library probe
+libc             # ADR 0113 — jobserver/getrandom's libc bindings
+getrandom        # ADR 0113 — jobserver's dependency (build-only here)
+r-efi            # ADR 0113 — getrandom's UEFI target support, never built on Linux
+cfg-if           # ADR 0113 — conditional compilation helper in the closure

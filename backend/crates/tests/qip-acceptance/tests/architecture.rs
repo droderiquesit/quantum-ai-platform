@@ -1917,23 +1917,32 @@ fn the_dependency_graph_is_acyclic() {
 // --- external surface -------------------------------------------------------
 
 #[test]
-fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
+fn no_crate_declares_a_third_party_dependency_the_allow_list_does_not_admit() {
     // The lockfile check in `scripts/check-dependencies.sh` catches what was
     // resolved. This catches what was *asked for*, which is the line a
     // reviewer sees in the diff.
     //
-    // Served by `cargo metadata` like every other check in this file. It used
-    // to run its own, weaker manifest reader — one that classified a section by
-    // `contains("dependencies")` and split keys on `['.', ' ', '=']` — so the
-    // two disagreed about quoted keys, tables named after one dependency, and
-    // which sections counted. Three review rounds were decided by which of the
-    // two happened to fire on a given manifest, which is not a property a
-    // boundary check should have. There is now one reader.
+    // Until ADR 0109 this held every crate to serde and serde_json. ADR 0109
+    // replaced the fixed pair with the committed allow-list the shell script
+    // also reads, so both checks now answer to one list: a crate declared in a
+    // manifest and missing from `scripts/dependency-allowlist.txt` fails here
+    // even before the lockfile is regenerated. The decision core's own two
+    // (ADR 0009) is still held by the next test, so admitting a crate here
+    // does not let it into the core.
     //
-    // Unlike the boundary graph this counts **every** kind, including dev and
-    // build dependencies: the rule is that the workspace declares two
-    // third-party crates, and a test-only dependency is still a supply chain.
-    let permitted: BTreeSet<&str> = ["serde", "serde_json"].into_iter().collect();
+    // Served by `cargo metadata` like every other check in this file. It
+    // counts **every** kind, including dev and build dependencies: a
+    // test-only dependency is still a supply chain.
+    let allow_list = qip_acceptance::read("scripts/dependency-allowlist.txt");
+    let permitted: BTreeSet<&str> = allow_list
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(
+        permitted.contains("serde") && permitted.contains("serde_json"),
+        "premise: the allow-list was read and admits the decision core's two"
+    );
     let metadata = workspace_metadata();
     let members = workspace_member_names(&metadata);
     let mut offenders = Vec::new();
@@ -1960,7 +1969,8 @@ fn no_crate_declares_a_third_party_dependency_beyond_the_two_permitted() {
     );
     assert!(
         offenders.is_empty(),
-        "third-party dependencies were declared: {offenders:?}"
+        "third-party dependencies were declared that scripts/dependency-allowlist.txt \
+         does not admit (add each with the ADR that admits it): {offenders:?}"
     );
 }
 
