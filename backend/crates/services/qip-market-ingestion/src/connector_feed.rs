@@ -175,7 +175,21 @@ pub struct ConnectorFeed {
     /// Captures the lake writer refused or failed, and the last reason.
     tick_lake_failures: u64,
     tick_lake_last_failure: Option<String>,
+    /// Knowledge packs released polls produced and nobody has yet collected,
+    /// each beside its `(pack bytes, body bytes)` footprint, oldest first,
+    /// bounded at [`PENDING_PACK_CAPACITY`] (R12-DATA-1041).
+    pending_packs: VecDeque<PendingPack>,
 }
+
+/// A knowledge pack a released poll produced, with the encoded size of the
+/// pack and of the body it was derived from, where the pack encoded.
+pub type PendingPack = (
+    qip_contracts::knowledge_pack::KnowledgePack,
+    Option<(u64, u64)>,
+);
+
+/// Knowledge packs a feed holds for its caller before dropping the oldest.
+pub const PENDING_PACK_CAPACITY: usize = 1_024;
 
 /// Checked evidence a feed holds for its caller before dropping the oldest.
 /// One poll's worth at the largest shipped batch cap, several times over: a
@@ -295,6 +309,7 @@ impl ConnectorFeed {
             tick_lake: None,
             tick_lake_failures: 0,
             tick_lake_last_failure: None,
+            pending_packs: VecDeque::new(),
         })
     }
 
@@ -523,6 +538,16 @@ impl ConnectorFeed {
                 }
             }
         }
+        // The pack travels like the evidence: only once the poll that
+        // produced it has been referenced and committed, so a pack never
+        // describes records nobody received.
+        if let Some(pack) = report.knowledge_pack.take() {
+            if self.pending_packs.len() >= PENDING_PACK_CAPACITY {
+                self.pending_packs.pop_front();
+            }
+            self.pending_packs
+                .push_back((pack, report.knowledge_footprint));
+        }
         // Refused evidence goes up with the released: its records stay in
         // quarantine, but the world fabric's detectors read the claims.
         for checked in report.evidence.into_iter().chain(report.refused_evidence) {
@@ -546,6 +571,14 @@ impl ConnectorFeed {
     /// bounded, for the composition root to collect.
     pub fn drain_evidence(&mut self) -> Vec<CheckedEvidence> {
         self.pending_evidence.drain(..).collect()
+    }
+
+    /// Take the knowledge packs every poll released since the last call
+    /// produced, oldest first, each with its measured footprint, for the
+    /// composition root to persist (R12-DATA-1041). Before this the pack was
+    /// built and measured on every poll and dropped with the report.
+    pub fn drain_knowledge_packs(&mut self) -> Vec<PendingPack> {
+        self.pending_packs.drain(..).collect()
     }
 
     /// Seal the ticks, quotes and trades this feed releases into the lake

@@ -156,6 +156,52 @@ impl TickLakeSettings {
     }
 }
 
+/// The variable that turns on the durable knowledge-pack store
+/// (R12-DATA-1041): `store` keeps every pack a connector poll produces under
+/// [`KNOWLEDGE_PACK_NAMESPACE`]; `off`, or unset, keeps none. Anything else
+/// stops the process.
+pub const KNOWLEDGE_PACKS_VARIABLE: &str = "QIP_DEEPBRAIN_KNOWLEDGE_PACKS";
+
+/// The blob namespace knowledge packs are kept under.
+pub const KNOWLEDGE_PACK_NAMESPACE: &str = "knowledge-packs";
+
+/// Whether this node keeps knowledge packs. `false` when unset.
+pub fn knowledge_packs_enabled(lookup: &dyn Fn(&str) -> Option<String>) -> Result<bool> {
+    match lookup(KNOWLEDGE_PACKS_VARIABLE).as_deref().map(str::trim) {
+        None | Some("off") => Ok(false),
+        Some("store") => Ok(true),
+        Some(other) => Err(Error::invalid(format!(
+            "{KNOWLEDGE_PACKS_VARIABLE} is `{other}`; it is `store` or `off`"
+        ))),
+    }
+}
+
+/// What an arm's knowledge-pack store has done, for the banner and for a
+/// test that asserts the store ran rather than assuming it did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackStoreStats {
+    /// Packs written.
+    pub written: u64,
+    /// Encoded bytes of the packs written, and of the bodies they were
+    /// derived from: the durable layer's size beside the source's.
+    pub pack_bytes: u64,
+    pub source_bytes: u64,
+    /// Packs refused because they were not smaller than their source, or
+    /// could not be measured. Refused rather than kept: the durable layer
+    /// is a compact interpretation, and a pack as large as the body it came
+    /// from is a copy wearing a schema.
+    pub refused_not_smaller: u64,
+    /// Writes the store failed, and the last reason.
+    pub failures: u64,
+    pub last_failure: Option<String>,
+}
+
+/// The footprint of a pack worth keeping: measured, and smaller than the
+/// body it was derived from.
+fn keepable(footprint: Option<(u64, u64)>) -> Option<(u64, u64)> {
+    footprint.filter(|(pack_bytes, source_bytes)| pack_bytes < source_bytes)
+}
+
 /// One catalogued connector, its standing gate, and the admission the
 /// platform's reference ledger names the licence by.
 #[derive(Debug)]
@@ -167,6 +213,10 @@ pub struct ConnectorArm {
     admitted: AdmittedSource,
     /// What the last poll's evidence did to the world fabric.
     last_evidence: EvidenceIntake,
+    /// Where this arm keeps its knowledge packs, when the root opened a
+    /// store for them (R12-DATA-1041).
+    pack_store: Option<Arc<dyn BlobStore>>,
+    pack_stats: PackStoreStats,
 }
 
 impl ConnectorArm {
@@ -210,6 +260,8 @@ impl ConnectorArm {
                 admission,
                 admitted,
                 last_evidence: EvidenceIntake::default(),
+                pack_store: None,
+                pack_stats: PackStoreStats::default(),
             }),
             Err(error) => Err(error.and_release(feed.shutdown(at))),
         }
@@ -278,6 +330,8 @@ impl ConnectorArm {
             admission,
             admitted,
             last_evidence: EvidenceIntake::default(),
+            pack_store: None,
+            pack_stats: PackStoreStats::default(),
         })
     }
 
@@ -285,6 +339,57 @@ impl ConnectorArm {
     pub fn with_tick_lake(mut self, writer: TickLakeWriter) -> Self {
         self.feed = self.feed.with_tick_lake(writer);
         self
+    }
+
+    /// Keep every knowledge pack this arm's polls produce on `store`.
+    pub fn with_knowledge_packs(mut self, store: Arc<dyn BlobStore>) -> Self {
+        self.pack_store = Some(store);
+        self
+    }
+
+    /// What the knowledge-pack store has done.
+    pub const fn knowledge_packs(&self) -> &PackStoreStats {
+        &self.pack_stats
+    }
+
+    /// Write the packs the feed holds, keyed by source and content hash so a
+    /// re-run writes the same key rather than a second copy. A failed write
+    /// does not fail the poll — the records are committed and the loop is
+    /// owed them — but it is counted with its reason, as the tick lake's is.
+    fn persist_packs(&mut self) {
+        let packs = self.feed.drain_knowledge_packs();
+        let Some(store) = &self.pack_store else {
+            return;
+        };
+        for (pack, footprint) in packs {
+            let Some((pack_bytes, source_bytes)) = keepable(footprint) else {
+                self.pack_stats.refused_not_smaller =
+                    self.pack_stats.refused_not_smaller.saturating_add(1);
+                continue;
+            };
+            let written = pack.encode().and_then(|bytes| {
+                let key = format!(
+                    "{}/{}-{}.json",
+                    self.admitted.source_id(),
+                    pack.created_ms,
+                    qip_core::hash::sha256_hex(&bytes)
+                );
+                store.put(&key, bytes)
+            });
+            match written {
+                Ok(()) => {
+                    self.pack_stats.written = self.pack_stats.written.saturating_add(1);
+                    self.pack_stats.pack_bytes =
+                        self.pack_stats.pack_bytes.saturating_add(pack_bytes);
+                    self.pack_stats.source_bytes =
+                        self.pack_stats.source_bytes.saturating_add(source_bytes);
+                }
+                Err(error) => {
+                    self.pack_stats.failures = self.pack_stats.failures.saturating_add(1);
+                    self.pack_stats.last_failure = Some(error.message().to_string());
+                }
+            }
+        }
     }
 
     /// Captures the lake refused or failed, and the last reason.
@@ -363,6 +468,7 @@ impl ConnectorArm {
             platform.reference_fetch(digest, until).map(|_| ())
         })?;
         self.last_evidence = platform.absorb_evidence(self.feed.drain_evidence(), until);
+        self.persist_packs();
         Ok(records)
     }
 
@@ -504,6 +610,25 @@ mod tests {
              admission check that followed refused it"
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_pack_is_kept_only_when_measured_and_smaller_than_its_source() {
+        assert_eq!(keepable(Some((40, 400))), Some((40, 400)));
+        assert_eq!(keepable(Some((400, 400))), None, "as large as the body");
+        assert_eq!(keepable(Some((401, 400))), None, "larger than the body");
+        assert_eq!(keepable(None), None, "never measured");
+    }
+
+    #[test]
+    fn the_knowledge_pack_switch_is_off_unless_it_says_store() {
+        let unset = |_: &str| None;
+        assert!(matches!(knowledge_packs_enabled(&unset), Ok(false)));
+        let say = |value: &'static str| move |_: &str| Some(value.to_string());
+        assert!(matches!(knowledge_packs_enabled(&say("off")), Ok(false)));
+        assert!(matches!(knowledge_packs_enabled(&say("store")), Ok(true)));
+        assert!(knowledge_packs_enabled(&say("yes")).is_err());
+        assert!(knowledge_packs_enabled(&say("")).is_err());
     }
 
     fn lake(value: &str) -> Result<Option<TickLakeSettings>> {
