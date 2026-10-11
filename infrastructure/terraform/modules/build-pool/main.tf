@@ -213,7 +213,7 @@ resource "google_storage_bucket_iam_member" "build_writes_output" {
 #     the same reason (worker pools carry no IAM policy of their own);
 #   * running it as the build identity: `iam.serviceAccountUser` on that one
 #     account, never project-wide;
-#   * staging the tarball: object create on the staging bucket, and the
+#   * staging the tarball: object create under `source/` only, and the
 #     bucket read `gcloud` makes before uploading;
 #   * collecting the result: object read on the same bucket, to download
 #     the saved image the pool wrote under `out/`.
@@ -235,9 +235,8 @@ resource "google_service_account_iam_member" "ci_runs_builds_as_the_build_identi
   member             = "serviceAccount:${var.ci_service_account}"
 }
 
-resource "google_storage_bucket_iam_member" "ci_stages_source" {
+resource "google_storage_bucket_iam_member" "ci_reads_staging" {
   for_each = toset([
-    "roles/storage.objectCreator",
     "roles/storage.legacyBucketReader",
     "roles/storage.objectViewer",
   ])
@@ -245,4 +244,23 @@ resource "google_storage_bucket_iam_member" "ci_stages_source" {
   bucket = google_storage_bucket.staging.name
   role   = each.value
   member = "serviceAccount:${var.ci_service_account}"
+}
+
+# The pipeline's one write: the checkout tarball, under `source/`, where
+# `deploy.yml` stages it (`pool_staging`). Until 2026-10-11 this grant held
+# the whole bucket, `out/` included, so the identity that loads the saved
+# image and compares its id with the pool's could also have written both —
+# the two-build reproducibility check would then have compared the pipeline
+# with itself. An allow-list rather than "not out/", so a prefix added later
+# is closed to the pipeline until a person opens it.
+resource "google_storage_bucket_iam_member" "ci_stages_source" {
+  bucket = google_storage_bucket.staging.name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${var.ci_service_account}"
+
+  condition {
+    title       = "pipeline-source-only"
+    description = "The pipeline stages the checkout under source/ and writes nowhere else, out/ least of all."
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${local.staging_bucket}/objects/source/\")"
+  }
 }

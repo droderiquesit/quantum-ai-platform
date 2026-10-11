@@ -105,6 +105,30 @@ run "the_pipeline_acts_as_the_build_identity_alone" {
   }
 }
 
+# The pipeline writes only where it stages the checkout. If it could write
+# under `out/`, the saved image and the id it is compared with could both
+# come from the identity that compares them. Mutations that must fail this
+# run: drop the `condition` on `ci_stages_source`, point it at the bucket
+# root, or put `roles/storage.objectCreator` back into `ci_reads_staging`.
+run "the_pipeline_writes_only_under_source_and_never_under_out" {
+  command = plan
+
+  assert {
+    condition     = google_storage_bucket_iam_member.ci_stages_source.role == "roles/storage.objectCreator" && length(google_storage_bucket_iam_member.ci_stages_source.condition) == 1
+    error_message = "The pipeline's write on the staging bucket carries no condition, so it reaches out/."
+  }
+
+  assert {
+    condition     = google_storage_bucket_iam_member.ci_stages_source.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/pool-plan-harness-qip-dev-build-source/objects/source/\")"
+    error_message = "The pipeline may write somewhere other than source/ in the staging bucket."
+  }
+
+  assert {
+    condition     = !contains([for grant in google_storage_bucket_iam_member.ci_reads_staging : grant.role], "roles/storage.objectCreator") && length(google_storage_bucket_iam_member.ci_reads_staging) == 2
+    error_message = "The pipeline holds an unconditioned object create on the staging bucket beside its conditioned one."
+  }
+}
+
 # Admits a valid peering size, refuses one Cloud Build rejects at apply.
 run "a_peering_range_smaller_than_a_slash_24_is_refused" {
   command = plan

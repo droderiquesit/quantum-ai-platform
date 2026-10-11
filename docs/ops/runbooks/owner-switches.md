@@ -39,7 +39,10 @@ creates a Cloud Build private pool `qip-dev-build` peered into the
 Engineering VPC, the build identity `qip-build-dev` (reads the staged
 source, writes its saved image under `out/` in the staging bucket, nothing
 else), the bucket `<project>-qip-dev-build-source`, and four grants for the
-pipeline's identity. `deploy.yml` reads the same tfvars line and submits
+pipeline's identity, whose one write is the checkout under `source/` — it
+cannot write under `out/`, so the image id the pool reports and the image
+the runner loads both come from the build identity, not from the identity
+comparing them. `deploy.yml` reads the same tfvars line and submits
 `infrastructure/cloudbuild/build-image.yaml`, which builds twice from
 nothing cached and hands back an image only if both image ids agree; the
 runner loads it, refuses a different id, and pushes, scans, signs and
