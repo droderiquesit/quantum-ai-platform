@@ -1105,3 +1105,48 @@ fn an_order_is_refused_while_a_shared_cause_level_cannot_be_read() -> Result<()>
     );
     Ok(())
 }
+
+/// R12-RISK-7205: the capital survival kernel's ceiling is a limit the
+/// pre-trade gate evaluates, not a second enforcement path beside it. An
+/// order that would carry gross past what survival released is refused by the
+/// same `check` every other limit goes through; a sale that brings an
+/// over-ceiling book back down is admitted, because a ceiling that trapped
+/// the book in its exposure would stop de-risking exactly when it matters.
+#[test]
+fn the_survival_ceiling_refuses_added_gross_and_admits_a_sale_through_the_gate() -> Result<()> {
+    let checker = PreTradeChecker::new(LimitSet::new("survival").with(Limit::new(
+        "survival-gross",
+        LimitKind::MaxSurvivalGross { limit: 1.0 },
+    )));
+    let book = |ceiling: i64| RiskState {
+        equity: Decimal::from_int(1_000_000),
+        gross_exposure: Decimal::from_int(400_000),
+        net_exposure: Decimal::from_int(400_000),
+        position_notionals: BTreeMap::from([("obj-AAA".to_string(), Decimal::from_int(400_000))]),
+        survival_gross_ceiling: Some(Decimal::from_int(ceiling)),
+        ..RiskState::default()
+    };
+
+    // Premise: with room under the ceiling the same purchase passes, so the
+    // refusal below is the ceiling and not the order.
+    let buy = order("AAA", "1000", "100"); // 100k more gross
+    assert!(checker.check(&buy, &book(600_000), now())?.is_approved());
+
+    let refused = checker.check(&buy, &book(450_000), now())?;
+    assert!(
+        matches!(refused.decision, PreTradeDecision::Rejected { .. }),
+        "500k of gross against a 450k survival ceiling must be refused: {}",
+        refused.decision.describe()
+    );
+
+    // The book already stands above a ceiling survival has since lowered;
+    // selling half of the position lowers gross and must pass.
+    let sell = order("AAA", "-2000", "100");
+    let shed = checker.check(&sell, &book(100_000), now())?;
+    assert!(
+        shed.is_approved(),
+        "a sale that lowers gross must pass the survival ceiling: {}",
+        shed.decision.describe()
+    );
+    Ok(())
+}

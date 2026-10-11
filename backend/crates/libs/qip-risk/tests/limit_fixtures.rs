@@ -30,6 +30,7 @@
 //! | `MinCashBuffer` | `a_book_above_the_cash_floor_passes` | `a_book_below_the_cash_floor_is_vetoed` |
 //! | `MaxVenueExposure` | `a_venue_inside_its_exposure_limit_passes` | `a_venue_beyond_its_exposure_limit_is_vetoed` |
 //! | `MaxVenueNotionalRate` | `a_venue_inside_its_notional_rate_passes` | `a_venue_beyond_its_notional_rate_is_vetoed` |
+//! | `MaxSurvivalGross` | `a_book_inside_its_survival_ceiling_passes` | `a_book_beyond_its_survival_ceiling_is_vetoed` |
 //!
 //! The two venue rules carry a third fixture,
 //! `a_venue_with_no_exposure_figure_is_vetoed_by_both_venue_rules`, because
@@ -96,6 +97,11 @@ fn state() -> RiskState {
         // nothing writes it yet, which is why no venue rule ships in
         // `LimitSet::conservative_default`.
         venue_exposures: BTreeMap::from([("simulated".to_string(), Decimal::from_int(150_000))]),
+        // The survival kernel stands behind 1.2m of gross; the book carries
+        // 900k. Not a projection, so `gross_before_order` is absent and the
+        // survival rule judges the gross as it stands.
+        survival_gross_ceiling: Some(Decimal::from_int(1_200_000)),
+        gross_before_order: None,
     }
 }
 
@@ -638,6 +644,66 @@ fn a_venue_beyond_its_notional_rate_is_vetoed() {
 
 // --- the table is closed ----------------------------------------------------
 
+// --- MaxSurvivalGross -------------------------------------------------------
+
+#[test]
+fn a_book_inside_its_survival_ceiling_passes() {
+    // 900k of gross against a 1.2m ceiling is 0.75 of it.
+    let at = |limit: f64| LimitKind::MaxSurvivalGross { limit };
+    passes(at(1.0), at(0.5), &state());
+}
+
+#[test]
+fn a_book_beyond_its_survival_ceiling_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxSurvivalGross { limit };
+    let breach = vetoes(at(0.5), at(1.0), &state());
+    assert!((breach.observed - 0.75).abs() < 1e-9);
+}
+
+#[test]
+fn a_state_with_no_survival_ceiling_is_refused_by_the_survival_rule() {
+    // A survival limit evaluated against no survival figure has not been
+    // evaluated. At a bound no finite figure could breach, only the absence
+    // can veto — the venue rules' absent-key defect, closed in advance here.
+    let generous = LimitKind::MaxSurvivalGross { limit: 1_000.0 };
+    assert!(
+        !check(generous.clone(), &state()).is_blocked(),
+        "premise: with a ceiling the generous bound passes"
+    );
+    let absent = RiskState {
+        survival_gross_ceiling: None,
+        ..state()
+    };
+    let verdict = check(generous, &absent);
+    assert!(verdict.is_blocked(), "an absent ceiling must refuse");
+}
+
+#[test]
+fn an_order_that_sheds_gross_is_never_refused_by_the_survival_rule() {
+    // The survival kernel released nothing, the book still holds 900k, and
+    // the projection shows gross falling from 950k. A ceiling that stopped
+    // this order would trap the book in exposure it is trying to shed.
+    let rule = LimitKind::MaxSurvivalGross { limit: 1.0 };
+    let adding = RiskState {
+        survival_gross_ceiling: Some(Decimal::ZERO),
+        gross_before_order: Some(Decimal::from_int(850_000)),
+        ..state()
+    };
+    assert!(
+        check(rule.clone(), &adding).is_blocked(),
+        "premise: an order raising gross past a zero ceiling is refused"
+    );
+    let shedding = RiskState {
+        survival_gross_ceiling: Some(Decimal::ZERO),
+        gross_before_order: Some(Decimal::from_int(950_000)),
+        ..state()
+    };
+    assert!(
+        !check(rule, &shedding).is_blocked(),
+        "an order that lowers gross must pass the survival rule"
+    );
+}
+
 #[test]
 fn every_limit_kind_has_both_fixtures() {
     // One value of every arm. The `match` below is exhaustive with no
@@ -688,8 +754,9 @@ fn every_limit_kind_has_both_fixtures() {
             venue: "simulated".into(),
             limit: 1.0,
         },
+        LimitKind::MaxSurvivalGross { limit: 1.0 },
     ];
-    let fixtures: [(&str, &str); 19] = [
+    let fixtures: [(&str, &str); 20] = [
         (
             "an_order_inside_the_notional_limit_passes",
             "an_order_beyond_the_notional_limit_is_vetoed",
@@ -766,6 +833,10 @@ fn every_limit_kind_has_both_fixtures() {
             "a_venue_inside_its_notional_rate_passes",
             "a_venue_beyond_its_notional_rate_is_vetoed",
         ),
+        (
+            "a_book_inside_its_survival_ceiling_passes",
+            "a_book_beyond_its_survival_ceiling_is_vetoed",
+        ),
     ];
     let source = include_str!("limit_fixtures.rs");
     for (kind, (pass, veto)) in kinds.iter().zip(fixtures) {
@@ -789,6 +860,7 @@ fn every_limit_kind_has_both_fixtures() {
             LimitKind::MinCashBuffer { .. } => "MinCashBuffer",
             LimitKind::MaxVenueExposure { .. } => "MaxVenueExposure",
             LimitKind::MaxVenueNotionalRate { .. } => "MaxVenueNotionalRate",
+            LimitKind::MaxSurvivalGross { .. } => "MaxSurvivalGross",
         };
         // Each named fixture exists as a test in this file, and the table
         // row names both. Matched on the whole declaration so a fixture

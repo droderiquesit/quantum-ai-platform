@@ -207,6 +207,25 @@ pub enum LimitKind {
     /// windowed in time either: it reads whatever exposure the producer filed.
     /// A venue absent from the map is refused, as for [`Self::MaxVenueExposure`].
     MaxVenueNotionalRate { venue: String, limit: f64 },
+    /// Maximum gross exposure as a fraction of the gross the capital survival
+    /// kernel has released ([`RiskState::survival_gross_ceiling`]).
+    ///
+    /// This is how survival reaches the Risk Gate as a *limit* rather than as
+    /// a second enforcement path beside it (R12-RISK-7205): the survival
+    /// kernel computes how much gross it will stand behind after NAV,
+    /// reserves, obligations, hedge capacity and the stressed-liquidity
+    /// reserve are withheld, and the gate refuses an order that would carry
+    /// the book past it. The kernel decides the number; the gate decides the
+    /// order, deterministically, from that number alone.
+    ///
+    /// **An absent ceiling refuses**, as an absent venue figure does: a
+    /// survival limit evaluated against no survival figure has not been
+    /// evaluated, and passing it would be the `MaxExpectedShortfall` defect
+    /// again. **An order that does not raise gross is never refused by it**
+    /// when the state carries [`RiskState::gross_before_order`]: a ceiling
+    /// that trapped the book in the exposure it exists to shed would make
+    /// de-risking impossible exactly when survival is in doubt.
+    MaxSurvivalGross { limit: f64 },
 }
 
 impl LimitKind {
@@ -231,6 +250,7 @@ impl LimitKind {
             Self::MinCashBuffer { .. } => "min_cash_buffer",
             Self::MaxVenueExposure { .. } => "max_venue_exposure",
             Self::MaxVenueNotionalRate { .. } => "max_venue_notional_rate",
+            Self::MaxSurvivalGross { .. } => "max_survival_gross",
         }
     }
 
@@ -267,6 +287,7 @@ impl LimitKind {
             | Self::MaxCounterpartyExposure { limit }
             | Self::MaxVenueExposure { limit, .. }
             | Self::MaxVenueNotionalRate { limit, .. }
+            | Self::MaxSurvivalGross { limit }
             | Self::MinCashBuffer { limit } => *limit,
             Self::MinLiquidity { fraction, .. } => *fraction,
         }
@@ -368,6 +389,7 @@ impl LimitKind {
                 venue: venue.clone(),
                 limit: bound,
             },
+            Self::MaxSurvivalGross { .. } => Self::MaxSurvivalGross { limit: bound },
         })
     }
 
@@ -383,12 +405,12 @@ impl LimitKind {
     /// monotone in size — converges to zero and refuses everything. Nothing
     /// about the threshold could have fixed that.
     ///
-    /// The match is exhaustive with no wildcard, so an eighteenth kind cannot
-    /// be added without someone answering this question about it. There are
-    /// seventeen — `grep -c '=> "max_\|=> "min_' src/limits.rs` — and this
-    /// sentence said "a seventeenth" after the count had already reached it,
-    /// which would have let the next author think the arm they were adding was
-    /// the one the rule already covered. That is the
+    /// The match is exhaustive with no wildcard, so a new kind cannot be
+    /// added without someone answering this question about it. Count them
+    /// with `grep -c '=> "max_\|=> "min_' src/limits.rs` rather than reading
+    /// a number here: this sentence said "seventeen" and "an eighteenth" while
+    /// the count stood at nineteen, which would have let the next author think
+    /// the arm they were adding was one the rule already covered. That is the
     /// whole point of the method: the question was never asked of
     /// `MaxConcentration`, and it shipped in every default set.
     pub fn denominator_moves_with_the_order(&self) -> bool {
@@ -411,7 +433,10 @@ impl LimitKind {
             | Self::MaxCounterpartyExposure { .. }
             | Self::MinCashBuffer { .. }
             | Self::MaxVenueExposure { .. }
-            | Self::MaxVenueNotionalRate { .. } => false,
+            | Self::MaxVenueNotionalRate { .. }
+            // The ceiling is fixed by the survival kernel before the order
+            // exists; the order moves the numerator only.
+            | Self::MaxSurvivalGross { .. } => false,
         }
     }
 
@@ -751,6 +776,14 @@ pub struct RiskState {
     /// A venue limit belongs in a shipped set only alongside a producer — the
     /// kernel's `risk_state` — that fills this map for the venue it names.
     pub venue_exposures: BTreeMap<String, Decimal>,
+    /// The most gross exposure the capital survival kernel will stand behind,
+    /// read by [`LimitKind::MaxSurvivalGross`]. `None` means no survival
+    /// figure was computed for this state, and that limit refuses on it.
+    pub survival_gross_ceiling: Option<Decimal>,
+    /// Gross exposure before the order under check, written by the pre-trade
+    /// projection so a limit can tell an order that adds risk from one that
+    /// sheds it. `None` on a state that is not a projection.
+    pub gross_before_order: Option<Decimal>,
 }
 
 impl RiskState {
@@ -1671,6 +1704,52 @@ impl LimitSet {
                     format!("notional to venue {venue} has no figure in the risk state"),
                 ),
             },
+            LimitKind::MaxSurvivalGross { limit: bound } => {
+                // A projection that does not raise gross is de-risking, and
+                // a survival ceiling never stands in the way of that. Only a
+                // projection can say so: a bare state carries no "before".
+                if let Some(before) = state.gross_before_order
+                    && state.gross_exposure <= before
+                {
+                    return out;
+                }
+                match state.survival_gross_ceiling {
+                    Some(ceiling) if ceiling.is_positive() => record(
+                        state.gross_exposure.to_f64() / ceiling.to_f64(),
+                        *bound,
+                        None,
+                        format!(
+                            "gross exposure over the {ceiling} the capital survival kernel \
+                             released"
+                        ),
+                    ),
+                    // A ceiling of zero is the survival kernel releasing
+                    // nothing: any gross at all is beyond it. Carried as an
+                    // infinite ratio so it binds as Critical through the
+                    // same refusal arm a non-number takes.
+                    Some(ceiling) => record(
+                        if state.gross_exposure.is_zero() {
+                            0.0
+                        } else {
+                            f64::INFINITY
+                        },
+                        *bound,
+                        None,
+                        format!(
+                            "the capital survival kernel released {ceiling} of gross and the \
+                             order would carry {}",
+                            state.gross_exposure
+                        ),
+                    ),
+                    None => record(
+                        f64::NAN,
+                        *bound,
+                        None,
+                        "gross exposure against a survival ceiling the risk state does not carry"
+                            .into(),
+                    ),
+                }
+            }
         }
         out
     }

@@ -304,6 +304,11 @@ impl PreTradeChecker {
 
         projected.order_notional = Some(order.notional());
         projected.order_subject = Some(key);
+        // The gross the book held before this order, so a limit can tell an
+        // order that adds risk from one that sheds it. `MaxSurvivalGross`
+        // reads it: a survival ceiling the book already stands above must
+        // still admit the sale that brings it back down.
+        projected.gross_before_order = Some(current.gross_exposure);
         projected
     }
 
