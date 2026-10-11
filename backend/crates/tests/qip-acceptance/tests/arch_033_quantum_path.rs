@@ -12,6 +12,13 @@
 //! These drive the real chain: a `qip_quantum` provider attached to the
 //! `qip_optimization_engine` router that the kernel's construction stage
 //! calls, on a problem the router's own policy admits to the quantum path.
+//!
+//! Since the quantum arm went submit-and-poll, a quantum answer is judged in
+//! the cycle *after* the one that asked, so the quantum path is driven across
+//! two solves; and since no job is sent against a provably optimal baseline,
+//! the baseline here is annealing (the exhaustive limit sits below the
+//! problem size). The property is unchanged: whenever a quantum answer is
+//! judged, a classical baseline was solved first on the same problem.
 
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
@@ -19,7 +26,7 @@
 
 use qip_core::error::Result;
 use qip_optimization_engine::problem::{Objective, PortfolioProblem};
-use qip_optimization_engine::router::{ComputeRouter, RoutingPolicy, Solver};
+use qip_optimization_engine::router::{ComputeRouter, RoutingDecision, RoutingPolicy, Solver};
 use qip_quantum::provider::SimulatedProvider;
 use qip_quantum::qaoa::QaoaSettings;
 use std::sync::Arc;
@@ -46,12 +53,13 @@ fn discrete_problem() -> Result<PortfolioProblem> {
         .with_cardinality(4))
 }
 
-/// A policy that admits a ten-asset problem to the quantum path and gives the
-/// router a provably optimal (exhaustive) classical baseline.
+/// A policy that admits a ten-asset problem to the quantum path, with an
+/// annealing baseline: the router sends no job against an exhaustive one,
+/// because nothing can beat a proven optimum.
 fn admitting_policy() -> RoutingPolicy {
     RoutingPolicy {
         minimum_assets_for_quantum: 4,
-        exact_enumeration_limit: 12,
+        exact_enumeration_limit: 2,
         qaoa: QaoaSettings {
             layers: 1,
             optimiser_iterations: 20,
@@ -61,10 +69,43 @@ fn admitting_policy() -> RoutingPolicy {
     }
 }
 
-fn quantum_router() -> ComputeRouter {
+fn quantum_router(policy: RoutingPolicy) -> Result<ComputeRouter> {
     ComputeRouter::classical(1)
-        .with_policy(admitting_policy())
+        .with_policy(policy)?
         .with_quantum(Arc::new(SimulatedProvider::new(3).with_max_qubits(12)))
+}
+
+/// Two cycles, as the kernel drives them: the first solve submits and
+/// answers classically, the job's worker finishes, the second judges it.
+/// Asserts that the asking cycle adopted nothing — an inline call would.
+fn judged_in_the_next_cycle(
+    router: &ComputeRouter,
+    problem: &PortfolioProblem,
+) -> Result<RoutingDecision> {
+    let first = router.solve(problem)?;
+    assert!(
+        first.quantum_dispatch.submitted.is_some(),
+        "premise: the first cycle submitted a job: {}",
+        first.quantum_note
+    );
+    assert!(
+        first.run_for(Solver::Quantum).is_none(),
+        "the cycle that asked also judged the answer, so the call was inline"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while router.quantum_job_ready()? != Some(true) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the simulated quantum job did not return within a minute"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let second = router.solve(problem)?;
+    assert_eq!(
+        second.quantum_dispatch.harvested,
+        first.quantum_dispatch.submitted
+    );
+    Ok(second)
 }
 
 /// Mutation: in `ComputeRouter::solve`, move `let classical =
@@ -76,11 +117,11 @@ fn quantum_router() -> ComputeRouter {
 fn when_the_quantum_path_runs_the_classical_baseline_is_solved_first_on_the_same_problem()
 -> Result<()> {
     let problem = discrete_problem()?;
-    let router = quantum_router();
+    let router = quantum_router(admitting_policy())?;
     let (attempt, note) = router.quantum_assessment(&problem);
     assert!(attempt, "premise: the policy admits this problem: {note}");
 
-    let decision = router.solve(&problem)?;
+    let decision = judged_in_the_next_cycle(&router, &problem)?;
 
     // Premise: the quantum path actually ran, or "baseline beside it" is
     // satisfied by a run in which nothing else happened.
@@ -111,8 +152,7 @@ fn when_the_quantum_path_runs_the_classical_baseline_is_solved_first_on_the_same
 /// A quantum answer that does not clear the margin is not used and no
 /// advantage is claimed. The margin here is `f64::MAX`, so no answer clears
 /// it whatever the simulator returns and whether or not its answer is
-/// feasible; the baseline is exhaustive besides, so the test does not depend
-/// on the simulator being weak.
+/// feasible, so the test does not depend on the simulator being weak.
 ///
 /// Mutation (always fires): in `ComputeRouter::solve`'s selection, replace
 /// both `Some(quantum)` arms with one returning `(Solver::Quantum,
@@ -122,21 +162,18 @@ fn when_the_quantum_path_runs_the_classical_baseline_is_solved_first_on_the_same
 /// self.policy.quantum_margin` with `if true`.
 #[test]
 fn a_quantum_answer_inside_the_margin_is_never_chosen_and_no_advantage_is_claimed() -> Result<()> {
-    let router = ComputeRouter::classical(1)
-        .with_policy(RoutingPolicy {
-            quantum_margin: f64::MAX,
-            ..admitting_policy()
-        })
-        .with_quantum(Arc::new(SimulatedProvider::new(3).with_max_qubits(12)));
-    let decision = router.solve(&discrete_problem()?)?;
-    // Premises: quantum ran, and the baseline is the exact optimum.
+    let router = quantum_router(RoutingPolicy {
+        quantum_margin: f64::MAX,
+        ..admitting_policy()
+    })?;
+    let decision = judged_in_the_next_cycle(&router, &discrete_problem()?)?;
+    // Premises: a quantum answer was judged, beside a classical baseline.
     assert!(
         decision.run_for(Solver::Quantum).is_some(),
         "{}",
         decision.rationale
     );
-    assert_eq!(decision.runs[0].solver, Solver::ExactEnumeration);
-    assert!(decision.runs[0].solver.is_exact());
+    assert!(!decision.runs[0].solver.is_quantum());
 
     assert_ne!(decision.chosen, Solver::Quantum, "{}", decision.rationale);
     assert_eq!(decision.measured_quantum_advantage(), None);
@@ -160,7 +197,7 @@ fn a_quantum_answer_inside_the_margin_is_never_chosen_and_no_advantage_is_claime
 fn with_no_provider_configured_only_the_classical_baseline_runs_and_the_reason_is_recorded()
 -> Result<()> {
     let decision = ComputeRouter::classical(1)
-        .with_policy(admitting_policy())
+        .with_policy(admitting_policy())?
         .solve(&discrete_problem()?)?;
     assert_eq!(decision.runs.len(), 1);
     assert!(!decision.runs[0].solver.is_quantum());

@@ -41,7 +41,11 @@ fn spec(class: QosClass) -> StreamPolicySpec {
     }
 }
 
-const ALL_ACKS: [AckProfile; 3] = [AckProfile::None, AckProfile::LeaderOnly, AckProfile::Quorum];
+const ALL_ACKS: [AckProfile; 3] = [
+    AckProfile::None,
+    AckProfile::LeaderOnly,
+    AckProfile::Archived,
+];
 
 /// FABRIC-028/029/067. Every class refuses every acknowledgement weaker than
 /// its floor and admits its floor; P0 and P1 therefore admit only the
