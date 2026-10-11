@@ -352,6 +352,7 @@ dependencies = [
  "qip-observability",
  "qip-orderbook",
  "qip-protocols",
+ "qip-risk",
  "qip-risk-engine",
  "qip-routing",
  "qip-sequencing",
