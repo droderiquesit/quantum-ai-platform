@@ -33,7 +33,6 @@ pub mod capital;
 pub mod degradation;
 pub mod edge;
 pub mod expansion;
-pub mod fabric_envelope;
 pub mod feasibility;
 pub mod feature;
 pub mod federation;
@@ -54,7 +53,6 @@ pub mod replay;
 pub mod routing;
 pub mod schema;
 pub mod signal;
-pub mod stream_policy;
 pub mod time;
 pub mod venue;
 pub mod wire;
@@ -66,7 +64,6 @@ pub use expansion::{
     BrainSpec, CurriculumItem, GapClass, GapSignal, MemoryEntry, MemoryKind, RetentionPolicy,
     ValuePolicy,
 };
-pub use fabric_envelope::{AuthContext, FabricEnvelope, QoSClass};
 pub use feature::{
     Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,
     KnowableAt, Revision,
@@ -87,6 +84,5 @@ pub use regional_episode::{EpisodeKind, RegionalEpisode};
 pub use routing::{QuantumRouter, RoutingConfig};
 pub use schema::{CompatibilityPolicy, SchemaDefinition, SchemaRegistry};
 pub use signal::{Conviction, OpportunityId, Signal, SignalKind, StrategyId};
-pub use stream_policy::{AckPolicy, OverloadBehavior, StreamPolicy};
 pub use time::{Stamped, Watermark};
 pub use venue::{Origin, VenueClass, VenueId, VenueStatus};

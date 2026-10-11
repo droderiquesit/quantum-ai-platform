@@ -221,7 +221,9 @@ fn parse_ack_profile(raw: &str) -> Result<AckProfile> {
     match raw {
         "none" => Ok(AckProfile::None),
         "leader_only" => Ok(AckProfile::LeaderOnly),
-        "quorum" => Ok(AckProfile::Quorum),
+        // `quorum` is the spelling before FABRIC-086's rename; it always
+        // meant "archived", never a replica majority, and is read as that.
+        "archived" | "quorum" => Ok(AckProfile::Archived),
         other => Err(Error::invalid(format!("unknown ack profile '{other}'"))),
     }
 }

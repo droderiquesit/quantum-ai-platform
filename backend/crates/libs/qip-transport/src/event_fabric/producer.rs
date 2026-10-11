@@ -7,7 +7,7 @@
 //! every producer must state, never a broker default: [`ProducerConfig::ack_profile`]
 //! takes [`AckProfile`], a type with no `Default` impl anywhere in this
 //! workspace, so [`ProducerConfig`] itself cannot be built by omission — see
-//! the module-level doctest below. `AckProfile::Quorum` is more than a label
+//! the module-level doctest below. `AckProfile::Archived` is more than a label
 //! here: [`Producer::send`] does not return `Ok` for it until a follow-up
 //! [`super::protocol::Metadata`] poll shows `archived_through` has caught up
 //! to the batch's own offset, because a leader-accepted-but-not-yet-durable
@@ -379,7 +379,7 @@ impl Producer {
         }
     }
 
-    /// `AckProfile::Quorum`'s condition: block, within the retry policy's own
+    /// `AckProfile::Archived`'s condition: block, within the retry policy's own
     /// attempt budget, until a [`super::protocol::Metadata`] poll shows
     /// `archived_through` has passed the batch's `base_offset`. Any weaker
     /// profile is satisfied by the leader's own [`ProduceAck`] already in
@@ -391,10 +391,10 @@ impl Producer {
     /// everything is. The batch at `base_offset` is therefore archived when
     /// `archived_through > base_offset`. This compared with `>=` until the
     /// SDK was driven against the broker, where a P1 producer's very first
-    /// batch — offset zero, archive empty — was reported quorum-safe before
+    /// batch — offset zero, archive empty — was reported archive-safe before
     /// any segment had been sealed, and every later one a segment early.
     fn await_ack_profile(&mut self, ack: ProduceAck) -> Result<ProduceAck> {
-        if !matches!(self.ack_profile, AckProfile::Quorum)
+        if !matches!(self.ack_profile, AckProfile::Archived)
             || ack.archived_through() > ack.base_offset()
         {
             return Ok(ack);
@@ -405,7 +405,7 @@ impl Producer {
             if !self.retry_policy.may_retry(attempt) {
                 return Err(Error::timeout(format!(
                     "produce to {}:{} reached base offset {} but archived_through stayed at {} \
-                     after {attempt} metadata poll(s): the quorum acknowledgement this \
+                     after {attempt} metadata poll(s): the archived acknowledgement this \
                      producer's ack profile requires never arrived within the retry budget",
                     self.stream,
                     self.partition,
@@ -660,7 +660,7 @@ mod tests {
             partition: 0,
             producer_id: "cell-eu-1".to_string(),
             qos_class: QosClass::P0Control,
-            ack_profile: AckProfile::Quorum,
+            ack_profile: AckProfile::Archived,
             retry_policy: RetryPolicy {
                 // Three polls and the send that precedes them: the script
                 // below answers one stale poll, one a single offset short,
@@ -679,11 +679,11 @@ mod tests {
     }
 
     /// Asserts its own premise (the ack the mock answers with is genuinely
-    /// short of the quorum condition — `archived_through` behind
+    /// short of the archived condition — `archived_through` behind
     /// `base_offset`) before asserting that `send` polls metadata until it
     /// catches up and only then returns.
     ///
-    /// Mutation: delete the `!matches!(self.ack_profile, AckProfile::Quorum)`
+    /// Mutation: delete the `!matches!(self.ack_profile, AckProfile::Archived)`
     /// short-circuit's *body* so `await_ack_profile` always returns `ack`
     /// immediately — fails, because the returned ack's `archived_through`
     /// (80, the stale produce-time value) no longer matches the metadata
@@ -697,7 +697,7 @@ mod tests {
     /// have caught. Mutation: restore `>=` in either comparison — fails,
     /// returning 100 from the poll that is not yet caught up.
     #[test]
-    fn a_quorum_ack_profile_is_not_reported_until_a_metadata_poll_shows_the_batch_archived() {
+    fn an_archived_ack_profile_is_not_reported_until_a_metadata_poll_shows_the_batch_archived() {
         let init_epoch = 4;
         let produce_ack =
             ProduceAck::new("orders", 0, 100, 120, 80).expect("a coherent produce ack");
@@ -726,7 +726,7 @@ mod tests {
 
         let ack = producer
             .send(one_record_batch())
-            .expect("send eventually reports once the quorum condition is met");
+            .expect("send eventually reports once the archived condition is met");
         assert_eq!(
             ack.archived_through(),
             101,

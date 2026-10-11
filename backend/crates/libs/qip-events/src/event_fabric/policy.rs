@@ -68,16 +68,58 @@ impl QosClass {
 
     /// The weakest [`AckProfile`] this class tolerates (FABRIC-067).
     ///
-    /// P0 and P1 are "never dropped" in ADR 0100 §5's own words, which only a
-    /// quorum acknowledgement can back without the class becoming a label
-    /// rather than a guarantee. P2 and P3 still commit to the leader before
+    /// P0 and P1 are "never dropped" in ADR 0100 §5's own words, so they wait
+    /// for the strongest acknowledgement this build can honestly give:
+    /// [`AckProfile::Archived`], the batch's segment sealed and copied to the
+    /// archive. That is not a replica majority — see the variant's own
+    /// documentation — and the floor will become one only when replication
+    /// exists to back it. P2 and P3 still commit to the leader before
     /// acknowledging. P4 may run with none at all — FABRIC-041 permits
     /// at-most-once delivery for telemetry alone.
     pub const fn ack_floor(&self) -> AckProfile {
         match self {
-            Self::P0Control | Self::P1Outcomes => AckProfile::Quorum,
+            Self::P0Control | Self::P1Outcomes => AckProfile::Archived,
             Self::P2MarketJournal | Self::P3Research => AckProfile::LeaderOnly,
             Self::P4Telemetry => AckProfile::None,
+        }
+    }
+
+    /// The only [`OverloadPolicy`] this class may be declared with, where
+    /// the class fixes it; `None` where ADR 0100 §5 leaves a choice.
+    ///
+    /// P0 and P1 are "never dropped": under overload the producer is refused,
+    /// visibly, and narrows. A P1 stream declared `sample_or_shed` would have
+    /// let the broker shed a fill and answer the producer that it had — an
+    /// accounting hole with an acknowledgement on it (FABRIC-7056). Until this
+    /// existed nothing stopped a catalogue declaring exactly that.
+    pub const fn required_overload_policy(&self) -> Option<OverloadPolicy> {
+        match self {
+            Self::P0Control | Self::P1Outcomes => Some(OverloadPolicy::RefuseProducer),
+            Self::P2MarketJournal | Self::P3Research | Self::P4Telemetry => None,
+        }
+    }
+
+    /// Whether a stream of this class may be declared with `overload`.
+    ///
+    /// The class's [`Self::required_overload_policy`] where it has one; and
+    /// shedding is telemetry's alone ("sampled or shed first") — a P2
+    /// journal stream that shed would lose an entry with no `Gap` written,
+    /// and a P3 research stream is declared to back up, not to lose.
+    pub const fn permits_overload_policy(&self, overload: OverloadPolicy) -> bool {
+        if let Some(required) = self.required_overload_policy() {
+            return matches!(
+                (required, overload),
+                (
+                    OverloadPolicy::RefuseProducer,
+                    OverloadPolicy::RefuseProducer
+                )
+            );
+        }
+        match overload {
+            OverloadPolicy::SampleOrShed => matches!(self, Self::P4Telemetry),
+            OverloadPolicy::RefuseProducer
+            | OverloadPolicy::ThrottleWithGap
+            | OverloadPolicy::AllowBacklog => true,
         }
     }
 
@@ -115,9 +157,31 @@ pub const BATCH_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AckProfile {
+    /// No acknowledgement: at-most-once, telemetry only (FABRIC-041).
     None,
+    /// The single broker has appended and fsynced the batch.
     LeaderOnly,
-    Quorum,
+    /// The batch's segment has been sealed and archived: the producer is
+    /// answered only once the broker's `archived_through` has passed the
+    /// batch's offset.
+    ///
+    /// This variant was called `Quorum` until FABRIC-086 was assessed
+    /// INCORRECT. The blueprint defines a quorum acknowledgement as "the
+    /// record survived on a majority of replicas", and this build has one
+    /// broker at replication factor one (ADR 0100 §3, C2); what the variant
+    /// actually waited for was the archive copy — which, with the default
+    /// local archive directory, can be a second file on the same machine. A
+    /// name that promised a majority while delivering one disk is the
+    /// failure the rename removes: a reader of a P1 policy saw "quorum" and
+    /// reasoned about surviving a broker loss that nothing guarded against.
+    ///
+    /// Serialised as `archived`. The old spelling `quorum` is still read, as
+    /// this variant, so a stored policy or committed catalogue written before
+    /// the rename keeps loading; nothing writes it any more. When replication
+    /// with majority acknowledgement exists, it gets a new variant above this
+    /// one rather than re-using either name.
+    #[serde(alias = "quorum")]
+    Archived,
 }
 
 /// FABRIC-057's declared ordering semantics.
@@ -329,6 +393,14 @@ impl StreamPolicy {
             return Err(Error::denied(format!(
                 "mirroring policy {:?} is refused (C8): fabric-mirror is not built",
                 spec.mirroring
+            )));
+        }
+        if !spec.qos_class.permits_overload_policy(spec.overload_policy) {
+            return Err(Error::denied(format!(
+                "overload policy {:?} is refused for {}: P0 and P1 are never dropped and must \
+                 refuse the producer, and only P4 telemetry may be shed",
+                spec.overload_policy,
+                spec.qos_class.as_str()
             )));
         }
         let floor = spec.qos_class.ack_floor();
