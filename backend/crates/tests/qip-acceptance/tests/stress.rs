@@ -1640,8 +1640,8 @@ fn quantum_being_unavailable_produces_a_classical_answer_that_says_why() -> Resu
             minimum_assets_for_quantum: 4,
             exact_enumeration_limit: 8,
             ..RoutingPolicy::default()
-        })
-        .with_quantum(Arc::new(hosted))
+        })?
+        .with_quantum(Arc::new(hosted))?
         .solve(&problem)?;
 
     assert_ne!(

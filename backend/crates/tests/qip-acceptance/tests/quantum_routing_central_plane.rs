@@ -32,7 +32,9 @@ fn platform_quantum_config_is_accessible_to_composition_roots() {
 #[test]
 fn compute_router_accepts_quantum_provider_when_configured() {
     let provider = Arc::new(SimulatedProvider::new(42));
-    let router = ComputeRouter::classical(42).with_quantum(provider.clone());
+    let router = ComputeRouter::classical(42)
+        .with_quantum(provider.clone())
+        .expect("the default policy must reach the in-tree simulator");
 
     // Verify the router is ready to use
     let policy = router.policy();
@@ -68,7 +70,9 @@ fn quantum_provider_is_reachable_when_wired() {
         "SimulatedProvider must be available (it's in-process)"
     );
 
-    let _router = ComputeRouter::classical(456).with_quantum(provider);
+    let _router = ComputeRouter::classical(456)
+        .with_quantum(provider)
+        .expect("the default policy must reach the in-tree simulator");
     // Router successfully accepts the provider
 }
 
@@ -78,8 +82,9 @@ fn quantum_provider_is_reachable_when_wired() {
 fn quantum_enabled_flag_controls_quantum_usage() {
     // Two identical routers, differing only in quantum provider
     let no_quantum_router = ComputeRouter::classical(42);
-    let with_quantum_router =
-        ComputeRouter::classical(42).with_quantum(Arc::new(SimulatedProvider::new(42)));
+    let with_quantum_router = ComputeRouter::classical(42)
+        .with_quantum(Arc::new(SimulatedProvider::new(42)))
+        .expect("the default policy must reach the in-tree simulator");
 
     // Both routers have valid policies
     assert!(no_quantum_router.policy().time_budget.as_secs_f64() > 0.0);

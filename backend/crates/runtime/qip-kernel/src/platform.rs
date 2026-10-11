@@ -2735,6 +2735,16 @@ pub struct SolverRoutingJournal {
     /// Whether a quantum path was attempted at all, and why or why not, in
     /// the router's own words.
     pub quantum_note: String,
+    /// What the asynchronous quantum arm did this cycle: the job it judged
+    /// and after how many cycles, the job it submitted and its declared cost.
+    /// Journaled because which cycle adopts a quantum answer depends on when
+    /// a worker finished, so the log — not a re-run — is what reproduces it.
+    #[serde(default)]
+    pub quantum_dispatch: qip_optimization_engine::QuantumDispatch,
+    /// The compiled task and one verdict per declared compute substrate —
+    /// which answered, which was dispatched, which was declined and why.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub compute: Option<qip_optimization_engine::ComputeDecision>,
 }
 
 impl SolverRoutingJournal {
@@ -2751,6 +2761,8 @@ impl SolverRoutingJournal {
             improvement_over_classical: decision.improvement_over_classical(),
             measured_quantum_advantage: decision.measured_quantum_advantage(),
             quantum_note: decision.quantum_note.clone(),
+            quantum_dispatch: decision.quantum_dispatch.clone(),
+            compute: decision.compute.clone(),
         }
     }
 
@@ -4574,9 +4586,14 @@ impl Platform {
             }
         }
 
-        let mut router = ComputeRouter::classical(config.seed).with_policy(config.routing);
+        // Both builders refuse rather than clamp: an invalid routing policy,
+        // or one whose quantum size threshold no attached provider can ever
+        // reach, stops assembly here instead of shipping a quantum arm that
+        // reads as enabled and can never run. The arm, once attached, is
+        // submit-and-poll — the provider is never called on the cycle thread.
+        let mut router = ComputeRouter::classical(config.seed).with_policy(config.routing)?;
         if config.quantum_enabled {
-            router = router.with_quantum(Arc::new(SimulatedProvider::new(config.seed)));
+            router = router.with_quantum(Arc::new(SimulatedProvider::new(config.seed)))?;
         }
 
         let mut central = CentralPlane::with_reproducible_key(
