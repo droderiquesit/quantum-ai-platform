@@ -52,9 +52,9 @@
 //!   held unsigned and nothing is written.
 
 use qip_contracts::ambient::{
-    AcquisitionCriteria, Advisory, AmbientSignal, AttentionRouter, ComputeResourceType, Detection,
-    Disposition, InfoRequest, ModelReputation, Pathway, RoutingPolicy, SignalClass, Trigger,
-    rank_acquisitions,
+    AcquisitionCriteria, Advisory, AmbientSignal, AttentionRouter, AuthorityBoundary,
+    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
+    RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
 use qip_contracts::expansion::{CapabilityEntry, GapClass};
 use qip_core::error::{Error, Result};
@@ -1023,10 +1023,17 @@ impl ResearchLoop {
                         let Some(gap) = self.pending.remove(&event.signal_id) else {
                             continue;
                         };
+                        // Irrefutable while attention has one authority: a
+                        // second variant would be the first activation that
+                        // could act, and it stops compiling here first.
+                        let AuthorityBoundary::AdvisoryOnly = event.authority;
+                        // The advisory is filed under the event's feedback
+                        // link, so its outcome joins back to the decision
+                        // that woke it (R12-CONTRACT-7079).
                         self.admit(
                             gap,
                             event.pathway,
-                            &event.signal_id,
+                            &event.feedback_link,
                             now,
                             &metrics,
                             &mut round,
@@ -1185,7 +1192,7 @@ impl ResearchLoop {
         &mut self,
         gap: RaisedGap,
         pathway: Pathway,
-        signal_id: &str,
+        feedback_link: &str,
         now: Timestamp,
         metrics: &Metrics,
         round: &mut ResearchRound,
@@ -1216,8 +1223,10 @@ impl ResearchLoop {
         if self.advisories.len() == RETAINED {
             self.advisories.pop_front();
         }
-        self.advisories
-            .push_back(Advisory::new(format!("{pathway:?}: {question}"), signal_id));
+        self.advisories.push_back(Advisory::new(
+            format!("{pathway:?}: {question}"),
+            feedback_link,
+        ));
 
         // Value of information (AMBIENT-3104): what reducing this gap's
         // uncertainty is worth, against the cheapest observation that could
@@ -1239,7 +1248,7 @@ impl ResearchLoop {
             return Ok(());
         };
         let mut request = InfoRequest::new(
-            format!("info-{signal_id}"),
+            format!("info-{feedback_link}"),
             question,
             criteria,
             now.saturating_add(self.config.signal_ttl),

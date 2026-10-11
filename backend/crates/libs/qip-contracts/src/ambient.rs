@@ -279,7 +279,46 @@ pub enum Disposition {
     Expired,
 }
 
+/// Why an activation happened: the class of deviation and the trigger that
+/// ran its detector. Carried on the event rather than looked up through the
+/// signal id, because a replay that has the event and has lost the signal
+/// would otherwise know that something woke and not why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationReason {
+    pub class: SignalClass,
+    pub trigger: Trigger,
+}
+
+/// The attention budget as it stood when the router decided: the window's
+/// allowance and how much of it was spent, this decision included. A
+/// `Deferred` or `Shed` event with `spent < per_window` would be a router
+/// that refused attention it had, and the record makes that checkable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttentionBudget {
+    pub per_window: u32,
+    pub spent: u32,
+}
+
+/// What an activation is allowed to do.
+///
+/// One variant, on purpose: attention wakes research, a specialist, a review
+/// or a model update, and its output is an [`Advisory`]. No activation grants
+/// execution authority, and a second variant would be the first place that
+/// could. Serialised so a record from a build that invented one is refused on
+/// decode rather than read as advisory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityBoundary {
+    AdvisoryOnly,
+}
+
 /// One routing decision, referencing the signal that caused it.
+///
+/// Carries the §27 AttentionEvent fields (R12-CONTRACT-7079): activation
+/// reason, originating models, budget, priority, authority boundary and the
+/// completion/feedback link. Every field is required on decode — serde has no
+/// default for any of them — so a record missing one is refused rather than
+/// read with a guessed value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttentionEvent {
     pub id: String,
@@ -287,6 +326,20 @@ pub struct AttentionEvent {
     pub pathway: Pathway,
     pub disposition: Disposition,
     pub at: Timestamp,
+    pub reason: ActivationReason,
+    /// The detectors that raised the signal: the trigger's name. A list
+    /// because a fused signal may name several; never empty.
+    pub originating_models: Vec<String>,
+    pub budget: AttentionBudget,
+    /// The signal's severity, in basis points: the quantity materiality is
+    /// judged on, so the order a reader ranks activations in is the router's.
+    pub priority_bp: u32,
+    pub authority: AuthorityBoundary,
+    /// The key the activation's outcome is filed under. It is the value an
+    /// [`Advisory`] produced from this activation carries as its
+    /// `origin_signal`, so a completion can be joined back to the decision
+    /// that woke it.
+    pub feedback_link: String,
 }
 
 /// Materiality, class-to-pathway routing and the attention budget.
@@ -421,8 +474,8 @@ impl AttentionRouter {
                         out.push(event);
                         continue;
                     }
-                    let event = self.event(&held, Disposition::Activated, now)?;
                     self.used += 1;
+                    let event = self.event(&held, Disposition::Activated, now)?;
                     out.push(event);
                 }
             }
@@ -459,12 +512,27 @@ impl AttentionRouter {
             Error::invalid("routing policy lost a class; construct it through RoutingPolicy::new")
         })?;
         self.issued += 1;
+        let detector = match &s.trigger {
+            Trigger::Schedule(name) | Trigger::Event(name) => name.clone(),
+        };
         Ok(AttentionEvent {
             id: format!("attention-{}", self.issued),
             signal_id: s.id.clone(),
             pathway,
             disposition: d,
             at,
+            reason: ActivationReason {
+                class: s.class,
+                trigger: s.trigger.clone(),
+            },
+            originating_models: vec![detector],
+            budget: AttentionBudget {
+                per_window: self.policy.budget_per_window,
+                spent: self.used,
+            },
+            priority_bp: s.severity_bp,
+            authority: AuthorityBoundary::AdvisoryOnly,
+            feedback_link: s.id.clone(),
         })
     }
 }

@@ -99,6 +99,52 @@ fn jumps(symbols: &[&str]) -> Vec<SensedRecord> {
     records
 }
 
+/// R12-CONTRACT-7078, 7079 and 7085 on the path `qip-deepbrain`'s run loop
+/// takes (`main.rs` builds `ResearchLoop` from `ResearchConfig::from_lookup`):
+/// the loop *produces* an `AmbientSignal` from a raised gap, the attention
+/// router turns it into an `AttentionEvent`, the loop *consumes* that event's
+/// feedback link as the advisory's origin, and the desk queues a
+/// `CurriculumItem` carrying every §27 field. One test, because the three
+/// contracts are only worth anything joined: a curriculum item nobody can
+/// trace to the signal that raised it is research with no reason on record.
+#[test]
+fn a_raised_gap_flows_from_ambient_signal_through_attention_event_to_a_complete_curriculum_item() {
+    let platform = platform();
+    assert!(platform.price_history().is_empty(), "premise: no history");
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A", "obj-B"])]));
+
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(round.raised, 1, "premise: one gap raised: {round:?}");
+    assert_eq!(loop_.desk().queue().len(), 1, "premise: one item queued");
+
+    // The signal the loop emitted is `ambient-1`; the advisory is filed under
+    // the attention event's feedback link, which names it.
+    let advisories: Vec<_> = loop_.advisories().collect();
+    assert_eq!(advisories.len(), 1, "{advisories:?}");
+    assert_eq!(advisories[0].origin_signal(), "ambient-1");
+
+    let ranked = loop_.desk().queue().ranked();
+    let item = ranked[0].item();
+    assert!(
+        advisories[0].view().ends_with(&item.research_question),
+        "the advisory and the curriculum item name one question: {:?} / {:?}",
+        advisories[0].view(),
+        item.research_question
+    );
+    assert!(!item.research_question.trim().is_empty());
+    assert_eq!(item.owner, "qip-deepbrain/research");
+    assert!(!item.tools_and_data.is_empty(), "{item:?}");
+    assert!(item.budget > Decimal::ZERO, "an uncosted item: {item:?}");
+    assert!(!item.evaluation_suite.trim().is_empty(), "{item:?}");
+    assert_eq!(item.stop_conditions.len(), 2, "{item:?}");
+    assert!(
+        ranked[0].origin().is_some(),
+        "the queued item keeps the gap that raised it"
+    );
+}
+
 #[test]
 fn an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router() {
     let platform = platform();
