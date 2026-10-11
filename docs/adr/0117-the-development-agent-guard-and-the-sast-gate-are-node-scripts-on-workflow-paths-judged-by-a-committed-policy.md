@@ -224,3 +224,26 @@ allowance retired is a file where it no longer exists.
 exemption list and this amendment should be reversed. Its total is 491 on
 2026-10-11; count it with
 `python3 -c "import json;print(sum(json.load(open('scripts/sast-baseline.json'))['allowances'].values()))"`.
+
+## Amendment 2 (2026-10-11): vendored templates are outside the analysis
+
+The TypeScript analysis on PR #207 blocked on 12 findings, all inside
+`vendor/templates/**` (jQuery, jsTree and the Cryptrix template). ADR 0015
+keeps those packages exactly as licensed, so the code cannot be fixed here,
+and no Dockerfile, workflow, Terraform file or frontend build references
+the directory, so none of it reaches a deployed process. CodeQL's
+`paths-ignore` now excludes `vendor/templates` in `codeql-analysis.yml`.
+
+**What it costs.** A vulnerable file copied *out* of `vendor/templates`
+into shipped code would be scanned at its new path, but one referenced in
+place by a future build would not be. The guard against that is the same
+search this amendment rests on: if any build starts reading
+`vendor/templates`, this exclusion must be removed in the same change.
+
+**What would make this wrong.** Any deployed artefact that serves a file
+from `vendor/templates`.
+
+Not covered by this amendment: the 23 Rust findings the round-4 merges
+added beyond the Amendment 1 baseline. They are fixed in code (test
+messages that formatted signing-derived values no longer do), never
+admitted by raising the baseline.

@@ -53,6 +53,15 @@ jobs:
           languages: ${{ matrix.language }}
           # Optional: specify queries to customize CodeQL's analysis
           queries: security-and-quality
+          # vendor/templates holds licensed third-party template packages kept
+          # byte-for-byte as delivered (ADR 0015) and shipped by no image,
+          # workflow or frontend build. Their findings are the vendors' code,
+          # not ours, and are fixed by updating the package, never by editing
+          # it; scanning them only blocked every commit on code nobody here
+          # may change. ADR 0117 Amendment 2.
+          config: |
+            paths-ignore:
+              - vendor/templates
 
       - name: Setup Rust toolchain (Rust only)
         if: matrix.language == 'rust'
