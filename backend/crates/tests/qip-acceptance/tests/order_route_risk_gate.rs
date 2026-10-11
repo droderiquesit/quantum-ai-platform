@@ -313,8 +313,16 @@ fn a_strategy_order_that_breaches_the_cells_limit_never_reaches_the_venue() -> R
     );
     let refusals = risk_refusals(&node);
     assert_eq!(refusals.len(), 1, "one refusal journaled under {GATE_RISK}");
+    // The refusal names the limit by the name the limit set gave it —
+    // `order-notional`, this suite's own bound, since the shipped set holds
+    // no limit of that name — not by `LimitKind::label`'s
+    // `max_order_notional`, which this assertion asked for when it was
+    // written in round 2 and never run. Matched delimited on both sides
+    // (`: order-notional: `), so a neighbour such as `max-order-notional`
+    // cannot satisfy it, and beside the kind's own description so the name
+    // is shown to be the limit that bound and not a word in the prose.
     assert!(
-        refusals[0].contains("max_order_notional"),
+        refusals[0].contains(": order-notional: ") && refusals[0].contains("single order notional"),
         "the refusal names the limit that bound: {}",
         refusals[0]
     );

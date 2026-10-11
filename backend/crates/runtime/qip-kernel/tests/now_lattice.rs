@@ -26,6 +26,7 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_streaming::envelope::StreamEnvelope;
 use qip_world_model::lattice::{LatticeHorizon, WeightUpdate};
 use qip_world_model::now::ScopeKind;
 use std::collections::BTreeSet;
@@ -124,7 +125,17 @@ fn reviews<T: EventBody>(platform: &Platform, prefix: &str) -> Vec<T> {
                 .as_deref()
                 .is_some_and(|k| k.starts_with(prefix))
         })
-        .map(|e| e.decode::<T>().unwrap().body)
+        // `Platform::journal_record` appends a sealed `StreamEnvelope`'s
+        // frame, so the log record's payload is the envelope wire and the
+        // review is inside it. Decoding the frame as the review directly
+        // read the wire's fields as the review's and failed on `cycle`,
+        // which is how all seven tests here failed at their first read.
+        .map(|e| {
+            StreamEnvelope::from_frame(e)
+                .and_then(|envelope| envelope.decode::<T>())
+                .unwrap()
+                .body
+        })
         .collect()
 }
 

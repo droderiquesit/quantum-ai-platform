@@ -90,3 +90,21 @@ variable "ci_service_account" {
   description = "The pipeline's identity (modules/cicd). It submits builds into the pool and runs them as the build identity; it gains nothing else here."
   type        = string
 }
+
+variable "key_ring_id" {
+  description = "The environment's KMS key ring (modules/secrets). The staging bucket's key is created in it (SEC-046)."
+  type        = string
+}
+
+variable "kms_protection_level" {
+  description = "Protection level for the staging bucket's key. Set from the root's single value so the platform cannot be HSM for one key and software for another."
+  type        = string
+  default     = "SOFTWARE"
+
+  validation {
+    # Defended here as well as at the root, as `modules/evidence` does: this
+    # module is callable on its own.
+    condition     = contains(["SOFTWARE", "HSM"], var.kms_protection_level)
+    error_message = "kms_protection_level must be exactly \"SOFTWARE\" or \"HSM\"."
+  }
+}

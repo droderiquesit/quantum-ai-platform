@@ -335,8 +335,9 @@ fn run() -> Result<()> {
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     if let qip_api::signing::SigningPosture::Asymmetric(signers) = &signing {
+        // Through the platform's one-purpose seam, not `central_mut`: that
+        // would hand this layer every mutator the central plane has.
         platform
-            .central_mut()
             .install_envelope_signer(
                 Arc::clone(&signers.envelope),
                 Arc::clone(&signers.verifier) as Arc<dyn qip_contracts::trust::ArtefactVerifier>,

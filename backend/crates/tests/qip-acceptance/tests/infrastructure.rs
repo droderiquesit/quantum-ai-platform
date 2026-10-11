@@ -2269,6 +2269,14 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         // The ledger writer, `qip-ledgerd` (ADR 0100 §2): its one machine runs
         // as it. Logs and metrics only. Added in `d7675f60`; bound below.
         ("ledgerd".to_string(), "ledgerd".to_string()),
+        // The Cloud Build private pool's build identity (R12 CICD-9097,
+        // `modules/build-pool`): every build `deploy.yml` submits to the pool
+        // runs as it — `gcloud builds submit --service-account
+        // "${POOL_ACCOUNT}"`, where the workflow derives `POOL_ACCOUNT` as
+        // `qip-build-<env>@…`, the module's `account_id`. Log writes and one
+        // prefix of its staging bucket; no registry write, no secret, signs
+        // nothing. Created only where `cloud_build_private_pool_enabled`.
+        ("build-pool".to_string(), "build".to_string()),
     ];
     expected.sort();
     assert_eq!(

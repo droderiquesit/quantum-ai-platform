@@ -12,6 +12,7 @@ variables {
   environment        = "dev"
   peered_network_id  = "projects/pool-plan-harness/global/networks/qip-dev-engineering"
   ci_service_account = "qip-ci-dev@pool-plan-harness.iam.gserviceaccount.com"
+  key_ring_id        = "projects/pool-plan-harness/locations/us-east4/keyRings/qip-dev"
 }
 
 # The names `deploy.yml` derives from the tfvars. If either side renames

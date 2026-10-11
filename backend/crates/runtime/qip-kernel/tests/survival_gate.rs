@@ -152,10 +152,29 @@ fn the_kernel_installs_the_survival_limit_and_it_vetoes_an_order_past_the_ceilin
         "withholding reserves must lower the ceiling the gate reads: {ceiling} against {open}"
     );
 
-    // Five million of gross is inside it.
+    // Five million of gross is inside it, so the gate admits the order.
     buy(&mut platform, dec!("50000"))?;
-    // A further million carries the book to six, past it.
-    let refusal = buy(&mut platform, dec!("10000")).expect_err("an order past the ceiling");
+    // The gate reads the book as filled, and the simulated venue fills six
+    // tenths of a market order immediately and works the rest
+    // (`SimulationSettings::immediate_fill_fraction`). This test assumed a
+    // full fill and was never run before merge; on the real fill the book
+    // held three million, so its "further million" reached four and was
+    // rightly admitted. The premise is asserted rather than assumed, and the
+    // breaching order is sized from the book the gate actually reads.
+    let filled: Decimal = platform
+        .orders()
+        .fills()
+        .iter()
+        .map(|fill| fill.quantity)
+        .sum();
+    assert_eq!(
+        filled,
+        dec!("30000"),
+        "premise: the venue filled six tenths of the admitted order"
+    );
+    // Three million held; three million more carries the book to six,
+    // half a million past the ceiling.
+    let refusal = buy(&mut platform, dec!("30000")).expect_err("an order past the ceiling");
     assert!(
         refusal.message().contains(SURVIVAL_LIMIT_NAME),
         "the refusal does not name the survival limit: {}",

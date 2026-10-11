@@ -248,7 +248,13 @@ fn an_episode_formed_by_the_cycle_carries_the_world_model_version() -> Result<()
     platform.observe(swings);
     let later = horizon.saturating_add(Duration::from_mins(1));
     platform.run_cycle(later);
-    let remembered: Vec<_> = platform.remembered_episodes(later).collect();
+    // Read a second after the resolving cycle, as the episodic suite does:
+    // LEARN stamps the episode `known_at = later`, and the store's one read
+    // rule is *strictly* before (`EpisodeStore::episodes`), so an episode is
+    // not knowable at the instant it was written. Reading at `later` itself
+    // found nothing although LEARN reported "1 episode(s) remembered".
+    let read_at = later.saturating_add(Duration::from_secs(1));
+    let remembered: Vec<_> = platform.remembered_episodes(read_at).collect();
     assert!(
         !remembered.is_empty(),
         "premise: LEARN remembered the resolved episode"
