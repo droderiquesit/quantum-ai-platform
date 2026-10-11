@@ -16,6 +16,8 @@
 //! Build-dependencies and target-specific dependency tables are included,
 //! because they are compiled for the binary.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;

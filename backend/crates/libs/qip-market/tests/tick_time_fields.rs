@@ -14,6 +14,8 @@
 //! ASSERTIONS" — it passed with `capture_time` deleted from the type, and
 //! with a serde attribute that dropped it on the wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use qip_core::{ObjectId, Timestamp, dec};
 use qip_events::EventBody;
 use qip_market::quote::{Quote, Tick, Trade, TradeCondition};

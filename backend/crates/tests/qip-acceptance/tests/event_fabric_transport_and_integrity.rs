@@ -3,12 +3,6 @@
 //! Tests for QUIC streams, integrity protection, versioning, ordering, metadata,
 //! and delivery semantics.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransportMode {
-    Stream,
-    Datagram,
-}
-
 #[derive(Debug, Clone)]
 struct RecordWithIntegrity {
     _content: String,
@@ -44,44 +38,58 @@ enum DeliverySemantics {
 }
 
 #[test]
-fn fabric_036_durable_records_use_quic_streams_datagrams_only_for_lossy_telemetry() {
-    // FABRIC-036: Durable records must use QUIC streams for ordered, reliable delivery.
-    // Datagrams are only for lossy telemetry that can be dropped without consequences.
-
-    // Scenario 1: Durable record uses QUIC stream
-    let durable_record = ("durable-message".to_string(), TransportMode::Stream);
-
-    assert_eq!(durable_record.1, TransportMode::Stream);
-
-    // Scenario 2: Telemetry uses datagram
-    let telemetry = ("telemetry-point".to_string(), TransportMode::Datagram);
-
-    assert_eq!(telemetry.1, TransportMode::Datagram);
-
-    // Scenario 3: Multiple durable records use streams
-    let records = [
-        ("record-1".to_string(), TransportMode::Stream),
-        ("record-2".to_string(), TransportMode::Stream),
-        ("record-3".to_string(), TransportMode::Stream),
-    ];
-
+fn fabric_036_gap_every_fabric_record_crosses_the_one_tcp_http_transport_and_no_datagram_path_exists()
+ {
+    // GAP PIN. FABRIC-036 asks for QUIC streams for durable records and
+    // datagrams only for lossy telemetry. The previous test paired strings
+    // with a local `TransportMode` enum and asserted the pairs it had made.
+    // There is no QUIC in this build: the `FabricTransport` seam has exactly
+    // one production implementation, `HttpTransport`, which speaks HTTP/1.1
+    // over TCP — ordered and reliable for every class, including telemetry —
+    // and no fabric code opens a UDP socket. That is the truthful half of the
+    // property (no durable record can ride a lossy path, because none exists)
+    // and the gap (no stream/datagram split at all). Both are asserted.
+    //
+    // Mutation: add `impl FabricTransport for UdpTransport` in any `src/` file
+    // — the implementation list stops being `["HttpTransport"]` and fires.
+    // Mutation: open a `std::net::UdpSocket` in
+    // `qip-transport/src/event_fabric/` — the datagram assertion fires.
+    let mut implementations = Vec::new();
+    let mut fabric_sources = 0usize;
+    for path in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let display = path.display().to_string();
+        if !display.contains("/src/") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let text = qip_acceptance::production_text(&raw);
+        for line in text.lines() {
+            let line = line.trim_start();
+            if line.starts_with("impl")
+                && let Some(rest) = line.split("FabricTransport for ").nth(1)
+            {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                implementations.push(name);
+            }
+        }
+        if display.contains("qip-transport/src/event_fabric/") {
+            fabric_sources += 1;
+            assert!(
+                !text.contains("UdpSocket"),
+                "{display} opens a datagram socket"
+            );
+        }
+    }
     assert!(
-        records
-            .iter()
-            .all(|(_, mode)| *mode == TransportMode::Stream)
+        fabric_sources >= 5,
+        "premise: the fabric client sources were scanned"
     );
-
-    // Scenario 4: Telemetry never uses stream
-    let telemetry_items = [
-        ("metric-1".to_string(), TransportMode::Datagram),
-        ("metric-2".to_string(), TransportMode::Datagram),
-    ];
-
-    assert!(
-        telemetry_items
-            .iter()
-            .all(|(_, mode)| *mode == TransportMode::Datagram)
-    );
+    assert_eq!(implementations, ["HttpTransport"]);
 }
 
 #[test]

@@ -42,27 +42,77 @@ fn fabric_060_each_region_fabric_lives_in_own_project() {
 }
 
 #[test]
-fn fabric_066_reflex_cells_emit_orders_through_fabric_topics() {
-    // (Extending core operational semantics)
-    // Reflex Cells emit order placement events and decisions through fabric topics.
+fn fabric_066_reflex_cells_must_not_emit_orders_through_fabric_topics() {
+    // Inverted from `fabric_066_reflex_cells_emit_orders_through_fabric_topics`,
+    // whose fixture modelled a cell publishing `orders_placed` and
+    // `orders_cancelled` to fabric topics and asserted the list was non-empty.
+    // That is the §28 anti-pattern — an order whose path to the venue runs
+    // through a broker — written down as the requirement. FABRIC-003 says the
+    // opposite: orders go directly to the venue, never through a fabric topic.
+    // This test asserts that, against the router that decides it and the crate
+    // that sends orders.
+    //
+    // Mutation: in `MessageTypeRouter::new`, register `Topic::OrderSubmitted`
+    // to `FabricPath::LocalJournal` — the refusal assertion fires.
+    // Mutation: add `use qip_transport::event_fabric::producer::Producer;` to
+    // `qip-edge/src/cell.rs` — the scan fires.
+    use qip_events::Topic;
+    use qip_events::event_fabric::message_routing::{FabricPath, MessageTypeRouter};
 
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct ReflexCellEventFlow {
-        cell_id: String,
-        order_emissions: Vec<String>, // Topic names
-        decision_emissions: Vec<String>,
+    let router = MessageTypeRouter::new();
+    let orders = [
+        Topic::OrderSubmitted,
+        Topic::OrderAmended,
+        Topic::OrderCancelled,
+        Topic::OrderFilled,
+    ];
+    for topic in orders {
+        // Premise: the router knows the topic, so a refusal is a decision.
+        assert_eq!(
+            router.required_path(topic),
+            Ok(FabricPath::VenueIo),
+            "{topic:?}"
+        );
+        for fabric in [FabricPath::LocalJournal, FabricPath::MeshLink] {
+            assert!(
+                router.validate(topic, fabric).is_err(),
+                "{topic:?} may travel on {fabric}"
+            );
+        }
     }
+    // Nothing else is routed to the venue: the venue path carries orders only.
+    let on_venue: Vec<Topic> = router
+        .routes()
+        .filter(|(_, path)| *path == FabricPath::VenueIo)
+        .map(|(topic, _)| topic)
+        .collect();
+    assert_eq!(on_venue.len(), orders.len(), "{on_venue:?}");
 
-    let event_flow = ReflexCellEventFlow {
-        cell_id: "us-central-cell".to_string(),
-        order_emissions: vec!["orders_placed".to_string(), "orders_cancelled".to_string()],
-        decision_emissions: vec!["decisions_log".to_string()],
-    };
-
-    // Events flow through fabric topics, not direct connections
-    assert!(!event_flow.order_emissions.is_empty());
-    assert!(!event_flow.decision_emissions.is_empty());
+    // The crate that sends orders holds no fabric producer or consumer.
+    let sources = qip_acceptance::files_with_extension("backend/crates/edge/qip-edge/src", "rs");
+    assert!(
+        sources.iter().any(|path| path.ends_with("cell.rs")),
+        "premise: the scan reached cell.rs"
+    );
+    let forbidden = [
+        "event_fabric::producer",
+        "event_fabric::consumer",
+        "event_fabric::batching_producer",
+        "BatchingProducer",
+        "qip_streaming",
+    ];
+    for path in &sources {
+        let text = qip_acceptance::production_text(
+            &std::fs::read_to_string(path).expect("a readable source file"),
+        );
+        for token in forbidden {
+            assert!(
+                !text.contains(token),
+                "{} names `{token}` in production code",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]
@@ -208,73 +258,99 @@ fn fabric_083_market_journal_mirroring_throttled_before_local_ingest() {
 }
 
 #[test]
-fn fabric_084_production_regions_start_with_five_broker_vms_across_three_zones() {
-    // FABRIC-084: Each production region must initially run five C4D/C4-class broker VMs
-    // spread across three zones.
+fn fabric_084_gap_the_broker_module_declares_at_most_one_template_and_no_instance_group() {
+    // GAP PIN. FABRIC-084 asks for five C4D/C4-class broker VMs across three
+    // zones per production region. The previous test built a struct holding
+    // `broker_count: 5` and three zone names and asserted them back. What the
+    // broker module actually declares is `broker_count = var.enabled ? 1 : 0`
+    // instance *templates*, machine type `c3-standard-4` by default, and no
+    // instance group or instance that uses the template — so even enabled, it
+    // creates no broker VM at all. This test asserts those facts; any one
+    // changing makes it fail, and it should then assert the requirement.
+    //
+    // Mutation: add a `google_compute_region_instance_group_manager` with
+    // `target_size = 5` to the module — the instance-group assertion fires.
+    let main = qip_acceptance::read("infrastructure/terraform/modules/event-fabric-broker/main.tf");
+    let variables =
+        qip_acceptance::read("infrastructure/terraform/modules/event-fabric-broker/variables.tf");
+    let norm = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct BrokerDeployment {
-        region: String,
-        broker_count: usize,
-        broker_machine_type: String,
-        zones: Vec<String>,
-    }
-
-    let deployment = BrokerDeployment {
-        region: "us-central1".to_string(),
-        broker_count: 5,
-        broker_machine_type: "c4d".to_string(),
-        zones: vec![
-            "us-central1-a".to_string(),
-            "us-central1-b".to_string(),
-            "us-central1-c".to_string(),
-        ],
-    };
-
-    // Five brokers
-    assert_eq!(deployment.broker_count, 5);
-
-    // C4D class
-    assert!(deployment.broker_machine_type.contains("c4"));
-
-    // Three zones
-    assert_eq!(deployment.zones.len(), 3);
+    assert!(
+        main.lines()
+            .any(|line| norm(line).starts_with("broker_count = var.enabled ? 1 : 0")),
+        "the broker count is no longer one-or-none"
+    );
+    let resources: Vec<String> = main
+        .lines()
+        .map(norm)
+        .filter(|line| line.starts_with("resource \""))
+        .collect();
+    assert!(
+        resources
+            .iter()
+            .any(|line| line.starts_with("resource \"google_compute_instance_template\"")),
+        "premise: the template is declared: {resources:?}"
+    );
+    let instantiating: Vec<&String> = resources
+        .iter()
+        .filter(|line| {
+            line.starts_with("resource \"google_compute_instance\"")
+                || line.contains("instance_group_manager")
+        })
+        .collect();
+    assert!(
+        instantiating.is_empty(),
+        "a broker VM is now created ({instantiating:?}) — assert five across three zones"
+    );
+    let machine = variables
+        .lines()
+        .skip_while(|line| !line.starts_with("variable \"machine_type\""))
+        .map(norm)
+        .find(|line| line.starts_with("default ="))
+        .expect("premise: machine_type has a default");
+    assert_eq!(machine, "default = \"c3-standard-4\"", "not a C4/C4D class");
 }
 
 #[test]
-fn fabric_086_journal_durability_from_replication_never_from_one_device() {
-    // FABRIC-086: No durability guarantee may depend on a single local device: a record
-    // counts as durable only when replicated as its class requires.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct ReplicationRequirement {
-        class: String,
-        required_replicas: usize,
-        quorum_required: usize,
-    }
-
-    let requirements = vec![
-        ReplicationRequirement {
-            class: "P0CriticalControl".to_string(),
-            required_replicas: 3,
-            quorum_required: 2,
-        },
-        ReplicationRequirement {
-            class: "P1FinancialOutcomes".to_string(),
-            required_replicas: 3,
-            quorum_required: 2,
-        },
-    ];
-
-    // Durability requires meeting replication requirement
-    for req in requirements {
-        assert!(req.required_replicas >= req.quorum_required);
-
-        // No record is durable on just one device
-        let on_one_device = false;
-        assert!(!on_one_device);
+fn fabric_086_gap_no_stream_may_declare_replication_so_durability_rests_on_one_broker() {
+    // GAP PIN. FABRIC-086: a record counts as durable only when replicated as
+    // its class requires, never on one device. The previous test built
+    // `required_replicas: 3` and asserted `let on_one_device = false;` was
+    // false. The production truth is the opposite and is enforced in code:
+    // `StreamPolicy::new` refuses every replication factor but one (ADR 0100
+    // §3, blocked on C2), so every durable class — P0 and P1 included — is
+    // durable on one broker's fsync. The test asserts that refusal for each
+    // class, so the gap is evidence and its closing is noticed.
+    //
+    // Mutation: delete the `spec.replication_factor != 1` refusal in
+    // `StreamPolicy::new` — RF3 is admitted and the assertion fires.
+    use qip_events::event_fabric::policy::{
+        Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy, StreamPolicySpec,
+    };
+    let spec = |class: QosClass, replication_factor: u32| StreamPolicySpec {
+        qos_class: class,
+        partition_key: "key".to_string(),
+        ordering: Ordering::PerPartition,
+        retention: qip_events::retention::RetentionClass::Irreplaceable,
+        replication_factor,
+        mirroring: Mirroring::None,
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile: class.ack_floor(),
+        byte_quota_per_producer: 1 << 20,
+        message_quota_per_producer: 1_000,
+        lag_limit: 10_000,
+        entitlement: Entitlement::new("ledger", "trade").expect("valid"),
+        seal_age_ms: 60_000,
+        peak_bytes_per_second: 1 << 16,
+    };
+    for class in QosClass::ALL {
+        let admitted = StreamPolicy::new(spec(class, 1)).expect("premise: RF1 is admitted");
+        assert_eq!(admitted.replication_factor(), 1);
+        for rf in [2, 3, 5] {
+            let refused = StreamPolicy::new(spec(class, rf))
+                .expect_err("a replication factor the fabric cannot honour was admitted");
+            assert!(refused.to_string().contains("(C2)"), "{refused}");
+        }
     }
 }
 

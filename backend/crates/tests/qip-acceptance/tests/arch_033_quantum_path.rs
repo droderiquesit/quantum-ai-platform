@@ -13,6 +13,10 @@
 //! `qip_optimization_engine` router that the kernel's construction stage
 //! calls, on a problem the router's own policy admits to the quantum path.
 
+// In a test the assertion is the deliverable; the workspace denies
+// `panic_in_result_fn` for production code, where it would be a bug.
+#![allow(clippy::panic_in_result_fn)]
+
 use qip_core::error::Result;
 use qip_optimization_engine::problem::{Objective, PortfolioProblem};
 use qip_optimization_engine::router::{ComputeRouter, RoutingPolicy, Solver};

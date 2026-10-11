@@ -4587,44 +4587,69 @@ fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
 
 #[test]
 fn cost_anomalies_are_not_yet_journaled_to_fabric_tasks() {
-    // FINOPS-018: budget alerts and cost-anomaly jobs must raise Fabric tasks.
-    // This test documents the current gap: no infrastructure exists to turn a
-    // cost anomaly into a journaled Fabric task or incident.
+    // GAP PIN (FINOPS-018): budget alerts and cost-anomaly jobs must raise
+    // Fabric tasks, journaling project, labels, amount and threshold, with
+    // dedup. None of that exists. The previous version of this test said it
+    // "fails if any of these exist" and then asserted only that a billing
+    // budget did — it could not fail on any of the three things it named.
+    // It now asserts each absence, so the first piece to land fails it and
+    // it is replaced with the integration test the requirement asks for
+    // (a billing-export fixture in, one task out, a duplicate refused).
     //
-    // The infrastructure needed:
-    // 1. A Cloud Monitoring or BigQuery cost-anomaly job that detects anomalies
-    //    (requires FINOPS-009: billing export to BigQuery, which is MISSING)
-    // 2. An adapter that catches budget alerts (via Pub/Sub) or anomaly results
-    //    and creates Fabric tasks, journaling project, labels, amount and threshold.
-    // 3. Dedup logic ensuring the same anomaly does not create two tasks.
-    //
-    // Current state:
-    // - google_billing_budget exists and is guarded to have no programmatic
-    //   actions (a_billing_budget_notifies_and_never_carries_a_programmatic_action).
-    // - BigQuery billing export is not yet enabled (FINOPS-009 MISSING).
-    // - No Cloud Monitoring or BQ anomaly job exists.
-    // - No Fabric task/incident creation path exists in the Rust workspace.
-    //
-    // This test fails if any of these exist, but they do not, so the test
-    // passes as a gate against accidental early implementation. Once the
-    // infrastructure lands, this test should be replaced with an integration
-    // test that feeds a billing-export fixture and verifies task creation.
+    // Mutation: add `pub struct CostAnomalyTask;` to any crate's `src/` — the
+    // Rust assertion fires. Add a `google_bigquery_data_transfer_config` (a
+    // scheduled anomaly query) to any module — the Terraform assertion fires.
+    // Route the budget to a `pubsub_topic` — the notification assertion fires.
     let mut budget_count = 0usize;
-
+    let mut tf_files = 0usize;
     for path in files_with_extension("infrastructure/terraform", "tf") {
+        tf_files += 1;
         let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
         if content.contains("resource \"google_billing_budget\"") {
             budget_count += 1;
+            assert!(
+                !content.contains("pubsub_topic"),
+                "{}: a budget now notifies a topic — the anomaly path may be landing",
+                path.display()
+            );
+        }
+        for line in content.lines() {
+            let line = line.trim_start();
+            assert!(
+                !line.starts_with("resource \"google_bigquery_data_transfer_config\""),
+                "{}: a scheduled BigQuery job exists — the anomaly path may be landing",
+                path.display()
+            );
         }
     }
-
-    // Budgets must exist (guarded by a_billing_budget_notifies_and_never_carries_a_programmatic_action)
-    // They form the source for cost anomalies, though the bridge to Fabric tasks
-    // is not yet built (FINOPS-009 billing export MISSING).
+    assert!(tf_files > 10, "premise: the Terraform tree was walked");
     assert!(
         budget_count >= 1,
-        "expected at least one billing budget (required for FINOPS-018 anomaly detection)"
+        "premise: the budget that would feed the path exists"
     );
+
+    // No Rust identifier in production code names a cost anomaly or a budget
+    // alert. Compared on identifiers with `_` removed and lowercased, so
+    // `CostAnomaly`, `cost_anomaly_task` and `BudgetAlertRaised` all match and
+    // prose in comments (dropped by `production_text`) does not.
+    let mut rust_files = 0usize;
+    for path in files_with_extension("backend/crates", "rs") {
+        if !path.display().to_string().contains("/src/") {
+            continue;
+        }
+        rust_files += 1;
+        let text =
+            qip_acceptance::production_text(&std::fs::read_to_string(&path).expect("readable"));
+        for identifier in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            let folded = identifier.replace('_', "").to_lowercase();
+            assert!(
+                !folded.contains("costanomaly") && !folded.contains("budgetalert"),
+                "{} declares `{identifier}` — FINOPS-018's path may be landing",
+                path.display()
+            );
+        }
+    }
+    assert!(rust_files > 100, "premise: the Rust sources were walked");
 }
 
 // --- retention (FINOPS-014) --------------------------------------------------
