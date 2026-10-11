@@ -10,7 +10,7 @@
 //! checks against this cannot be handed an unapproved grant. Construction is
 //! not the control; verification is, and this is where it happens.
 
-use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -122,7 +122,7 @@ impl VerifiedEnvelope {
         notional: Decimal,
         used: &Utilisation,
         now: Timestamp,
-    ) -> CapitalGrant {
+    ) -> CapitalAdmission {
         self.inner.admit(venue, notional, used, now)
     }
 }

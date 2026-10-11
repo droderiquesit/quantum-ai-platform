@@ -6,6 +6,9 @@
 //! do is spend an amount somebody already approved.
 
 use crate::signal::StrategyId;
+use crate::validated::{
+    Contract, MAX_BP, Validated, after, basis_points, named, non_negative, positive, refuse,
+};
 use crate::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
@@ -156,9 +159,18 @@ pub struct Utilisation {
     pub orders_sent: u64,
 }
 
-/// The answer to "may this order go".
+/// The answer to "may this order go" — [`CapitalEnvelope::admit`]'s verdict.
+///
+/// Named `CapitalGrant` until R12-CONTRACT-6115, when the blueprint's
+/// `CapitalGrant` contract (bounded deployable authority, [`CapitalGrant`]
+/// below) needed the name. The two are different facts — a per-order verdict
+/// and a standing grant of authority — and sharing a name meant a reader
+/// searching for the grant contract found a three-arm enum and concluded it
+/// was missing fields. The wire form is unchanged: serde writes the variant
+/// names, never the type name, so journals written under the old name still
+/// read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum CapitalGrant {
+pub enum CapitalAdmission {
     /// Send it at the requested size.
     Full,
     /// Send it, but smaller. [`CapitalEnvelope::admit`] no longer constructs
@@ -170,7 +182,7 @@ pub enum CapitalGrant {
     Refused(String),
 }
 
-impl CapitalGrant {
+impl CapitalAdmission {
     pub fn permitted_quantity(&self, requested: Decimal) -> Decimal {
         match self {
             Self::Full => requested,
@@ -195,25 +207,25 @@ impl CapitalEnvelope {
         notional: Decimal,
         used: &Utilisation,
         now: Timestamp,
-    ) -> CapitalGrant {
+    ) -> CapitalAdmission {
         if !self.is_live(now) {
-            return CapitalGrant::Refused("the capital envelope has expired".to_string());
+            return CapitalAdmission::Refused("the capital envelope has expired".to_string());
         }
         if !self.permits_venue(venue) {
-            return CapitalGrant::Refused(format!(
+            return CapitalAdmission::Refused(format!(
                 "the envelope does not cover venue {}",
                 venue.as_str()
             ));
         }
         if used.realised_loss >= self.loss_limit {
-            return CapitalGrant::Refused(format!(
+            return CapitalAdmission::Refused(format!(
                 "realised loss {} reached the {} limit",
                 used.realised_loss, self.loss_limit
             ));
         }
         let headroom = self.gross_limit - used.gross_committed;
         if headroom <= Decimal::ZERO {
-            return CapitalGrant::Refused(format!(
+            return CapitalAdmission::Refused(format!(
                 "the {} gross limit is fully committed",
                 self.gross_limit
             ));
@@ -225,17 +237,160 @@ impl CapitalEnvelope {
         // a journal written before this change still reads; nothing here
         // constructs it.
         if notional > self.order_limit {
-            return CapitalGrant::Refused(format!(
+            return CapitalAdmission::Refused(format!(
                 "order notional {notional} exceeds the {} order limit",
                 self.order_limit
             ));
         }
         if notional > headroom {
-            return CapitalGrant::Refused(format!(
+            return CapitalAdmission::Refused(format!(
                 "order notional {notional} exceeds the {headroom} of the {} gross limit left",
                 self.gross_limit
             ));
         }
-        CapitalGrant::Full
+        CapitalAdmission::Full
+    }
+}
+// ---- The §24.9 / §27 CapitalGrant contract -----------------------------
+
+/// What the grant's capital is held as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollateralClass {
+    Cash,
+    GovernmentBonds,
+    Equities,
+    DigitalAssets,
+}
+
+/// The execution mode a grant authorises. **One variant, on purpose**: the
+/// platform is paper-trading only (ADR 0003), and a grant that could name a
+/// live mode would be one more place that boundary had to be held. A record
+/// carrying any other value fails to decode. Adding a variant is ADR 0108's
+/// decision, not a contract change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantMode {
+    Paper,
+}
+
+/// The fields of a [`CapitalGrant`]. This unifies the two blueprint
+/// statements of the contract: §24.9 (R12-CONTRACT-6115: amount, strategy,
+/// region, venue, risk budget, liquidity reserve, expiry) and §27
+/// (R12-CONTRACT-7066: owner/mandate, collateral class, leverage, drawdown
+/// and liquidity constraints).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalGrantFields {
+    pub schema_version: u32,
+    pub grant_id: String,
+    pub mode: GrantMode,
+    /// Who owns the capital.
+    pub owner: String,
+    /// The mandate the grant is made under.
+    pub mandate: String,
+    pub strategy: StrategyId,
+    pub region: String,
+    pub venue: VenueId,
+    /// The capital granted, in the account currency.
+    pub amount: Decimal,
+    pub collateral: CollateralClass,
+    /// Gross exposure over `amount`; at least one (one is unlevered).
+    pub max_leverage: Decimal,
+    /// The most the grant may lose before it is withdrawn; no more than
+    /// `amount` — loss beyond the capital granted is not grantable.
+    pub risk_budget: Decimal,
+    /// Peak-to-trough drawdown that stops the strategy, in basis points.
+    pub max_drawdown_bp: u32,
+    /// Capital held back and never deployed; less than `amount`.
+    pub liquidity_reserve: Decimal,
+    /// The largest share of a venue's average daily volume any position may
+    /// be, in basis points.
+    pub max_adv_share_bp: u32,
+    pub granted_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+/// Bounded deployable authority (§24.9 / §27). Built only through
+/// [`Validated::new`]; deserialisation goes through the same refusals.
+pub type CapitalGrant = Validated<CapitalGrantFields>;
+
+impl Contract for CapitalGrantFields {
+    const NAME: &'static str = "CapitalGrant";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Refuses blank names; a non-positive amount; leverage below one; a
+    /// risk budget that is non-positive or exceeds the amount; a drawdown
+    /// limit of zero (a strategy stopped before it starts) or above 100%; a
+    /// negative reserve or one that leaves nothing to deploy; an ADV share of
+    /// zero or above 100%; and an expiry not after the grant. Nothing is
+    /// clamped: a grant widened in transit is not a limit.
+    fn check(&self) -> Result<()> {
+        let c = Self::NAME;
+        named(c, "grant_id", &self.grant_id)?;
+        named(c, "owner", &self.owner)?;
+        named(c, "mandate", &self.mandate)?;
+        named(c, "strategy", self.strategy.as_str())?;
+        named(c, "region", &self.region)?;
+        named(c, "venue", self.venue.as_str())?;
+        positive(c, "amount", self.amount)?;
+        if self.max_leverage < Decimal::ONE {
+            return refuse(
+                c,
+                format!(
+                    "states leverage {}; one is unlevered and less is meaningless",
+                    self.max_leverage
+                ),
+            );
+        }
+        positive(c, "risk_budget", self.risk_budget)?;
+        if self.risk_budget > self.amount {
+            return refuse(c, "budgets more risk than the capital it grants");
+        }
+        basis_points(c, "max_drawdown_bp", self.max_drawdown_bp)?;
+        if self.max_drawdown_bp == 0 {
+            return refuse(
+                c,
+                "has a zero drawdown limit; the strategy would stop on its first tick",
+            );
+        }
+        non_negative(c, "liquidity_reserve", self.liquidity_reserve)?;
+        if self.liquidity_reserve >= self.amount {
+            return refuse(c, "reserves the whole amount; nothing is left to deploy");
+        }
+        if self.max_adv_share_bp == 0 || self.max_adv_share_bp > MAX_BP {
+            return refuse(
+                c,
+                format!(
+                    "states an ADV share of {} bp; give one in (0, {MAX_BP}]",
+                    self.max_adv_share_bp
+                ),
+            );
+        }
+        after(
+            c,
+            "expires_at",
+            self.expires_at,
+            "granted_at",
+            self.granted_at,
+        )
+    }
+}
+
+impl CapitalGrant {
+    /// Whether the grant is in force at `now`: granted and not expired.
+    pub fn is_live(&self, now: Timestamp) -> bool {
+        self.granted_at <= now && now < self.expires_at
+    }
+
+    /// The capital that may be deployed: the amount less the reserve. Never
+    /// negative — [`Contract::check`] refused a reserve at or above the
+    /// amount.
+    pub fn deployable(&self) -> Decimal {
+        self.amount - self.liquidity_reserve
     }
 }

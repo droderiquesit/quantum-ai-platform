@@ -32,7 +32,7 @@ use crate::settlement::{self, GATE_SETTLEMENT, SettlementTerms};
 use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
-use qip_contracts::capital::{CapitalGrant, Utilisation};
+use qip_contracts::capital::{CapitalAdmission, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
@@ -4851,8 +4851,8 @@ impl Cell {
             .envelope
             .admit(&venue, notional, &deployed.utilisation, now)
         {
-            CapitalGrant::Full => desired,
-            CapitalGrant::Reduced(cap) => {
+            CapitalAdmission::Full => desired,
+            CapitalAdmission::Reduced(cap) => {
                 let reduced = cap.checked_div(price).unwrap_or(Decimal::ZERO);
                 self.refuse(
                     report,
@@ -4862,7 +4862,7 @@ impl Cell {
                 );
                 reduced
             }
-            CapitalGrant::Refused(reason) => {
+            CapitalAdmission::Refused(reason) => {
                 let reason = drawdown_refusal(
                     &key,
                     &deployed.envelope,
@@ -7665,15 +7665,17 @@ impl Cell {
             used.gross_committed += pending;
             Some(
                 match desk.envelope().admit(&intent.venue, notional, &used, now) {
-                    CapitalGrant::Refused(reason) => CapitalGrant::Refused(drawdown_refusal(
-                        desk.strategy().as_str(),
-                        desk.envelope(),
-                        &used,
-                        &intent.venue,
-                        notional,
-                        reason,
-                        now,
-                    )),
+                    CapitalAdmission::Refused(reason) => {
+                        CapitalAdmission::Refused(drawdown_refusal(
+                            desk.strategy().as_str(),
+                            desk.envelope(),
+                            &used,
+                            &intent.venue,
+                            notional,
+                            reason,
+                            now,
+                        ))
+                    }
                     other => other,
                 },
             )
@@ -7692,8 +7694,8 @@ impl Cell {
                 );
                 None
             }
-            Some(Some(CapitalGrant::Full)) => Some(notional),
-            Some(Some(CapitalGrant::Reduced(cap))) => {
+            Some(Some(CapitalAdmission::Full)) => Some(notional),
+            Some(Some(CapitalAdmission::Reduced(cap))) => {
                 self.refuse(
                     report,
                     "arbitrage_capital",
@@ -7705,7 +7707,7 @@ impl Cell {
                 );
                 None
             }
-            Some(Some(CapitalGrant::Refused(reason))) => {
+            Some(Some(CapitalAdmission::Refused(reason))) => {
                 self.refuse(report, "capital", &reason, now);
                 None
             }
@@ -9239,7 +9241,7 @@ impl Cell {
     /// envelope check is here — a strategy that has exhausted the region's
     /// budget must not contribute to a net at all.
     ///
-    /// Refused whole, never reduced. `CapitalGrant::Reduced` narrows an order
+    /// Refused whole, never reduced. `CapitalAdmission::Reduced` narrows an order
     /// to what one strategy's envelope has left; a region allocation short of
     /// what a strategy asked for is a different fact — the capital is
     /// somewhere else — and trimming would spend a remainder the centre may
@@ -10151,7 +10153,8 @@ fn drawdown_refusal(
         realised_loss: Decimal::ZERO,
         ..used.clone()
     };
-    if envelope.admit(venue, notional, &without_loss, now) == CapitalGrant::Refused(reason.clone())
+    if envelope.admit(venue, notional, &without_loss, now)
+        == CapitalAdmission::Refused(reason.clone())
     {
         return reason;
     }

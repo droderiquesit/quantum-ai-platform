@@ -332,6 +332,51 @@ fn novelty_alone_never_outranks_a_candidate_with_economic_value_and_information_
     assert_eq!(infeasible.score().unwrap_err().code(), "denied");
 }
 
+/// R12-AMBIENT-3106 (§9.10), the curriculum's half: economic value and
+/// uncertainty reduction multiply. Under the additive score this replaced,
+/// a question that would teach nothing still ranked on its value, urgency
+/// and coverage, and one worth nothing ranked on what it would teach.
+///
+/// Mutation: put `value_per_cost` back as an addend of the reduction term —
+/// the zero-reduction candidate then scores above zero and the first
+/// assertion fails.
+#[test]
+fn a_candidate_with_zero_uncertainty_reduction_or_zero_economic_value_scores_zero() {
+    let full = criteria(900, 30).score().unwrap().priority();
+    assert!(full > 0.0, "premise: the stock candidate scores {full}");
+
+    let teaches_nothing = Criteria {
+        uncertainty_reduction: Some(0.0),
+        information_gain: Some(0.0),
+        ..criteria(900, 30)
+    };
+    assert_eq!(
+        teaches_nothing.score().unwrap().priority().to_bits(),
+        0.0_f64.to_bits()
+    );
+
+    let worth_nothing = criteria(0, 30);
+    assert_eq!(
+        worth_nothing.score().unwrap().priority().to_bits(),
+        0.0_f64.to_bits()
+    );
+
+    // Multiplicative: doubling the reduction term doubles the priority,
+    // which no sum of the eleven inputs would do.
+    let base = Criteria {
+        uncertainty_reduction: Some(0.25),
+        information_gain: Some(0.25),
+        ..criteria(900, 30)
+    };
+    let doubled = Criteria {
+        uncertainty_reduction: Some(0.5),
+        information_gain: Some(0.5),
+        ..criteria(900, 30)
+    };
+    let ratio = doubled.score().unwrap().priority() / base.score().unwrap().priority();
+    assert!((ratio - 2.0).abs() < 1e-9, "ratio was {ratio}");
+}
+
 /// EXPAND-014. A queue that started items in arrival order would be a list,
 /// and the ranking would decide nothing.
 #[test]
