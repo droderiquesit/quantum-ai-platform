@@ -573,12 +573,12 @@ fn a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_ris
     let round = loop_
         .sweep(&platform, after, &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
-    assert!(round.now_surprises >= 1, "{round:?}");
+    assert!(round.now_surprises >= 1, "premise: a surprise");
     let woken: BTreeSet<&str> = round.now_wakes.keys().copied().collect();
     assert_eq!(
         woken,
         BTreeSet::from(["adversarial", "forecast", "risk", "sensing"]),
-        "{round:?}"
+        "the surprise wakes exactly these four"
     );
     // Read once: a second sweep with no new cycle wakes nothing again.
     let again = loop_

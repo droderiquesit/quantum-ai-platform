@@ -26,88 +26,98 @@ use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
 use qip_transport::tls::{LinkSecurity, TlsSource, WorkloadIdentity};
 
 fn main() {
-    let started = LedgerConfig::from_environment().and_then(|config| {
-        // Resolved once, here, to fail at start on a missing or malformed
-        // token; each worker's transport resolves its own copy from the same
-        // two values so the token is never cloned through a `BearerToken`.
-        let direct = std::env::var(FABRIC_TOKEN).ok();
-        let path = std::env::var(format!("{FABRIC_TOKEN}{}", qip_core::secret::FILE_SUFFIX)).ok();
-        BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
-        let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
-        // ADR 0112: the fabric link is mutual TLS with this workload's
-        // certificate unless a local deployment chose plaintext, and the read
-        // API serves under the same one. Hand-placed
-        // files are loaded once, here, so one that will not load stops the
-        // ledger before a worker starts. Under `cas` the certificate is
-        // requested here and renewed on its own thread; a CA that cannot be
-        // reached leaves the ledger running not-ready, its handshakes
-        // refused, rather than reading over anything weaker. There is no
-        // fallback in either case.
-        let (link, issued) = match &config.workload_tls {
-            Some(TlsSource::Files(paths)) => (
-                LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?)),
-                None,
-            ),
-            Some(TlsSource::Issued(settings)) => {
-                let issued = workload_certificate(settings, "qip-ledgerd", Arc::clone(&clock))?;
-                if let Some(error) = issued.status().last_error() {
-                    eprintln!(
-                        "qip-ledgerd: no workload certificate yet; not ready, retrying. The CA \
-                         said: {error}"
-                    );
-                }
-                (LinkSecurity::issued(issued.identity()), Some(issued))
-            }
-            None => (LinkSecurity::Plaintext, None),
-        };
-        eprintln!("qip-ledgerd: fabric link and read API {}", link.describe());
-        let url = config.fabric_url.clone();
-        let connect: Connect = Arc::new(move || {
-            let token = BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
-            let transport: Box<dyn FabricTransport + Send> =
-                Box::new(HttpTransport::over(&link, &url, token)?);
-            Ok(transport)
-        });
-        // The Google endpoint and credential the Spanner store is reached
-        // through, read only when that is the store: a workstation run on
-        // the local store must not be refused over a credential it was
-        // never going to present. The access token goes through
-        // `qip_core::secret`, so it may arrive as a mounted file.
-        let access = match &config.storage {
-            LedgerStorage::Spanner { .. } => {
-                let plain = |name: &str| std::env::var(name).ok();
-                let token = qip_core::secret::resolve_from(
-                    gcp::TOKEN_VARIABLE,
-                    plain(gcp::TOKEN_VARIABLE),
-                    plain(&format!(
-                        "{}{}",
-                        gcp::TOKEN_VARIABLE,
-                        qip_core::secret::FILE_SUFFIX
-                    )),
-                )?;
-                GcpAccess::from_values(
-                    plain(gcp::ENDPOINT_VARIABLE).as_deref(),
-                    plain(gcp::METADATA_VARIABLE).as_deref(),
-                    plain(gcp::TOKEN_FILE_VARIABLE).as_deref(),
-                    token.as_deref(),
-                    clock.clone(),
-                )?
-            }
-            LedgerStorage::Local { .. } => GcpAccess::unconfigured(),
-        };
-        qip_ledgerd::start_with_link(&config, clock, thread_sleeper(), connect, access, issued)
-    });
-    match started {
+    let config = match LedgerConfig::from_environment() {
+        Ok(config) => config,
+        Err(error) => refuse(&error),
+    };
+    match start(&config) {
         Ok(running) => {
+            // Printed from the configuration, never from `running`: the
+            // ledger holds the workload certificate's key and the access
+            // token, and no value read out of either reaches a log line.
             eprintln!(
                 "qip-ledgerd: serving the ledger read API and health on {}",
-                running.address()
+                config.listen_addr
             );
             running.wait();
         }
-        Err(error) => {
-            eprintln!("qip-ledgerd: refusing to start. {error}");
-            std::process::exit(1);
-        }
+        Err(error) => refuse(&error),
     }
+}
+
+fn refuse(error: &qip_core::Error) -> ! {
+    eprintln!("qip-ledgerd: refusing to start. {error}");
+    std::process::exit(1);
+}
+
+fn start(config: &LedgerConfig) -> qip_core::Result<qip_ledgerd::Running> {
+    // Resolved once, here, to fail at start on a missing or malformed
+    // token; each worker's transport resolves its own copy from the same
+    // two values so the token is never cloned through a `BearerToken`.
+    let direct = std::env::var(FABRIC_TOKEN).ok();
+    let path = std::env::var(format!("{FABRIC_TOKEN}{}", qip_core::secret::FILE_SUFFIX)).ok();
+    BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
+    let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);
+    // ADR 0112: the fabric link is mutual TLS with this workload's
+    // certificate unless a local deployment chose plaintext, and the read
+    // API serves under the same one. Hand-placed
+    // files are loaded once, here, so one that will not load stops the
+    // ledger before a worker starts. Under `cas` the certificate is
+    // requested here and renewed on its own thread; a CA that cannot be
+    // reached leaves the ledger running not-ready, its handshakes
+    // refused, rather than reading over anything weaker. There is no
+    // fallback in either case.
+    let (link, issued) = match &config.workload_tls {
+        Some(TlsSource::Files(paths)) => (
+            LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?)),
+            None,
+        ),
+        Some(TlsSource::Issued(settings)) => {
+            let issued = workload_certificate(settings, "qip-ledgerd", Arc::clone(&clock))?;
+            if let Some(error) = issued.status().last_error() {
+                eprintln!(
+                    "qip-ledgerd: no workload certificate yet; not ready, retrying. The CA \
+                     said: {error}"
+                );
+            }
+            (LinkSecurity::issued(issued.identity()), Some(issued))
+        }
+        None => (LinkSecurity::Plaintext, None),
+    };
+    eprintln!("qip-ledgerd: fabric link and read API {}", link.describe());
+    let url = config.fabric_url.clone();
+    let connect: Connect = Arc::new(move || {
+        let token = BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
+        let transport: Box<dyn FabricTransport + Send> =
+            Box::new(HttpTransport::over(&link, &url, token)?);
+        Ok(transport)
+    });
+    // The Google endpoint and credential the Spanner store is reached
+    // through, read only when that is the store: a workstation run on
+    // the local store must not be refused over a credential it was
+    // never going to present. The access token goes through
+    // `qip_core::secret`, so it may arrive as a mounted file.
+    let access = match &config.storage {
+        LedgerStorage::Spanner { .. } => {
+            let plain = |name: &str| std::env::var(name).ok();
+            let token = qip_core::secret::resolve_from(
+                gcp::TOKEN_VARIABLE,
+                plain(gcp::TOKEN_VARIABLE),
+                plain(&format!(
+                    "{}{}",
+                    gcp::TOKEN_VARIABLE,
+                    qip_core::secret::FILE_SUFFIX
+                )),
+            )?;
+            GcpAccess::from_values(
+                plain(gcp::ENDPOINT_VARIABLE).as_deref(),
+                plain(gcp::METADATA_VARIABLE).as_deref(),
+                plain(gcp::TOKEN_FILE_VARIABLE).as_deref(),
+                token.as_deref(),
+                clock.clone(),
+            )?
+        }
+        LedgerStorage::Local { .. } => GcpAccess::unconfigured(),
+    };
+    qip_ledgerd::start_with_link(config, clock, thread_sleeper(), connect, access, issued)
 }

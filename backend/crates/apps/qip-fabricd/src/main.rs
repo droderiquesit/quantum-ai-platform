@@ -34,38 +34,47 @@ use qip_storage::gcp::workload_certificate::workload_certificate;
 use qip_transport::tls::TlsSource;
 
 fn main() {
-    let started = Config::from_environment().and_then(|config| {
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        if let Some(source) = &config.listener_tls {
-            eprintln!("qip-fabricd: protocol listener over {}", source.describe());
-        }
-        match &config.listener_tls {
-            Some(TlsSource::Issued(settings)) => {
-                let issued = workload_certificate(settings, "qip-fabricd", Arc::clone(&clock))?;
-                let status = issued.status();
-                if let Some(error) = status.last_error() {
-                    eprintln!(
-                        "qip-fabricd: no workload certificate yet; serving not-ready and \
-                         retrying. The CA said: {error}"
-                    );
-                }
-                qip_fabricd::start_issued(&config, clock, issued)
-            }
-            _ => qip_fabricd::start(&config, clock),
-        }
-    });
-    match started {
+    let config = match Config::from_environment() {
+        Ok(config) => config,
+        Err(error) => refuse(&error),
+    };
+    match start(&config) {
         Ok(running) => {
+            // Printed from the configuration, never from `running`: the
+            // broker holds the workload certificate's key, and no value read
+            // out of a key-holding value reaches a log line.
             eprintln!(
                 "qip-fabricd: serving the event-fabric protocol on {} and health on {}",
-                running.address(),
-                running.health_address()
+                config.listen, config.health_listen
             );
             running.wait();
         }
-        Err(error) => {
-            eprintln!("qip-fabricd: refusing to start. {error}");
-            std::process::exit(1);
+        Err(error) => refuse(&error),
+    }
+}
+
+fn refuse(error: &qip_core::Error) -> ! {
+    eprintln!("qip-fabricd: refusing to start. {error}");
+    std::process::exit(1);
+}
+
+fn start(config: &Config) -> qip_core::Result<qip_fabricd::Running> {
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    if let Some(source) = &config.listener_tls {
+        eprintln!("qip-fabricd: protocol listener over {}", source.describe());
+    }
+    match &config.listener_tls {
+        Some(TlsSource::Issued(settings)) => {
+            let issued = workload_certificate(settings, "qip-fabricd", Arc::clone(&clock))?;
+            let status = issued.status();
+            if let Some(error) = status.last_error() {
+                eprintln!(
+                    "qip-fabricd: no workload certificate yet; serving not-ready and \
+                     retrying. The CA said: {error}"
+                );
+            }
+            qip_fabricd::start_issued(config, clock, issued)
         }
+        _ => qip_fabricd::start(config, clock),
     }
 }

@@ -677,12 +677,13 @@ impl DecisionLoop {
         self.cell.apply_journal_pressure(pressure, now)?;
         self.telemetry.pressure(state_of(pressure));
         if self.last_pressure != Some(pressure) {
+            // States only: every count read off this scheduler is reachable
+            // from the venue credential it holds, so the unshipped depth is
+            // left to the `ring_depth` gauge and the health body.
             eprintln!(
-                "qip-edge-node: journal pressure {} (spool {}, unshipped journal {} of {})",
+                "qip-edge-node: journal pressure {} (spool {})",
                 pressure.describe(),
-                spool.pressure.describe(),
-                self.cell.journal().retained(),
-                self.bound.exhaust_at
+                spool.pressure.describe()
             );
         }
         self.last_pressure = Some(pressure);

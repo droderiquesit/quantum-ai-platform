@@ -591,13 +591,13 @@ fn two_sweeps(
         .unwrap();
     assert!(
         opening.desk.started.iter().any(|q| q.contains(VENUE)),
-        "premise: the residual gap was granted and started: {opening:?}"
+        "premise: the residual gap was granted and started"
     );
     assert_eq!(
         opening.campaigns.get("waiting"),
         Some(&1),
         "premise: with no post-start fills the campaign has no paper or shadow stage and \
-         nothing is promoted: {opening:?}"
+         nothing is promoted"
     );
     research
         .sweep_over(
@@ -634,7 +634,7 @@ fn a_correction_that_does_not_beat_the_uncorrected_twin_is_refused_promotion_and
     assert_eq!(
         promoted.campaigns.get("promoted"),
         Some(&1),
-        "premise: a correction that beats the champion is promoted: {promoted:?}"
+        "premise: a correction that beats the champion is promoted"
     );
     assert_eq!(better.capabilities().count(), 1);
 
@@ -644,9 +644,13 @@ fn a_correction_that_does_not_beat_the_uncorrected_twin_is_refused_promotion_and
     assert_eq!(
         refused.campaigns.get("null_recorded"),
         Some(&1),
-        "a correction worse than the incumbent was not refused: {refused:?}"
+        "a correction worse than the incumbent was not refused"
     );
-    assert_eq!(refused.campaigns.get("promoted"), None, "{refused:?}");
+    assert_eq!(
+        refused.campaigns.get("promoted"),
+        None,
+        "nothing is promoted"
+    );
     assert_eq!(
         worse.capabilities().count(),
         0,
@@ -677,14 +681,11 @@ fn a_correction_that_does_not_beat_the_uncorrected_twin_is_refused_promotion_and
             &eligible,
         )
         .unwrap();
-    assert!(
-        again.raised >= 1,
-        "premise: the same gap is raised again: {again:?}"
-    );
+    assert!(again.raised >= 1, "premise: the same gap is raised again");
     assert_eq!(
         again.admissions.get("refused"),
         Some(&1),
-        "a question already found null was admitted again: {again:?}"
+        "a question already found null was admitted again"
     );
     assert!(
         worse
@@ -711,7 +712,7 @@ fn a_research_campaign_runs_four_environments_in_order_with_provenance_and_repla
     let run = || {
         let mut research = deployed(BTreeMap::new());
         let round = two_sweeps(&mut research, &fills(40.0, 0, 0.0), &fills(40.0, 8, 40.0));
-        assert_eq!(round.campaigns.get("promoted"), Some(&1), "{round:?}");
+        assert_eq!(round.campaigns.get("promoted"), Some(&1), "one promotion");
         let packages: Vec<_> = research.packages().cloned().collect();
         assert_eq!(packages.len(), 1, "the promoted campaign was not compiled");
         packages[0]

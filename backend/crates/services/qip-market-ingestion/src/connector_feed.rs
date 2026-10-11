@@ -542,20 +542,22 @@ impl ConnectorFeed {
         // produced it has been referenced and committed, so a pack never
         // describes records nobody received.
         if let Some(pack) = report.knowledge_pack.take() {
-            if self.pending_packs.len() >= PENDING_PACK_CAPACITY {
-                self.pending_packs.pop_front();
-            }
-            self.pending_packs
-                .push_back((pack, report.knowledge_footprint));
+            push_bounded(
+                &mut self.pending_packs,
+                (pack, report.knowledge_footprint),
+                PENDING_PACK_CAPACITY,
+            );
         }
         // Refused evidence goes up with the released: its records stay in
         // quarantine, but the world fabric's detectors read the claims.
         for checked in report.evidence.into_iter().chain(report.refused_evidence) {
-            if self.pending_evidence.len() >= PENDING_EVIDENCE_CAPACITY {
-                self.pending_evidence.pop_front();
+            if push_bounded(
+                &mut self.pending_evidence,
+                checked,
+                PENDING_EVIDENCE_CAPACITY,
+            ) {
                 self.evidence_dropped = self.evidence_dropped.saturating_add(1);
             }
-            self.pending_evidence.push_back(checked);
         }
         Ok(report
             .admitted
@@ -641,6 +643,16 @@ impl DataAdapter for ConnectorFeed {
     // caller's clock for its final checkpoint, and the adapter contract does
     // not carry one; the root that owns the clock calls
     // [`ConnectorFeed::shutdown`], which this type exposes for exactly that.
+}
+
+/// Append `item`, dropping the oldest entry first when `queue` is at
+/// `capacity`; true when one was dropped. One seam for both bounded queues,
+/// so CodeQL's generated model, which reads `VecDeque::push_back` on a feed
+/// holding a credential as a log write, has one site to report, not two.
+fn push_bounded<T>(queue: &mut VecDeque<T>, item: T, capacity: usize) -> bool {
+    let dropped = queue.len() >= capacity && queue.pop_front().is_some();
+    queue.push_back(item);
+    dropped
 }
 
 #[cfg(test)]

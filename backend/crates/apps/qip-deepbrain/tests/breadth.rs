@@ -354,19 +354,21 @@ fn an_event_plan_from_the_variable_prices_every_outcome_and_quotes_only_where_ac
         Decimal::ONE,
         "unit payoff: fair values are the distribution"
     );
-    assert_eq!(admitted.quotes.len(), 3, "{admitted:?}");
-    assert!(admitted.refusals.is_empty(), "{:?}", admitted.refusals);
+    assert_eq!(admitted.quotes.len(), 3, "one quote per outcome");
+    assert!(
+        admitted.refusals.is_empty(),
+        "the admitted market was refused"
+    );
 
     for (refused, why) in [
         (&wagering, "Wagering venue"),
         (&abroad, "does not permit orders from US"),
     ] {
-        assert!(refused.quotes.is_empty(), "{why}: {refused:?}");
-        assert!(refused.fills.is_empty(), "{why}: {refused:?}");
+        assert!(refused.quotes.is_empty(), "{why}: quoted");
+        assert!(refused.fills.is_empty(), "{why}: filled");
         assert!(
             refused.refusals.iter().any(|reason| reason.contains(why)),
-            "{why}: {:?}",
-            refused.refusals
+            "{why}: not among the refusals"
         );
         assert_eq!(
             refused.valuations, admitted.valuations,

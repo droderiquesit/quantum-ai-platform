@@ -269,14 +269,17 @@ fn a_commerce_plan_file_discovers_buys_receives_lists_and_sells_on_paper_into_th
         .collect();
     assert!(!ledger.units().is_empty());
     for (unit, record) in ledger.units() {
-        assert!(purchased.contains(unit), "{unit} was not bought");
+        assert!(
+            purchased.contains(unit),
+            "a unit in the ledger was not bought"
+        );
         assert_eq!(record.location, WAREHOUSE);
         // Ownership passes to the buyer on sale; until then it is the desk's.
         let owner = match record.state {
             UnitState::Sold { .. } => "paper-buyer",
             _ => OWNER,
         };
-        assert_eq!(record.owner, owner, "{unit}");
+        assert_eq!(record.owner, owner, "a unit has the wrong owner");
         assert!(record.cost_basis.is_positive());
     }
     assert_eq!(&Ledger::replay(ledger.events())?, ledger);

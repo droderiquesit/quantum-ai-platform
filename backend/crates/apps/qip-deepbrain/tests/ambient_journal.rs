@@ -205,7 +205,7 @@ fn each_attention_record_is_caused_by_the_signal_record_it_answers() {
     let round = loop_
         .sweep(&platform, start(), &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(round.raised, 1, "premise: one gap raised: {round:?}");
+    assert_eq!(round.raised, 1, "premise: one gap raised");
     let mut ambient = journal();
     let written = ambient
         .record(1, &round, start())
@@ -258,7 +258,7 @@ fn a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist
     let round = loop_
         .sweep(&platform, after, &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
-    assert!(round.now_surprises >= 1, "premise: {round:?}");
+    assert!(round.now_surprises >= 1, "premise: a surprise");
 
     let mut ambient = journal();
     ambient
@@ -329,7 +329,7 @@ fn an_anomaly_scan_is_journaled_as_signals_each_with_the_routers_decision() {
     let round = loop_
         .sweep(&platform, start(), &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
-    assert!(round.anomalies >= 3, "premise: {round:?}");
+    assert!(round.anomalies >= 3, "premise: three anomalies");
     let mut ambient = journal();
     ambient
         .record(1, &round, start())
@@ -436,11 +436,7 @@ fn a_storm_of_signals_never_wakes_past_the_attention_budget_and_the_excess_is_on
     let round = loop_
         .sweep(&platform, start(), &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(
-        round.raised, 300,
-        "premise: a storm of 300 gaps: {}",
-        round.raised
-    );
+    assert_eq!(round.raised, 300, "premise: a storm of 300 gaps");
     let mut ambient = journal();
     ambient
         .record(1, &round, start())
