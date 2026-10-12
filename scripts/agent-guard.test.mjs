@@ -418,12 +418,21 @@ test("the range command refuses an empty range and a protected agent commit", ()
   }
 });
 
-/** A fake GitHub API: two commits, the first merged through PR 7. */
-function fakeApi({ total = 2 } = {}) {
+/**
+ * A fake GitHub API: two commits, the first merged through PR 7. The compare
+ * answer is pages, as `gh api --paginate --slurp` returns it; `split` puts
+ * each commit on its own page, the shape a range over 250 commits takes.
+ */
+function fakeApi({ total = 2, split = false, repeat = false } = {}) {
   const B = "b".repeat(40);
   const C = "c".repeat(40);
+  const first = { sha: B, ...agentCommit("technical-writer") };
+  const second = repeat ? first : { sha: C, ...personCommit };
+  const compare = split
+    ? [{ total_commits: total, commits: [first] }, { total_commits: total, commits: [second] }]
+    : [{ total_commits: total, commits: [first, second] }];
   const routes = {
-    [`repos/o/r/compare/${"0".repeat(40)}...${C}`]: { total_commits: total, commits: [{ sha: B, ...agentCommit("technical-writer") }, { sha: C, ...personCommit }] },
+    [`repos/o/r/compare/${"0".repeat(40)}...${C}?per_page=100`]: compare,
     [`repos/o/r/commits/${B}`]: [{ files: [{ filename: ".claude/settings.json" }] }],
     [`repos/o/r/commits/${C}`]: [{ files: [{ filename: "README.md" }] }],
     [`repos/o/r/commits/${B}/pulls`]: [{ number: 7, merged_at: "2026-10-11T00:00:00Z" }],
@@ -448,8 +457,22 @@ test("a range is gathered commit by commit with each one's own pull request, and
   assert.deepEqual(entries[0].pr.permissions, { dana: "write" }, "rita's permission could not be read and is absent");
   assert.equal(entries[1].pr, null);
   assert.throws(() => gatherRange({ api: fakeApi({ total: 300 }), repository: "o/r", base: "0".repeat(40), head: "c".repeat(40) }), /judge it in parts/);
+  assert.throws(() => gatherRange({ api: fakeApi({ repeat: true }), repository: "o/r", base: "0".repeat(40), head: "c".repeat(40) }), /judge it in parts/, "a page repeated in place of another is not the whole range");
   // technical-writer may not touch settings.json even approved: the gathered
   // range is refused for the earlier commit, which a first-parent check skipped.
+  const { refusals } = judgeRange({ policy: POLICY, entries });
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /^bbbbbbbbbbbb: the technical-writer role/);
+});
+
+// Mutation: read only the first page of the compare answer. deploy.yml run
+// 262 refused a 1,456-commit range on the single-response limit; a range the
+// API pages through must be judged whole, the later pages included.
+test("a range the compare endpoint pages through is gathered whole, and its later pages are judged", () => {
+  const entries = gatherRange({ api: fakeApi({ split: true }), repository: "o/r", base: "0".repeat(40), head: "c".repeat(40) });
+  assert.equal(entries.length, 2, "the commit on the second page was gathered");
+  assert.equal(entries[1].sha, "c".repeat(40));
+  assert.equal(entries[1].pr, null);
   const { refusals } = judgeRange({ policy: POLICY, entries });
   assert.equal(refusals.length, 1);
   assert.match(refusals[0], /^bbbbbbbbbbbb: the technical-writer role/);
