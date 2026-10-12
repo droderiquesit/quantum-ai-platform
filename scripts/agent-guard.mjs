@@ -138,7 +138,12 @@ export function loadLanes(policy, policyPath, read = (path) => readFileSync(path
     return { problem: `the lane manifest ${relative} cannot be read: ${cause.message}` };
   }
 }
-
+export const ADR_0123_ADVISORY_CEILING = Object.freeze(["dev"]);
+export function rangeIsAdvisory({ policy, environment }) {
+  const listed = policy?.deploy_range_advisory?.environments;
+  if (typeof environment !== "string" || !Array.isArray(listed)) return false;
+  return listed.includes(environment) && ADR_0123_ADVISORY_CEILING.includes(environment);
+}
 /**
  * Whether a commit carries a signature GitHub verified against a key a
  * person registered — and not GitHub's own web-flow key, which signs every
@@ -546,6 +551,12 @@ export function main(argv, { out = console.log, err = console.error, api = ghApi
       return 1;
     }
     const { refusals } = judgeRange({ policy, entries, lanes: loadLanes(policy, policyPath) });
+    const environment = option(argv, "environment");
+    if (refusals.length > 0 && rangeIsAdvisory({ policy, environment })) {
+      for (const refusal of refusals) err(`advisory (ADR 0123, ${environment}): ${refusal}`);
+      out(`${refusals.length} refusal(s) are advisory for ${environment} under ADR 0123; the deploy proceeds`);
+      return 0;
+    }
     for (const refusal of refusals) err(refusal);
     if (refusals.length > 0) return 1;
     out(`each of ${entries.length} commit(s) in the range is inside the agent boundary`);
