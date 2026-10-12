@@ -511,7 +511,8 @@ resource "google_dns_record_set" "registry_wildcard" {
 # auto-provisioned nodes will use. The GKE metadata server withholds the node's
 # own credential from every Pod, so pods reach GCP through Workload Identity
 # alone — the identity above — and the nodes' own identity is limited to
-# logging and monitoring. Without a configured account nodes default to the
+# logging, monitoring and the image pulls the kubelet makes on every Pod's
+# behalf (`nodes_read_registry`, below). Without a configured account nodes default to the
 # project's unnarrowed Compute Engine service account (roles/editor by default
 # in a project with no organization policy).
 
@@ -519,7 +520,7 @@ resource "google_service_account" "nodes" {
   project      = var.project_id
   account_id   = "${local.prefix}-control-plane-nodes"
   display_name = "qip Control Plane Nodes (${var.environment})"
-  description  = "Node-wide identity for the GKE Autopilot control plane cluster. Limited to logging and monitoring; Pod workloads use Workload Identity instead."
+  description  = "Node-wide identity for the GKE Autopilot control plane cluster. Limited to logging, monitoring and pulling from this environment's registry; Pod workloads use Workload Identity instead."
 }
 
 resource "google_project_iam_member" "nodes_log_writer" {
@@ -683,6 +684,36 @@ resource "google_artifact_registry_repository_iam_member" "kcc_reads_registry" {
   repository = var.registry_repository_name
   role       = "roles/artifactregistry.reader"
   member     = "serviceAccount:${google_service_account.kcc.email}"
+}
+
+# The kubelet pulls every controller image as the *node's* identity, not as
+# the Pod's: Workload Identity reaches the Pod's own calls to Google, and
+# image pulls happen before any of the Pod's code runs. So the node account
+# needs to read the repository the vendored controller images are mirrored
+# into, and the comment above it saying "limited to logging and monitoring"
+# was true of every call except the one that starts a container.
+#
+# Observed, not inferred. `infra.yml` run 110 (`up`, dev, 2026-10-12, the
+# first bootstrap into algorik-qip-dev) left every Argo CD Pod at
+# ImagePullBackOff on a digest `vendor.yml` run 31 had just pushed and
+# attested:
+#
+#   failed to fetch oauth token: unexpected status from GET request to
+#   https://us-east4-docker.pkg.dev/v2/token?scope=repository%3A
+#   algorik-qip-dev%2Fqip-dev%2Fvendor%2Fargocd-patched%3Apull...: 403 Forbidden
+#
+# A 403 on the token endpoint is access, not absence — a missing digest
+# answers 404 from the manifest endpoint after a token is issued. The node
+# account held logWriter and metricWriter and nothing on any registry.
+#
+# Repository-scoped and read-only, the same shape as the two grants above:
+# one role, on this one repository, to the one principal the refusal names.
+resource "google_artifact_registry_repository_iam_member" "nodes_read_registry" {
+  project    = var.project_id
+  location   = var.region
+  repository = var.registry_repository_name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.nodes.email}"
 }
 
 # --- what the bootstrap may do ------------------------------------------------
