@@ -143,7 +143,7 @@ spec:
       # computes: the service name, the project number, the region. Internal
       # ingress, so this address answers nobody from the internet.
       - name: QIP_API_BASE_URL
-        value: https://qip-dev-api-0.us-east4.run.app
+        value: https://qip-dev-api-101249892564.us-east4.run.app
       # The `viewer` credential the gateway proxies with, as a path. Viewer is
       # the whole entitlement: POST /api/v1/cycle is analyst and both
       # directions of the kill switch are operator, so a console compromise
