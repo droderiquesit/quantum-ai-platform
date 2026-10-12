@@ -574,6 +574,12 @@ resource "google_service_account_iam_member" "workload_identity" {
   service_account_id = local.identities[each.value.identity].name
   role               = "roles/iam.workloadIdentityUser"
   member             = each.value.member
+
+  # The `<project>.svc.id.goog` pool these members name exists only once a
+  # cluster with Workload Identity does. In a project that never had one the
+  # binding is refused with "Identity Pool does not exist" — the first apply
+  # into algorik-qip-dev (2026-10-11) — so it waits for the cluster.
+  depends_on = [google_container_cluster.control_plane]
 }
 
 # Config Connector: create and update Cloud Run services and their invoker

@@ -1114,6 +1114,25 @@ variable "partner_interconnects" {
   default = {}
 }
 
+variable "project_key_policies_enabled" {
+  description = <<-EOT
+    Whether this root sets iam.disableServiceAccountKeyCreation and
+    iam.disableServiceAccountKeyUpload on the project itself.
+
+    False only where a parent already enforces both: under ADR 0118 the
+    platform folder `infrastructure/foundation` creates sets the same two
+    constraints, every project in it inherits them, and the project-level
+    copies would need the deploying identity to hold Organization Policy
+    Administrator — an organisation-wide right — to restate a refusal that
+    is already in force. That is what stopped the first apply into
+    algorik-qip-dev (2026-10-11): `orgpolicy.policies.create` denied to
+    claude-builder. True everywhere else, so a project outside the folder
+    keeps its own copy.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "cloud_router_asn" {
   description = "The VPC side's BGP ASN. Private, and not the one the colocated equipment uses: two ends claiming one ASN never establish a session."
   type        = number

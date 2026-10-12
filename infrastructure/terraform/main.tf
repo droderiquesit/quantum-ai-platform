@@ -1322,6 +1322,7 @@ output "agent_identity_email" {
 # Restored after 2d3217e reverted an earlier form that put `rules` outside
 # `spec {}` and so failed `terraform validate`; this one validates.
 resource "google_org_policy_policy" "disable_service_account_key_creation" {
+  count  = var.project_key_policies_enabled ? 1 : 0
   parent = "projects/${var.project_id}"
   name   = "projects/${var.project_id}/policies/iam.disableServiceAccountKeyCreation"
 
@@ -1337,6 +1338,7 @@ resource "google_org_policy_policy" "disable_service_account_key_creation" {
 # Uploading an externally generated key is the same long-lived credential by
 # another door.
 resource "google_org_policy_policy" "disable_service_account_key_upload" {
+  count  = var.project_key_policies_enabled ? 1 : 0
   parent = "projects/${var.project_id}"
   name   = "projects/${var.project_id}/policies/iam.disableServiceAccountKeyUpload"
 

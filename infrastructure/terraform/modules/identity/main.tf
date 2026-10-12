@@ -41,7 +41,7 @@ resource "google_identity_platform_config" "algorik" {
     # converge and says nothing. Multi-tenancy stays off either way, and
     # the same applies to the phone_number sign-in block inside sign_in:
     # materialized disabled, planned away, added back.
-    ignore_changes = [multi_tenant, sign_in[0].phone_number]
+    ignore_changes = [multi_tenant, sign_in[0].phone_number, quota[0].sign_up_quota_config[0].start_time]
   }
 
   # Every domain a browser may be redirected back to after authentication.
@@ -97,12 +97,13 @@ resource "google_identity_platform_config" "algorik" {
     sign_up_quota_config {
       quota          = var.sign_up_quota_per_hour
       quota_duration = "3600s"
-      # The provider requires all three fields together; the comment that
-      # previously omitted this one produced "Missing required argument" at
-      # plan time. A committed static instant in the past means the quota
-      # has simply always applied, and the plan stays deterministic — a
-      # timestamp() here would diff on every run.
-      start_time = "2026-09-01T00:00:00Z"
+      # The provider requires all three fields together. The API refuses a
+      # start outside [now, now + 365 days] — "SignUp quota must start
+      # between now and 365 days from now", the first apply into
+      # algorik-qip-dev (2026-10-11), against the static past instant this
+      # used to be — so it is the apply time, and ignored afterwards so the
+      # plan stays deterministic rather than diffing on every run.
+      start_time = plantimestamp()
     }
   }
 
