@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gatherRange, globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeRange, judgeSandboxWorkflow, loadLanes, main, matchesAny } from "./agent-guard.mjs";
+import { gatherRange, ghApi, globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeRange, judgeSandboxWorkflow, loadLanes, main, matchesAny } from "./agent-guard.mjs";
 
 const POLICY = JSON.parse(readFileSync(new URL("./agent-policy.json", import.meta.url), "utf8"));
 const HEAD = "a".repeat(40);
@@ -416,6 +416,34 @@ test("the range command refuses an empty range and a protected agent commit", ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Mutation: drop the retry loop (attempts fixed at 1), or retry a 4xx, or
+// return `undefined` after the last attempt instead of throwing. deploy.yml
+// run 264 died on one empty body in ~3,000 calls; the gate now asks again,
+// a bounded number of times, and still refuses when every attempt fails.
+test("ghApi retries an empty or failed response a bounded number of times and never answers with nothing", () => {
+  const calls = [];
+  const sleeps = [];
+  const fake = (...answers) => () => {
+    calls.push(1);
+    return answers.shift() ?? { status: 0, stdout: "" };
+  };
+  const good = { status: 0, stdout: '[{"number": 7}]' };
+  const sleep = (ms) => sleeps.push(ms);
+  // Empty body, then a server error, then the answer: three attempts, two waits.
+  const flaky = fake({ status: 0, stdout: "" }, { status: 1, stderr: "gh: HTTP 502: Bad Gateway" }, good);
+  assert.deepEqual(ghApi("repos/o/r/commits/abc/pulls", { spawn: flaky, sleep }), [{ number: 7 }]);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(sleeps, [1000, 2000], "backoff doubles between attempts");
+  // Every attempt empty: refused, after exactly `attempts` tries.
+  calls.length = 0;
+  assert.throws(() => ghApi("repos/o/r/x", { spawn: fake(), sleep, attempts: 3 }), /unparseable body/);
+  assert.equal(calls.length, 3);
+  // A 4xx is final: one attempt, no retry — asking again does not change a 404.
+  calls.length = 0;
+  assert.throws(() => ghApi("repos/o/r/x", { spawn: fake({ status: 1, stderr: "gh: HTTP 404: Not Found" }), sleep }), /404/);
+  assert.equal(calls.length, 1);
 });
 
 /**

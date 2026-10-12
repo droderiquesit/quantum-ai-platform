@@ -337,11 +337,39 @@ const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
  * any failure rather than an empty answer — an API error read as "no pull
  * request" or "no files" would judge a commit as unreviewed nothing.
  */
-export function ghApi(path, { paginate = false } = {}) {
+export function ghApi(path, { paginate = false, attempts = 4, spawn = spawnSync, sleep = pause } = {}) {
   const args = ["api", ...(paginate ? ["--paginate", "--slurp"] : []), path];
-  const run = spawnSync("gh", args, { encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
-  if (run.status !== 0) throw new Error(`gh api ${path} failed: ${(run.stderr || run.error?.message || "").trim()}`);
-  return JSON.parse(run.stdout);
+  // Retried, boundedly, on what is transient and on nothing else. deploy.yml
+  // run 264 (2026-10-12) died 28 minutes into judging 1,458 commits on one
+  // call that exited 0 with an empty body — `JSON.parse("")`, "unexpected end
+  // of JSON input" — and a range of ~3,000 calls meets a flaky one. An empty
+  // or unparseable body, a server-side (5xx) or network failure, is retried
+  // with backoff; a 4xx (not found, forbidden, rate limited) is answered at
+  // once, since asking again does not change the answer. After the last
+  // attempt the call still refuses: a retry that ran out is not an empty
+  // answer, and an empty answer would judge a commit as unreviewed nothing.
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const run = spawn("gh", args, { encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
+    const stderr = (run.stderr || run.error?.message || "").trim();
+    if (run.status === 0) {
+      try {
+        return JSON.parse(run.stdout);
+      } catch (cause) {
+        last = new Error(`gh api ${path} returned an unparseable body (${cause.message})`);
+      }
+    } else {
+      last = new Error(`gh api ${path} failed: ${stderr}`);
+      if (/HTTP 4\d\d/.test(stderr)) break;
+    }
+    if (attempt < attempts) sleep(1000 * 2 ** (attempt - 1));
+  }
+  throw last;
+}
+
+/** A synchronous pause, for a retry loop in a synchronous API wrapper. */
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**
