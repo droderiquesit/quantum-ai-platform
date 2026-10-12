@@ -357,7 +357,8 @@ jobs:
           node .agent-guard/scripts/agent-guard.mjs gather \
             --repository "$THIS_REPOSITORY" --base "$base" --head "$DEPLOY_SHA" --out "$work/range.json"
           node .agent-guard/scripts/agent-guard.mjs range \
-            --policy .agent-guard/scripts/agent-policy.json --range "$work/range.json"
+            --policy .agent-guard/scripts/agent-policy.json --range "$work/range.json" \
+            --environment "$TARGET_ENVIRONMENT"
 
   # One image per deployed artefact. Four of the five are workspace binaries
   # built from the one Dockerfile, so those four cannot drift apart.
