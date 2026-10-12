@@ -14,7 +14,20 @@
 #
 # backend/rust-toolchain.toml pins the toolchain to 1.94.1 and this image's own
 # RUST_VERSION is 1.94.1, so the compiler that builds here is the one the test
-# suite ran against and rustup fetches nothing at build time.
+# suite ran against. That sentence used to end "and rustup fetches nothing at
+# build time", and it was not true: the image carries the toolchain with the
+# `minimal` profile, rust-toolchain.toml also asks for rustfmt and clippy, so
+# the first `cargo` call in every image build had rustup fetch the channel
+# manifest and both components from static.rust-lang.org — an unpinned input
+# in a build this file claims is pinned by one digest, and a build that fails
+# outright without a network (deploy run 265's recipe, rebuilt here with
+# `--network=none`: "could not download file from
+# 'https://static.rust-lang.org/dist/channel-rust-1.94.1.toml.sha256'").
+# The RUN below therefore names the image's own toolchain to rustup directly,
+# so the toolchain file is not consulted and nothing is fetched, and refuses
+# first unless the file's channel is the image's RUST_VERSION — a bumped
+# toolchain pin without a bumped digest fails here, loudly, instead of
+# silently building with the wrong compiler.
 #
 # Pinned by digest, not by tag. `rust:1.94-alpine` moves under this file every
 # time the base is rebuilt, so two builds of the same commit could use two
@@ -85,6 +98,9 @@ RUN test -n "$BINARY" \
   && test -n "$SOURCE_DATE_EPOCH" \
   && test "${#QIP_SOURCE_COMMIT}" -eq 40 \
   && case "$QIP_SOURCE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac \
+  && channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" \
+  && test "$channel" = "$RUST_VERSION" \
+  && export RUSTUP_TOOLCHAIN="$RUST_VERSION-x86_64-unknown-linux-musl" \
   && export SOURCE_DATE_EPOCH QIP_SOURCE_COMMIT \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip

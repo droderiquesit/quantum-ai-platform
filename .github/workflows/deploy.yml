@@ -773,6 +773,7 @@ jobs:
       # everything else and its reproducibility is recorded as open work in
       # infrastructure/gitops/kargo/README.md.
       - name: a second build of the commit is the same image
+        id: reproducibility
         # Not after a pool build: the pool ran this same rebuild and
         # comparison itself and refuses to hand back an image otherwise.
         if: steps.build.outcome == 'success' && matrix.dockerfile == '' && steps.build.outputs.where == 'runner'
@@ -795,9 +796,52 @@ jobs:
           if [ "$first" != "$second" ]; then
             echo "two builds of ${DEPLOY_SHA} produced two images: ${first} and ${second}." >&2
             echo "Nothing is pushed. An image nobody can rebuild from its commit cannot be verified against it." >&2
+            # Say what differed. deploy run 265 (2026-10-12), the first run
+            # to reach this step, failed it for all four binaries with the
+            # two image ids above and nothing else, and a local double
+            # build of qip-edge-node on glibc was byte-identical — so the
+            # next failure has to name the layer, the config field or the
+            # bytes of /qip that moved, or nobody can find it. Every diff
+            # below is `|| true`: this step has already failed, and the
+            # evidence is the point.
+            diag="$RUNNER_TEMP/reproducibility"
+            mkdir -p "$diag/first" "$diag/second"
+            for which in first second; do
+              ref="${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
+              [ "$which" = first ] || ref="qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}"
+              docker image inspect --format '{{json .RootFS.Layers}}' "$ref" > "$diag/$which/layers.json"
+              docker image inspect --format '{{json .Config}}' "$ref" | jq -S . > "$diag/$which/config.json"
+              docker image history --no-trunc --format '{{.CreatedAt}} {{.Size}} {{.CreatedBy}}' "$ref" > "$diag/$which/history.txt"
+              container="$(docker create "$ref" /qip)"
+              docker cp "$container:/qip" "$diag/$which/qip"
+              docker rm "$container" >/dev/null
+            done
+            echo "::group::layers"; diff "$diag/first/layers.json" "$diag/second/layers.json" && echo "identical"; echo "::endgroup::"
+            echo "::group::config"; diff "$diag/first/config.json" "$diag/second/config.json" && echo "identical"; echo "::endgroup::"
+            echo "::group::history"; diff "$diag/first/history.txt" "$diag/second/history.txt" && echo "identical"; echo "::endgroup::"
+            echo "::group::/qip"
+            sha256sum "$diag/first/qip" "$diag/second/qip"
+            if cmp -s "$diag/first/qip" "$diag/second/qip"; then
+              echo "the binaries are identical; the difference is in the image, not the build"
+            else
+              echo "the binaries differ: $(cmp -l "$diag/first/qip" "$diag/second/qip" | wc -l) of $(stat -c %s "$diag/first/qip") bytes, first at $(cmp "$diag/first/qip" "$diag/second/qip" 2>&1 | head -1)"
+              echo "section headers:"
+              diff <(readelf -S -W "$diag/first/qip") <(readelf -S -W "$diag/second/qip") && echo "identical"
+            fi
+            echo "::endgroup::"
             exit 1
           fi
           echo "two builds of ${DEPLOY_SHA} are the same image: ${first}"
+
+      # The two builds, kept for a week when they differ, so the bytes can
+      # be compared off the runner with tools the runner does not have.
+      - name: keep both builds when they differ
+        if: failure() && steps.reproducibility.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducibility-${{ matrix.binary }}-${{ env.DEPLOY_SHA }}
+          path: ${{ runner.temp }}/reproducibility
+          retention-days: 7
 
       # Scan the image before it is pushed, signed, or attested. After the
       # push would be too late: a signed, attested, vulnerable image is
