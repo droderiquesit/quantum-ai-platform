@@ -335,7 +335,7 @@ been dispatched by me.
 
 | Workflow | Trigger | What it does | Never |
 |---|---|---|---|
-| `ci.yml` | push to `main` and `claude/**`; pull request to `main` | The gate. Jobs: `format`, `clippy`, `test`, `release-build`, `dependency-policy`, `security-audit`, `dependency-supply-chain`, `sbom`, `frontend-portal`, `frontend-landing`, `trivy`, `trunk`, `infrastructure`, `secrets` | Deploys |
+| `ci.yml` | push to `main`; pull request to `main` (one run per change — a work branch is gated by its pull request, not by its pushes) | The gate. Jobs: `format`, `clippy`, `test`, `release-build`, `dependency-policy`, `security-audit`, `dependency-supply-chain`, `sbom`, `frontend-portal`, `frontend-landing`, `trivy`, `trunk`, `infrastructure`, `secrets` | Deploys |
 | `deploy.yml` | `workflow_run` of `ci` on `main` (success only); `workflow_dispatch` with `environment` in dev, test, stage, prod | `gate` (refuses a commit ci did not pass), `images` (build, scan, push by commit tag, sign and attest), `deploy` (rolls execution node groups; moves no Cloud Run service) | Deploys prod without a human dispatch: the first step exits 1 with `prod is not deployed automatically.` |
 | `infra.yml` | `workflow_dispatch` only; `environment` in dev, test, stage | Actions `plan`, `up`, `apps`, `suspend`, `down`, `teardown`, `force-unlock`, `diagnose` | Touches prod: not in the choice list and refused again in the first step |
 | `image.yml` | `workflow_dispatch` only; dev, test, stage | `bake`: builds the execution node's Compute Engine image from an attested `qip-edge-node` image. A base image must be a full self-link, never a family | Runs on push: a machine created by a push is a bill nobody decided on |

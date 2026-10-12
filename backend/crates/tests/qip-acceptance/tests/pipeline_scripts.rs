@@ -301,6 +301,13 @@ fn the_pipeline_runs_the_history_scan_on_a_full_clone() {
 /// "cargo audit"; this one fails naming `security-audit`.
 #[test]
 fn every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention() {
+    // The test gate is two jobs since 2026-10-12: `test` runs every test
+    // binary under nextest, in four partitions —
+    // `every_workspace_crate_is_tested_by_exactly_one_partition_of_the_test_job`
+    // below holds that one, since its run line is a matrix value — and
+    // nextest does not run doctests, so `doctest` runs those and nothing
+    // else. A `doctest` job deleted leaves the suite green and every doctest
+    // unrun, which is the failure this entry exists for.
     const GATES: [(&str, &str); 9] = [
         ("format", "- run: cargo fmt --all --check"),
         (
@@ -308,8 +315,8 @@ fn every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention() {
             "- run: cargo clippy --workspace --all-targets --all-features",
         ),
         (
-            "test",
-            "- run: cargo test --workspace --all-features --no-fail-fast",
+            "doctest",
+            "- run: cargo test --workspace --all-features --doc --no-fail-fast",
         ),
         (
             "release-build",
@@ -333,6 +340,153 @@ fn every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention() {
         assert!(
             lines.iter().any(|line| line == step),
             "ci.yml's `{job}` job no longer has the step `{step}`"
+        );
+    }
+}
+
+/// The failure this prevents: a crate tested by no partition, or by two.
+/// ci.yml's `test` job runs as four runners since 2026-10-12, three naming
+/// their packages with `-p` and the fourth taking the rest of the workspace
+/// with `--workspace --exclude …`. A crate named in a `-p` and missing from
+/// the exclusions runs twice, which costs minutes; a crate in the exclusions
+/// with no `-p` runs nowhere, and nothing else would notice — the suite
+/// stays green with that crate's tests never run. So the two sets must be
+/// the same set, and every name in them must be a crate in the tree, since
+/// cargo refuses a `-p` it cannot find but silently accepts an `--exclude`
+/// naming nothing.
+///
+/// Mutation: drop `-p qip-fastbrain` from the acceptance partition's
+/// `packages`. The exclusions then name a crate no partition runs.
+#[test]
+fn every_workspace_crate_is_tested_by_exactly_one_partition_of_the_test_job() {
+    let job = ci_job("test");
+    let partitions: Vec<&str> = job
+        .iter()
+        .filter_map(|line| line.strip_prefix("packages: "))
+        .map(|value| value.trim_matches('"'))
+        .collect();
+    // Premise: the matrix exists and the one run line is fed by it, so the
+    // sets below describe what actually runs.
+    assert!(
+        partitions.len() >= 2,
+        "ci.yml's test job no longer partitions the suite: {job:?}"
+    );
+    assert!(
+        job.iter().any(|line| {
+            line == "run: cargo nextest run ${{ matrix.packages }} --all-features --no-fail-fast"
+        }),
+        "ci.yml's test job no longer runs nextest over `matrix.packages`: {job:?}"
+    );
+
+    let mut named = std::collections::BTreeSet::new();
+    let mut excluded = std::collections::BTreeSet::new();
+    let mut rest_partitions = 0;
+    for partition in &partitions {
+        let words: Vec<&str> = partition.split_whitespace().collect();
+        if words.first() == Some(&"--workspace") {
+            rest_partitions += 1;
+            for pair in words[1..].chunks(2) {
+                assert_eq!(
+                    pair.first().copied(),
+                    Some("--exclude"),
+                    "the rest-of-workspace partition holds something other than exclusions: {partition}"
+                );
+                let krate = pair.get(1).copied().unwrap_or_default();
+                assert!(excluded.insert(krate), "`{krate}` is excluded twice");
+            }
+        } else {
+            for pair in words.chunks(2) {
+                assert_eq!(
+                    pair.first().copied(),
+                    Some("-p"),
+                    "a named partition holds something other than `-p` pairs: {partition}"
+                );
+                let krate = pair.get(1).copied().unwrap_or_default();
+                assert!(named.insert(krate), "`{krate}` is named by two partitions");
+            }
+        }
+    }
+    assert_eq!(
+        rest_partitions, 1,
+        "exactly one partition takes the rest of the workspace, so a new crate is tested once"
+    );
+    assert_eq!(
+        named, excluded,
+        "the crates the named partitions run and the crates the rest-of-workspace partition \
+         excludes are not the same set: a crate in one and not the other runs twice or never"
+    );
+    for krate in &named {
+        let exists = std::fs::read_dir(repo_root().join("backend/crates"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|group| group.path().join(krate).join("Cargo.toml").is_file());
+        assert!(
+            exists,
+            "`{krate}` is named in ci.yml's test partitions and is not a crate under backend/crates/"
+        );
+    }
+}
+
+/// The failure this prevents: a timing suite renamed out from under the
+/// nextest override that gives it the runner to itself. `.config/nextest.toml`
+/// names, by binary, every suite that asserts on wall-clock time, and sets
+/// `threads-required = "num-cpus"` on them, because ci run 956 failed
+/// `m5_performance::feature_extraction_scales_linearly` on a 1.2 ms
+/// measurement taken beside three tests over 120 s. A filter naming a binary
+/// that no longer exists matches nothing and nextest says nothing; the suite
+/// then runs beside everything else again, and fails the next time the
+/// runner is busy — and reads as a flake rather than as this.
+///
+/// Mutation: rename `binary(fabric_bench)` to `binary(fabric_bench_x)` in the
+/// filter; the walk finds no such test file. (Renaming `m5_performance`
+/// fails the premise instead, which is also a failure, and a less specific
+/// one.)
+#[test]
+fn every_timing_suite_the_nextest_override_names_is_a_test_binary_in_the_tree() {
+    let config = read("backend/.config/nextest.toml");
+    let filter = config
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("filter = "))
+        .expect("backend/.config/nextest.toml has an override filter");
+    let names: Vec<&str> = filter
+        .split("binary(")
+        .skip(1)
+        .map(|rest| rest.split(')').next().unwrap_or_default())
+        .collect();
+    // Premise: the filter names the suite the override was written for, so
+    // the walk below is checking something.
+    assert!(
+        names.contains(&"m5_performance") && names.len() >= 4,
+        "the override's filter no longer names the timing suites: {filter}"
+    );
+    assert!(
+        config
+            .lines()
+            .any(|line| line.trim() == "threads-required = \"num-cpus\""),
+        "the override no longer gives the timing suites the runner to themselves"
+    );
+    let groups = std::fs::read_dir(repo_root().join("backend/crates")).unwrap();
+    let mut test_files = Vec::new();
+    for group in groups.filter_map(Result::ok) {
+        for krate in std::fs::read_dir(group.path())
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+        {
+            if let Ok(tests) = std::fs::read_dir(krate.path().join("tests")) {
+                for test in tests.filter_map(Result::ok) {
+                    if let Some(stem) = test.path().file_stem() {
+                        test_files.push(stem.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    for name in names {
+        assert!(
+            test_files.iter().any(|stem| stem == name),
+            "`binary({name})` in backend/.config/nextest.toml matches no tests/{name}.rs under \
+             backend/crates/; a renamed suite runs beside everything else again"
         );
     }
 }

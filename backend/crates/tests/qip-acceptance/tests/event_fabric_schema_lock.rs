@@ -703,7 +703,9 @@ fn the_pipeline_runs_the_compatibility_gate_against_the_pull_requests_base_lock(
         "premise: the path in the step below is the lock this suite reads"
     );
     for line in [
-        "if: github.event_name == 'pull_request'".to_string(),
+        // One partition of the matrixed test job, named, because the gate
+        // needs qip-cli built and only the runtime partition builds it.
+        "if: github.event_name == 'pull_request' && matrix.partition == 'runtime'".to_string(),
         "BASE_SHA: ${{ github.event.pull_request.base.sha }}".to_string(),
         "git fetch --no-tags --depth=1 origin \"$BASE_SHA\"".to_string(),
         format!("git show \"$BASE_SHA:{lock}\" > \"$RUNNER_TEMP/base.lock.json\""),

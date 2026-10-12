@@ -1,0 +1,26 @@
+# nextest's configuration for the workspace. ci.yml runs the suite through
+# nextest, which runs every test of every binary concurrently across the
+# runner's cores; `cargo test` ran one binary at a time.
+#
+# The suites below measure wall-clock time and assert on it — a per-operation
+# ceiling, or that a four-times-larger input costs less than twice as much
+# per operation. Measured beside a compute-bound test on a four-core runner,
+# a 1.2 ms measurement is noise: ci run 956 failed
+# `m5_performance::feature_extraction_scales_linearly` at 2.21x growth
+# against a 2.0x tolerance, with 5,000 operations timed at 0.239 µs each and
+# 20,000 at 0.528 µs, while three tests over 120 s ran on the other cores.
+# The same tests passed in the three runs before and had passed for months
+# under `cargo test`, where nothing else ran at the same time.
+#
+# `threads-required = "num-cpus"` makes each of these tests take every slot,
+# so it runs with the runner to itself, the way `cargo test` ran it. The
+# tolerance is not touched: a test that asserts a timing is kept honest by
+# giving it a quiet machine, not by widening what it accepts. Together these
+# binaries hold about 25 CPU-seconds of tests (run 953), so running them one
+# at a time costs under half a minute.
+#
+# `qip-acceptance`'s `pipeline_scripts` suite proves every binary named here
+# exists, so a renamed suite cannot leave this filter matching nothing.
+[[profile.default.overrides]]
+filter = 'binary(m5_performance) | binary(m6_critical_path) | binary(performance) | binary(stress) | binary(throughput) | binary(fabric_bench) | binary(io_mode_benchmark) | binary(event_fabric_batcher_throughput)'
+threads-required = "num-cpus"
