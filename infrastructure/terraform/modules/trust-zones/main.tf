@@ -506,7 +506,19 @@ resource "google_compute_router" "egress" {
   project = var.project_id
   name    = "qip-${var.environment}-tz-router"
   region  = var.region
-  network = var.network_id
+  # The network the egress zones' subnets are on, read from the same map
+  # that places them. This read `var.network_id`, deprecated and defaulting
+  # to "", so the first apply into algorik-qip-dev (2026-10-11) was refused
+  # with "Required field 'resource.network' not specified". A router can NAT
+  # only subnets on its own network, hence the precondition.
+  network = local.zone_network[local.egress_zones[0]]
+
+  lifecycle {
+    precondition {
+      condition     = length(distinct([for zone in local.egress_zones : local.zone_network[zone]])) == 1
+      error_message = "The zones declaring external egress (${join(", ", local.egress_zones)}) are on more than one network, and a Cloud Router NATs only subnets on its own network. Split the egress across one router per network rather than letting a zone fall silently outside the NAT."
+    }
+  }
 }
 
 # A fixed outbound address, because a counterparty that allow-lists us can only

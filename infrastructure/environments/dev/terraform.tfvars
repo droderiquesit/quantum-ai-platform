@@ -300,15 +300,24 @@ execution_nodes_enabled = false
 # and stop, naming it. Dev only: it is the one environment that builds.
 cloud_build_private_pool_enabled = false
 
+# The two service-account-key constraints are enforced on the platform folder
+# this project lives in (ADR 0118, infrastructure/foundation); see the
+# variable for why the project does not restate them.
+project_key_policies_enabled = false
+
 # --- Partner interconnects for connectivity (GCP-031) --------------------------
 #
-# Test configuration for demonstrating partner interconnect capability.
-# These entries are purely for validation purposes and would only be enabled
-# in an environment where actual partner circuits have been ordered.
+# Off: no circuit has been ordered, and the variable's own description says
+# an attachment is created only after one is. It was on with a test entry
+# until the first apply into algorik-qip-dev (2026-10-11), where Google refused
+# it — a PARTNER attachment's router must carry ASN 16550, not the private
+# 64514 this root defaults to — and an attachment that had succeeded would
+# have been a pairing key no partner holds. The entry stays as the shape a
+# real one takes.
 #
 # See `infrastructure/terraform/modules/connectivity/NOT-ORDERED.md` for the
 # full deployment sequence and caveats about billing and circuit dependencies.
-enable_partner_interconnect = true
+enable_partner_interconnect = false
 
 partner_interconnects = {
   # Test attachment in us-east4 region for demonstration

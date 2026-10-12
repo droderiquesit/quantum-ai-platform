@@ -126,7 +126,13 @@ resource "google_secret_manager_secret" "platform" {
 
   # The CMEK below is performed by Secret Manager's agent, so the secret
   # cannot exist before the agent holds the key.
-  depends_on = [google_kms_crypto_key_iam_member.secretmanager_agent]
+  # The rotation topic is checked at creation: Secret Manager refuses the
+  # secret unless its own agent can already publish there — the first apply
+  # into algorik-qip-dev (2026-10-11), where nothing ordered the two.
+  depends_on = [
+    google_kms_crypto_key_iam_member.secretmanager_agent,
+    google_pubsub_topic_iam_member.rotation_publisher,
+  ]
 
   replication {
     user_managed {
