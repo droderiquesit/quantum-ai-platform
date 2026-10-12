@@ -341,17 +341,28 @@ export function ghApi(path, { paginate = false } = {}) {
 
 /**
  * The range `base..head` as `judgeRange` reads it, from the GitHub API.
- * `api(path, { paginate })` is injectable for the tests. Refuses a range the
- * compare endpoint truncated (it lists at most 250 commits), because judging
- * the first 250 of a longer range is judging part of it and calling it all.
+ * `api(path, { paginate })` is injectable for the tests.
+ *
+ * The compare endpoint lists at most 250 commits in one response, and pages
+ * through the rest when asked with `per_page`/`page`. It is asked that way:
+ * the first deployment after a long gap judges every commit since the last
+ * one, and deploy.yml run 262 (2026-10-12) refused a 1,456-commit range here
+ * on the single-response limit alone, before judging any of it.
+ *
+ * The refusal stays, and is now the check that the pages add up: a range
+ * whose listed commits do not equal `total_commits` on every page is refused,
+ * because judging part of a range and calling it all is the failure this
+ * function exists to prevent, whatever truncated it.
  */
 export function gatherRange({ api, repository, base, head }) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? "")) throw new Error("the repository is not owner/name");
   if (!SHA.test(base ?? "") || !SHA.test(head ?? "")) throw new Error("base and head must be commit shas");
-  const compare = api(`repos/${repository}/compare/${base}...${head}`);
-  const commits = compare?.commits ?? [];
-  if (!Array.isArray(commits) || commits.length !== compare.total_commits) {
-    throw new Error(`the range ${base.slice(0, 12)}..${head.slice(0, 12)} holds ${compare?.total_commits} commits and the API listed ${commits.length}; judge it in parts`);
+  const pages = api(`repos/${repository}/compare/${base}...${head}?per_page=100`, { paginate: true });
+  const totals = new Set((Array.isArray(pages) ? pages : []).map((page) => page?.total_commits));
+  const commits = (Array.isArray(pages) ? pages : []).flatMap((page) => page?.commits ?? []);
+  const total = totals.size === 1 ? [...totals][0] : undefined;
+  if (total === undefined || commits.length !== total || new Set(commits.map((c) => c?.sha)).size !== total) {
+    throw new Error(`the range ${base.slice(0, 12)}..${head.slice(0, 12)} holds ${[...totals].join("/")} commits and the API listed ${commits.length}; judge it in parts`);
   }
   const prs = new Map();
   const pullRequest = (number) => {
