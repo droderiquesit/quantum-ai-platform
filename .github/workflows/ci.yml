@@ -59,18 +59,91 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The changed-crate scope below diffs against the base, so the base
+          # commit has to be in the clone.
+          fetch-depth: 0
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+      # Which packages this run tests. A push to main always tests the whole
+      # workspace: deploy.yml ships whatever main's ci approved, so main's
+      # verdict has to cover everything. A pull request or a work branch tests
+      # only the packages whose files changed, so a one-crate edit waits on
+      # one crate's tests rather than the full forty-minute build. That is a
+      # deliberate trade, said plainly: a change to a library is not tested
+      # through the crates that depend on it until it reaches main, where the
+      # full suite runs before anything deploys.
+      #
+      # Anything outside a crate directory that can change every crate's build
+      # — the workspace manifest, the lockfile, the toolchain pin, cargo
+      # config — widens the scope back to the whole workspace, as does a base
+      # that cannot be resolved. Refuse-rather-than-guess: an unknown scope is
+      # the full scope, never an empty one.
+      - name: the packages this change touches
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          full() { echo "scope: whole workspace ($1)"; echo "args=--workspace" >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "$EVENT" = "push" ] && [ "$REF" = "refs/heads/main" ] && full "a push to main"
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          case "$base" in ''|0000000000000000000000000000000000000000|*[!0-9a-f]*) full "no base commit to diff against" ;; esac
+          git cat-file -e "${base}^{commit}" 2>/dev/null || full "base ${base} is not in the clone"
+          # --relative: paths relative to backend/, the working directory, so
+          # `Cargo.lock` and `crates/...` below match. Without it git prints
+          # `backend/...` and every change maps to no package — a scope that
+          # silently tests nothing, which is the failure this step refuses.
+          changed="$(git diff --relative --name-only "$base" HEAD)"
+          if printf '%s\n' "$changed" | grep -qE '^(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|\.cargo/)'; then
+            full "a workspace-wide build input changed"
+          fi
+          # Map each changed file to the workspace package whose directory holds it.
+          cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | "\(.manifest_path | sub("/Cargo.toml$"; ""))\t\(.name)"' > "$RUNNER_TEMP/packages.tsv"
+          root="$(pwd)"
+          packages=""
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            abs="${root}/${file}"
+            while IFS=$'\t' read -r dir name; do
+              case "$abs" in "$dir"/*) packages="${packages} ${name}"; break ;; esac
+            done < "$RUNNER_TEMP/packages.tsv"
+          done <<< "$changed"
+          packages="$(printf '%s\n' $packages | sort -u | tr '\n' ' ')"
+          if [ -z "${packages// /}" ]; then
+            echo "scope: no Rust package changed; nothing to test"
+            echo "args=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          args=""
+          for p in $packages; do args="${args} -p ${p}"; done
+          echo "scope:${args}"
+          echo "args=${args}" >> "$GITHUB_OUTPUT"
       # `--no-fail-fast` because without it cargo stops at the first failing
       # test binary and the totals then describe a fraction of the suite: a run
       # reporting 64 passed out of 3,000-odd reads as a small suite rather than
       # an aborted one. Every other gate's evidence depends on this one being
       # complete — a financial limit whose vetoing fixture regressed is invisible
       # if an earlier binary aborted the run before reaching it.
-      - run: cargo test --workspace --all-features --no-fail-fast
+      - name: cargo test (whole workspace)
+        if: steps.scope.outputs.args == '--workspace'
+        run: cargo test --workspace --all-features --no-fail-fast
+      - name: cargo test (changed packages)
+        if: steps.scope.outputs.args != '' && steps.scope.outputs.args != '--workspace'
+        env:
+          SCOPE: ${{ steps.scope.outputs.args }}
+        run: |
+          # Word-split on purpose: SCOPE is `-p a -p b`, built above from
+          # workspace package names, never from free text.
+          # shellcheck disable=SC2086
+          cargo test $SCOPE --all-features --no-fail-fast
       # The schema compatibility gate (CICD-070). The suite above proves each
       # fabric-bound body still has the shape its row in schemas.lock.json
       # records, and that is a comparison of the tree with itself: a row
