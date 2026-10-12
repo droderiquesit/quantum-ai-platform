@@ -57,93 +57,41 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      # The suite's time was execution, not compilation: ci run 941 compiled
+      # in 6m40s and then ran 767 test binaries one after another for 35
+      # minutes, four of them (tape, resilience, manifest_wiring and
+      # qip-deepbrain's unit tests) for 31 of those minutes, each dominated by
+      # one long, compute-bound test running as unoptimised debug code.
+      # opt-level 1 makes those tests run as optimised code while keeping
+      # debug-assertions and overflow-checks on — they are separate profile
+      # keys and stay at the test profile's defaults, so an overflow a test
+      # would have caught still panics.
+      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The changed-crate scope below diffs against the base, so the base
-          # commit has to be in the clone.
-          fetch-depth: 0
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      # Which packages this run tests. A push to main always tests the whole
-      # workspace: deploy.yml ships whatever main's ci approved, so main's
-      # verdict has to cover everything. A pull request or a work branch tests
-      # only the packages whose files changed, so a one-crate edit waits on
-      # one crate's tests rather than the full forty-minute build. That is a
-      # deliberate trade, said plainly: a change to a library is not tested
-      # through the crates that depend on it until it reaches main, where the
-      # full suite runs before anything deploys.
-      #
-      # Anything outside a crate directory that can change every crate's build
-      # — the workspace manifest, the lockfile, the toolchain pin, cargo
-      # config — widens the scope back to the whole workspace, as does a base
-      # that cannot be resolved. Refuse-rather-than-guess: an unknown scope is
-      # the full scope, never an empty one.
-      - name: the packages this change touches
-        id: scope
-        env:
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          full() { echo "scope: whole workspace ($1)"; echo "args=--workspace" >> "$GITHUB_OUTPUT"; exit 0; }
-          [ "$EVENT" = "push" ] && [ "$REF" = "refs/heads/main" ] && full "a push to main"
-          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
-          case "$base" in ''|0000000000000000000000000000000000000000|*[!0-9a-f]*) full "no base commit to diff against" ;; esac
-          git cat-file -e "${base}^{commit}" 2>/dev/null || full "base ${base} is not in the clone"
-          # --relative: paths relative to backend/, the working directory, so
-          # `Cargo.lock` and `crates/...` below match. Without it git prints
-          # `backend/...` and every change maps to no package — a scope that
-          # silently tests nothing, which is the failure this step refuses.
-          changed="$(git diff --relative --name-only "$base" HEAD)"
-          if printf '%s\n' "$changed" | grep -qE '^(Cargo\.toml|Cargo\.lock|rust-toolchain(\.toml)?|\.cargo/)'; then
-            full "a workspace-wide build input changed"
-          fi
-          # Map each changed file to the workspace package whose directory holds it.
-          cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | "\(.manifest_path | sub("/Cargo.toml$"; ""))\t\(.name)"' > "$RUNNER_TEMP/packages.tsv"
-          root="$(pwd)"
-          packages=""
-          while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            abs="${root}/${file}"
-            while IFS=$'\t' read -r dir name; do
-              case "$abs" in "$dir"/*) packages="${packages} ${name}"; break ;; esac
-            done < "$RUNNER_TEMP/packages.tsv"
-          done <<< "$changed"
-          packages="$(printf '%s\n' $packages | sort -u | tr '\n' ' ')"
-          if [ -z "${packages// /}" ]; then
-            echo "scope: no Rust package changed; nothing to test"
-            echo "args=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          args=""
-          for p in $packages; do args="${args} -p ${p}"; done
-          echo "scope:${args}"
-          echo "args=${args}" >> "$GITHUB_OUTPUT"
-      # `--no-fail-fast` because without it cargo stops at the first failing
-      # test binary and the totals then describe a fraction of the suite: a run
-      # reporting 64 passed out of 3,000-odd reads as a small suite rather than
-      # an aborted one. Every other gate's evidence depends on this one being
-      # complete — a financial limit whose vetoing fixture regressed is invisible
+      # cargo-nextest runs every test of every binary in parallel across the
+      # runner's cores, where `cargo test` runs the binaries one at a time; a
+      # long test in one binary then overlaps the others instead of queueing
+      # them. Pinned to an exact version and --locked like cargo-audit and
+      # cargo-deny below; rust-cache keeps the installed binary between runs.
+      - name: install cargo-nextest
+        run: cargo nextest --version 2>/dev/null | grep -q '^cargo-nextest 0.9.146' || cargo install cargo-nextest --version 0.9.146 --locked
+      # The whole workspace, every time — pull requests included. `--no-fail-fast`
+      # because a run that stops at the first failure reports a fraction of the
+      # suite: a financial limit whose vetoing fixture regressed is invisible
       # if an earlier binary aborted the run before reaching it.
-      - name: cargo test (whole workspace)
-        if: steps.scope.outputs.args == '--workspace'
-        run: cargo test --workspace --all-features --no-fail-fast
-      - name: cargo test (changed packages)
-        if: steps.scope.outputs.args != '' && steps.scope.outputs.args != '--workspace'
-        env:
-          SCOPE: ${{ steps.scope.outputs.args }}
-        run: |
-          # Word-split on purpose: SCOPE is `-p a -p b`, built above from
-          # workspace package names, never from free text.
-          # shellcheck disable=SC2086
-          cargo test $SCOPE --all-features --no-fail-fast
+      - name: the whole workspace's tests, in parallel
+        run: cargo nextest run --workspace --all-features --no-fail-fast
+      # nextest does not run doctests; cargo test does, and only those here.
+      - name: the whole workspace's doctests
+        run: cargo test --workspace --all-features --doc --no-fail-fast
       # The schema compatibility gate (CICD-070). The suite above proves each
       # fabric-bound body still has the shape its row in schemas.lock.json
       # records, and that is a comparison of the tree with itself: a row
