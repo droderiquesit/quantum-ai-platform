@@ -75,13 +75,16 @@ jobs:
   # and linking 767 test binaries, one per test file — and then 300 s to run
   # all 9,248 tests. Every binary of an app or of qip-acceptance links most
   # of the workspace, so the split is by link weight rather than by test
-  # count: the acceptance suites with the fast brain (the two crates holding
-  # every test over sixty seconds), the kernel and the binaries built on it
-  # with four of the wider libraries, the network-facing nodes with the
-  # edge cell and its two data services, and everything else. Run 955, the
-  # first four-way run, put the last partition at 7m09s of compile for 419
-  # binaries against 4m10s–4m16s for the other two; the libraries moved
-  # out of it since are the rebalancing. The last partition is
+  # count: the acceptance suites alone (their run is bounded by one 200 s
+  # test, so nothing else waits behind it), the kernel and the binaries
+  # built on it with four of the wider libraries, the network-facing nodes
+  # with the edge cell, its two data services and the fast brain (whose
+  # three tape tests run over 120 s each, beside each other), and
+  # everything else. Run 955, the first four-way run, put the last
+  # partition at 7m09s of compile for 419 binaries against 4m10s–4m16s for
+  # the other two; run 956, after the first rebalancing, put the acceptance
+  # partition last at 4m40s of compile and 220 s of run. The moves since
+  # are those two measurements. The last partition is
   # `--workspace --exclude …` rather than a list, so a crate added tomorrow
   # is tested without anybody editing this file; `pipeline_scripts.rs`
   # proves the exclusions and the named packages are the same set, so no
@@ -97,11 +100,11 @@ jobs:
       matrix:
         include:
           - partition: acceptance
-            packages: "-p qip-acceptance -p qip-fastbrain"
+            packages: "-p qip-acceptance"
           - partition: runtime
             packages: "-p qip-kernel -p qip-cli -p qip-web -p qip-deepbrain -p qip-contracts -p qip-market-ingestion -p qip-transport -p qip-storage"
           - partition: nodes
-            packages: "-p qip-api -p qip-edge-node -p qip-fabricd -p qip-ledgerd -p qip-edge -p qip-world-model -p qip-data-finder"
+            packages: "-p qip-api -p qip-edge-node -p qip-fabricd -p qip-ledgerd -p qip-edge -p qip-world-model -p qip-data-finder -p qip-fastbrain"
           - partition: core
             packages: "--workspace --exclude qip-acceptance --exclude qip-fastbrain --exclude qip-kernel --exclude qip-cli --exclude qip-web --exclude qip-deepbrain --exclude qip-contracts --exclude qip-market-ingestion --exclude qip-transport --exclude qip-storage --exclude qip-api --exclude qip-edge-node --exclude qip-fabricd --exclude qip-ledgerd --exclude qip-edge --exclude qip-world-model --exclude qip-data-finder"
     env:

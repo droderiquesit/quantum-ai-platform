@@ -427,6 +427,70 @@ fn every_workspace_crate_is_tested_by_exactly_one_partition_of_the_test_job() {
     }
 }
 
+/// The failure this prevents: a timing suite renamed out from under the
+/// nextest override that gives it the runner to itself. `.config/nextest.toml`
+/// names, by binary, every suite that asserts on wall-clock time, and sets
+/// `threads-required = "num-cpus"` on them, because ci run 956 failed
+/// `m5_performance::feature_extraction_scales_linearly` on a 1.2 ms
+/// measurement taken beside three tests over 120 s. A filter naming a binary
+/// that no longer exists matches nothing and nextest says nothing; the suite
+/// then runs beside everything else again, and fails the next time the
+/// runner is busy — and reads as a flake rather than as this.
+///
+/// Mutation: rename `binary(fabric_bench)` to `binary(fabric_bench_x)` in the
+/// filter; the walk finds no such test file. (Renaming `m5_performance`
+/// fails the premise instead, which is also a failure, and a less specific
+/// one.)
+#[test]
+fn every_timing_suite_the_nextest_override_names_is_a_test_binary_in_the_tree() {
+    let config = read("backend/.config/nextest.toml");
+    let filter = config
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("filter = "))
+        .expect("backend/.config/nextest.toml has an override filter");
+    let names: Vec<&str> = filter
+        .split("binary(")
+        .skip(1)
+        .map(|rest| rest.split(')').next().unwrap_or_default())
+        .collect();
+    // Premise: the filter names the suite the override was written for, so
+    // the walk below is checking something.
+    assert!(
+        names.contains(&"m5_performance") && names.len() >= 4,
+        "the override's filter no longer names the timing suites: {filter}"
+    );
+    assert!(
+        config
+            .lines()
+            .any(|line| line.trim() == "threads-required = \"num-cpus\""),
+        "the override no longer gives the timing suites the runner to themselves"
+    );
+    let groups = std::fs::read_dir(repo_root().join("backend/crates")).unwrap();
+    let mut test_files = Vec::new();
+    for group in groups.filter_map(Result::ok) {
+        for krate in std::fs::read_dir(group.path())
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+        {
+            if let Ok(tests) = std::fs::read_dir(krate.path().join("tests")) {
+                for test in tests.filter_map(Result::ok) {
+                    if let Some(stem) = test.path().file_stem() {
+                        test_files.push(stem.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+    for name in names {
+        assert!(
+            test_files.iter().any(|stem| stem == name),
+            "`binary({name})` in backend/.config/nextest.toml matches no tests/{name}.rs under \
+             backend/crates/; a renamed suite runs beside everything else again"
+        );
+    }
+}
+
 /// Every `*.test.mjs` below `dir`, as repository-relative paths.
 fn script_test_files(dir: &Path, found: &mut Vec<String>) {
     for entry in std::fs::read_dir(dir).unwrap() {
