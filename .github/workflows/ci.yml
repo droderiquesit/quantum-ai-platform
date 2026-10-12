@@ -5,9 +5,18 @@
 # nobody has to fix is a warning everybody stops reading.
 name: ci
 
+# One run per change. A push to a work branch used to start a run, and the
+# pull request on the same branch started a second one for the same commit:
+# two runs of twenty jobs, against an account ceiling of twenty concurrent
+# jobs, so each queued behind the other and every result arrived twice. Work
+# branches are now gated by their pull request alone. Nothing read the push
+# runs: deploy.yml's dispatch path requires a `push` ci run *with a `sast`
+# job*, and `sast` runs on main only, so a work-branch commit could not be
+# dispatched for deployment whether or not it had a push run. main keeps
+# its push run because that is the run deploy.yml's automatic path waits on.
 on:
   push:
-    branches: ["main", "claude/**"]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
 
@@ -17,12 +26,9 @@ on:
 permissions:
   contents: read
 
-# A push on top of a push cancels the run it superseded. The account runs at
-# most twenty jobs at once and this workflow has nineteen; a branch with an
-# open pull request starts two runs per push (the push and the pull request),
-# so a second push while the first pair is still running queued its jobs
-# behind theirs — in run 950 the test job waited 95 s for a runner before its
-# first step. The result of the superseded run was never going to be read.
+# A push on top of a push cancels the run it superseded: the result of the
+# superseded run was never going to be read, and its jobs were holding
+# runners the new run queued behind (run 950's test job waited 95 s for one).
 # main is excepted: deploy.yml waits on ci for the exact commit it ships, and
 # a cancelled run on main is a commit that can never deploy.
 concurrency:
@@ -63,12 +69,37 @@ jobs:
           workspaces: backend
       - run: cargo clippy --workspace --all-targets --all-features
 
+  # Four runners, each compiling a quarter of the test binaries. Run 953
+  # measured the whole suite on one runner: 13m05s to compile — 96
+  # `Compiling` lines done by minute four, the other nine minutes building
+  # and linking 767 test binaries, one per test file — and then 300 s to run
+  # all 9,248 tests. Every binary of an app or of qip-acceptance links most
+  # of the workspace, so the split is by link weight rather than by test
+  # count: the acceptance suites with the fast brain (the two crates holding
+  # every test over sixty seconds), the kernel with the three binaries built
+  # on it, the four network-facing nodes, and everything else. The last
+  # partition is `--workspace --exclude …` rather than a list, so a crate
+  # added tomorrow is tested without anybody editing this file;
+  # `pipeline_scripts.rs` proves the exclusions and the named packages are
+  # the same set, so no crate runs twice and none runs nowhere.
   test:
     name: test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: backend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - partition: acceptance
+            packages: "-p qip-acceptance -p qip-fastbrain"
+          - partition: runtime
+            packages: "-p qip-kernel -p qip-cli -p qip-web -p qip-deepbrain"
+          - partition: nodes
+            packages: "-p qip-api -p qip-edge-node -p qip-fabricd -p qip-ledgerd"
+          - partition: core
+            packages: "--workspace --exclude qip-acceptance --exclude qip-fastbrain --exclude qip-kernel --exclude qip-cli --exclude qip-web --exclude qip-deepbrain --exclude qip-api --exclude qip-edge-node --exclude qip-fabricd --exclude qip-ledgerd"
     env:
       # The suite's time was execution, not compilation: ci run 941 compiled
       # in 6m40s and then ran 767 test binaries one after another for 35
@@ -115,10 +146,13 @@ jobs:
       # every dependency, and a cache saved only on success means the run
       # that fixes the failure compiles them all again: runs 948, 949 and 950
       # each built the whole tree from nothing for exactly this reason.
+      # Keyed by partition: the four target directories hold different
+      # binaries, and rust-cache's default key does not see matrix values.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
           cache-on-failure: true
+          key: ${{ matrix.partition }}
       # cargo-nextest runs every test of every binary in parallel across the
       # runner's cores, where `cargo test` runs the binaries one at a time; a
       # long test in one binary then overlaps the others instead of queueing
@@ -146,12 +180,13 @@ jobs:
         run: |
           while [ -d "/proc/$(cat "$RUNNER_TEMP/free-disk.pid")" ]; do sleep 2; done
           df -h /
-      # The whole workspace, every time — pull requests included. `--no-fail-fast`
-      # because a run that stops at the first failure reports a fraction of the
-      # suite: a financial limit whose vetoing fixture regressed is invisible
-      # if an earlier binary aborted the run before reaching it.
-      - name: the whole workspace's tests, in parallel
-        run: cargo nextest run --workspace --all-features --no-fail-fast
+      # The whole workspace across the four partitions, every time — pull
+      # requests included. `--no-fail-fast` because a run that stops at the
+      # first failure reports a fraction of the suite: a financial limit whose
+      # vetoing fixture regressed is invisible if an earlier binary aborted
+      # the run before reaching it.
+      - name: this partition's tests, in parallel
+        run: cargo nextest run ${{ matrix.packages }} --all-features --no-fail-fast
       # The schema compatibility gate (CICD-070). The suite above proves each
       # fabric-bound body still has the shape its row in schemas.lock.json
       # records, and that is a comparison of the tree with itself: a row
@@ -165,8 +200,11 @@ jobs:
       # has. The base commit is fetched by its id rather than by a branch
       # name, so the comparison is with what this run was opened against and
       # not with wherever the branch has moved since.
+      #
+      # One partition only: the gate is one `cargo run` of qip-cli, and the
+      # runtime partition is the one whose build already holds it.
       - name: schema compatibility against the base
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && matrix.partition == 'runtime'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |

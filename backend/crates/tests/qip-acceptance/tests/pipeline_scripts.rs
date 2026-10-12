@@ -301,22 +301,18 @@ fn the_pipeline_runs_the_history_scan_on_a_full_clone() {
 /// "cargo audit"; this one fails naming `security-audit`.
 #[test]
 fn every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention() {
-    // The test gate is two steps in two jobs since 2026-10-12: nextest runs
-    // every test binary, in parallel, and does not run doctests; `cargo test
-    // --doc` runs those and nothing else. Both are named because either could
-    // go missing alone — a `doctest` job deleted leaves the suite green and
-    // every doctest unrun, which is the failure this test exists for.
-    const GATES: [(&str, &str); 10] = [
+    // The test gate is two jobs since 2026-10-12: `test` runs every test
+    // binary under nextest, in four partitions —
+    // `every_workspace_crate_is_tested_by_exactly_one_partition_of_the_test_job`
+    // below holds that one, since its run line is a matrix value — and
+    // nextest does not run doctests, so `doctest` runs those and nothing
+    // else. A `doctest` job deleted leaves the suite green and every doctest
+    // unrun, which is the failure this entry exists for.
+    const GATES: [(&str, &str); 9] = [
         ("format", "- run: cargo fmt --all --check"),
         (
             "lint",
             "- run: cargo clippy --workspace --all-targets --all-features",
-        ),
-        // A named step, so its `run:` line carries no `- `; the trim in
-        // `ci_job` leaves the key on, so a commented-out copy still fails.
-        (
-            "test",
-            "run: cargo nextest run --workspace --all-features --no-fail-fast",
         ),
         (
             "doctest",
@@ -344,6 +340,89 @@ fn every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention() {
         assert!(
             lines.iter().any(|line| line == step),
             "ci.yml's `{job}` job no longer has the step `{step}`"
+        );
+    }
+}
+
+/// The failure this prevents: a crate tested by no partition, or by two.
+/// ci.yml's `test` job runs as four runners since 2026-10-12, three naming
+/// their packages with `-p` and the fourth taking the rest of the workspace
+/// with `--workspace --exclude …`. A crate named in a `-p` and missing from
+/// the exclusions runs twice, which costs minutes; a crate in the exclusions
+/// with no `-p` runs nowhere, and nothing else would notice — the suite
+/// stays green with that crate's tests never run. So the two sets must be
+/// the same set, and every name in them must be a crate in the tree, since
+/// cargo refuses a `-p` it cannot find but silently accepts an `--exclude`
+/// naming nothing.
+///
+/// Mutation: drop `-p qip-fastbrain` from the acceptance partition's
+/// `packages`. The exclusions then name a crate no partition runs.
+#[test]
+fn every_workspace_crate_is_tested_by_exactly_one_partition_of_the_test_job() {
+    let job = ci_job("test");
+    let partitions: Vec<&str> = job
+        .iter()
+        .filter_map(|line| line.strip_prefix("packages: "))
+        .map(|value| value.trim_matches('"'))
+        .collect();
+    // Premise: the matrix exists and the one run line is fed by it, so the
+    // sets below describe what actually runs.
+    assert!(
+        partitions.len() >= 2,
+        "ci.yml's test job no longer partitions the suite: {job:?}"
+    );
+    assert!(
+        job.iter().any(|line| {
+            line == "run: cargo nextest run ${{ matrix.packages }} --all-features --no-fail-fast"
+        }),
+        "ci.yml's test job no longer runs nextest over `matrix.packages`: {job:?}"
+    );
+
+    let mut named = std::collections::BTreeSet::new();
+    let mut excluded = std::collections::BTreeSet::new();
+    let mut rest_partitions = 0;
+    for partition in &partitions {
+        let words: Vec<&str> = partition.split_whitespace().collect();
+        if words.first() == Some(&"--workspace") {
+            rest_partitions += 1;
+            for pair in words[1..].chunks(2) {
+                assert_eq!(
+                    pair.first().copied(),
+                    Some("--exclude"),
+                    "the rest-of-workspace partition holds something other than exclusions: {partition}"
+                );
+                let krate = pair.get(1).copied().unwrap_or_default();
+                assert!(excluded.insert(krate), "`{krate}` is excluded twice");
+            }
+        } else {
+            for pair in words.chunks(2) {
+                assert_eq!(
+                    pair.first().copied(),
+                    Some("-p"),
+                    "a named partition holds something other than `-p` pairs: {partition}"
+                );
+                let krate = pair.get(1).copied().unwrap_or_default();
+                assert!(named.insert(krate), "`{krate}` is named by two partitions");
+            }
+        }
+    }
+    assert_eq!(
+        rest_partitions, 1,
+        "exactly one partition takes the rest of the workspace, so a new crate is tested once"
+    );
+    assert_eq!(
+        named, excluded,
+        "the crates the named partitions run and the crates the rest-of-workspace partition \
+         excludes are not the same set: a crate in one and not the other runs twice or never"
+    );
+    for krate in &named {
+        let exists = std::fs::read_dir(repo_root().join("backend/crates"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|group| group.path().join(krate).join("Cargo.toml").is_file());
+        assert!(
+            exists,
+            "`{krate}` is named in ci.yml's test partitions and is not a crate under backend/crates/"
         );
     }
 }
