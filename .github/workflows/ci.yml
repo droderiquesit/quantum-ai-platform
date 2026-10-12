@@ -69,7 +69,24 @@ jobs:
       # would have caught still panics.
       CARGO_PROFILE_DEV_OPT_LEVEL: "1"
       CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+      # Line tables only, not full debug info. ci run 948 (the first with
+      # opt-level 1) died compiling `qip-data-finder`'s tests with "No space
+      # left on device" and 19 MB free: 767 optimised test binaries each
+      # carrying full DWARF filled the runner's disk before one test ran.
+      # Line tables keep file and line in every panic and backtrace, which is
+      # what a failing test needs; variable-level debug info is what a
+      # debugger needs, and nothing here attaches one.
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
     steps:
+      # The standard runner leaves ~14 GB free; these preinstalled SDKs are
+      # ~20 GB this job never uses. Removed before the build, not after a
+      # failure.
+      - name: free the runner's disk for the test build
+        working-directory: /
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -565,8 +582,18 @@ jobs:
   # not only an analysis that could not finish; see the last step of
   # codeql-analysis.yml. `security-events: write` is the one
   # permission the analysis needs beyond reading, granted to this job alone.
+  # CodeQL runs on main, not on pull requests or work branches (owner's
+  # decision, 2026-10-12): its Rust analysis took 10m09s in ci run 948, the
+  # longest job in the run, and set the pace of every pull request. What
+  # deploys is unchanged: deploy.yml only ever ships a main commit and its
+  # "static analysis passed in that ci run" step still refuses a ci run with
+  # no successful `sast / …` job, so nothing reaches an environment without
+  # this scan. What changes is when a finding is seen — after merge rather
+  # than before it — and codeql-analysis.yml's daily schedule still scans
+  # code that has not changed.
   sast:
     name: sast
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
