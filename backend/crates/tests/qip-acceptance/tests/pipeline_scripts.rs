@@ -301,15 +301,26 @@ fn the_pipeline_runs_the_history_scan_on_a_full_clone() {
 /// "cargo audit"; this one fails naming `security-audit`.
 #[test]
 fn every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention() {
-    const GATES: [(&str, &str); 9] = [
+    // The test gate is two steps in two jobs since 2026-10-12: nextest runs
+    // every test binary, in parallel, and does not run doctests; `cargo test
+    // --doc` runs those and nothing else. Both are named because either could
+    // go missing alone — a `doctest` job deleted leaves the suite green and
+    // every doctest unrun, which is the failure this test exists for.
+    const GATES: [(&str, &str); 10] = [
         ("format", "- run: cargo fmt --all --check"),
         (
             "lint",
             "- run: cargo clippy --workspace --all-targets --all-features",
         ),
+        // A named step, so its `run:` line carries no `- `; the trim in
+        // `ci_job` leaves the key on, so a commented-out copy still fails.
         (
             "test",
-            "- run: cargo test --workspace --all-features --no-fail-fast",
+            "run: cargo nextest run --workspace --all-features --no-fail-fast",
+        ),
+        (
+            "doctest",
+            "- run: cargo test --workspace --all-features --doc --no-fail-fast",
         ),
         (
             "release-build",

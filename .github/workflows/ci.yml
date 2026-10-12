@@ -17,6 +17,18 @@ on:
 permissions:
   contents: read
 
+# A push on top of a push cancels the run it superseded. The account runs at
+# most twenty jobs at once and this workflow has nineteen; a branch with an
+# open pull request starts two runs per push (the push and the pull request),
+# so a second push while the first pair is still running queued its jobs
+# behind theirs — in run 950 the test job waited 95 s for a runner before its
+# first step. The result of the superseded run was never going to be read.
+# main is excepted: deploy.yml waits on ci for the exact commit it ships, and
+# a cancelled run on main is a commit that can never deploy.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   # Fail on any warning. The workspace lint set already denies the ones that
@@ -78,37 +90,68 @@ jobs:
       # debugger needs, and nothing here attaches one.
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      # cargo-nextest, pinned, and the digest of its release tarball. The
+      # tarball is nextest's own release asset for this exact version, so a
+      # tag that moved or a mirror that served something else fails the
+      # checksum rather than running.
+      NEXTEST_VERSION: "0.9.146"
+      NEXTEST_SHA256: "682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428"
     steps:
       # The standard runner leaves ~14 GB free; these preinstalled SDKs are
-      # ~20 GB this job never uses. Removed before the build, not after a
-      # failure.
-      - name: free the runner's disk for the test build
+      # ~20 GB this job never uses, and 767 optimised test binaries do not
+      # fit beside them (run 948 died at 19 MB free). The removal takes
+      # 60-100 s of disk I/O and nothing below needs the space until the
+      # build, so it runs in the background while the checkout, toolchain
+      # and cache restore go on, and the step before the build waits for it.
+      - name: start freeing the runner's disk for the test build
         working-directory: /
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          df -h /
+          nohup sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+          echo $! > "$RUNNER_TEMP/free-disk.pid"
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+      # cache-on-failure, because a run whose tests failed still compiled
+      # every dependency, and a cache saved only on success means the run
+      # that fixes the failure compiles them all again: runs 948, 949 and 950
+      # each built the whole tree from nothing for exactly this reason.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+          cache-on-failure: true
       # cargo-nextest runs every test of every binary in parallel across the
       # runner's cores, where `cargo test` runs the binaries one at a time; a
       # long test in one binary then overlaps the others instead of queueing
-      # them. Pinned to an exact version and --locked like cargo-audit and
-      # cargo-deny below; rust-cache keeps the installed binary between runs.
+      # them. Run 949: 9,248 tests in 297 s, against 35 minutes serially.
+      #
+      # Installed from nextest's release tarball, checked against the digest
+      # above, rather than `cargo install`: building it from source took
+      # 3m59s of the job in runs 949 and 950 — a quarter of the budget, spent
+      # before a test ran. The version check first keeps a cached binary.
       - name: install cargo-nextest
-        run: cargo nextest --version 2>/dev/null | grep -q '^cargo-nextest 0.9.146' || cargo install cargo-nextest --version 0.9.146 --locked
+        run: |
+          set -euo pipefail
+          if cargo nextest --version 2>/dev/null | grep -q "^cargo-nextest $NEXTEST_VERSION "; then
+            echo "cargo-nextest $NEXTEST_VERSION is already installed"
+            exit 0
+          fi
+          curl -sSfL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/nextest.tar.gz" \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$NEXTEST_VERSION/cargo-nextest-$NEXTEST_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$NEXTEST_SHA256  $RUNNER_TEMP/nextest.tar.gz" | sha256sum --check
+          tar xzf "$RUNNER_TEMP/nextest.tar.gz" -C "$HOME/.cargo/bin" cargo-nextest
+          cargo nextest --version
+      # `kill -0` cannot be used here: the process is root's, so from the
+      # runner's user it answers EPERM whether or not it is still running.
+      - name: wait for the disk to be freed
+        run: |
+          while [ -d "/proc/$(cat "$RUNNER_TEMP/free-disk.pid")" ]; do sleep 2; done
+          df -h /
       # The whole workspace, every time — pull requests included. `--no-fail-fast`
       # because a run that stops at the first failure reports a fraction of the
       # suite: a financial limit whose vetoing fixture regressed is invisible
       # if an earlier binary aborted the run before reaching it.
       - name: the whole workspace's tests, in parallel
         run: cargo nextest run --workspace --all-features --no-fail-fast
-      # nextest does not run doctests; cargo test does, and only those here.
-      - name: the whole workspace's doctests
-        run: cargo test --workspace --all-features --doc --no-fail-fast
       # The schema compatibility gate (CICD-070). The suite above proves each
       # fabric-bound body still has the shape its row in schemas.lock.json
       # records, and that is a comparison of the tree with itself: a row
@@ -132,6 +175,33 @@ jobs:
           cargo run --quiet -p qip-cli --bin qip -- event-fabric schema-gate \
             --base "$RUNNER_TEMP/base.lock.json" \
             --head crates/libs/qip-events/schemas.lock.json
+
+  # nextest does not run doctests; `cargo test --doc` does, and only those.
+  # Its own job rather than a step after the suite: it compiles every
+  # library a second time in doctest mode, and run beside the suite that
+  # time overlaps the test job instead of extending it. Same profile as the
+  # test job, for the same reasons, so the two builds agree on what they
+  # measured.
+  doctest:
+    name: doctests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - run: cargo test --workspace --all-features --doc --no-fail-fast
 
   # CICD-102: Validate that environment configuration only pins digests
   # with valid Binary Authorization attestations.
@@ -186,7 +256,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - run: cargo install cargo-audit --locked
+      # rust-cache keeps ~/.cargo/bin between runs, so the binary each of
+      # these three jobs installs is built from source once per Cargo.lock
+      # and restored after: run 950 spent 2m02s, 1m53s and 1m01s building
+      # cargo-audit, cargo-deny and cargo-cyclonedx before checking anything.
+      # The version check first is what makes the restore count.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - run: cargo audit --version >/dev/null 2>&1 || cargo install cargo-audit --locked
       - run: cargo audit --deny warnings
 
   # `cargo audit` reads only the advisory database; it has no opinion on a
@@ -208,7 +287,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - run: cargo install cargo-deny --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - run: cargo deny --version >/dev/null 2>&1 || cargo install cargo-deny --locked
       - run: cargo deny check
 
   # A software bill of materials for every release build, so an operator can
@@ -223,7 +306,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - run: cargo install cargo-cyclonedx --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-on-failure: true
+      - run: cargo cyclonedx --version >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
       - run: cargo cyclonedx --format json --all
       - uses: actions/upload-artifact@v4
         with:
