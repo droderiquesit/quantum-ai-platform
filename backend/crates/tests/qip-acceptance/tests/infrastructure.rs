@@ -11465,15 +11465,15 @@ fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
     // and ignores `rewrite-timestamp` — deploy run 266 had byte-identical
     // binaries, configs and histories and two sets of layer digests.
     assert_eq!(
-        deploy
-            .matches(".tar,rewrite-timestamp=true\"")
-            .count(),
+        deploy.matches(".tar,rewrite-timestamp=true\"").count(),
         2,
         "deploy.yml's two builds do not both export through the tarball exporter with \
          rewrite-timestamp; the daemon's own image store ignores it"
     );
     assert_eq!(
-        deploy.matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}").count(),
+        deploy
+            .matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}")
+            .count(),
         2,
         "deploy.yml's two builds are not both loaded from their tarball"
     );
