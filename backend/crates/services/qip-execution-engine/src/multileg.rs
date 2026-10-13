@@ -547,9 +547,19 @@ impl LegGroup {
     /// leg's, so calling this twice produces the same ids rather than a second
     /// set of orders that would double the reversal into a position opposite
     /// the one being closed.
+    ///
+    /// In reverse of the order the legs were placed. `legs` is execution
+    /// order, and in a cycle each leg spends what the one before it delivered,
+    /// so a recovery undoes the last leg first: stranded after buying BTC with
+    /// dollars and selling it for euros, the group must buy the BTC back with
+    /// its euros before it can sell BTC for dollars. Issued forwards, the first
+    /// reversal sells BTC the group no longer holds — a naked short opened by
+    /// the recovery path itself. `settle` matches reversals by id and cannot
+    /// see the order; `tests/saga_recovery.rs` is what holds it (RM-P5-03).
     pub fn unwind_orders(&self, now: Timestamp) -> Vec<Order> {
         self.legs
             .iter()
+            .rev()
             .filter(|leg| leg.filled.is_positive())
             .map(|leg| {
                 let reversed = match leg.order.side {
