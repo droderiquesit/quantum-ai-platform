@@ -76,7 +76,7 @@ spec:
       - name: QIP_STORAGE_TARGET
         value: memory
       - name: QIP_UNIVERSE_PATH
-        value: /etc/qip/7ec25303c3f3ecac/universe.json
+        value: /etc/qip/931c5fe44d20d1d9/universe.json
       volumeMounts:
       - name: capital-envelope-key
         mountPath: /var/run/secrets/qip/capital-envelope-key
@@ -101,7 +101,7 @@ spec:
       image: envoy
       args:
       - -c
-      - /etc/envoy/envoy-fc9574203f973d2d.yaml
+      - /etc/envoy/envoy-760e37df4041e228.yaml
       - --service-cluster
       - qip-egress
       - --log-level

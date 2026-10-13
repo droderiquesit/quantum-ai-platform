@@ -3584,6 +3584,578 @@ fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
     );
 }
 
+/// Every Run service's template is stamped with the enabled version of each
+/// secret it mounts — by the `apps` stage, after the sync is proven and on
+/// both sides of the Healthy wait — so a revision that died on an empty
+/// secret is replaced once the secret holds a version, and a rotated version
+/// reaches a revision without anybody editing a manifest.
+///
+/// Not hypothetical. `infra.yml` run 113's portal revision died on
+/// `qip-session-secret-dev/versions/latest was not found`, and run 114's
+/// `diagnose` found that same dead revision still the latest one. Cloud Run
+/// validates a mounted secret when it creates a revision and never looks
+/// again; Config Connector creates a revision only when the template
+/// differs; seeding a secret changes no template. So the seed step can fill
+/// every empty slot and the service stays down, and a re-run prints the
+/// message that sent somebody to check a secret that was there. The stamp
+/// is the one place a seeded or rotated version becomes a new revision: an
+/// annotation on the RunService template naming each mounted secret's
+/// enabled version, which changes exactly when a version does.
+///
+/// The properties are control flow rather than text, because the first
+/// version of this test asserted text and a review found it would pass over
+/// a function called in the wrong place. The function is called only after
+/// the Synced wait, at least once before the Healthy wait and once after it,
+/// or it acts on the previous manifest's revisions or judges a revision it
+/// never replaced. Inside it: the services come from the RunServices in
+/// `qip-run`, not Cloud Run's list, because a service no manifest owns has
+/// nothing here to patch; a service with any mounted secret unseeded is
+/// skipped before the patch, or it is re-run and dies again under a new
+/// name; a service whose stamp is already current is skipped before the
+/// patch, or every dispatch creates a revision; the patch is the test of an
+/// `if !`, so one service that cannot be patched is a warning and the next
+/// service rather than, under `set -e`, the end of the step; what is patched
+/// is the template's annotations, which is what makes Config Connector
+/// create a revision; the new generation is waited for before health is
+/// judged, or the Ready condition read is the previous reconcile's; and
+/// Cloud Run is never written through gcloud, because the manifest's live
+/// object is the only remedy ADR 0036 admits.
+#[test]
+fn every_run_service_s_template_is_stamped_with_its_secret_versions_between_the_sync_and_the_health_wait()
+ {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let step = steps
+        .iter()
+        .find(|step| step.contains("name: bootstrap the GitOps controllers"))
+        .expect("infra.yml has the bootstrap step");
+
+    // Each landmark occurs once. A second Synced or Healthy wait would make
+    // "after the wait" ambiguous, so the premise pins one of each rather
+    // than taking the first.
+    let only = |needle: &str| {
+        let found: Vec<usize> = step.match_indices(needle).map(|(at, _)| at).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "the bootstrap step contains `{needle}` {} time(s); this test orders the stamp \
+             against exactly one",
+            found.len()
+        );
+        found[0]
+    };
+    let defined = only("stamp_secret_versions() {");
+    let synced = only("'{.status.sync.status}'=Synced");
+    let healthy = only("'{.status.health.status}'=Healthy");
+    assert!(
+        synced < healthy,
+        "the Synced wait no longer precedes the Healthy wait"
+    );
+
+    // Where the function is *called*: a line holding the bare name. The
+    // definition's line holds more than the name, so it is not counted.
+    let mut called = Vec::new();
+    let mut offset = 0;
+    for line in step.lines() {
+        if line.trim() == "stamp_secret_versions" {
+            called.push(offset);
+        }
+        offset += line.len() + 1;
+    }
+    assert!(
+        called.len() >= 2,
+        "stamp_secret_versions is called {} time(s); once before the first Healthy wait and \
+         once between later ones is the least that catches a revision dying during the first",
+        called.len()
+    );
+    assert!(
+        called.iter().all(|&call| synced < call),
+        "a stamp runs before the sync is proven, so it acts on the previous manifest's revisions"
+    );
+    assert!(
+        called.iter().any(|&call| call < healthy),
+        "no stamp runs before the Healthy wait, so a revision dead before this dispatch is \
+         judged and never replaced"
+    );
+    assert!(
+        called.iter().any(|&call| healthy < call),
+        "no stamp runs after a Healthy wait expires, so a revision that dies during the wait \
+         is never replaced"
+    );
+    assert!(
+        defined < called[0],
+        "stamp_secret_versions is called at offset {} and defined at {defined}, after its \
+         first call",
+        called[0]
+    );
+
+    // The function's body, bounded by its closing brace at its own indent.
+    let body = &step[defined..];
+    let body = &body[..body
+        .find("\n            }\n")
+        .expect("stamp_secret_versions closes")];
+    let at = |needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("stamp_secret_versions does not contain {needle}"))
+    };
+
+    // The services are the manifests' RunServices, not Cloud Run's list.
+    let listed = at("kubectl -n qip-run get runservices");
+    assert!(
+        !body.contains("gcloud run services list"),
+        "the services are read from Cloud Run rather than from the RunServices in qip-run, so \
+         a service no manifest owns is stamped and nothing it is stamped on exists"
+    );
+
+    // The patch, and that it is the test of an `if !` rather than a bare
+    // call. The bare text is located first so the message can say which of
+    // the two is missing.
+    let patch = at("kubectl -n qip-run patch \"runservice/${service}\"");
+    let guard = "if ! generation=\"$(";
+    assert!(
+        body[..patch].ends_with(guard),
+        "the RunService patch is a bare call rather than the test of `{guard}`; under \
+         `set -e` one service that cannot be patched ends the step before the next is stamped, \
+         and the warning that names it is never printed"
+    );
+
+    // Every mounted secret is read for an enabled version before the patch,
+    // and one with none skips the service: the loop empties `versions` and
+    // breaks, and the empty `versions` continues to the next service before
+    // the patch is reached.
+    let enabled = at("--filter='state:ENABLED'");
+    assert!(
+        listed < enabled && enabled < patch,
+        "the patch is written before the enabled version is read, so a revision is re-run on a \
+         secret that is still empty"
+    );
+    assert!(
+        body.contains("versions=\"\"\n                    break"),
+        "a service naming one empty secret among several keeps the versions it has read, so it \
+         is stamped and re-run and dies again under a new name"
+    );
+    let unseeded = body.find("[ -n \"${versions}\" ] || continue");
+    assert!(
+        unseeded.is_some_and(|skip| skip < patch),
+        "the empty-versions skip is {} the patch, so a service with an unseeded secret is \
+         patched anyway and re-run to die again",
+        if unseeded.is_some() {
+            "after"
+        } else {
+            "missing before"
+        }
+    );
+
+    // A stamp already current is not rewritten: a patch to the same value
+    // changes no template, and one that forced a change would create a
+    // revision per dispatch.
+    let current = at("[ \"${current}\" = \"${versions}\" ] && continue");
+    assert!(
+        current < patch,
+        "the current-stamp skip comes after the patch, so every dispatch creates a revision"
+    );
+    assert!(
+        body.contains("{\\\"spec\\\":{\\\"template\\\":{\\\"annotations\\\":"),
+        "the patch does not touch the template's annotations, so Config Connector sees no \
+         change and creates no revision"
+    );
+    let observed = at("--for=jsonpath='{.status.observedGeneration}'");
+    assert!(
+        patch < observed,
+        "the new generation is not waited for after the patch, so the Healthy wait reads the \
+         previous reconcile's Ready condition"
+    );
+    assert!(
+        !body.contains("gcloud run services update") && !body.contains("gcloud run deploy"),
+        "the stamp writes Cloud Run directly, which ADR 0036 reserves for the manifest's \
+         reconciler"
+    );
+}
+
+/// A missing Kargo credential warns and skips the promotion chain; it does
+/// not fail the job, because the console's IAP gate is the step after it.
+///
+/// The refusal it replaces read as correct until what followed it was
+/// counted. Phase 11 of the bootstrap step ran after every service had been
+/// proven Synced and Healthy and before the step that enables IAP on the
+/// portal, and a step after a failed one does not run. So an environment
+/// whose owner had not yet made a GitHub App for Kargo — which promotes
+/// digests and serves nothing — ended every `apps` dispatch red, with the
+/// console deployed and its gate never applied. The portal has no allUsers
+/// invoker, so that state answers 403 to everyone; safe, and not the
+/// protected console the job claims to produce.
+///
+/// Asserted as control flow, because the first version of this test
+/// asserted the warning's text and would have passed with an `exit 1` on the
+/// line after it. The branch taken when the credential file is absent holds
+/// the warning naming the secret and neither an exit nor an error
+/// annotation; the phase's closing line says Kargo was not applied by this
+/// run, so a green run does not imply it was; and the IAP gate is a later
+/// step than the bootstrap, which is what makes the first property
+/// load-bearing. The earlier warning, printed where the credential is found
+/// absent before Argo CD's phases, must not still announce that "phase 11
+/// will refuse": a warning naming a refusal that does not happen sends an
+/// operator to fix the wrong thing.
+#[test]
+fn a_missing_kargo_credential_warns_and_skips_the_chain_rather_than_failing_the_job_before_the_iap_gate()
+ {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+    let bootstrap = position("name: bootstrap the GitOps controllers");
+    let gate = position("name: the console's IAP gate");
+
+    // Premise: the gate is a later step of the same job, which is the whole
+    // reason an exit in the bootstrap step would cost it.
+    assert!(
+        bootstrap < gate,
+        "the IAP gate (step {gate}) no longer follows the bootstrap (step {bootstrap}); \
+         this test's reasoning assumes it does"
+    );
+
+    let step = &steps[bootstrap];
+
+    // The branch taken when the credential is absent: from the test of the
+    // file to the `else` at the same indent.
+    let absent = step
+        .find("if [ ! -f \"${scratch}/secret-kargo.json\" ]; then")
+        .expect("the bootstrap step tests whether the Kargo credential it fetched exists");
+    let absent = &step[absent..];
+    let absent = &absent[..absent
+        .find("\n            else\n")
+        .expect("the absent-credential test has an else branch that applies the chain")];
+    assert!(
+        absent.contains(
+            "::warning title=Kargo not bootstrapped::qip-github-app-kargo-${ENVIRONMENT}"
+        ),
+        "a missing Kargo credential is no longer reported as a warning naming the secret"
+    );
+    assert!(
+        absent.contains("kargo_bootstrapped=0"),
+        "the absent branch no longer records that Kargo was not bootstrapped, so the closing \
+         line cannot say so"
+    );
+    // A shell `exit` is a statement: the start of a line, or of a part after
+    // `;`, `&&` or `||`. Prose in the warning is not a statement, so a
+    // message that mentions an exit does not fail this.
+    let exits: Vec<&str> = absent
+        .lines()
+        .filter(|line| {
+            line.split([';', '&', '|'])
+                .any(|part| part.trim_start().starts_with("exit"))
+        })
+        .collect();
+    assert!(
+        exits.is_empty(),
+        "the absent-credential branch exits, which is the failure that skipped the IAP gate: \
+         {exits:?}"
+    );
+    assert!(
+        !absent.contains("::error"),
+        "the absent-credential branch annotates an error, which marks the job failed"
+    );
+
+    // The other branch records the other outcome, and the phase closes by
+    // reporting whichever happened rather than letting a green run imply
+    // Kargo was applied.
+    assert!(
+        step.contains("kargo_bootstrapped=1"),
+        "the phase no longer records that Kargo was bootstrapped, so its closing line cannot \
+         say which happened"
+    );
+    assert!(
+        step.lines().any(|line| {
+            line.trim_start()
+                .starts_with("echo \"Kargo was not applied by this run")
+        }),
+        "the phase no longer closes by saying Kargo was not applied by this run, so a green run \
+         implies a promotion chain that is not there"
+    );
+
+    // The earlier warning, where the credential is found absent before
+    // Argo CD's phases, says what phase 11 will do — and it must be what
+    // phase 11 does now.
+    let earlier = step
+        .lines()
+        .find(|line| line.contains("::warning title=no Kargo App credential::"))
+        .expect("the bootstrap step warns where it finds the Kargo credential absent");
+    assert!(
+        !earlier.contains("phase 11 will refuse"),
+        "the earlier warning still says phase 11 will refuse, and it no longer does; an \
+         operator reading it expects a failure that does not come: {earlier}"
+    );
+    assert!(
+        !step.contains("phase 11 will refuse"),
+        "the bootstrap step still says somewhere that phase 11 will refuse, and it does not"
+    );
+}
+
+/// A `seed` dispatch never binds its credential inputs where the runner
+/// prints them, masks each as it is read, refuses a live key, and writes
+/// only into a slot that holds no version.
+///
+/// The road exists because the session operating dev on the owner's behalf
+/// holds no Google credential and cannot reach this repository's Actions
+/// secrets, and the owner directed that the deployment be driven from it
+/// with the keys in hand. A dispatch input is that road, and run 115 is how
+/// it leaked: the first version of this step bound the inputs into its
+/// `env:` as `${{ inputs.… }}`, and the runner prints every `env:` value and
+/// the expanded script in the step's log header before the script's first
+/// line can mask anything. A mask that runs after the print is a mask of
+/// nothing. So the inputs reach the script only by reading the event payload
+/// from disk, each value is masked on the line after the one that reads it,
+/// and no expression in the step names them — asserted on the raw step,
+/// comments included, because an expression in a comment line of a `run:`
+/// block is expanded and printed all the same.
+///
+/// Then the paper boundary at this road: a key id that is not `PK…` —
+/// Alpaca's paper prefix — is refused with `exit 1`, so the input cannot
+/// carry a live venue credential (`AK…`) into the platform ADR 0003 keeps
+/// paper-only. And the write: a slot holding a version in *any* state is
+/// held — a slot whose only version is disabled is a revoked credential, and
+/// refilling it would be a resurrection — so the held read has no state
+/// filter, a held slot returns before the write unless the dispatch asked to
+/// rotate, and the payload is a private file, never an argument visible in
+/// the process table.
+#[test]
+fn a_seed_dispatch_never_binds_its_inputs_where_the_runner_prints_them_masks_them_as_read_refuses_a_live_key_and_writes_only_into_an_unheld_slot()
+ {
+    let infra = read(".github/workflows/infra.yml");
+    let name = "name: seed the credentials handed to this dispatch";
+
+    // The bytes the runner reads, comments included.
+    let raw = raw_job_steps(&infra)
+        .into_iter()
+        .find(|step| step.contains(name))
+        .expect("infra.yml has the dispatch-seeding step");
+    let expressions: Vec<&str> = raw
+        .match_indices("${{")
+        .map(|(at, _)| {
+            let rest = &raw[at..];
+            &rest[..rest.find("}}").expect("an expression closes") + 2]
+        })
+        .collect();
+    assert!(
+        expressions
+            .iter()
+            .any(|expression| expression.contains("inputs.environment")),
+        "premise: the step still takes the environment by expression, so the expression walk \
+         is reading the step"
+    );
+    for expression in &expressions {
+        assert!(
+            !expression.contains("alpaca")
+                && !expression.contains("github.event")
+                && !expression.contains("toJSON"),
+            "the dispatch-seeding step names a credential input in `{expression}`, which the \
+             runner expands and prints in the step's log header before any line of the script \
+             can mask it; this is how run 115 leaked"
+        );
+    }
+    // Every mention of either input is the read of the event payload on
+    // disk, and there is exactly one: any other is a binding the runner
+    // prints.
+    let inputs = [
+        ("alpaca_api_key_id", "key_id"),
+        ("alpaca_api_secret_key", "secret_key"),
+    ];
+    for (input, variable) in inputs {
+        let read_line = raw
+            .lines()
+            .find(|line| line.contains(&format!("jq -r '.inputs.{input}")))
+            .unwrap_or_else(|| {
+                panic!("the dispatch-seeding step does not read inputs.{input} with jq")
+            });
+        assert!(
+            read_line
+                .trim_start()
+                .starts_with(&format!("{variable}=\"$(jq -r '.inputs.{input}"))
+                && read_line.contains("\"${GITHUB_EVENT_PATH}\""),
+            "inputs.{input} is read from somewhere other than the event payload on disk: \
+             {read_line}"
+        );
+        assert_eq!(
+            raw.matches(&format!("inputs.{input}")).count(),
+            1,
+            "inputs.{input} is named more than once in the dispatch-seeding step; the one \
+             mention is the jq read, and any other is a binding the runner prints"
+        );
+    }
+
+    let step = job_steps(&infra)
+        .into_iter()
+        .find(|step| step.contains(name))
+        .expect("infra.yml has the dispatch-seeding step");
+    let lines: Vec<&str> = step.lines().collect();
+
+    // The gate, exactly: an `up` or `apps` must not read inputs it was
+    // never handed, and a gate that admits a second action is not this one.
+    let gate = lines
+        .iter()
+        .find(|line| line.trim_start().starts_with("if:"))
+        .expect("the dispatch-seeding step has an if: gate");
+    assert_eq!(
+        gate.trim(),
+        "if: inputs.action == 'seed'",
+        "the dispatch-seeding step runs under something other than exactly the `seed` action"
+    );
+
+    // Masked as read: the mask is the line after the read, so nothing runs
+    // between them with the value unmasked.
+    for (input, variable) in inputs {
+        let read_at = lines
+            .iter()
+            .position(|line| {
+                line.trim_start()
+                    .starts_with(&format!("{variable}=\"$(jq -r '.inputs.{input}"))
+            })
+            .expect("the read was found above");
+        let mask = format!("::add-mask::${{{variable}}}");
+        let mask_at = lines
+            .iter()
+            .position(|line| line.contains(&mask))
+            .unwrap_or_else(|| panic!("the dispatch-seeding step does not mask {variable}"));
+        assert_eq!(
+            mask_at,
+            read_at + 1,
+            "{variable} is read on line {read_at} and masked on line {mask_at}; a line between \
+             them runs with the value unmasked"
+        );
+    }
+    let at = |needle: &str| {
+        step.find(needle)
+            .unwrap_or_else(|| panic!("the dispatch-seeding step does not contain {needle}"))
+    };
+    let mask_id = at("::add-mask::${key_id}");
+    let mask_secret = at("::add-mask::${secret_key}");
+    let first_gcloud = at("gcloud ");
+    // The first echo that is not itself a mask: the mask is an `echo` of a
+    // workflow command, which the runner consumes rather than prints.
+    let first_echo = step
+        .match_indices("echo \"")
+        .map(|(offset, _)| offset)
+        .find(|&offset| !step[offset..].starts_with("echo \"::add-mask::"))
+        .expect("the dispatch-seeding step prints something");
+    assert!(
+        mask_id < first_gcloud && mask_secret < first_gcloud,
+        "a gcloud call runs before the inputs are masked, so its error text could carry a value"
+    );
+    assert!(
+        mask_id < first_echo && mask_secret < first_echo,
+        "an echo runs before the inputs are masked, so a message could carry a value"
+    );
+
+    // The paper boundary at this road: PK admitted, every other arm exits.
+    // The arm's label is its first line ending in `)`; an `echo` line ends in
+    // `>&2`.
+    fn label(arm: &str) -> &str {
+        arm.lines()
+            .map(str::trim)
+            .find(|line| line.ends_with(')'))
+            .unwrap_or("")
+    }
+    let case = &step[at("case \"${key_id}\" in")..];
+    let case = &case[..case
+        .find("\n          esac")
+        .expect("the key-id case closes")];
+    let arms: Vec<&str> = case.split(";;").collect();
+    // The text after the last `;;` is not an arm.
+    let arms = &arms[..arms.len() - 1];
+    let labels: Vec<&str> = arms.iter().map(|arm| label(arm)).collect();
+    assert_eq!(
+        labels,
+        ["PK*)", "AK*)", "*)"],
+        "premise: the key-id case has the three arms this test reads"
+    );
+    let admitted: Vec<&str> = arms
+        .iter()
+        .filter(|arm| !arm.contains("exit 1"))
+        .map(|arm| label(arm))
+        .collect();
+    assert_eq!(
+        admitted,
+        ["PK*)"],
+        "the arms of the key-id case that do not `exit 1` are {admitted:?}; only Alpaca's \
+         paper prefix may fall through, or this road carries a live venue credential (AK…) \
+         or something that is no key id at all"
+    );
+    assert!(
+        arms[0].trim_end().ends_with("PK*)"),
+        "the PK arm does more than admit the key id: {}",
+        arms[0]
+    );
+    assert!(
+        arms[1].contains("title=live key refused"),
+        "the live key is no longer refused by name"
+    );
+
+    // The write.
+    let body = &step[at("write_once() {")..];
+    let body = &body[..body.find("\n          }\n").expect("write_once closes")];
+    let body_lines: Vec<&str> = body.lines().collect();
+    let held_at = body_lines
+        .iter()
+        .position(|line| {
+            line.trim_start()
+                .starts_with("held=\"$(gcloud secrets versions list")
+        })
+        .expect("write_once reads whether the slot holds a version");
+    // The read and its continuation lines, as the one command they are.
+    let mut held_end = held_at;
+    while held_end + 1 < body_lines.len() && body_lines[held_end].trim_end().ends_with('\\') {
+        held_end += 1;
+    }
+    let held_read = body_lines[held_at..=held_end].join("\n");
+    assert!(
+        held_read.contains("gcloud secrets versions list \"$name\" --project \"$project\"")
+            && held_read.contains("--format=\"value(name)\" --limit=1"),
+        "premise: this is the held read, and it is not the command it was:\n{held_read}"
+    );
+    assert!(
+        !held_read.contains("--filter"),
+        "the held read filters versions by state, so a slot whose only version is disabled — \
+         a revoked credential — reads as unheld and is refilled; any version in any state is \
+         held:\n{held_read}"
+    );
+    let keep_at = body_lines
+        .iter()
+        .position(|line| {
+            line.trim() == "if [ -n \"$held\" ] && [ \"${ROTATE}\" != \"true\" ]; then"
+        })
+        .expect("write_once tests whether the slot is held and the dispatch did not ask to rotate");
+    let keep_end = keep_at
+        + body_lines[keep_at..]
+            .iter()
+            .position(|line| line.trim() == "fi")
+            .expect("the held test closes");
+    assert!(
+        body_lines[keep_at..keep_end]
+            .iter()
+            .any(|line| line.trim() == "return 0"),
+        "a held slot without rotate=true falls through to the write; the branch no longer \
+         returns, so a value an operator is using is replaced"
+    );
+    let add_at = body_lines
+        .iter()
+        .position(|line| line.contains("gcloud secrets versions add"))
+        .expect("write_once adds a version");
+    assert!(
+        held_at < keep_at && keep_end < add_at,
+        "the version is added (line {add_at}) before the held read (line {held_at}) and its \
+         test (lines {keep_at}..{keep_end}) decide, so a held slot is written"
+    );
+    assert!(
+        body.contains("--data-file=\"$scratch/payload\""),
+        "the credential is passed to gcloud as something other than the private file, so it \
+         may be readable from the process table"
+    );
+}
+
 #[test]
 fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
@@ -11008,6 +11580,141 @@ fn the_diagnose_action_reaches_no_step_that_writes() {
             );
         }
     }
+}
+
+/// The `seed` action reaches no step that grants, writes state or applies.
+///
+/// `seed` exists so a credential can be handed to an environment from a
+/// dispatch, by a session that holds no Google credential of its own. The
+/// one write it is for is `gcloud secrets versions add` — in the step that
+/// seeds the generated slots and the step that writes the handed values —
+/// and the `versions disable` beside the second, which retires the version a
+/// rotation supersedes. Everything else an `up` does — the bucket and
+/// project grants, `terraform init` against remote state, the apply, the
+/// bootstrap — is out of its reach, for the reason the `diagnose` walk above
+/// gives: a step without an action gate runs for every action, and an action
+/// documented as narrow is the one an operator dispatches without re-reading
+/// the workflow. A `seed` that opened remote state or granted a role would do
+/// it with the operator's attention on a credential.
+///
+/// Reach is read from each step's `if:` line — the control flow the runner
+/// evaluates — and not from the step's text. A step is out of reach when its
+/// gate names `!= 'seed'`, when it names some other action and not `'seed'`,
+/// or when it requires `steps.init.outcome == 'success'` and the `init` step
+/// is itself out of reach: the job's final step lists remote state, and
+/// under `seed` it is skipped only because `init` was. Take `seed` out of
+/// `init`'s gate and both come back into reach, which is the mutation this
+/// test was proven against.
+#[test]
+fn a_seed_dispatch_reaches_no_step_that_grants_writes_state_or_applies() {
+    let workflow = read(".github/workflows/infra.yml");
+    let jobs = workflow_jobs(&workflow);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "terraform")
+        .expect("infra.yml has a `terraform` job");
+
+    // The verbs the diagnose walk refuses, less the one write seed exists for.
+    const WRITES: [&str; 7] = [
+        "add-iam-policy-binding",
+        "terraform apply",
+        "terraform destroy",
+        "state rm",
+        "terraform init",
+        "state list",
+        "services update",
+    ];
+
+    // The step's own `if:` expression — the key at the step's indent, so a
+    // shell line inside `run:` is never read as the gate.
+    fn gate_of(step: &str) -> Option<&str> {
+        let key_indent = indent_of(step.lines().next().unwrap_or("")) + 2;
+        step.lines()
+            .find(|line| indent_of(line) == key_indent && line.trim_start().starts_with("if:"))
+            .map(|line| line.trim_start()["if:".len()..].trim())
+    }
+    fn gated_off_seed(gate: &str) -> bool {
+        gate.contains("!= 'seed'")
+            || (gate.contains("inputs.action ==") && !gate.contains("== 'seed'"))
+    }
+
+    let steps = job_steps(body);
+    // Premise: the walk found the step list and both seed steps are in it
+    // and in reach. An empty walk, or a gate reader that refused everything,
+    // would satisfy every absence below while proving nothing.
+    assert!(
+        steps.len() > 10,
+        "the terraform job parsed to {} step(s); the walk is not reading the job",
+        steps.len()
+    );
+    let named = |name: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(name))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {name}"))
+    };
+    let generated = named("name: seed any credential that has no version");
+    let handed = named("name: seed the credentials handed to this dispatch");
+    let init = steps
+        .iter()
+        .position(|step| step.lines().any(|line| line.trim() == "id: init"))
+        .expect("the terraform init step carries `id: init`, which the final step's gate names");
+    let init_reachable = !gate_of(&steps[init]).is_some_and(gated_off_seed);
+    let reachable = |step: &str| match gate_of(step) {
+        None => true,
+        Some(gate) => {
+            !gated_off_seed(gate)
+                && (init_reachable || !gate.contains("steps.init.outcome == 'success'"))
+        }
+    };
+    assert!(
+        reachable(&steps[generated]) && reachable(&steps[handed]),
+        "the seed steps are out of reach under `seed`; the gate reader is not reading gates"
+    );
+
+    let reached: Vec<(usize, &String)> = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| reachable(step.as_str()))
+        .collect();
+    for (index, step) in &reached {
+        for verb in WRITES {
+            assert!(
+                !step.contains(verb),
+                "step {index} is reachable under `seed` and runs `{verb}`. The action exists to \
+                 write one secret version and nothing else; an operator dispatches it with \
+                 their attention on a credential, not on state or IAM. Gate the step with \
+                 `inputs.action != 'seed'`.\n{step}"
+            );
+        }
+    }
+
+    // The one write seed exists for, and where: the two seed steps add a
+    // version, and only the dispatch-seeding step — whose rotate=true retires
+    // the version it supersedes — disables one.
+    let adders: Vec<usize> = reached
+        .iter()
+        .filter(|(_, step)| step.contains("versions add"))
+        .map(|(index, _)| *index)
+        .collect();
+    assert_eq!(
+        adders,
+        [generated, handed],
+        "the steps reachable under `seed` that add a secret version are {adders:?}; the two \
+         seed steps are {generated} and {handed}, and a third writer is a slot written by a \
+         step no operator dispatched seed for"
+    );
+    let disablers: Vec<usize> = reached
+        .iter()
+        .filter(|(_, step)| step.contains("versions disable"))
+        .map(|(index, _)| *index)
+        .collect();
+    assert_eq!(
+        disablers,
+        [handed],
+        "the steps reachable under `seed` that disable a secret version are {disablers:?}; \
+         only the dispatch-seeding step ({handed}) retires a version, and only on rotate=true"
+    );
 }
 
 // --- CICD-084: dev holds no production secret --------------------------------

@@ -140,6 +140,23 @@ the repository, so a token from any other repository is refused. And the
 account it exchanges for is `qip-ci-<env>`, the narrow one Terraform creates
 — never `claude-builder`, for the reasons in §1.
 
+One owner-supplied credential does pass through GitHub, and it is said here
+so that the sentence above is not read as covering it: the Alpaca **paper**
+pair reaches its two Secret Manager slots through `infra.yml`'s `seed`
+action, as two `workflow_dispatch` inputs (2026-10-13, the owner's
+direction). It is a dispatch input and not a repository secret because the
+session that operates `dev` on the owner's behalf can dispatch a workflow
+and can reach nothing else. What that costs: GitHub keeps a run's inputs
+with the run, so the value persists in that run's metadata, where a
+collaborator can re-run it but no API returns the value. What bounds it:
+the step reads the inputs from the runner's event file and masks each as it
+is read, never binding them where the runner prints a step's `env` or its
+expanded script (run 115 did, and its logs were deleted and the keys
+rotated); it accepts only a key id with Alpaca's paper prefix `PK`, refusing
+a live `AK` key by name; and it writes only into a slot that holds no
+version in any state, unless `rotate` is set. The paper-trading boundary's
+venue-credential slot has no such road.
+
 ### For the platform at runtime
 
 | Secret | Consumer | Injection |

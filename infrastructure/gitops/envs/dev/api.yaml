@@ -82,7 +82,7 @@ spec:
       - name: QIP_TOKEN_VIEWER_FILE
         value: /var/run/secrets/qip/token-viewer/token-viewer
       - name: QIP_UNIVERSE_PATH
-        value: /etc/qip/7ec25303c3f3ecac/universe.json
+        value: /etc/qip/931c5fe44d20d1d9/universe.json
       volumeMounts:
       - name: alpaca-api-key-id
         mountPath: /var/run/secrets/qip/alpaca-api-key-id
@@ -119,7 +119,7 @@ spec:
       image: envoy
       args:
       - -c
-      - /etc/envoy/envoy-fc9574203f973d2d.yaml
+      - /etc/envoy/envoy-760e37df4041e228.yaml
       - --service-cluster
       - qip-egress
       - --log-level
