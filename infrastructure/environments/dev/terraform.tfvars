@@ -624,8 +624,8 @@ gitops_kargo_hostname  = ""
 # be reached, and the way `infra.yml` itself reaches it — the fleet's Connect
 # gateway, then a port-forward:
 #
-#   gcloud container fleet memberships get-credentials qip-dev-gitops \
-#     --project algorik-qip-dev
+#   gcloud container fleet memberships get-credentials qip-dev-control-plane \
+#     --project algorik-qip-dev --location us-east4
 #   kubectl -n argocd port-forward svc/argocd-server 8080:443
 #   kubectl -n kargo  port-forward svc/kargo-api     8081:443
 #

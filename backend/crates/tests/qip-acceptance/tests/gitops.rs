@@ -2855,6 +2855,332 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
     );
 }
 
+const NETWORK_MODULE: &str = "infrastructure/terraform/modules/network";
+const TRUST_ZONES_MODULE: &str = "infrastructure/terraform/modules/trust-zones/main.tf";
+const TERRAFORM_ROOT: &str = "infrastructure/terraform/main.tf";
+
+/// The `key = value` lines of an HCL block, whitespace collapsed and a quoted
+/// key or value unquoted.
+fn hcl_assignments(block: &str) -> BTreeMap<String, String> {
+    block
+        .lines()
+        .map(collapsed)
+        .filter_map(|line| {
+            let (key, value) = line.split_once(" = ")?;
+            Some((
+                key.trim_matches('"').to_string(),
+                value.trim_matches('"').to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// The role inside a `google_compute_network.vpc["<role>"]` reference.
+fn vpc_role(reference: &str) -> Option<String> {
+    reference
+        .split("google_compute_network.vpc[\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .map(str::to_string)
+}
+
+/// Which VPC network Terraform creates each subnetwork on, read from the
+/// modules that create them rather than restated here: `modules/network`
+/// names the networks and creates the console's egress subnet, and
+/// `modules/trust-zones` creates one subnet per zone on whichever network the
+/// root wires to that zone's variable.
+struct TerraformNetworks {
+    /// `local.networks`: a role (`reflex`, `fabric`, `service`) to the
+    /// network's name, `${var.environment}` unexpanded.
+    names: BTreeMap<String, String>,
+    /// `modules/network`'s outputs: an output's name to the role of the
+    /// network it exports.
+    exported: BTreeMap<String, String>,
+    /// The root's `module "trust_zones"` arguments: a variable of that module
+    /// to the `modules/network` output it is given.
+    wired: BTreeMap<String, String>,
+    /// `local.zone_network`: a zone to the variable naming its network.
+    zones: BTreeMap<String, String>,
+    /// The variable `lookup` falls back to for a zone the map does not name.
+    zone_fallback: String,
+    /// The console's egress subnet: its name, unexpanded, and its network's role.
+    console_egress: (String, String),
+}
+
+impl TerraformNetworks {
+    fn read() -> Self {
+        let network = without_comments(&read(&format!("{NETWORK_MODULE}/main.tf")));
+        let names = hcl_assignments(&block_under(&network, "networks = {"));
+        assert!(
+            names.contains_key("service"),
+            "modules/network's `local.networks` names no `service` network ({names:?}); the \
+             three-VPC split this test reads (GCP-009) has moved"
+        );
+
+        let outputs = without_comments(&read(&format!("{NETWORK_MODULE}/outputs.tf")));
+        let exported: BTreeMap<String, String> = outputs
+            .lines()
+            .filter_map(|line| {
+                let name = line.strip_prefix("output \"")?.strip_suffix("\" {")?;
+                let role = vpc_role(&block_under(&outputs, line.trim()))?;
+                Some((name.to_string(), role))
+            })
+            .collect();
+
+        let root = without_comments(&read(TERRAFORM_ROOT));
+        let wired: BTreeMap<String, String> =
+            hcl_assignments(&block_under(&root, "module \"trust_zones\" {"))
+                .into_iter()
+                .filter_map(|(variable, value)| {
+                    let output = value.strip_prefix("module.network.")?;
+                    Some((variable, output.to_string()))
+                })
+                .collect();
+
+        let trust_zones = without_comments(&read(TRUST_ZONES_MODULE));
+        let zones = hcl_assignments(&block_under(&trust_zones, "zone_network = {"));
+        let subnet = hcl_assignments(&block_under(
+            &trust_zones,
+            "resource \"google_compute_subnetwork\" \"zone\" {",
+        ));
+        assert_eq!(
+            subnet.get("name").map(String::as_str),
+            Some("qip-${var.environment}-tz-${each.key}"),
+            "modules/trust-zones no longer names a zone's subnet qip-<env>-tz-<zone>, which is \
+             how this test finds the zone a manifest's subnetwork belongs to"
+        );
+        let zone_fallback = subnet
+            .get("network")
+            .and_then(|network| {
+                network
+                    .strip_prefix("lookup(local.zone_network, each.key, ")?
+                    .strip_suffix(')')
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "modules/trust-zones no longer places a zone's subnet by \
+                     `lookup(local.zone_network, …)`: {subnet:?}"
+                )
+            })
+            .to_string();
+
+        let console = hcl_assignments(&block_under(
+            &network,
+            "resource \"google_compute_subnetwork\" \"console_egress\" {",
+        ));
+        let console_egress = (
+            console.get("name").cloned().unwrap_or_default(),
+            console
+                .get("network")
+                .and_then(|network| vpc_role(network))
+                .unwrap_or_default(),
+        );
+        assert!(
+            !console_egress.0.is_empty() && !console_egress.1.is_empty(),
+            "modules/network's console egress subnet names no name or no network: {console:?}"
+        );
+
+        Self {
+            names,
+            exported,
+            wired,
+            zones,
+            zone_fallback,
+            console_egress,
+        }
+    }
+
+    /// The name of the network Terraform creates `subnetwork` on in
+    /// `environment`, or `None` for a subnetwork no module here creates.
+    fn network_of(&self, environment: &str, subnetwork: &str) -> Option<String> {
+        let expand = |template: &str| template.replace("${var.environment}", environment);
+        let role = if subnetwork == expand(&self.console_egress.0) {
+            self.console_egress.1.clone()
+        } else {
+            let zone = subnetwork.strip_prefix(&format!("qip-{environment}-tz-"))?;
+            let variable = self.zones.get(zone).unwrap_or(&self.zone_fallback);
+            let output = self.wired.get(variable.strip_prefix("var.")?)?;
+            self.exported.get(output)?.clone()
+        };
+        self.names.get(&role).map(|name| expand(name))
+    }
+}
+
+/// Every RunService's network interface names the VPC network Terraform
+/// created its subnetwork on.
+///
+/// Cloud Run refuses a revision whose network and subnetwork disagree, and
+/// refuses it at deploy time — not at plan, not at sync. `infra.yml` run 113
+/// (`apps`, dev) is that refusal: "Direct VPC subnetwork qip-dev-tz-cognition
+/// do not belong to network qip-dev". GCP-009 (`560d953a`) split the single
+/// VPC, then named `qip-<env>`, into reflex, fabric and service networks and
+/// renamed the one every Cloud Run zone sits on to `qip-<env>-service`; the
+/// manifests, written on a branch that predated the split, kept the old name.
+/// Argo CD applied every one, Config Connector accepted every one, and no
+/// revision of deepbrain, fastbrain or OpenObserve could start; the api and the
+/// portal carried the same pair behind a missing secret. Nothing in this suite
+/// read the network: the parity walk checks that the subnetwork names the zone
+/// and stops there, and it skips the portal and OpenObserve entirely.
+///
+/// So the expected network is derived from the Terraform that creates the
+/// subnetwork — the zone's entry in `zone_network`, the variable the root wires
+/// it to, the output that variable is given and the name `modules/network`
+/// gives that network — and checked on every RunService in every environment.
+/// An interface naming no network is skipped rather than failed: Cloud Run then
+/// looks the network up from the subnetwork, and there is nothing to disagree.
+#[test]
+fn every_run_service_names_the_network_terraform_put_its_subnetwork_on() {
+    let terraform = TerraformNetworks::read();
+    let mut checked: BTreeSet<String> = BTreeSet::new();
+    for environment in environment_directories() {
+        let project = tfvars_value(&environment, "project_id")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_id"));
+        let before = checked.len();
+        for (_, _, service, _) in run_services(&environment) {
+            let describe = service.describe();
+            for interface in list_at(
+                &service.value,
+                &["spec", "template", "vpcAccess", "networkInterfaces"],
+            ) {
+                let Some(network) = text_at(interface, &["networkRef", "external"]) else {
+                    continue;
+                };
+                let subnetwork =
+                    text_at(interface, &["subnetworkRef", "external"]).unwrap_or_else(|| {
+                        panic!("{describe} names network `{network}` and no subnetwork")
+                    });
+                let subnetwork = subnetwork.rsplit('/').next().unwrap_or_default();
+                let expected = terraform
+                    .network_of(&environment, subnetwork)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{describe} egresses through `{subnetwork}`, which neither \
+                             modules/trust-zones nor modules/network creates in {environment}"
+                        )
+                    });
+                assert_eq!(
+                    network,
+                    format!("projects/{project}/global/networks/{expected}"),
+                    "{describe} names network `{network}`, but Terraform creates `{subnetwork}` \
+                     on `{expected}`. Cloud Run refuses that pair when the revision is \
+                     created — run 113's \"Direct VPC subnetwork … do not belong to network\" \
+                     — after Argo CD and Config Connector have both accepted it"
+                );
+                checked.insert(service.name());
+            }
+        }
+        assert!(
+            checked.len() > before,
+            "no RunService under {ENVS}/{environment} names a network, so nothing there was \
+             checked; if the manifests now name only subnetworks, this test's premise has \
+             changed and it should say so"
+        );
+    }
+    // The two the parity walk skips are the two most worth reading: run 113
+    // could not start either of them.
+    for service in ["qip-dev-portal", "qip-dev-openobserve"] {
+        assert!(
+            checked.contains(service),
+            "{service} was not among the services whose network was checked: {checked:?}"
+        );
+    }
+}
+
+/// Every secret a RunService references is one `infra.yml`'s seeding step
+/// either writes or names, and that step runs on the action that starts
+/// revisions.
+///
+/// The step keeps two lists: platform-internal keys it writes a first version
+/// into, and owner-supplied credentials it refuses to invent and names in a
+/// warning instead. A secret on neither list is the silent case — Terraform
+/// creates the container, nothing writes a version, no warning names it, and
+/// the first anybody hears of it is a revision that will not start. That is
+/// `infra.yml` run 113: the portal mounted `qip-session-secret-dev`, which
+/// `scripts/deploy-frontends.sh` had seeded until the portal became a
+/// manifest (ADR 0094) and which nothing seeded afterwards. And the step ran
+/// only on `up`, so even a listed key would have waited for the next apply
+/// while `apps` failed on it — which is how run 80 died on the envelope key.
+#[test]
+fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step() {
+    let workflow = read(INFRA_WORKFLOW);
+    let step = workflow
+        .split("- name: seed any credential that has no version")
+        .nth(1)
+        .expect("infra.yml has the credential seeding step");
+    let step = step
+        .split("\n      - name:")
+        .next()
+        .expect("the step is followed by another step or the end of the job");
+    let condition = step
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("if: "))
+        .unwrap_or_default();
+    assert!(
+        condition.contains("inputs.action == 'apps'"),
+        "the seeding step runs under `{condition}`, not on `apps` — the action that starts \
+         revisions, and the one runs 80 and 113 both died in on an empty container"
+    );
+    let list = |name: &str| -> BTreeSet<String> {
+        step.split(&format!("{name}=\""))
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_else(|| panic!("the seeding step declares no `{name}` list"))
+            .split_whitespace()
+            .filter(|word| *word != "\\")
+            .map(str::to_string)
+            .collect()
+    };
+    let generated = list("generated");
+    let owner = list("owner_supplied");
+
+    let mut referenced = 0usize;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for environment in environment_directories() {
+        for (_, _, service, _) in run_services(&environment) {
+            let describe = service.describe();
+            let mut references = Vec::new();
+            find_key(&service.value, "secretRef", &mut references);
+            for reference in references {
+                let secret = text_at(reference, &["external"])
+                    .or_else(|| text_at(reference, &["name"]))
+                    .unwrap_or_else(|| panic!("{describe} has a secretRef naming no secret"));
+                let secret = secret.rsplit('/').next().unwrap_or_default();
+                // The step seeds `<name>-<environment>`; a reference without
+                // that suffix is a secret the step could not reach either way.
+                let base = secret
+                    .strip_suffix(&format!("-{environment}"))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{describe} references `{secret}`, which lacks the \
+                             `-{environment}` suffix the seeding step appends, so no list \
+                             there can cover it"
+                        )
+                    });
+                assert!(
+                    generated.contains(base) || owner.contains(base),
+                    "{describe} references `{secret}`, and `{base}` is on neither of the \
+                     seeding step's lists: nothing writes it a version and no warning names \
+                     it, so its revision cannot start and nothing says why until Cloud Run \
+                     does. A platform-internal key belongs on `generated`; a credential for an \
+                     account somebody else holds belongs on `owner_supplied`"
+                );
+                referenced += 1;
+                seen.insert(base.to_string());
+            }
+        }
+    }
+    // Premise: the walk found references, including the one that started
+    // this test, so a parse that stopped finding `secretRef` cannot pass it.
+    assert!(
+        referenced >= 30,
+        "only {referenced} secret references were found across the RunServices"
+    );
+    assert!(
+        seen.contains("qip-session-secret"),
+        "the portal's session key was not among the references checked: {seen:?}"
+    );
+}
+
 #[test]
 fn every_catalogue_workload_egresses_all_traffic_through_the_vpc_and_portal_uses_private_ranges_only_by_design()
  {

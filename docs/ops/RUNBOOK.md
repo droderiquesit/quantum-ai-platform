@@ -355,7 +355,7 @@ deployment-path page was written; **not re-run**), and `stage` has
 `project_id = "unprovisioned"`, which every workflow refuses. So today there is
 no promotion to do. When there is:
 
-1. `gcloud container fleet memberships get-credentials qip-dev-gitops --project algorik-platform-dev` (**repo**, `infrastructure/gitops/README.md`; **not run**)
+1. `gcloud container fleet memberships get-credentials qip-dev-control-plane --project algorik-qip-dev --location us-east4` (**repo**, `infrastructure/gitops/README.md`; the membership `infra.yml`'s bootstrap step fetches, and run 113's log shows the `connectgateway_algorik-qip-dev_us-east4_qip-dev-control-plane` context it wrote; **not run** by an operator. Until 2026-10-13 this line named `qip-dev-gitops` in `algorik-platform-dev`; neither is the cluster `modules/gitops-control-plane` creates or the project dev runs in)
 2. `kubectl -n kargo port-forward svc/kargo-api 8081:443` (**repo**; **not run**), then promote in the Kargo UI or `kargo` CLI.
 3. Record the promotion commit sha, the Argo CD sync id and the hook's `serves` line, which is the evidence the deployment-path page asks for.
 

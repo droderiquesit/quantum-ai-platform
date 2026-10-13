@@ -34,7 +34,7 @@ spec:
       egress: ALL_TRAFFIC
       networkInterfaces:
       - networkRef:
-          external: projects/unprovisioned/global/networks/qip-test
+          external: projects/unprovisioned/global/networks/qip-test-service
         subnetworkRef:
           external: projects/unprovisioned/regions/europe-west2/subnetworks/qip-test-tz-cognition
         tags:

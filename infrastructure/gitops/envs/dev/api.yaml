@@ -34,7 +34,7 @@ spec:
       egress: ALL_TRAFFIC
       networkInterfaces:
       - networkRef:
-          external: projects/algorik-qip-dev/global/networks/qip-dev
+          external: projects/algorik-qip-dev/global/networks/qip-dev-service
         subnetworkRef:
           external: projects/algorik-qip-dev/regions/us-east4/subnetworks/qip-dev-tz-application-identity
         tags:
