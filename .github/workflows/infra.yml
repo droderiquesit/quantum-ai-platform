@@ -613,6 +613,24 @@ jobs:
         if: inputs.action == 'up' || inputs.action == 'apps'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
+          # An owner-supplied credential the owner has stored in this
+          # repository's Actions secrets, read under QIP_<ENVIRONMENT>_<SLOT>:
+          # the slot's `qip-` prefix dropped and its dashes as underscores, so
+          # dev's Alpaca paper key id is QIP_DEV_ALPACA_API_KEY_ID. The lookup
+          # is by `format`, so a dev run resolves dev's secret and nobody
+          # else's, and a secret that is not set resolves to the empty
+          # string, which the loop below reads as "not handed over" and
+          # reports by name. GitHub masks these values wherever this job
+          # prints, and the step prints only the slot and the secret's name.
+          #
+          # Only the two Alpaca paper slots have such a pipe. They are the
+          # owner-supplied slots a dev service mounts, and the one dev's `apps`
+          # has died on since run 113 fixed the rest. `qip-venue-credential`
+          # deliberately has none: it is the live-class slot the paper
+          # boundary keeps unreadable, and a pipe that could fill it is a
+          # convenience pointing the wrong way.
+          OWNER_QIP_ALPACA_API_KEY_ID: ${{ secrets[format('QIP_{0}_ALPACA_API_KEY_ID', inputs.environment)] }}
+          OWNER_QIP_ALPACA_API_SECRET_KEY: ${{ secrets[format('QIP_{0}_ALPACA_API_SECRET_KEY', inputs.environment)] }}
         run: |
           set -euo pipefail
           project="${{ steps.identity.outputs.project }}"
@@ -667,10 +685,26 @@ jobs:
             qip-market-data-key qip-quantum-token qip-venue-credential \
             qip-github-app-argocd qip-github-app-kargo"
 
-          # Report, never write. An empty owner slot is not an error here —
-          # the infrastructure applied correctly — but it is the reason a
-          # later `apps` will refuse, and naming it now is cheaper than
-          # reading it out of a revision that would not start.
+          # Report, and write only what the owner handed over. An empty owner
+          # slot is not an error here — the infrastructure applied correctly —
+          # but it is the reason a later `apps` will refuse, and naming it now
+          # is cheaper than reading it out of a revision that would not start.
+          #
+          # A slot whose value the owner stored in this repository's Actions
+          # secrets (the step's `env` names the slots that have such a pipe,
+          # and the name each is read under) is filled from there: the same
+          # `versions add` the generated list uses, behind the same emptiness
+          # check, so a value an operator has since rotated by hand is never
+          # replaced by an older copy. What this step still never does is
+          # make an owner value up — `the_seeding_step_never_writes_a_value_
+          # for_a_credential_that_names_another_account` holds the two lists
+          # apart, and this loop writes nothing it was not given.
+          #
+          # A stored value carrying whitespace is refused, not trimmed. The one
+          # plausible way it gets there is a trailing newline from a paste,
+          # and a key written with one fails authentication in a way the
+          # connector reports as a bad credential — which sends somebody to
+          # rotate a key that was right.
           missing=""
           for secret in ${owner_supplied}; do
             name="$secret-$suffix"
@@ -678,7 +712,29 @@ jobs:
             existing="$(gcloud secrets versions list "$name" --project "$project" \
               --filter="state:ENABLED" --format="value(name)" --limit=1)"
             [ -n "$existing" ] && continue
-            missing="${missing} ${name}"
+            var="OWNER_$(printf '%s' "$secret" | tr 'a-z-' 'A-Z_')"
+            if [ -z "${!var+x}" ]; then
+              # No pipe for this slot: only a person with gcloud fills it.
+              missing="${missing} ${name}"
+              continue
+            fi
+            github_name="QIP_$(printf '%s' "$suffix" | tr 'a-z-' 'A-Z_')_${var#OWNER_QIP_}"
+            value="${!var}"
+            if [ -z "$value" ]; then
+              missing="${missing} ${name}(repository secret ${github_name} is not set)"
+              continue
+            fi
+            case "$value" in
+              *[[:space:]]*)
+                echo "::error title=Owner-supplied credential refused::The repository secret ${github_name} holds whitespace, most likely a trailing newline from a paste. Nothing was written to ${name}. Re-save it as the bare value and re-run."
+                exit 1 ;;
+            esac
+            printf '%s' "$value" > "$scratch/payload"
+            gcloud secrets versions add "$name" --project "$project" \
+              --data-file="$scratch/payload" >/dev/null
+            rm -f "$scratch/payload"
+            echo "seeded $name from the repository secret ${github_name}"
+            seeded=1
           done
           if [ -n "${missing}" ]; then
             # Built up in one variable and emitted on one physical line. A
@@ -691,9 +747,11 @@ jobs:
             # a statement about seven specific slots.
             note="These slots hold no enabled version and this step will not invent one,"
             note="${note} because a generated value would be a false credential rather than a"
-            note="${note} weak one. Any Cloud Run service mounting one cannot start until a"
-            note="${note} person runs 'gcloud secrets versions add <name> --project ${project}"
-            note="${note} --data-file=-'. Empty:${missing}"
+            note="${note} weak one. Any Cloud Run service mounting one cannot start until the"
+            note="${note} value is handed over: where a slot names a repository secret, store"
+            note="${note} the value under that name in this repository's Actions secrets and"
+            note="${note} re-run this action; for any slot, a person runs 'gcloud secrets"
+            note="${note} versions add <name> --project ${project} --data-file=-'. Empty:${missing}"
             echo "::warning title=Owner-supplied credentials have no version::${note}"
           fi
 
@@ -734,7 +792,7 @@ jobs:
             seeded=1
           done
           if [ "$seeded" = 1 ]; then
-            echo "A generated credential was written. This step did not log any value; read one with:"
+            echo "A credential was written. This step did not log any value; read one with:"
             echo "  gcloud secrets versions access latest --secret <name>-$suffix --project $project"
           fi
 
@@ -1619,6 +1677,75 @@ jobs:
                 ;;
             esac
 
+            # A revision that died on an empty secret is retried here, and
+            # nowhere else retries it.
+            #
+            # Cloud Run validates every mounted secret when it *creates* a
+            # revision, refuses one whose container holds no enabled version
+            # ("Secret .../versions/latest was not found"), and never looks
+            # again: a version seeded a minute later changes nothing, because
+            # that revision is already dead and nothing creates another.
+            # Config Connector creates one only when the template differs
+            # from what Cloud Run holds, and seeding a secret changes no
+            # template. So the seed step above can fill every empty slot and
+            # the service it filled them for stays down. Run 113's portal
+            # died on `qip-session-secret-dev`; a re-run after seeding it
+            # would have found the same dead revision, printed the same
+            # message, and sent somebody to check a secret that was there.
+            #
+            # The manifest is the only remedy ADR 0036 admits, and this acts
+            # on the manifest's own live object: the RunService in `qip-run`
+            # gets one annotation on its template, valued by the enabled
+            # version of each secret the dead revision named. Config
+            # Connector sees a template that differs and creates a revision.
+            # The value comes from the versions rather than from the clock,
+            # so a later dispatch over the same versions writes the same
+            # annotation and creates nothing. Argo CD keeps reporting Synced:
+            # its diff is a three-way merge of the manifest over the live
+            # object, and a field the manifest does not name survives it,
+            # exactly as a mutating webhook's annotation does; the next real
+            # manifest change carries it along and supersedes it.
+            #
+            # Only a revision whose failure names a secret, and only when
+            # every secret it names now holds an enabled version. Any other
+            # failure — a container that exits, a path that does not exist —
+            # is left for the Healthy wait to report, and so is a revision
+            # that names two secrets of which one is still empty: a nudge
+            # that re-ran a revision that would die again hides the cause
+            # behind a new name, which is worse than the dead revision.
+            retry_seeded() {
+              local services service latest conditions names name enabled versions
+              services="$(gcloud run services list --project "${GCP_PROJECT}" --region "${region}" \
+                --format='value(metadata.name)' 2>/dev/null | grep "^qip-${ENVIRONMENT}-" || true)"
+              for service in ${services}; do
+                latest="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
+                  --format='value(status.latestCreatedRevisionName)' 2>/dev/null || true)"
+                [ -n "${latest}" ] || continue
+                conditions="$(gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" --region "${region}" \
+                  --format='value(status.conditions[].message)' 2>/dev/null || true)"
+                # Each secret the dead revision names, once.
+                names="$(printf '%s\n' "${conditions}" \
+                  | grep -o 'secrets/qip-[a-z0-9-]*/versions/latest was not found' \
+                  | sed 's|secrets/\(.*\)/versions/latest was not found|\1|' | sort -u || true)"
+                [ -n "${names}" ] || continue
+                versions=""
+                for name in ${names}; do
+                  enabled="$(gcloud secrets versions list "${name}" --project "${GCP_PROJECT}" \
+                    --filter='state:ENABLED' --format='value(name)' --limit=1 2>/dev/null || true)"
+                  if [ -z "${enabled}" ]; then
+                    echo "${service}: ${latest} died on ${name}, which still holds no enabled version; there is nothing to retry until it is seeded."
+                    versions=""
+                    break
+                  fi
+                  versions="${versions}${versions:+,}${name}:${enabled##*/}"
+                done
+                [ -n "${versions}" ] || continue
+                echo "${service}: ${latest} died on a secret that has since been seeded (${versions}); asking Config Connector for a new revision."
+                kubectl -n qip-run patch "runservice/${service}" --type merge \
+                  -p "{\"spec\":{\"template\":{\"annotations\":{\"qip.algorik.ai/secret-versions\":\"${versions}\"}}}}" >/dev/null
+              done
+            }
+
             echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
             # Longer than one full cycle of the PostSync hook, which polls
             # Cloud Run for up to five minutes before it decides. At 600s the
@@ -1632,13 +1759,27 @@ jobs:
               why
               exit 1
             fi
-            if ! kubectl -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
-                "application/qip-${ENVIRONMENT}" --timeout=600s; then
-              echo "::error title=Application synced but is not healthy::qip-${ENVIRONMENT} reached Synced and not Healthy." >&2
-              echo "Synced means Argo CD applied what the manifests say; Healthy means the objects it applied came up. A sync that is not healthy is a reconciler that did its job over manifests that cannot run." >&2
-              why
-              exit 1
-            fi
+            # The retry runs before the first wait and between the later
+            # ones, because a dead revision can exist at either moment: the
+            # auto-sync that followed the merge may have created and lost one
+            # before this dispatch began, and the sync just proven may be
+            # creating one as this line runs. Three waits of 200s are the
+            # 600s this gate has always allowed, spent in pieces so a
+            # revision that dies during the first can be retried before the
+            # last; on the third expiry the diagnosis below is the answer.
+            retry_seeded
+            attempt=1
+            until kubectl -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
+                "application/qip-${ENVIRONMENT}" --timeout=200s; do
+              if [ "${attempt}" -ge 3 ]; then
+                echo "::error title=Application synced but is not healthy::qip-${ENVIRONMENT} reached Synced and not Healthy." >&2
+                echo "Synced means Argo CD applied what the manifests say; Healthy means the objects it applied came up. A sync that is not healthy is a reconciler that did its job over manifests that cannot run." >&2
+                why
+                exit 1
+              fi
+              attempt=$((attempt + 1))
+              retry_seeded
+            done
             echo "bootstrapped ${cluster}; qip-${ENVIRONMENT} is Synced and Healthy, and Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
 
           fi
@@ -1875,35 +2016,56 @@ jobs:
           # ---- the applications: applied by `apps`, skipped by `up` ----
           if [ "$STAGE" = apps ]; then
             # 11. Kargo's Project, the credential that lands in the namespace
-            #     it creates, and the promotion chain.
-            kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
-              -f "${gitops}/kargo/base/project.yaml"
-            kubectl wait --for=condition=Ready project/qip --timeout=300s
-
-            # Kargo's own App credential, now that the namespace its Project
-            # controller creates actually exists.
+            #     it creates, and the promotion chain — all three, or none.
             #
-            # Unlike Argo CD's, this one is required rather than an optimisation.
+            # Kargo's App credential is required rather than an optimisation.
             # Kargo *pushes* promotion commits, and anonymous access to a public
             # repository can read but never write, so a Kargo with no credential
             # is a Kargo that will fail at its first promotion with a 403 rather
-            # than here. Refusing now names the missing secret; refusing then
-            # names a git error.
+            # than here. So without the credential nothing of Kargo is applied,
+            # and the run says so by name.
+            #
+            # It says so as a warning, not by failing the job, and that is a
+            # change argued rather than a softening. This phase used to
+            # `exit 1` here, which read as the right refusal until what sat
+            # after it was counted: the console's IAP gate is the *next step*
+            # of this job, and a step after a failed one does not run. So a
+            # dispatch that had proven every service Synced and Healthy ended
+            # red for want of a promotion credential, with the console
+            # deployed and its gate never applied — safe only because the
+            # portal has no allUsers invoker and so answers 403 to everyone,
+            # which is not the protected console the job exists to produce.
+            # What is served is decided by the manifests Argo CD reconciles;
+            # what Kargo adds is promotion of a new digest into them, and a
+            # chain that is absent promotes nothing, which is exactly the
+            # state the pinned digests were in before. The warning names the
+            # secret and the command, and this phase's closing line says
+            # Kargo is not bootstrapped rather than letting a green run imply
+            # it is.
             if [ ! -f "${scratch}/secret-kargo.json" ]; then
-              echo "::error title=no Kargo App credential::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version, and Kargo cannot push a promotion commit anonymously." >&2
-              echo "Seed it as infrastructure/gitops/bootstrap/README.md describes, then re-run:" >&2
-              echo "  gcloud secrets versions add qip-github-app-kargo-${ENVIRONMENT} --project ${GCP_PROJECT} --data-file=<app.json>" >&2
-              echo "Everything above this line is applied and running; Argo CD is unaffected." >&2
-              exit 1
-            fi
-            kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
-              -f "${scratch}/secret-kargo.json" >/dev/null
-            rm -f "${scratch}/secret-kargo.json"
-            echo "projected the Kargo App credential into qip/qip-repository; the value was not printed."
+              echo "::warning title=Kargo not bootstrapped::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version, and Kargo cannot push a promotion commit anonymously, so its Project and promotion chain were not applied. Argo CD serves the digests the manifests pin; nothing promotes a new one into them until the credential is seeded as infrastructure/gitops/bootstrap/README.md describes: gcloud secrets versions add qip-github-app-kargo-${ENVIRONMENT} --project ${GCP_PROJECT} --data-file=<app.json> — then re-run this action."
+              kargo_bootstrapped=0
+            else
+              kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
+                -f "${gitops}/kargo/base/project.yaml"
+              kubectl wait --for=condition=Ready project/qip --timeout=300s
 
-            # The Kargo chain, into the namespace the project created.
-            apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
-            echo "bootstrapped Kargo; its chain promotes into ${gitops}/envs/${ENVIRONMENT} from here on."
+              # Kargo's own App credential, now that the namespace its
+              # Project controller creates actually exists.
+              kubectl apply --server-side --force-conflicts --field-manager=qip-bootstrap \
+                -f "${scratch}/secret-kargo.json" >/dev/null
+              rm -f "${scratch}/secret-kargo.json"
+              echo "projected the Kargo App credential into qip/qip-repository; the value was not printed."
+
+              # The Kargo chain, into the namespace the project created.
+              apply "${gitops}/kargo/overlays/${ENVIRONMENT}"
+              kargo_bootstrapped=1
+            fi
+            if [ "${kargo_bootstrapped}" = 1 ]; then
+              echo "bootstrapped Kargo; its chain promotes into ${gitops}/envs/${ENVIRONMENT} from here on."
+            else
+              echo "Kargo is not bootstrapped: no Project, no chain, no promotion. ${gitops}/envs/${ENVIRONMENT} serves the digests it pins until qip-github-app-kargo-${ENVIRONMENT} is seeded and this action is run again."
+            fi
           fi
 
       - name: the console's IAP gate
