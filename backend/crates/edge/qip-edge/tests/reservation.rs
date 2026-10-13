@@ -23,6 +23,7 @@ use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_edge::reservation::RegionTable;
 use qip_edge::telemetry::{EDGE_REGION_ALLOCATION_CONFIGURED, EDGE_REGION_ALLOCATION_FREE};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
@@ -581,5 +582,193 @@ fn a_marketable_order_holds_of_the_region_exactly_the_notional_it_is_sent_at() -
              sent at"
         );
     }
+    Ok(())
+}
+
+/// What a region table held at the instant an order reached the gateway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AtPlacement {
+    /// The notional of the order arriving.
+    notional: Decimal,
+    free: Decimal,
+    held: Decimal,
+    committed: Decimal,
+}
+
+/// A gateway that reads the cell's region table at the instant an order
+/// reaches it.
+///
+/// That instant is the first at which an order object exists. `Cell::send`
+/// numbers the order and hands it to the placer in one step, and until then
+/// the cell holds a price and a quantity and nothing more (the comment above
+/// the quote-budget gate in `Cell::place_net` says so). A hold this gateway
+/// sees existed before the order did.
+#[derive(Debug)]
+struct TableReadingGateway {
+    table: RegionTable,
+    seen: Vec<AtPlacement>,
+}
+
+impl TableReadingGateway {
+    fn new(table: &RegionTable) -> Self {
+        Self {
+            table: table.clone(),
+            seen: Vec::new(),
+        }
+    }
+}
+
+impl Placer for TableReadingGateway {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        _at: Timestamp,
+    ) -> Result<()> {
+        self.seen.push(AtPlacement {
+            notional: quantity * price,
+            free: self.table.free(),
+            held: self.table.held_total(),
+            committed: self.table.committed_total(),
+        });
+        Ok(())
+    }
+}
+
+/// A cell built as [`trading_cell`] builds one, holding against `table`: a
+/// handle the test keeps as well, so the table can be read from outside the
+/// cell while the cell works.
+fn cell_on_table(strategies: &[(&str, SignalKind, &str)], table: &RegionTable) -> Result<Cell> {
+    Ok(trading_cell(strategies, None, None)?.with_region_table(table.clone()))
+}
+
+/// RM-P3-03: the capital an order commits is reserved before the order
+/// object exists, and an order whose reservation cannot be taken is never
+/// built.
+///
+/// The failure this prevents is a limit applied after the fact. A region
+/// bound taken once the order is already numbered and on its way, or
+/// checked against the balance without holding it, leaves every end-of-pass
+/// balance the tests above assert exactly as it should be, and is still a
+/// race: a second order built in that window is checked against capital the
+/// first is about to spend. `src/reservation.rs` states the discipline,
+/// "held before an order exists, refused — never reduced — when the hold
+/// cannot be taken", and until this test nothing observed the "before".
+/// Here the gateway shares the cell's region table and reads it at the
+/// instant the order arrives.
+///
+/// Mutations: in `Cell`, take the hold after `send` instead of before the
+/// intent (`hold_region_capital` checks the balance without holding, and
+/// `place_net` reserves and commits after the send, so the end-of-pass
+/// balance is unchanged) and the placement assertion fires; in
+/// `RegionAllocation::reserve`, reduce a hold to what the region has left
+/// instead of refusing it, and the refusal half fires.
+#[test]
+fn capital_is_reserved_before_an_order_object_exists() -> Result<()> {
+    let strategies = [("alpha", SignalKind::Enter, "100")];
+
+    // The first half: a region with room for the order.
+    let opening = dec!("100000000");
+    let table = RegionTable::new(opening)?;
+    let mut cell = cell_on_table(&strategies, &table)?;
+    let mut gateway = TableReadingGateway::new(&table);
+    // Premise: nothing is held or spent before the pass.
+    assert_eq!(
+        (table.free(), table.held_total(), table.committed_total()),
+        (opening, Decimal::ZERO, Decimal::ZERO),
+        "premise: the table was not fresh before the pass"
+    );
+    let report = cell.work(t(50), &mut gateway)?;
+    // Premise: one order went out, and the order the gateway saw is the one
+    // the report names.
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "premise: the pass placed no order: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        gateway.seen.len(),
+        1,
+        "premise: the gateway saw {} placements for one order",
+        gateway.seen.len()
+    );
+    let order = &report.orders[0];
+    let notional = order.quantity * order.price;
+    let at_placement = gateway.seen[0];
+    assert!(
+        notional.is_positive(),
+        "premise: the order carries no notional to reserve"
+    );
+    assert_eq!(
+        at_placement.notional, notional,
+        "premise: the gateway saw a different order from the one the report names"
+    );
+    // The property: when the order came into existence its whole notional
+    // was already out of the region's free balance, held or committed, and
+    // nothing else was.
+    assert_eq!(
+        opening - at_placement.free,
+        notional,
+        "when the order reached the gateway the region had not yet given up its notional, so \
+         the hold was taken after the order existed or not at all: {at_placement:?}"
+    );
+    assert_eq!(
+        at_placement.held + at_placement.committed,
+        notional,
+        "when the order reached the gateway the table held something other than its \
+         notional: {at_placement:?}"
+    );
+
+    // The second half: one unit less than that notional. The hold cannot be
+    // taken, so the order is never built: nothing reaches the gateway, not
+    // even a smaller order, and none of the region's capital moves.
+    let short = notional - dec!("1");
+    let table = RegionTable::new(short)?;
+    let mut cell = cell_on_table(&strategies, &table)?;
+    let mut gateway = TableReadingGateway::new(&table);
+    let report = cell.work(t(50), &mut gateway)?;
+    // Premise: the strategy fired and its envelope admitted it, so the region
+    // hold is the only thing left that could stop it.
+    assert_eq!(
+        report.signals.len(),
+        1,
+        "premise: the strategy did not fire: {:?}",
+        report.refusals
+    );
+    assert!(
+        refused_under(&report, "capital").is_empty(),
+        "premise: the envelope refused, not the region: {:?}",
+        report.refusals
+    );
+    assert!(
+        gateway.seen.is_empty(),
+        "an order reached the gateway although its region hold could not be taken: {:?}",
+        gateway.seen
+    );
+    assert!(
+        report.orders.is_empty(),
+        "the report names an order whose region hold could not be taken: {:?}",
+        report.orders
+    );
+    assert_eq!(
+        refused_under(&report, "region_reservation").len(),
+        1,
+        "the region gate did not refuse exactly once: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        (table.free(), table.held_total(), table.committed_total()),
+        (short, Decimal::ZERO, Decimal::ZERO),
+        "a hold that could not be taken still moved the region's capital"
+    );
     Ok(())
 }
