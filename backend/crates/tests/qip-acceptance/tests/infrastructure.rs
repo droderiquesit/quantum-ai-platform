@@ -3757,6 +3757,92 @@ fn a_missing_kargo_credential_warns_and_skips_the_chain_rather_than_failing_the_
     );
 }
 
+/// A `seed` dispatch masks the credential it was handed before anything
+/// else runs, refuses a live key, and writes only into an empty slot.
+///
+/// The road exists because the session operating dev on the owner's behalf
+/// holds no Google credential and cannot reach this repository's Actions
+/// secrets, and the owner directed that the deployment be driven from it
+/// with the keys in hand. A dispatch input is that road, and three
+/// properties keep it from becoming the leak every other line of the
+/// workflow is written to prevent: the mask is the first thing that
+/// executes, so no later `echo`, annotation or gcloud error can carry the
+/// value into a log; a key id that is not `PK…` — Alpaca's paper prefix —
+/// is refused, so the input cannot carry a live venue credential (`AK…`)
+/// into the platform ADR 0003 keeps paper-only; and the write goes through
+/// the same empty-slot check and private `--data-file` as every other seed,
+/// so a rotated version is never replaced and the value is never an
+/// argument visible in the process table.
+#[test]
+fn a_seed_dispatch_masks_its_inputs_first_refuses_a_live_key_and_writes_only_into_an_empty_slot() {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let step = steps
+        .iter()
+        .find(|step| step.contains("name: seed the credentials handed to this dispatch"))
+        .expect("infra.yml has the dispatch-seeding step");
+
+    assert!(
+        step.contains("if: inputs.action == 'seed'"),
+        "the dispatch-seeding step is not gated on the `seed` action, so an `up` or `apps` \
+         would read credential inputs it was never handed"
+    );
+
+    let at = |needle: &str| {
+        step.find(needle)
+            .unwrap_or_else(|| panic!("the dispatch-seeding step does not contain {needle}"))
+    };
+    let mask_id = at("::add-mask::${ALPACA_API_KEY_ID}");
+    let mask_secret = at("::add-mask::${ALPACA_API_SECRET_KEY}");
+    let first_gcloud = at("gcloud ");
+    // The first echo that is not itself a mask: the mask is an `echo` of a
+    // workflow command, which the runner consumes rather than prints.
+    let first_echo = step
+        .match_indices("echo \"")
+        .map(|(offset, _)| offset)
+        .find(|&offset| !step[offset..].starts_with("echo \"::add-mask::"))
+        .expect("the dispatch-seeding step prints something");
+    assert!(
+        mask_id < first_gcloud && mask_secret < first_gcloud,
+        "a gcloud call runs before the inputs are masked, so its error text could carry a value"
+    );
+    assert!(
+        mask_id < first_echo && mask_secret < first_echo,
+        "an echo runs before the inputs are masked, so a message could carry a value"
+    );
+
+    // The paper boundary at this road: PK admitted, AK refused by name, and
+    // anything else refused as not a key id at all.
+    assert!(
+        step.contains("PK*) ;;"),
+        "the step no longer admits a key id by Alpaca's paper prefix"
+    );
+    assert!(
+        step.contains("AK*)") && step.contains("title=live key refused"),
+        "the step no longer refuses a live-trading key id by name; this road could then \
+         carry a live venue credential"
+    );
+
+    // The write: an empty slot only, and the payload as a private file.
+    let body = &step[at("write_once() {")..];
+    let existing = body
+        .find("--filter=\"state:ENABLED\"")
+        .expect("write_once reads whether the slot holds an enabled version");
+    let add = body
+        .find("gcloud secrets versions add")
+        .expect("write_once adds a version");
+    assert!(
+        existing < add,
+        "the version is written before the slot's emptiness is read, so a rotated value is \
+         replaced"
+    );
+    assert!(
+        body.contains("--data-file=\"$scratch/payload\""),
+        "the credential is passed to gcloud as something other than the private file, so it \
+         may be readable from the process table"
+    );
+}
+
 #[test]
 fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");
