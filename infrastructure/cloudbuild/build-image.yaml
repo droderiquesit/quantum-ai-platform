@@ -62,7 +62,10 @@ steps:
       # Through the tarball exporter and `docker load`, as deploy.yml does:
       # written straight into a graphdriver daemon's image store,
       # `rewrite-timestamp` is ignored and every layer carries the build's
-      # clock (deploy run 266, 2026-10-13).
+      # clock (deploy run 266, 2026-10-13). A graphdriver daemon also refuses
+      # the tarball exporter outright, so this recipe needs a daemon on the
+      # containerd image store; deploy.yml switches the runner's, and Cloud
+      # Build's has not been checked — the pool is off in every environment.
       docker buildx build "${recipe[@]}" \
         --output "type=docker,dest=/workspace/build.tar,rewrite-timestamp=true" \
         "${labels[@]}" \

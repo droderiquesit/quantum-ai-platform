@@ -11465,17 +11465,36 @@ fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
     // and ignores `rewrite-timestamp` — deploy run 266 had byte-identical
     // binaries, configs and histories and two sets of layer digests.
     assert_eq!(
-        deploy
-            .matches(".tar,rewrite-timestamp=true\"")
-            .count(),
+        deploy.matches(".tar,rewrite-timestamp=true\"").count(),
         2,
         "deploy.yml's two builds do not both export through the tarball exporter with \
          rewrite-timestamp; the daemon's own image store ignores it"
     );
     assert_eq!(
-        deploy.matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}").count(),
+        deploy
+            .matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}")
+            .count(),
         2,
         "deploy.yml's two builds are not both loaded from their tarball"
+    );
+    // And on a daemon that can do either: the hosted runner's graphdriver
+    // daemon ignores `rewrite-timestamp` and refuses the tarball exporter, so
+    // the job switches it to the containerd image store before the first
+    // build, and the switch comes before the build in the file.
+    let switch = deploy
+        .find("- name: build with the containerd image store")
+        .expect("deploy.yml no longer switches the runner to the containerd image store");
+    let build = deploy
+        .find("\n      - name: build\n")
+        .expect("deploy.yml has no `build` step");
+    assert!(
+        switch < build,
+        "deploy.yml switches the image store after it builds"
+    );
+    assert!(
+        deploy.contains(".features[\"containerd-snapshotter\"] = true")
+            && deploy.contains("*io.containerd.snapshotter*)"),
+        "deploy.yml's switch no longer turns the containerd snapshotter on and checks it took"
     );
     // And the check is made: a second, uncached build compared by image id.
     assert!(
