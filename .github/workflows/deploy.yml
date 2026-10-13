@@ -745,13 +745,24 @@ jobs:
           else
             recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}" --build-arg "QIP_SOURCE_COMMIT=${DEPLOY_SHA}")
           fi
+          # Exported to a tarball and loaded, never written straight into the
+          # daemon's image store. deploy run 266 (2026-10-13) proved the
+          # difference: with `--output type=docker` and no `dest`, the
+          # runner's daemon (graphdriver storage, not the containerd image
+          # store) commits the layers itself and ignores `rewrite-timestamp`,
+          # so two builds whose /qip, config and history were byte-identical
+          # still had two sets of layer digests — every file's mtime was the
+          # build's clock. The tarball exporter is the code path that
+          # rewrites timestamps, and `docker load` takes the layers as they
+          # are in the tarball, so the image id is a function of the commit.
           docker buildx build \
             "${recipe[@]}" \
-            --output "type=docker,rewrite-timestamp=true" \
+            --output "type=docker,dest=${RUNNER_TEMP}/${{ matrix.binary }}.tar,rewrite-timestamp=true" \
             --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --tag "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
             "${context:-.}"
+          docker load --input "${RUNNER_TEMP}/${{ matrix.binary }}.tar"
 
       # The check R12 CICD-9097 asks for: build the commit a second time,
       # from nothing cached, and require the same image. A build that is not
@@ -786,11 +797,12 @@ jobs:
             --file infrastructure/docker/Dockerfile \
             --build-arg "BINARY=${{ matrix.binary }}" \
             --build-arg "QIP_SOURCE_COMMIT=${DEPLOY_SHA}" \
-            --output "type=docker,rewrite-timestamp=true" \
+            --output "type=docker,dest=${RUNNER_TEMP}/${{ matrix.binary }}-rebuild.tar,rewrite-timestamp=true" \
             --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --tag "qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}" \
             .
+          docker load --input "${RUNNER_TEMP}/${{ matrix.binary }}-rebuild.tar"
           first="$(docker image inspect --format '{{.Id}}' "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}")"
           second="$(docker image inspect --format '{{.Id}}' "qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}")"
           if [ "$first" != "$second" ]; then
