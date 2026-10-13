@@ -155,15 +155,13 @@ fn awaiting_first_promotion(environment: &str) -> bool {
 /// An entry expires the moment a run pins the digest, and
 /// `every_image_deploy_yml_has_never_built_is_still_unbuilt_and_still_in_the_matrix`
 /// is what expires it.
-const NEVER_BUILT: &[(&str, &str)] = &[(
-    "qip-portal",
-    "ADR 0094 put the console's build into deploy.yml's matrix in the same commit as its \
-     manifest and its front door, so the first run that can produce these bytes is the first \
-     run after that commit. Until one has, this repository has never held an image for the \
-     portal and there is no digest to write down; inventing one would name bytes nobody \
-     scanned. The marker is replaced by whoever reviews the first attested digest, and the \
-     Kargo subscription that would keep it pinned afterwards is ADR 0094's named follow-on.",
-)];
+///
+/// Empty since 2026-10-13: `qip-portal`, the one entry this list ever held,
+/// was built, scanned and attested by deploy.yml run 268 and dev now pins
+/// that digest, so the entry expired exactly as
+/// `every_image_deploy_yml_has_never_built_is_still_unbuilt_and_still_in_the_matrix`
+/// demands.
+const NEVER_BUILT: &[(&str, &str)] = &[];
 
 /// Whether an image reference names something `NEVER_BUILT` argues for, by
 /// the last component of its repository path.
@@ -3197,9 +3195,46 @@ fn vendored_images() -> Vec<(String, String)> {
     entries
 }
 
+/// Images `deploy.yml` builds and its attestor signs that are not workspace
+/// binaries: the console, from `infrastructure/docker/portal.Dockerfile`
+/// (ADR 0094). Admitted as `attested` on the same terms as a catalogue
+/// binary, and only while `deploy.yml`'s build matrix still names each one —
+/// `every_pipeline_built_image_is_still_in_deploy_yml_s_build_matrix` holds
+/// that, so an image the pipeline stopped building cannot stay admitted by
+/// this list. It held nothing until 2026-10-13, when deploy.yml run 268
+/// produced the portal's first attested digest and dev pinned it.
+const PIPELINE_BUILT_IMAGES: [&str; 1] = ["qip-portal"];
+
+/// Whether an image reference names one of `PIPELINE_BUILT_IMAGES`, by the
+/// last component of its repository path, matched whole.
+fn pipeline_built(image: &str) -> bool {
+    let (repository, _) = split_reference(image);
+    let last = repository.rsplit('/').next().unwrap_or(&repository);
+    PIPELINE_BUILT_IMAGES.contains(&last)
+}
+
+#[test]
+fn every_pipeline_built_image_is_still_in_deploy_yml_s_build_matrix() {
+    // The failure this prevents: an image admitted as attested because a
+    // list says the pipeline builds it, after the pipeline stopped building
+    // it — a digest nobody will ever re-sign, admitted on a promise.
+    let deploy = read(DEPLOY_WORKFLOW);
+    for image in PIPELINE_BUILT_IMAGES {
+        assert!(
+            deploy
+                .lines()
+                .any(|line| line.trim() == format!("- binary: {image}")
+                    || line.trim() == format!("- {image}")),
+            "PIPELINE_BUILT_IMAGES admits {image} as attested and {DEPLOY_WORKFLOW}'s build \
+             matrix no longer names it"
+        );
+    }
+}
+
 /// Whether an image reference is one the platform's attestor could have
-/// signed: a catalogue binary the pipeline built, or a mirror of a line in
-/// the vendored list at that line's digest. Returns which, or the refusal.
+/// signed: a catalogue binary the pipeline built, an image the pipeline
+/// builds beside them, or a mirror of a line in the vendored list at that
+/// line's digest. Returns which, or the refusal.
 fn admissible(image: &str, vendored: &[(String, String)]) -> Result<&'static str, String> {
     if !is_digest_pinned(image) {
         return Err(format!("`{image}` is not pinned by a sha256 digest"));
@@ -3221,7 +3256,7 @@ fn admissible(image: &str, vendored: &[(String, String)]) -> Result<&'static str
             ));
         }
     }
-    if trading_binary_of(image).is_some() {
+    if trading_binary_of(image).is_some() || pipeline_built(image) {
         return Ok("attested");
     }
     let mirrored = vendored.iter().any(|(source_digest, destination)| {
