@@ -9,13 +9,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a panic is the failure report
 
 use qip_core::error::{Error, Result};
+use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::now::{
     Candidate, Catalogue, Constraint, Domain, EstimatorKind, Evidence, KalmanFilter, ManifestRef,
     NowBrain, NowConfig, NowVariable, Observation, PartitionKey, Prior, RateOfChange, Scale, Scope,
     ScopeKind, Specialist, StateFilter, VariableKey, VariableSpec,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn t0() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -564,6 +565,241 @@ fn a_reading_already_absorbed_is_not_counted_again() {
     let again = brain.step(token, vec![reading], later(t0(), 5)).unwrap();
     assert_eq!(again.unchanged, 1);
     assert!(again.promoted.is_empty() && again.deltas.is_empty());
+}
+
+/// How one step of a generated schedule treats one variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    /// A reading newer than anything the variable rests on.
+    Fresh,
+    /// Nothing at all for this variable this step.
+    Withheld,
+    /// The reading the variable last absorbed, delivered again unchanged.
+    Redelivered,
+    /// A reading the step must refuse: not yet knowable, or not a number.
+    Refused,
+}
+
+/// One promoted variable across one step: how the step treated it, and its
+/// posterior variance either side.
+#[derive(Clone, Debug)]
+struct Transition {
+    seed: u64,
+    step: usize,
+    instrument: &'static str,
+    delivery: Delivery,
+    before: f64,
+    after: f64,
+}
+
+/// RM-P2-15: the posterior variance of a NOW variable never shrinks across a
+/// step that brought it no new reading, whether the reading was withheld, was
+/// one the variable had already absorbed, or was refused as not yet knowable
+/// or not a number.
+///
+/// The failure this prevents is confidence manufactured from silence.
+/// `uncertainty` is the posterior variance every reader sizes its trust on:
+/// `confidence_bp` is computed from it, and the forecast lattice and the deep
+/// brain's surprise router read both. A step that tightened it on no evidence
+/// would report a state the brain has not looked at again as better known
+/// than when it last did. `NowBrain::update`'s idempotency comment names the
+/// shape that takes in the cycle: a pass that re-reads the same last bar,
+/// shrinking the uncertainty every time.
+/// `a_reading_already_absorbed_is_not_counted_again` holds one re-delivery
+/// after one reading. This holds every way of bringing nothing, interleaved
+/// with fresh readings, across generated schedules.
+///
+/// Property-style, on the in-tree generator because no property-testing
+/// crate is on the allow-list: 24 seeded schedules of 60 steps over three
+/// instruments in two partitions, under the standard three-filter ensemble,
+/// each step choosing per instrument between a fresh reading and the three
+/// ways of bringing none. A violation names the seed and step that reproduce
+/// it.
+///
+/// Mutations: drop the `valid_at > observed_at` filter in `NowBrain::update`
+/// (fires on a re-delivered step); in `NowBrain::step`, carry every promoted
+/// variable that brought no admissible reading forward as a reading of its
+/// own mean at `now` (fires on a withheld or refused step).
+#[test]
+fn the_state_covariance_never_shrinks_when_an_observation_is_withheld() {
+    const SCHEDULES: u64 = 24;
+    const STEPS: usize = 60;
+    // AAA and BBB share a partition and CCC has its own, so a step's write to
+    // one variable sits beside variables the same step left alone.
+    let instruments: [(&'static str, &'static str); 3] =
+        [("AAA", "US"), ("BBB", "US"), ("CCC", "GB")];
+    let uncertainty = |brain: &NowBrain, id: &str, region: &str| {
+        brain
+            .store()
+            .get(
+                &PartitionKey::new(Domain::Markets, region).unwrap(),
+                &VariableKey::new(scope(ScopeKind::Instrument, id), "return").unwrap(),
+            )
+            .map(|variable| variable.uncertainty)
+    };
+
+    let mut transitions: Vec<Transition> = Vec::new();
+    let mut vanished: Vec<String> = Vec::new();
+    let mut unrefused: Vec<String> = Vec::new();
+    for seed in 0..SCHEDULES {
+        let mut rng = Xoshiro256::seeded(seed);
+        let mut brain = NowBrain::standard(seed).unwrap();
+        let token = brain.lead();
+        // The reading each instrument's variable most recently absorbed.
+        let mut absorbed: BTreeMap<&str, Observation> = BTreeMap::new();
+        let mut now = t0();
+        for step in 0..STEPS {
+            // A minute to an hour per step, so sixty steps stay well inside
+            // the seven days after which a `return` expires: a variable can
+            // leave the store mid-schedule only if something removes it.
+            now = later(now, 1 + rng.below(60) as i64);
+            let mut deliveries: BTreeMap<&str, Delivery> = BTreeMap::new();
+            let mut fresh: BTreeMap<&str, Observation> = BTreeMap::new();
+            let mut observations = Vec::new();
+            for &(id, region) in &instruments {
+                // A variable not yet promoted has no variance to shrink, so
+                // its first delivery is always a reading.
+                let delivery = if absorbed.contains_key(id) {
+                    match rng.below(4) {
+                        0 => Delivery::Fresh,
+                        1 => Delivery::Withheld,
+                        2 => Delivery::Redelivered,
+                        _ => Delivery::Refused,
+                    }
+                } else {
+                    Delivery::Fresh
+                };
+                let value = rng.normal_with(0.001, 0.01);
+                match delivery {
+                    Delivery::Fresh => {
+                        let reading = ret(id, region, value, "s1", now);
+                        fresh.insert(id, reading.clone());
+                        observations.push(reading);
+                    }
+                    Delivery::Withheld => {}
+                    Delivery::Redelivered => observations.push(absorbed[id].clone()),
+                    Delivery::Refused => {
+                        let mut reading = ret(id, region, value, "s1", now);
+                        if rng.bernoulli(0.5) {
+                            reading.known_at = later(now, 1);
+                        } else {
+                            reading.value = f64::NAN;
+                        }
+                        observations.push(reading);
+                    }
+                }
+                deliveries.insert(id, delivery);
+            }
+
+            let before: BTreeMap<&str, Option<f64>> = instruments
+                .iter()
+                .map(|&(id, region)| (id, uncertainty(&brain, id, region)))
+                .collect();
+            let outcome = brain.step(token, observations, now).unwrap();
+            let refused = deliveries
+                .values()
+                .filter(|delivery| **delivery == Delivery::Refused)
+                .count();
+            if outcome.refused.len() != refused {
+                unrefused.push(format!(
+                    "seed {seed} step {step}: {refused} refusable reading(s), {} refusal(s): {:?}",
+                    outcome.refused.len(),
+                    outcome.refused
+                ));
+            }
+            for &(id, region) in &instruments {
+                let after = uncertainty(&brain, id, region);
+                match (before[id], after) {
+                    (Some(before), Some(after)) => transitions.push(Transition {
+                        seed,
+                        step,
+                        instrument: id,
+                        delivery: deliveries[id],
+                        before,
+                        after,
+                    }),
+                    (Some(_), None) => vanished.push(format!("seed {seed} step {step}: {id}")),
+                    (None, _) => {}
+                }
+                // Remember a fresh reading as absorbed only once the
+                // promoted state says it rests on it.
+                if let Some(reading) = fresh.remove(id) {
+                    let partition = PartitionKey::new(Domain::Markets, region).unwrap();
+                    let rests_on = brain
+                        .store()
+                        .get(&partition, &reading.key)
+                        .is_some_and(|variable| variable.freshness.observed_at == reading.valid_at);
+                    if rests_on {
+                        absorbed.insert(id, reading);
+                    }
+                }
+            }
+        }
+    }
+
+    // Premise: the schedules did what they claim. Every way of bringing
+    // nothing occurred often on a promoted variable; nothing left the store
+    // mid-schedule, which would hide a step from the property; every reading
+    // meant to be refused was refused rather than absorbed; and a fresh
+    // reading does shrink the variance, so a brain that never moved it could
+    // not satisfy the property by standing still.
+    let count = |wanted: Delivery| {
+        transitions
+            .iter()
+            .filter(|transition| transition.delivery == wanted)
+            .count()
+    };
+    for delivery in [Delivery::Withheld, Delivery::Redelivered, Delivery::Refused] {
+        assert!(
+            count(delivery) >= 100,
+            "premise: only {} {delivery:?} step(s) on a promoted variable",
+            count(delivery)
+        );
+    }
+    assert!(
+        vanished.is_empty(),
+        "premise: a promoted variable left the store mid-schedule: {vanished:?}"
+    );
+    assert!(
+        unrefused.is_empty(),
+        "premise: a reading meant to be refused was not: {unrefused:?}"
+    );
+    let shrank_on_fresh = transitions
+        .iter()
+        .filter(|transition| {
+            transition.delivery == Delivery::Fresh && transition.after < transition.before
+        })
+        .count();
+    assert!(
+        shrank_on_fresh > 0,
+        "premise: no fresh reading ever shrank the variance, so the brain cannot shrink it at \
+         all and the property below would hold vacuously"
+    );
+
+    // The property.
+    let violations: Vec<String> = transitions
+        .iter()
+        .filter(|transition| {
+            transition.delivery != Delivery::Fresh && transition.after < transition.before
+        })
+        .map(|transition| {
+            format!(
+                "seed {} step {}: {} {:?} took the variance from {:e} to {:e}",
+                transition.seed,
+                transition.step,
+                transition.instrument,
+                transition.delivery,
+                transition.before,
+                transition.after
+            )
+        })
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "the posterior variance shrank on {} step(s) that brought no new reading; first: {:?}",
+        violations.len(),
+        violations.iter().take(3).collect::<Vec<_>>()
+    );
 }
 
 /// WORLD-9016 and lane H's §27 contract: the coordinator's typed outputs.

@@ -1166,6 +1166,90 @@ fn over_generated_passes_an_adapter_is_called_only_after_simulation_and_the_gate
     assert!(adapter.calls.is_empty());
 }
 
+/// RM-P10-01 / AGENCY-012: a goal that no controllable variable with a tool
+/// can reach is reported unreachable — stopped at `IdentifyLevers`, saying
+/// so — and is never accepted or planned against.
+///
+/// Two failures this prevents. A planner that treated reachability loosely
+/// would pull the one tool it holds whether or not that tool moves anything
+/// the goal is stated over, and here a policy that may act stands behind it.
+/// And without the stop, `select` refuses the stray proposal and the pass
+/// ends `NoAction` — "nothing beat doing nothing" — which reads as a goal
+/// that was considered and declined, not one that cannot be reached at all.
+#[test]
+fn a_goal_with_no_controllable_lever_is_reported_unreachable_and_never_planned_against() {
+    let policy = narrow();
+
+    // Premise: the unaltered request, under the same policy, executes. So
+    // the goal, the proposal, the authority, the evidence and the guard are
+    // sound, and whatever stops the passes below is the missing lever.
+    let mut adapter = Counting::default();
+    let reachable = run(request(), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        matches!(reachable.outcome, Outcome::Executed(_)),
+        "premise: the reachable goal executes, got {:?}",
+        reachable.outcome
+    );
+    assert_eq!(reachable.levers, vec!["quote_size".to_string()]);
+    assert_eq!(adapter.calls, vec!["quoter".to_string()]);
+
+    // The tool moves `quote_size`, which no longer causes `spread`; what
+    // does is a macro rate nobody here can move.
+    let mut tool_off_the_path = request();
+    tool_off_the_path.variables.push(VariableDecl {
+        name: "macro_rate".into(),
+        observable: true,
+        controllable: false,
+        owned: false,
+    });
+    tool_off_the_path.causes = vec![("macro_rate".into(), "spread".into())];
+    // `quote_size` still causes `spread` and is controllable, but nothing
+    // holds a tool on it.
+    let mut lever_without_a_tool = request();
+    lever_without_a_tool.tool_edges.clear();
+
+    for (case, r) in [
+        ("tool off the causal path", tool_off_the_path),
+        ("controllable but no tool", lever_without_a_tool),
+    ] {
+        // Premise: an observable target and a complete proposal, so neither
+        // Observe nor Predict is what stops this pass.
+        assert_eq!(r.targets, vec!["spread".to_string()], "{case}");
+        assert!(
+            r.variables
+                .iter()
+                .any(|v| v.name == "spread" && v.observable),
+            "{case}: premise, the target is observable"
+        );
+        assert_eq!(r.proposals.len(), 1, "{case}: premise, one proposal");
+
+        let mut adapter = Counting::default();
+        let report = run(r, Some(&policy), &mut adapter).unwrap();
+
+        // Reported unreachable, by the stage that decides it, with its reason.
+        assert_eq!(
+            report.failed,
+            Some(Stage::IdentifyLevers),
+            "{case}: a goal no lever reaches did not stop where levers are identified; \
+             outcome {:?}",
+            report.outcome
+        );
+        assert_eq!(report.passed, &ORDER[..3], "{case}");
+        assert_eq!(
+            report.outcome,
+            Outcome::Stopped("no controllable variable with a tool reaches a target".to_string()),
+            "{case}"
+        );
+        assert!(report.levers.is_empty(), "{case}: {:?}", report.levers);
+        // Never planned against: nothing generated, refused, simulated or
+        // called.
+        assert!(report.candidates.is_empty(), "{case}");
+        assert!(report.refused.is_empty(), "{case}");
+        assert!(report.simulations.is_empty(), "{case}");
+        assert!(adapter.calls.is_empty(), "{case}: {:?}", adapter.calls);
+    }
+}
+
 // ---- AGENCY-055 ------------------------------------------------------------
 
 #[test]

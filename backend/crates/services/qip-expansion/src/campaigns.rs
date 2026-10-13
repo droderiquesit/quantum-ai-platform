@@ -4,20 +4,27 @@
 //! (EXPAND-017).
 //!
 //! A residual that grows without anyone investigating it becomes the loss
-//! nobody could explain. This module only decides that a campaign is owed; it
-//! replays nothing and schedules nothing.
+//! nobody could explain. This module decides that a campaign is owed and,
+//! through [`observations`], states the campaigns a sweep opened as the
+//! [`Observation`]s the curriculum queues research from (RM-P9-08). It
+//! replays nothing and schedules nothing: the desk decides what is queued
+//! and what starts.
 //!
 //! Fed by the deep brain's research loop (`qip-deepbrain/src/research.rs`)
 //! from the kernel's scored fills: each fill's trade error is a fill
 //! prediction residual and each venue it names is a sighting. Lead/lag and
 //! world-event reaction residuals have an observer here
 //! ([`TickCampaignDetector::observe_residual`]) and no producer yet, because
-//! nothing in the tree measures either.
+//! nothing in the tree measures either. Whether a composition root hands the
+//! campaigns it opens to [`observations`] is the root's to show, and a
+//! command shows it where a sentence here would go stale:
+//! `grep -rn 'campaigns::observations' backend/crates/apps`.
 
+use crate::gap::{GapTrigger, Observation, Wanting};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A campaign to replay and study tick-level microstructure after a residual
 /// anomaly or a new venue.
@@ -41,8 +48,9 @@ pub struct TickCampaign {
     pub threshold: Option<Decimal>,
 }
 
-/// The reason a [`TickCampaign`] was opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The reason a [`TickCampaign`] was opened. Ordered by declaration, which is
+/// the order [`observations`] states a sweep's campaigns in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TickCampaignTrigger {
     /// Unexplained slippage exceeds the threshold.
     UnexplainedSlippage,
@@ -58,6 +66,176 @@ pub enum TickCampaignTrigger {
     PaperReplayDivergence,
     /// A venue not previously seen.
     NewVenue,
+}
+
+impl TickCampaignTrigger {
+    /// Why the expansion loop opens on a campaign of this trigger, which
+    /// decides whether its research is ranked as reducing a risk the platform
+    /// runs (`desk::is_failure`). The four residuals of the platform's own
+    /// execution are its models failing to explain its own results; a
+    /// lead/lag or world-event reaction residual is the market departing from
+    /// what the world model expected; a new venue is one no brain or tool can
+    /// yet answer for, as `detectors::coverage` files an asset class with no
+    /// history.
+    const fn gap_trigger(self) -> GapTrigger {
+        match self {
+            Self::UnexplainedSlippage
+            | Self::FillPredictionError
+            | Self::QueuePredictionError
+            | Self::PaperReplayDivergence => GapTrigger::UnexplainedPnl,
+            Self::AbnormalLeadLag | Self::WorldEventReaction => GapTrigger::Surprise,
+            Self::NewVenue => GapTrigger::UnsupportedRequest,
+        }
+    }
+}
+
+/// The first evidence id of every observation [`observations`] states, so the
+/// queued item's derivation names this detector as the rule that raised it
+/// (`plan::Derivation::of` takes a leading `detector:` id as the rule), as
+/// each detector in `detectors.rs` names its own.
+pub const ORIGIN: &str = "detector:tick_campaign";
+
+/// The campaigns one sweep opened, as the observations the curriculum queues
+/// research from (RM-P9-08): one per trigger and venue, each wanting
+/// execution, so each is raised as an execution gap whose acquisition is
+/// `plan::AcquisitionAction::ReplayTicks` — the tick replay the campaign is.
+///
+/// The failure this closes is a campaign opened and only counted. The counter
+/// rises, the curriculum never hears of the campaign, and the residual that
+/// opened it stays the loss nobody could explain, which is the outcome the
+/// detector exists to prevent.
+///
+/// One observation per trigger and venue, not one per campaign. The detector
+/// opens a campaign on every residual past its threshold, so a venue whose
+/// twin misses a dozen fills opens a dozen; stated one by one they would be a
+/// dozen signals for one question, each weighed against the attention budget
+/// before the desk refused eleven of them as duplicates. The question is fixed
+/// by trigger and venue, so a venue that keeps missing is one item that stays
+/// raised. The campaigns — each residual
+/// against its own threshold — and the instruments they were scoped to ride
+/// in the evidence. The severity is the largest of the group's, as
+/// `detectors::anomaly_clusters` keeps each subject's worst.
+///
+/// Refuses, naming the campaign, one the detector cannot have opened: a
+/// residual campaign carrying no residual or no threshold, a residual not
+/// strictly past a threshold of zero or more, and a new-venue campaign that
+/// names no venue or carries a residual. Ranking any of those at a severity
+/// nobody measured would hide the caller's bug behind a plausible item.
+pub fn observations(campaigns: &[TickCampaign]) -> Result<Vec<Observation>> {
+    #[derive(Debug, Default)]
+    struct Group<'a> {
+        severity: f64,
+        evidence: Vec<String>,
+        instruments: BTreeSet<&'a str>,
+    }
+    let mut groups: BTreeMap<(TickCampaignTrigger, Option<&str>), Group<'_>> = BTreeMap::new();
+    for campaign in campaigns {
+        let severity = severity(campaign)?;
+        let group = groups
+            .entry((campaign.trigger, campaign.venue.as_deref()))
+            .or_default();
+        group.severity = group.severity.max(severity);
+        group.evidence.push(evidence(campaign));
+        group
+            .instruments
+            .extend(campaign.affected_instruments.iter().map(String::as_str));
+    }
+    Ok(groups
+        .into_iter()
+        .map(|((trigger, venue), group)| Observation {
+            trigger: trigger.gap_trigger(),
+            // A tick campaign is a tick replay whatever opened it, and
+            // replaying ticks is the acquisition an execution gap asks for.
+            wanting: vec![Wanting::Execution],
+            observation: question(trigger, venue),
+            affected_domains: vec!["execution".to_string()],
+            evidence: std::iter::once(ORIGIN.to_string())
+                .chain(group.evidence)
+                .chain(
+                    group
+                        .instruments
+                        .into_iter()
+                        .map(|instrument| format!("instrument:{instrument}")),
+                )
+                .collect(),
+            severity: group.severity,
+            // No campaign measures money. Zero is stated, not defaulted, as
+            // every detector in `detectors.rs` states it.
+            economic_value: Decimal::ZERO,
+        })
+        .collect())
+}
+
+/// One campaign's severity in `[0, 1]`, or a refusal naming why the detector
+/// cannot have opened it.
+fn severity(campaign: &TickCampaign) -> Result<f64> {
+    let id = &campaign.campaign_id;
+    if campaign.trigger == TickCampaignTrigger::NewVenue {
+        if campaign.venue.is_none()
+            || campaign.residual_value.is_some()
+            || campaign.threshold.is_some()
+        {
+            return Err(Error::invalid(format!(
+                "{id} is a new-venue campaign that names no venue or carries a residual; a first sighting names its venue and has no residual, so open it through TickCampaignDetector::observe_venue"
+            )));
+        }
+        // A venue seen for the first time has no history at all: its unseen
+        // share is the whole of it, which is how `detectors::coverage` scores
+        // an asset class with none of its instruments covered.
+        return Ok(1.0);
+    }
+    let (Some(residual), Some(threshold)) = (campaign.residual_value, campaign.threshold) else {
+        return Err(Error::invalid(format!(
+            "{id} was opened on {:?} and carries no residual or no threshold; a residual campaign is ranked by its residual against its threshold, so open it through TickCampaignDetector",
+            campaign.trigger
+        )));
+    };
+    if threshold < Decimal::ZERO || residual.abs() <= threshold {
+        return Err(Error::invalid(format!(
+            "{id}: a residual of {residual} against a threshold of {threshold} is not one the detector opens a campaign on, which takes a magnitude strictly past a threshold of zero or more; open it through TickCampaignDetector"
+        )));
+    }
+    if threshold.is_zero() {
+        // Every miss is past a zero threshold by more than any multiple of it.
+        return Ok(1.0);
+    }
+    // Decimal to f64 here and nowhere else in this module: severity is a
+    // ranking statistic, not money, and the residual and threshold stay exact
+    // in the evidence. Saturating at ten times the threshold is the scale
+    // `detectors::unexplained_residuals` ranks a twin's mean miss on, so a
+    // campaign and a residual gap at one venue rank against each other.
+    Ok((residual.abs().to_f64() / (10.0 * threshold.to_f64())).min(1.0))
+}
+
+/// The research question a campaign asks, fixed by its trigger and venue
+/// alone. The residual rides in the evidence, not here: a question that moved
+/// with every sweep's residual would be a new item each sweep while the one
+/// already started went quiet, the failure `detectors::unexplained_residuals`
+/// records for its own text.
+fn question(trigger: TickCampaignTrigger, venue: Option<&str>) -> String {
+    match (trigger, venue) {
+        (TickCampaignTrigger::NewVenue, Some(venue)) => {
+            format!("tick replay at `{venue}`, a venue not seen before")
+        }
+        (_, Some(venue)) => {
+            format!("tick replay at `{venue}` after {trigger:?} past its threshold")
+        }
+        (_, None) => format!("tick replay after {trigger:?} past its threshold, at no named venue"),
+    }
+}
+
+/// One campaign as an evidence id: which campaign, and for a residual
+/// campaign the residual against its threshold, exact.
+fn evidence(campaign: &TickCampaign) -> String {
+    match (campaign.residual_value, campaign.threshold) {
+        (Some(residual), Some(threshold)) => {
+            format!(
+                "tick_campaign:{}:{residual}/{threshold}",
+                campaign.campaign_id
+            )
+        }
+        _ => format!("tick_campaign:{}", campaign.campaign_id),
+    }
 }
 
 /// Opens tick-replay campaigns from residual observations and venue sightings.
@@ -311,5 +489,183 @@ mod tests {
             Ok(d) => panic!("a negative threshold was admitted: {d:?}"),
         }
         assert!(TickCampaignDetector::with_slippage_threshold(Decimal::ZERO).is_ok());
+    }
+
+    // --- the campaigns as the curriculum reads them (RM-P9-08) --------------
+
+    /// A fill-prediction campaign at `venue`, opened by `detector` against a
+    /// threshold of 25 so the severities below can be checked by eye.
+    fn fill_campaign(
+        detector: &mut TickCampaignDetector,
+        residual: i64,
+        venue: &str,
+        instrument: &str,
+    ) -> TickCampaign {
+        match detector.observe_residual(
+            TickCampaignTrigger::FillPredictionError,
+            Decimal::from_int(residual),
+            Decimal::from_int(25),
+            Some(venue),
+            set(&[instrument]),
+        ) {
+            Ok(Some(campaign)) => campaign,
+            other => panic!("premise: {residual} is past 25 and opens a campaign: {other:?}"),
+        }
+    }
+
+    fn stated(campaigns: &[TickCampaign]) -> Vec<Observation> {
+        match observations(campaigns) {
+            Ok(stated) => stated,
+            Err(e) => panic!("campaigns the detector opened must be stated: {e}"),
+        }
+    }
+
+    /// Three misses at one venue are one research question, not three: each
+    /// observation is an ambient signal the router charges to the attention
+    /// budget, and the desk would refuse the repeats as duplicates only after
+    /// the router had spent on every one.
+    ///
+    /// Mutation: key the groups on the campaign id as well as the trigger and
+    /// venue — four observations come back and the count fails.
+    #[test]
+    fn the_campaigns_a_sweep_opens_at_one_venue_are_one_observation_ranked_by_its_largest_miss() {
+        let mut detector = detector();
+        let opened = vec![
+            fill_campaign(&mut detector, 30, "XNYS", "AAPL"),
+            fill_campaign(&mut detector, -100, "XNYS", "MSFT"),
+            fill_campaign(&mut detector, 50, "XNYS", "AAPL"),
+            fill_campaign(&mut detector, 40, "XLON", "VOD"),
+        ];
+        // Premise: four distinct campaigns, three of them at one venue.
+        let ids: BTreeSet<&str> = opened.iter().map(|c| c.campaign_id.as_str()).collect();
+        assert_eq!(ids.len(), 4, "{opened:?}");
+
+        let stated = stated(&opened);
+        assert_eq!(
+            stated.len(),
+            2,
+            "one per venue, not one per campaign: {stated:?}"
+        );
+        let (xlon, xnys) = (&stated[0], &stated[1]);
+        assert_eq!(
+            xnys.observation,
+            "tick replay at `XNYS` after FillPredictionError past its threshold"
+        );
+        assert_eq!(xnys.trigger, GapTrigger::UnexplainedPnl);
+        assert_eq!(xnys.wanting, vec![Wanting::Execution]);
+        assert_eq!(
+            xnys.evidence,
+            vec![
+                ORIGIN.to_string(),
+                "tick_campaign:tick-campaign-000001:30/25".to_string(),
+                "tick_campaign:tick-campaign-000002:-100/25".to_string(),
+                "tick_campaign:tick-campaign-000003:50/25".to_string(),
+                "instrument:AAPL".to_string(),
+                "instrument:MSFT".to_string(),
+            ]
+        );
+        // The largest miss, |-100| against 25, on the ten-thresholds scale:
+        // 100 / 250. A negative miss ranks by its magnitude.
+        assert!((xnys.severity - 0.4).abs() < 1e-12, "{}", xnys.severity);
+        assert_eq!(
+            xlon.observation,
+            "tick replay at `XLON` after FillPredictionError past its threshold"
+        );
+        assert!((xlon.severity - 0.16).abs() < 1e-12, "{}", xlon.severity);
+    }
+
+    /// A venue that keeps missing asks one question across sweeps, so the
+    /// desk counts a repeat of the item it holds instead of queueing a new one
+    /// while the started one goes quiet.
+    ///
+    /// Mutation: append the group's severity to the question text — the two
+    /// sweeps' questions differ and the equality fails.
+    #[test]
+    fn a_venue_that_keeps_missing_asks_the_same_question_every_sweep() {
+        let mut detector = detector();
+        let first = stated(&[fill_campaign(&mut detector, 30, "XNYS", "AAPL")]);
+        let second = stated(&[fill_campaign(&mut detector, 900, "XNYS", "MSFT")]);
+        // Premise: one observation each, from two different misses.
+        assert_eq!((first.len(), second.len()), (1, 1));
+        assert_ne!(first[0].evidence, second[0].evidence);
+        assert!(first[0].severity < second[0].severity);
+
+        assert_eq!(first[0].observation, second[0].observation);
+    }
+
+    /// A campaign the detector cannot have opened is refused by name rather
+    /// than ranked at a severity nobody measured: with no residual there is
+    /// nothing to rank by, a miss inside its threshold is not a miss, and a
+    /// new venue that names none has no question to ask.
+    ///
+    /// Mutations, one per refusal, each letting its case through so the match
+    /// fails: rank a residual campaign with no residual at 1.0; drop the
+    /// strictly-past-the-threshold check; rank a new venue naming none at 1.0.
+    #[test]
+    fn a_campaign_the_detector_cannot_have_opened_is_refused_rather_than_ranked_at_a_guessed_severity()
+     {
+        let opened = fill_campaign(&mut detector(), 40, "XNYS", "AAPL");
+        let Some(venue) = detector().observe_venue("IEX", set(&["MSFT"])) else {
+            panic!("premise: a first sighting opens a campaign");
+        };
+        // Premise: both, as the detector opened them, are stated.
+        assert_eq!(stated(&[opened.clone(), venue.clone()]).len(), 2);
+
+        let no_residual = TickCampaign {
+            residual_value: None,
+            ..opened.clone()
+        };
+        let inside = TickCampaign {
+            residual_value: Some(Decimal::from_int(25)),
+            ..opened.clone()
+        };
+        let nowhere = TickCampaign {
+            venue: None,
+            ..venue
+        };
+        for (campaign, says) in [
+            (no_residual, "carries no residual or no threshold"),
+            (inside, "is not one the detector opens a campaign on"),
+            (nowhere, "names no venue or carries a residual"),
+        ] {
+            match observations(&[opened.clone(), campaign]) {
+                Err(e) => assert!(e.to_string().contains(says), "expected `{says}`: {e}"),
+                Ok(stated) => {
+                    panic!("a campaign the detector cannot have opened was ranked: {stated:?}")
+                }
+            }
+        }
+    }
+
+    /// New-venue discovery: a venue seen for the first time is one tick-replay
+    /// question at full severity, because none of it has history — its unseen
+    /// share is all of it, as `detectors::coverage` scores a class with none.
+    ///
+    /// Mutation: rank a new venue at 0.5 — the severity assertion fails.
+    #[test]
+    fn a_new_venue_is_one_tick_replay_question_at_full_severity_because_none_of_it_has_been_seen() {
+        let mut detector = detector();
+        let Some(campaign) = detector.observe_venue("IEX", set(&["MSFT", "GOOG"])) else {
+            panic!("premise: a first sighting opens a campaign");
+        };
+        let stated = stated(&[campaign]);
+        assert_eq!(stated.len(), 1, "{stated:?}");
+        let venue = &stated[0];
+        assert_eq!(
+            venue.observation,
+            "tick replay at `IEX`, a venue not seen before"
+        );
+        assert_eq!(venue.trigger, GapTrigger::UnsupportedRequest);
+        assert_eq!(venue.wanting, vec![Wanting::Execution]);
+        assert!((venue.severity - 1.0).abs() < 1e-12, "{}", venue.severity);
+        assert_eq!(
+            venue.evidence,
+            vec![
+                ORIGIN.to_string(),
+                "tick_campaign:tick-campaign-000001".to_string(),
+                "instrument:GOOG".to_string(),
+                "instrument:MSFT".to_string(),
+            ]
+        );
     }
 }

@@ -819,6 +819,137 @@ fn the_same_seed_and_the_same_inputs_produce_the_same_journal() -> Result<()> {
     Ok(())
 }
 
+/// What one seeded run of the simulation harness leaves behind: two
+/// instruments' history, three cycles against the simulated broker, and the
+/// head of each hash-chained log the run wrote.
+struct SeededRun {
+    /// Records in the platform's own event log when the run ends.
+    records: usize,
+    /// Cycle entries among them, so a run that assembled and never cycled
+    /// cannot pass for one that did.
+    cycles: usize,
+    /// The newest record's hash. Each record's hash covers its predecessor's,
+    /// so this one value commits to every byte of every record before it.
+    head: String,
+    /// The same, read off the durable journal a replay reads.
+    journal_head: String,
+}
+
+fn seeded_run(seed: u64) -> Result<SeededRun> {
+    let mut platform = platform(PlatformConfig::default().with_seed(seed))?;
+    let mut history = bars("AAA", 120);
+    history.extend(bars("BBB", 120));
+    platform.observe(history);
+    for step in 0..3 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * step)));
+    }
+
+    let log = platform.event_log();
+    // A head is only worth comparing if it is the head of a chain: a log
+    // whose links do not verify could share a last hash with another and
+    // share nothing else.
+    assert_eq!(
+        log.verify_chain(),
+        Ok(()),
+        "the event log's hash chain is broken at the sequence named"
+    );
+    assert_eq!(
+        platform.journal().verify_chain(),
+        Ok(()),
+        "the durable journal's hash chain is broken at the sequence named"
+    );
+    let head = |records: &[qip_events::log::LogRecord]| {
+        records
+            .last()
+            .map_or_else(String::new, |record| record.record_hash.clone())
+    };
+    Ok(SeededRun {
+        records: log.len(),
+        cycles: log.by_topic(CycleJournalEntry::TOPIC).len(),
+        head: head(log.records()),
+        journal_head: head(platform.journal().records()),
+    })
+}
+
+/// RM-P0-03: a seeded run of the simulation harness is reproducible down to
+/// the last byte of its event log.
+///
+/// The failure this prevents is a replay that diverges without anything
+/// saying so. A run whose log depends on anything other than its seed and its
+/// inputs — the wall clock, a process-global counter, a `HashMap` whose
+/// iteration order is drawn per process — cannot be re-derived from its own
+/// record, and "every decision reproducible from the log alone" stops being
+/// true while every test stays green.
+/// `the_same_seed_and_the_same_inputs_produce_the_same_journal` above does
+/// not catch that class: it compares three fields of each cycle entry, so a
+/// divergent event id, recorded instant or stage payload passes it. The head
+/// hash commits to every field of every record, in order.
+///
+/// Mutated by minting the journalled cycle entry's event id from a
+/// process-global counter in `Platform::journal_cycle` instead of from the
+/// seeded `IdGenerator`: the head assertion fires, and the sibling test above
+/// still passes.
+#[test]
+fn a_seeded_simulation_run_reproduces_the_same_event_log_hash() -> Result<()> {
+    const SEED: u64 = 0x5EED_0003;
+    let first = seeded_run(SEED)?;
+    let second = seeded_run(SEED)?;
+
+    // Premise: the runs did something. Two empty logs share a head trivially,
+    // and that head is the genesis value rather than the hash of anything.
+    for (name, run) in [("first", &first), ("second", &second)] {
+        assert_eq!(
+            run.cycles, 3,
+            "the {name} run journalled {} cycle entries for three cycles",
+            run.cycles
+        );
+        assert!(
+            run.records > run.cycles,
+            "the {name} run appended {} record(s): nothing beyond its cycle entries reached the \
+             log, so the run exercised nothing a replay would need",
+            run.records
+        );
+        for head in [&run.head, &run.journal_head] {
+            assert_eq!(
+                head.len(),
+                qip_events::log::GENESIS_HASH.len(),
+                "the {name} run's head is not a SHA-256 hex digest: {head:?}"
+            );
+            assert_ne!(
+                head.as_str(),
+                qip_events::log::GENESIS_HASH,
+                "the {name} run's head is the empty-log value"
+            );
+        }
+    }
+    // Premise: the head is a function of the run. A head that did not move
+    // with the seed would make the equality below hold for any two runs at
+    // all, so a different seed must end somewhere else.
+    let other = seeded_run(SEED + 1)?;
+    assert_ne!(
+        other.head, first.head,
+        "a different seed ended on the same head, so the head does not depend on the run and the \
+         equality below would prove nothing"
+    );
+
+    // The property.
+    assert_eq!(
+        first.records, second.records,
+        "two runs from one seed appended different numbers of records"
+    );
+    assert_eq!(
+        first.head, second.head,
+        "two runs from one seed ended on different event-log heads: something other than the \
+         seed and the inputs reached the log"
+    );
+    assert_eq!(
+        first.journal_head, second.journal_head,
+        "two runs from one seed ended on different durable-journal heads, so a replay of one \
+         would not reproduce the other"
+    );
+    Ok(())
+}
+
 // --- the streaming estimators ----------------------------------------------
 
 /// The four streaming estimators §21.1 and §22.2 name actually summarise a

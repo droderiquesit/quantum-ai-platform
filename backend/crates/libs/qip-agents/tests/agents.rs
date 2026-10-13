@@ -954,6 +954,110 @@ fn smoothing_stops_a_perfect_short_record_looking_like_certainty() {
     assert!((three_for_three.smoothed_support() - 0.8).abs() < 1e-12);
 }
 
+/// RM-P9-05: promotion is the step that consolidates episodic memory into
+/// semantic memory, and the lesson it stores must still name every run it
+/// was distilled from, and only those.
+///
+/// The ids are the lesson's provenance: the reviewer cites
+/// `supporting_episodes.len()` beside the statement, and an audit follows a
+/// lesson back to its runs through them. A promotion that trimmed the list
+/// to the policy's minimum would discard evidence while the lesson still
+/// read as supported; one that dropped the contradicting runs would make a
+/// rule that mostly holds read as a law; one that added or repeated an id
+/// would credit the lesson to a run that never supported it.
+#[test]
+fn consolidating_episodes_into_a_lesson_keeps_every_source_episode_id_and_no_other() {
+    let mut memory = ResearchMemory::new();
+    // Eight runs by one agent on one question, six right and two wrong, and
+    // one run by another agent that the lesson does not draw on.
+    for n in 1..=8 {
+        memory.record_episode(episode(n, n <= 6, now()));
+    }
+    let mut unrelated = episode(99, true, now());
+    unrelated.agent_id = "credit".to_string();
+    memory.record_episode(unrelated);
+
+    // The consolidation input, read from episodic memory rather than written
+    // out by hand, split by how each run resolved.
+    let source: Vec<Episode> = memory
+        .episodes_as_of("macro", now())
+        .into_iter()
+        .cloned()
+        .collect();
+    let resolved = |correct: bool| -> Vec<AgentRunId> {
+        source
+            .iter()
+            .filter(|e| e.outcome.as_ref().is_some_and(|o| o.correct == correct))
+            .map(|e| e.run_id.clone())
+            .collect()
+    };
+    let supporting = resolved(true);
+    let contradicting = resolved(false);
+
+    // Premise: there is something to keep and something to exclude. More
+    // supporting runs than the policy's minimum, so a trim to the minimum
+    // would show; contradicting runs, so dropping them would show; and a
+    // recorded run outside the source, so admitting it would show.
+    let policy = PromotionPolicy::default();
+    assert_eq!(source.len(), 8, "premise: eight source episodes");
+    assert_eq!(supporting.len(), 6, "premise: six runs support the lesson");
+    assert_eq!(contradicting.len(), 2, "premise: two runs contradict it");
+    // Every source run resolved one way or the other, so the two lists
+    // together are the source, and the two equalities below say "every
+    // source id and no other" between them.
+    assert_eq!(
+        supporting.len() + contradicting.len(),
+        source.len(),
+        "premise: the two lists partition the source episodes"
+    );
+    assert!(
+        supporting.len() > policy.minimum_support,
+        "premise: more support than the policy's minimum"
+    );
+    assert_eq!(
+        memory.episode_count(),
+        9,
+        "premise: an unrelated run is in memory"
+    );
+
+    let lesson_id = LessonId::from_string("lesson-credit-leads");
+    let promoted = memory
+        .promote(
+            Lesson {
+                lesson_id: lesson_id.clone(),
+                learned_at: now(),
+                learned_by: "learning-engine".to_string(),
+                applies_when: "regime=stressed".to_string(),
+                statement: "credit spreads lead equity by two days".to_string(),
+                supporting_episodes: supporting.clone(),
+                contradicting_episodes: contradicting.clone(),
+                superseded_at: None,
+            },
+            policy,
+        )
+        .expect("premise: six of eight clears the default promotion policy");
+    assert_eq!(promoted, lesson_id);
+    assert_eq!(memory.lesson_count(), 1, "premise: one lesson stored");
+
+    // Read back through the only read path semantic memory has.
+    let live = memory.lessons_as_of(now());
+    let stored = live
+        .iter()
+        .find(|lesson| lesson.lesson_id == lesson_id)
+        .expect("the promoted lesson is readable as of its learning instant");
+
+    // Every one, in order and once each: compared whole, not by membership,
+    // so a dropped id, a foreign id and a repeated id all fail here.
+    assert_eq!(
+        stored.supporting_episodes, supporting,
+        "the stored lesson does not name exactly the runs that supported it"
+    );
+    assert_eq!(
+        stored.contradicting_episodes, contradicting,
+        "the stored lesson does not name exactly the runs that contradicted it"
+    );
+}
+
 #[test]
 fn an_agent_with_no_track_record_has_no_hit_rate() {
     let mut memory = ResearchMemory::new();
