@@ -132,7 +132,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold no version — or, with rotate, as a new version that retires the old; applies no Terraform, grants nothing and touches no cluster)"
+        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold no version — or, with rotate, as a new version that retires the old; applies no Terraform, grants nothing and touches no cluster), urls (read-only: where the environment answers — every qip-<env>-* Cloud Run URL and whether IAP reads enabled on it, how Argo CD and Kargo are reached, and the commands that read the OpenObserve root login; writes nothing, grants nothing, prints no secret), grant (admit one person or group to the console through IAP: requires iap_member, grants roles/iap.httpsResourceAccessor and nothing else, and reads the binding back)"
         required: true
         default: "plan"
         type: choice
@@ -146,6 +146,8 @@ on:
           - force-unlock
           - diagnose
           - seed
+          - urls
+          - grant
       lock_id:
         description: "Only for force-unlock: the lock ID Terraform printed. Required, and deliberately not defaulted — see the step."
         required: false
@@ -166,6 +168,11 @@ on:
         required: false
         default: false
         type: boolean
+      iap_member:
+        description: "Only for grant: the Google identity to admit through IAP, as user:<address> or group:<address>. It is never written to the repository."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -378,7 +385,7 @@ jobs:
       # custom role carries storage.buckets.setIamPolicy. Idempotent, and the
       # bootstrap script makes the same grant.
       - name: the state bucket grant
-        if: inputs.action != 'diagnose' && inputs.action != 'seed'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed' && inputs.action != 'urls' && inputs.action != 'grant'
         run: |
           gcloud storage buckets add-iam-policy-binding \
             "gs://${{ steps.identity.outputs.project }}-qip-tfstate" \
@@ -398,7 +405,7 @@ jobs:
       # second bucket with the same missing permission, not a wider deny that
       # one grant already closed. Idempotent, same shape as the grant above.
       - name: the egress bootstrap bucket grant
-        if: inputs.action != 'diagnose' && inputs.action != 'seed'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed' && inputs.action != 'urls' && inputs.action != 'grant'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
@@ -454,7 +461,7 @@ jobs:
       # belt-and-braces convenience and could be deleted, when for three
       # roles it is the sole grant and deleting it breaks the plan.
       - name: the permissions the plan needs before it can grant them
-        if: inputs.action != 'diagnose' && inputs.action != 'seed'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed' && inputs.action != 'urls' && inputs.action != 'grant'
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
@@ -493,7 +500,7 @@ jobs:
           terraform_version: "1.9.8"
 
       - name: terraform init
-        if: inputs.action != 'diagnose' && inputs.action != 'seed'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed' && inputs.action != 'urls' && inputs.action != 'grant'
         id: init
         run: |
           terraform -chdir=infrastructure/terraform init -input=false \
@@ -2611,6 +2618,263 @@ jobs:
               --project "${GCP_PROJECT}" --limit 30 --order desc \
               --format='value(textPayload,jsonPayload.message)' 2>&1 | sed 's/^/      /'
           done
+
+      # Where the environment answers, read rather than derived, and nothing
+      # else. Every question of the form "what is the console's address" or
+      # "how do I reach Argo CD" has so far been answered either by a gcloud
+      # run by hand from a session holding the owner's credential — the
+      # thing this workflow exists to make unnecessary — or by re-reading
+      # `infrastructure/gitops/README.md`, which drifts. `diagnose` prints
+      # the URL and the IAP reading per service, between the revision
+      # conditions and thirty lines of log each; this is those two reads
+      # with the status left out, plus the two consoles that are not Cloud
+      # Run services and the one login that is read from Secret Manager
+      # rather than from a service.
+      #
+      # Read-only is a property of the job and not of this step, which is
+      # the lesson `diagnose`'s header records: the three self-grant steps
+      # and `terraform init` carry action gates, and this action is named in
+      # each of them, so a `urls` dispatch grants nothing, opens no remote
+      # state and lists none. `a_urls_dispatch_reaches_no_step_that_writes`
+      # in `infrastructure.rs` walks the gates to keep that true — including
+      # the one write `seed` is permitted and this is not.
+      #
+      # It prints the commands that read a secret and never the secret: the
+      # OpenObserve root login is in Secret Manager, this job's identity can
+      # read it (`modules/cicd` grants secretmanager.admin), and a value
+      # printed into a run log is a value in every copy of that log.
+      - name: urls
+        if: inputs.action == 'urls'
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || { echo "the tfvars name no region" >&2; exit 1; }
+
+          echo "Cloud Run services in ${GCP_PROJECT}/${region}:"
+          services="$(gcloud run services list --project "${GCP_PROJECT}" --region "${region}" \
+            --format='value(metadata.name)' | grep "^qip-${ENVIRONMENT}-" || true)"
+          if [ -z "${services}" ]; then
+            echo "  no qip-${ENVIRONMENT}-* service exists. Config Connector creates each from infrastructure/gitops/envs/${ENVIRONMENT}/ once an apps dispatch has synced a manifest naming a digest rather than TO-PIN."
+          fi
+          for service in ${services}; do
+            # The address a browser would open, and whether Identity-Aware
+            # Proxy is in front of it — both read, for the reason `diagnose`
+            # and the IAP gate give: `modules/iap-run` derives the URL from
+            # a naming convention, and a convention is not a reading.
+            url="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format='value(status.url)' 2>/dev/null || true)"
+            echo "  ${service}: ${url:-none; no revision has served yet}"
+            # `iapEnabled` is a Cloud Run **v2** field and `gcloud run
+            # services describe` projects the v1 shape, so the GA surface can
+            # answer empty for a service on which IAP is genuinely enabled.
+            # An empty answer is reported as unread rather than as false:
+            # "IAP is off" and "this gcloud did not say" are different facts,
+            # and printing the second as the first sends somebody to
+            # re-enable a gate that was never off.
+            iap="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
+            surface="run services describe"
+            if [ -z "${iap}" ]; then
+              iap="$(gcloud beta run services describe "${service}" --project "${GCP_PROJECT}" \
+                --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
+              surface="beta run services describe"
+            fi
+            if [ -z "${iap}" ]; then
+              echo "    iapEnabled: not reported by either gcloud surface; this is not a reading of false"
+            else
+              echo "    iapEnabled: ${iap} (read with gcloud ${surface})"
+            fi
+          done
+
+          echo "Argo CD and Kargo:"
+          if ! grep -Eq '^gitops_enabled[[:space:]]*=[[:space:]]*true' "$tfvars"; then
+            echo "  none: gitops_enabled is not true in ${tfvars}, so this environment declares no control plane (ADR 0036)."
+          else
+            # Published only where the tfvars say so and name both hosts;
+            # the root refuses the half-configuration, so a gateway flag
+            # beside an empty hostname never reaches an apply. Everything
+            # else is ADR 0095 decision 5: nothing published, reached the
+            # way this workflow's own bootstrap reaches the cluster.
+            argocd=""
+            kargo=""
+            if grep -Eq '^gitops_gateway_enabled[[:space:]]*=[[:space:]]*true' "$tfvars"; then
+              argocd="$(sed -n 's/^gitops_argocd_hostname[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+              kargo="$(sed -n 's/^gitops_kargo_hostname[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+            fi
+            if [ -n "${argocd}" ] && [ -n "${kargo}" ]; then
+              echo "  Argo CD: https://${argocd}"
+              echo "  Kargo:   https://${kargo}"
+            else
+              echo "  published nowhere (ADR 0095 decision 5). Reached through the fleet's Connect gateway and a port-forward, as infrastructure/gitops/README.md gives it:"
+              echo "    gcloud container fleet memberships get-credentials qip-${ENVIRONMENT}-control-plane --project ${GCP_PROJECT} --location ${region}"
+              # The two port-forwards are read out of the README rather than
+              # carried here, so this step holds no second copy of them to
+              # drift — the README is the record of how the consoles are
+              # reached, and it is the only one. It also keeps the gitops
+              # suite's reading of this file true: the bootstrap step is the
+              # one step that runs kubectl, and this one names it nowhere.
+              forwards="$(sed -n '/port-forward/p' infrastructure/gitops/README.md)"
+              if [ -n "${forwards}" ]; then
+                printf '%s\n' "${forwards}" | sed 's/^/    /'
+              else
+                echo "    infrastructure/gitops/README.md no longer carries the port-forward commands; read its Connect-gateway section for how Argo CD and Kargo are reached."
+              fi
+              echo "  If get-credentials finds no membership, the cluster is suspended (ADR 0093) and a later up recreates it."
+            fi
+          fi
+
+          echo "OpenObserve's root login is in Secret Manager. These read it; this step does not:"
+          echo "    gcloud secrets versions access latest --secret qip-openobserve-root-email-${ENVIRONMENT} --project ${GCP_PROJECT}"
+          echo "    gcloud secrets versions access latest --secret qip-openobserve-root-password-${ENVIRONMENT} --project ${GCP_PROJECT}"
+
+      # Admit one person to the console, and read the admission back.
+      #
+      # ADR 0095 decision 4 keeps `iap_members = []` in every environment,
+      # because an IAM member is an account identifier and
+      # `.claude/rules/00-enterprise-governance.md` refuses one in a
+      # committed file. So the door comes up admitting nobody, and the only
+      # way through it has been the `gcloud iap web add-iam-policy-binding`
+      # the IAP gate prints at the end of an `apps` run — run by hand, from
+      # a session holding the owner's credential. This is that command as a
+      # dispatch, so admitting a person takes the owner's dispatch and not
+      # the owner's shell.
+      #
+      # **The member is bound through `env:`, and the runner prints every
+      # `env:` value in the step's log header.** That is acceptable here,
+      # and it is not the seed road's rule, so the difference is said in one
+      # place: the seed inputs are credentials, which is why that step reads
+      # them from the event payload on disk and masks each before any line
+      # can print it. An IAM member is not a credential; it is the name of
+      # the person being admitted, this step prints it on purpose when it
+      # reads the binding back, and a dispatch is the owner's choice to put
+      # that name in this run's log — the same choice the seed inputs'
+      # metadata already makes. What it must never do is reach a file in the
+      # tree: the run log is the record of who was admitted, the repository
+      # is not, and nothing here writes to the checkout.
+      #
+      # It grants exactly one role, `roles/iap.httpsResourceAccessor`, and
+      # `a_grant_dispatch_admits_only_a_person_and_only_to_iap` in
+      # `infrastructure.rs` refuses a second. The three self-grant steps and
+      # `terraform init` name this action in their gates: admitting a person
+      # is one binding, and an operator dispatching it has their attention
+      # on a person, not on this job's own identity granting itself seven
+      # roles or opening remote state. The portal binding needs
+      # `roles/iap.admin` on the job's identity, which `the permissions the
+      # plan needs` grants itself on the first `plan` or `up`; a refusal
+      # naming `iap.webTypes.setIamPolicy` means dispatch `plan` once, not
+      # widen anything here.
+      - name: grant
+        if: inputs.action == 'grant'
+        env:
+          GCP_PROJECT: ${{ steps.identity.outputs.project }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          # Through the environment and never pasted into the script, so a
+          # newline in the value is a character and not a second command.
+          # Printed in the step's header; the comment above says why that is
+          # acceptable for this input and for no credential.
+          IAP_MEMBER: ${{ inputs.iap_member }}
+        run: |
+          set -euo pipefail
+          # Character set first, before any pattern tool sees the value:
+          # every pattern tool in a shell matches per line, and `case` alone
+          # reads the whole string. Then the three kinds of member that are
+          # not a person, each refused by name, because the console is for
+          # people: a service account does not sit at a browser, a domain
+          # admits every account in it including the ones that do not exist
+          # yet, and allUsers is the public internet — the exact thing IAP is
+          # in front of the console to refuse (ADR 0095 decision 6). Then the
+          # shape, as a whole-string match.
+          case "${IAP_MEMBER}" in
+            "")
+              echo "::error title=no member::grant needs iap_member: the Google identity to admit, as user:<address> or group:<address>. Nothing was granted." >&2
+              exit 1 ;;
+            *[!A-Za-z0-9.@_:+-]*)
+              echo "::error title=member refused::iap_member holds a character outside A-Z, a-z, 0-9, . @ _ : + and - — most likely a quote, a space or a trailing newline from a paste. Nothing was granted; re-dispatch with the bare user:<address> or group:<address>." >&2
+              exit 1 ;;
+            serviceAccount:*)
+              echo "::error title=not a person::iap_member names a service account, and the console is for people. A workload that needs the portal is a different design, not a grant here. Nothing was granted." >&2
+              exit 1 ;;
+            domain:*)
+              echo "::error title=not a person::iap_member names a whole domain, which admits every account in it, including the ones that do not exist yet. Name the person (user:) or the group (group:). Nothing was granted." >&2
+              exit 1 ;;
+            allUsers|allAuthenticatedUsers)
+              echo "::error title=not a person::iap_member is ${IAP_MEMBER}, which is the public internet, or every Google account on it, and the one thing IAP is in front of the console to refuse. Nothing was granted." >&2
+              exit 1 ;;
+          esac
+          member_pattern='^(user|group):[^@[:space:]]+@[^@[:space:]]+$'
+          if ! [[ "${IAP_MEMBER}" =~ ${member_pattern} ]]; then
+            echo "::error title=not a person::iap_member is '${IAP_MEMBER}', which is not user:<address> or group:<address>. Nothing was granted." >&2
+            exit 1
+          fi
+          tfvars="infrastructure/environments/${ENVIRONMENT}/terraform.tfvars"
+          region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          [ -n "$region" ] || { echo "the tfvars name no region" >&2; exit 1; }
+          admitted=""
+
+          # The portal is a Cloud Run service with IAP on the service itself
+          # (ADR 0095 decision 1), so its access list is per service and this
+          # binding admits the member to the console and to nothing else. A
+          # service that is not there yet is not a failure of this step:
+          # Config Connector creates it once portal.yaml names a digest
+          # rather than TO-PIN, and a 404 here would read as a permission
+          # problem.
+          service="qip-${ENVIRONMENT}-portal"
+          if gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+               --region "${region}" --format='value(metadata.name)' >/dev/null 2>&1; then
+            gcloud iap web add-iam-policy-binding --project="${GCP_PROJECT}" --resource-type=cloud-run --service="${service}" --region="${region}" --member="${IAP_MEMBER}" --role=roles/iap.httpsResourceAccessor --quiet >/dev/null
+            # Read back, and exactly: gcloud's `--filter` operator is a
+            # substring match, and a grant this step reports is one the
+            # policy holds under this role for this member and no other.
+            # The policy itself is never printed — it names everyone else
+            # already admitted.
+            held="$(gcloud iap web get-iam-policy --project="${GCP_PROJECT}" \
+              --resource-type=cloud-run --service="${service}" --region="${region}" --format=json \
+              | jq -r --arg member "${IAP_MEMBER}" \
+                  '[.bindings[]? | select(.role == "roles/iap.httpsResourceAccessor") | .members[]?] | index($member) != null')"
+            if [ "${held}" != "true" ]; then
+              echo "::error title=binding not read back::${service}'s IAP policy does not hold ${IAP_MEMBER} under roles/iap.httpsResourceAccessor after the binding was added. The grant is not proven, so it is not reported as made." >&2
+              exit 1
+            fi
+            echo "admitted ${IAP_MEMBER} to ${service} (IAP on the Cloud Run service, roles/iap.httpsResourceAccessor), read back from the service's IAP policy"
+            admitted="${admitted} ${service}"
+          else
+            echo "::warning title=no console to admit to::${service} does not exist in ${GCP_PROJECT}/${region}, so no binding was added on it. Config Connector creates it from infrastructure/gitops/envs/${ENVIRONMENT}/portal.yaml once that manifest names a digest rather than TO-PIN; dispatch apps after a deploy.yml run has built and attested qip-portal, then grant again."
+          fi
+
+          # Project level, and that is a widening said out loud: a GKE
+          # Gateway's backend service is named by its controller and has no
+          # Terraform address, so the IAP in front of Argo CD and Kargo has
+          # no per-resource list to hold, and every IAP resource in the
+          # project inherits the grant — the portal included. ADR 0095
+          # decision 3 reversed ADR 0094's project-level grant for the portal
+          # on exactly those terms, because IAP on Cloud Run is addressable
+          # per service, and left the gateway's where it was. So this arm
+          # runs only where the tfvars publish the gateway, which no
+          # environment does today.
+          if grep -Eq '^gitops_gateway_enabled[[:space:]]*=[[:space:]]*true' "$tfvars"; then
+            gcloud projects add-iam-policy-binding "${GCP_PROJECT}" --member="${IAP_MEMBER}" --role=roles/iap.httpsResourceAccessor --condition=None --quiet >/dev/null
+            held="$(gcloud projects get-iam-policy "${GCP_PROJECT}" --format=json \
+              | jq -r --arg member "${IAP_MEMBER}" \
+                  '[.bindings[]? | select(.role == "roles/iap.httpsResourceAccessor") | .members[]?] | index($member) != null')"
+            if [ "${held}" != "true" ]; then
+              echo "::error title=binding not read back::${GCP_PROJECT}'s IAM policy does not hold ${IAP_MEMBER} under roles/iap.httpsResourceAccessor after the binding was added. The grant is not proven, so it is not reported as made." >&2
+              exit 1
+            fi
+            echo "admitted ${IAP_MEMBER} to project ${GCP_PROJECT} (project-level roles/iap.httpsResourceAccessor: Argo CD, Kargo and every other IAP resource in the project), read back from the project's IAM policy"
+            admitted="${admitted} project:${GCP_PROJECT}"
+          else
+            echo "gitops_gateway_enabled is not true in ${tfvars}: Argo CD and Kargo publish nothing and are reached through the Connect gateway as the operator's own GKE identity (ADR 0095 decision 5), so there is no IAP in front of them to admit anyone to."
+          fi
+
+          if [ -z "${admitted}" ]; then
+            echo "::error title=admitted to nothing::${IAP_MEMBER} was admitted to nothing: the portal does not exist yet and the gateway is not published. Nothing was granted." >&2
+            exit 1
+          fi
+          echo "admitted: ${IAP_MEMBER} ->${admitted}"
 
       - name: what exists now
         if: always() && inputs.action != 'diagnose' && steps.init.outcome == 'success'
