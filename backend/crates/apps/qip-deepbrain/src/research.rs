@@ -59,7 +59,7 @@ use qip_contracts::ambient::{
 use qip_contracts::expansion::{CapabilityEntry, GapClass};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
-use qip_expansion::campaigns::{TickCampaignDetector, TickCampaignTrigger};
+use qip_expansion::campaigns::{self, TickCampaign, TickCampaignDetector, TickCampaignTrigger};
 use qip_expansion::curriculum::{Budget, State, TaskKind};
 use qip_expansion::desk::{
     Admission, DeskConfig, ExpansionDesk, SweepReport, declared_cost, task_kind,
@@ -836,11 +836,17 @@ impl ResearchLoop {
         }
         let threshold = Decimal::from_f64(RESIDUAL_BPS)
             .ok_or_else(|| Error::numeric("the residual threshold has no decimal form"))?;
+        // Every campaign this sweep opens, kept rather than only counted
+        // (RM-P9-08): each becomes the observation the curriculum queues a
+        // tick replay from, below. Counted alone, a venue whose twin kept
+        // missing raised a counter and no research, and the residual that
+        // opened the campaign stayed the loss nobody could explain.
+        let mut opened_campaigns: Vec<TickCampaign> = Vec::new();
         for fill in &fills[self.fills_read..] {
             let instruments = BTreeSet::from([fill.object_id.clone()]);
-            let mut opened: Vec<TickCampaignTrigger> = Vec::new();
+            let mut opened: Vec<TickCampaign> = Vec::new();
             if let Some(c) = self.ticks.observe_venue(&fill.venue, instruments.clone()) {
-                opened.push(c.trigger);
+                opened.push(c);
             }
             if let Some(bps) = fill.trade_error_bps
                 && let Some(residual) = Decimal::from_f64(bps)
@@ -852,14 +858,15 @@ impl ResearchLoop {
                     instruments,
                 )?
             {
-                opened.push(c.trigger);
+                opened.push(c);
             }
-            for trigger in opened {
+            for campaign in opened {
                 round.campaigns_opened += 1;
                 metrics.count(
                     names::TICK_CAMPAIGNS_OPENED,
-                    labels([("trigger", campaign_str(trigger))]),
+                    labels([("trigger", campaign_str(campaign.trigger))]),
                 );
+                opened_campaigns.push(campaign);
             }
         }
         self.fills_read = fills.len();
@@ -883,9 +890,14 @@ impl ResearchLoop {
                     names::TICK_CAMPAIGNS_OPENED,
                     labels([("trigger", campaign_str(c.trigger))]),
                 );
+                opened_campaigns.push(c);
             }
         }
         self.slippage_read = slippage.len();
+        // One observation per trigger and venue, not one per campaign: a
+        // venue whose twin misses a dozen fills is one question that stays
+        // raised, not a dozen duplicates the desk would refuse.
+        observations.extend(campaigns::observations(&opened_campaigns)?);
         let covered: BTreeSet<String> = platform.price_history().keys().cloned().collect();
         observations.extend(coverage(&self.coverage, &covered, COVERAGE_FLOOR)?);
 

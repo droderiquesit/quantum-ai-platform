@@ -687,14 +687,34 @@ fn a_correction_that_does_not_beat_the_uncorrected_twin_is_refused_promotion_and
         Some(&1),
         "a question already found null was admitted again"
     );
+    // The null question itself, compared whole. This asserted that no queued
+    // question mentioned the venue at all, which stopped being the property
+    // once the sweep's tick campaigns reached the curriculum (RM-P9-08): the
+    // same fills now also queue tick replays at `XSIM`, and a build of the
+    // `tick-replay` tool those are blocked on — different questions that name
+    // the venue legitimately. A substring of the venue matched them and failed
+    // on research the loop is meant to queue, which is the delimited-token
+    // trap `.claude/rules/architecture/01-testing-strategy.md` names.
+    let null_questions: Vec<String> = worse
+        .desk()
+        .closed()
+        .filter(|c| c.reason == CloseReason::NullRecorded && c.question.contains(VENUE))
+        .map(|c| c.question.clone())
+        .collect();
     assert!(
-        worse
-            .desk()
-            .queue()
-            .ranked()
-            .iter()
-            .all(|e| !e.item().research_question.contains(VENUE)),
-        "the null question is back in the queue"
+        !null_questions.is_empty(),
+        "premise: a null question at the venue is on record"
+    );
+    let queued: Vec<String> = worse
+        .desk()
+        .queue()
+        .ranked()
+        .iter()
+        .map(|e| e.item().research_question.clone())
+        .collect();
+    assert!(
+        queued.iter().all(|q| !null_questions.contains(q)),
+        "the null question is back in the queue: null {null_questions:?}, queued {queued:?}"
     );
 }
 
@@ -742,5 +762,79 @@ fn a_research_campaign_runs_four_environments_in_order_with_provenance_and_repla
         first,
         run(),
         "the same fills replayed to different datasets"
+    );
+}
+
+/// RM-P9-08 at the loop: a tick campaign the sweep opens reaches the
+/// curriculum as research, and is not only counted.
+///
+/// `qip-expansion`'s `campaigns::observations` states a sweep's campaigns as
+/// the observations the curriculum raises a tick replay from, and its own
+/// tests hold that statement. What they cannot see is whether the deep
+/// brain's loop ever hands its campaigns over. Until this change it did not:
+/// `ResearchLoop::sweep_over` counted each opened campaign on
+/// `TICK_CAMPAIGNS_OPENED` and dropped it, so the counter rose, the
+/// curriculum never heard, and the residual that opened the campaign stayed
+/// the loss nobody could explain. Mutation: delete the
+/// `observations.extend(campaigns::observations(..))` line in `sweep_over`.
+/// The campaigns are still opened and counted, and no signal names the
+/// detector.
+#[test]
+fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its_detector() {
+    let mut research = deployed(BTreeMap::new());
+    let platform = platform_over(Universe::new());
+    let (licensed, eligible) = deployed_bounds();
+    // Ten fills at a venue the detector has never seen, each missing the
+    // twin by 35 to 45 basis points against a 25 basis point threshold, so
+    // both the new-venue and the fill-prediction triggers fire.
+    let round = research
+        .sweep_over(
+            &platform,
+            &fills(40.0, 0, 0.0),
+            &[],
+            t0(),
+            &licensed,
+            &eligible,
+        )
+        .unwrap();
+
+    // Premise: the sweep opened campaigns. With none there is nothing for
+    // the curriculum to hear, and the property below would pass on silence.
+    assert!(
+        round.campaigns_opened > 0,
+        "premise: the sweep opened no tick campaign: {}",
+        round.describe()
+    );
+
+    let from_campaigns: Vec<_> = round
+        .signals
+        .iter()
+        .filter(|signal| {
+            signal.evidence_ids().first().map(String::as_str) == Some("detector:tick_campaign")
+        })
+        .collect();
+    assert!(
+        !from_campaigns.is_empty(),
+        "the sweep opened {} tick campaign(s) and no signal names the tick-campaign \
+         detector as its origin; the signals it raised name {:?}",
+        round.campaigns_opened,
+        round
+            .signals
+            .iter()
+            .map(|signal| signal.evidence_ids().first().cloned())
+            .collect::<Vec<_>>()
+    );
+    // And it is the campaign at this venue on this instrument, not a stray:
+    // the evidence carries the instrument the fills were on.
+    assert!(
+        from_campaigns.iter().all(|signal| signal
+            .evidence_ids()
+            .iter()
+            .any(|id| id == "instrument:BTC-USD")),
+        "a tick-campaign signal does not carry the fills' instrument: {:?}",
+        from_campaigns
+            .iter()
+            .map(|signal| signal.evidence_ids())
+            .collect::<Vec<_>>()
     );
 }
