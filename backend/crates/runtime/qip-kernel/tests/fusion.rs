@@ -314,6 +314,210 @@ fn a_world_market_mismatch_raises_an_investigation_a_relative_value_hypothesis_o
     Ok(())
 }
 
+/// RM-P2-08: every fused belief names both halves of what it rests on — the
+/// world event and the evidence that event carried, and the instrument trace,
+/// on its venue, that the belief's reaction was measured from.
+///
+/// The failure this prevents is a belief nobody can audit. A posterior is
+/// evidence only if a reader can say which event it was about, how good that
+/// event's evidence was and which market it was measured in; without that it
+/// is a number with a confidence attached. Three ways the join goes wrong are
+/// held here, each by a fixture built to expose it:
+///
+/// * the prior read from somewhere other than the event's own evidence — the
+///   fact linking the event to the company carries 0.9 and the event's
+///   evidence is 0.7, so the two cannot be confused;
+/// * a reaction measured from another instrument's trace — the two traced
+///   listings move in opposite directions, from different levels, on
+///   different venues, and their ids share a prefix (`obj-ACME`,
+///   `obj-ACMEB`), so a lookup that matched by substring would cross-wire
+///   them and is refused by the equality matching below;
+/// * a belief for a listing nothing traded — it would cite a market the
+///   fusion never read, so that listing must end with a prior and no belief.
+///
+/// Mutations: in `fuse`, take `evidence_quality` from the linking fact's
+/// confidence instead of the event's attribute (the evidence assertion
+/// fires); read every instrument's points from the first trace in the market
+/// map instead of its own (the trace assertion fires on `obj-ACMEB`).
+#[test]
+fn a_world_belief_and_a_market_signal_fuse_into_one_belief_with_both_provenances() -> Result<()> {
+    // The world: one event about one company with three listings.
+    let mut graph = KnowledgeGraph::new();
+    graph.add_node(
+        Node::event("evt-strike", "evt-strike", at(100), at(120))
+            .with_attribute("expected_direction", "down")
+            .with_attribute("evidence_quality", "0.7"),
+    )?;
+    graph.add_node(Node::entity("acme", EntityKind::Company, "acme", at(0)))?;
+    graph.assert_fact(Fact::new(
+        Relationship::new(
+            "evt-strike",
+            "acme",
+            RelationshipKind::ConcernsEntity,
+            1.0,
+            "wire:1",
+        ),
+        at(100),
+        at(120),
+        0.9,
+    )?);
+    let listings = [
+        ("inst-acme", "obj-ACME"),
+        ("inst-acmeb", "obj-ACMEB"),
+        ("inst-acmec", "obj-ACMEC"),
+    ];
+    for (node, object) in listings {
+        graph.add_node(
+            Node::new(node, NodeKind::FinancialObject, node, at(0))
+                .with_attribute("object_id", object),
+        )?;
+        graph.assert_fact(Fact::new(
+            Relationship::new("acme", node, RelationshipKind::Issues, 1.0, "registry:1"),
+            at(0),
+            at(0),
+            1.0,
+        )?);
+    }
+
+    // The market: (instrument, venue, mid before the turn, mid after it).
+    // `obj-ACMEC` is not here: nothing traded it. `obj-OTHR` is here and the
+    // event never reaches it.
+    let markets = [
+        ("obj-ACME", "XLON", 100.0, 99.0),
+        ("obj-ACMEB", "XPAR", 40.0, 40.4),
+        ("obj-OTHR", "XETR", 7.0, 7.0),
+    ];
+    let traces: Vec<MarketTrace> = markets
+        .iter()
+        .map(|&(object, venue, before, after)| MarketTrace {
+            venue: venue.into(),
+            ..trace(object, before, after, 150)
+        })
+        .collect();
+
+    let state = fuse(&graph, &traces, at(600), &config())?;
+
+    // Premise: one event was fused, it reached all three listings — one of
+    // which has no trace — and it moved at least one belief. Without the
+    // untraced listing the "no market, no belief" half below would hold of
+    // any fusion; without a belief the loop below would assert nothing.
+    assert_eq!(
+        state.events.len(),
+        1,
+        "premise: the one knowable event was fused"
+    );
+    let fused = &state.events[0];
+    assert_eq!(
+        fused
+            .watch
+            .instruments
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["obj-ACME", "obj-ACMEB", "obj-ACMEC"],
+        "premise: the event reaches all three listings"
+    );
+    assert!(
+        !fused.beliefs.is_empty(),
+        "premise: the fusion moved no belief, so nothing below would be checked"
+    );
+
+    // The world half, common to every belief this event moved: the event
+    // itself, at the instants it occurred and became knowable, and the
+    // evidence it carried — not the confidence of the fact that linked it.
+    assert_eq!(fused.event, "evt-strike");
+    assert_eq!(fused.occurred_at, at(100));
+    assert_eq!(fused.knowable_at, at(120));
+    assert_eq!(
+        fused.evidence_quality, 0.7,
+        "the fused event cites evidence other than the event's own 0.7"
+    );
+
+    for belief in &fused.beliefs {
+        let instrument = belief.instrument.as_str();
+        let watched = fused.watch.instruments.get(instrument).unwrap_or_else(|| {
+            panic!("the belief on {instrument} is on nothing the event reaches")
+        });
+        let (node, _) = listings
+            .iter()
+            .find(|(_, object)| *object == instrument)
+            .unwrap_or_else(|| panic!("the belief on {instrument} is on no listing of acme"));
+        // World: the path runs from the event's entity to this listing, and
+        // the prior the belief moved from is the event's evidence carried
+        // along that path.
+        assert_eq!(
+            watched.path,
+            vec!["acme".to_string(), (*node).to_string()],
+            "the belief on {instrument} does not cite the path from the event's entity"
+        );
+        assert!(
+            (belief.prior - watched.exposure_confidence * fused.evidence_quality).abs() < 1e-12,
+            "the belief on {instrument} moved from a prior of {} that is not the event's evidence \
+             along its exposure ({} x {})",
+            belief.prior,
+            watched.exposure_confidence,
+            fused.evidence_quality
+        );
+        // Market: exactly one reaction on this instrument, measured from this
+        // instrument's own trace, on that trace's venue and no other.
+        let &(_, venue, before, after) = markets
+            .iter()
+            .find(|(object, ..)| *object == instrument)
+            .unwrap_or_else(|| {
+                panic!("the belief on {instrument} cites no trace it could have been measured from")
+            });
+        assert_eq!(
+            watched.venues,
+            BTreeSet::from([venue.to_string()]),
+            "the belief on {instrument} does not cite the venue its trace was recorded on"
+        );
+        let reactions: Vec<_> = fused
+            .reactions
+            .iter()
+            .filter(|reaction| reaction.instrument == instrument)
+            .collect();
+        assert_eq!(
+            reactions.len(),
+            1,
+            "the belief on {instrument} rests on {} measured reactions",
+            reactions.len()
+        );
+        assert_eq!(
+            (reactions[0].baseline_mid, reactions[0].latest_mid),
+            (before, after),
+            "the belief on {instrument} was measured from a trace other than its own"
+        );
+    }
+
+    // Both traced listings were believed, and the listing nothing traded was
+    // not: the world model reached it, so it has a prior, and no market was
+    // read, so it has no reaction and no belief.
+    assert_eq!(
+        fused
+            .beliefs
+            .iter()
+            .map(|belief| belief.instrument.as_str())
+            .collect::<Vec<_>>(),
+        ["obj-ACME", "obj-ACMEB"],
+        "the beliefs are not exactly the two listings a market was read for"
+    );
+    assert!(
+        fused
+            .priors
+            .iter()
+            .any(|prior| prior.instrument == "obj-ACMEC"),
+        "premise: the untraced listing has a prior"
+    );
+    assert!(
+        fused
+            .reactions
+            .iter()
+            .all(|reaction| reaction.instrument != "obj-ACMEC"),
+        "a reaction was measured on a listing nothing traded"
+    );
+    Ok(())
+}
+
 /// Mutation: read events with `events_at(as_of, Timestamp::MAX)` or trace
 /// points without the `p.at <= as_of` filter — a later fact leaks into an
 /// earlier fusion.
