@@ -658,6 +658,52 @@ jobs:
       # matrix named a Dockerfile rather than on the image's name: a `case`
       # on `qip-portal` would be a second place the list of images lives.
       #
+      # The image store the builds below need, switched on before they run.
+      #
+      # BuildKit honours `rewrite-timestamp` only in its own image exporters,
+      # and the Docker daemon uses those only with the containerd image store.
+      # The hosted runner's Docker (28.0.4 on ubuntu-24.04 20261004) uses
+      # graphdriver (overlay2) storage, and there:
+      #   - `--output type=docker` with no `dest` is committed by the daemon's
+      #     own exporter, which ignores `rewrite-timestamp`: every file in
+      #     every layer carries the build's clock, so two builds of one commit
+      #     are two images (deploy runs 265 and 266: same /qip bytes, same
+      #     config and history, different layer digests);
+      #   - `--output type=docker,dest=…` is refused outright: "Docker
+      #     exporter is not supported for the docker driver. Switch to a
+      #     different driver, or turn on the containerd image store".
+      # Both reproduced on 2026-10-13 against a daemon on overlay2 with the
+      # pinned builder digest. With the containerd store the same two builds,
+      # the second `--no-cache`, load as one image id, every file's time the
+      # commit's epoch. The runner is ephemeral and builds nothing before
+      # this step, so the switch costs a daemon restart and loses nothing;
+      # the feature is merged into whatever daemon.json the image ships, and
+      # the step refuses to go on unless the daemon reports the containerd
+      # snapshotter, because a build on the wrong store fails later and less
+      # clearly.
+      - name: build with the containerd image store
+        if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT == env.BUILD_ENVIRONMENT
+        run: |
+          set -euo pipefail
+          config=/etc/docker/daemon.json
+          current="$(sudo cat "$config" 2>/dev/null || echo '{}')"
+          printf '%s' "$current" | jq '.features["containerd-snapshotter"] = true' > "$RUNNER_TEMP/daemon.json"
+          sudo install -m 0644 "$RUNNER_TEMP/daemon.json" "$config"
+          sudo systemctl restart docker
+          for _ in $(seq 1 30); do
+            docker info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          status="$(docker info --format '{{json .DriverStatus}}')"
+          case "$status" in
+            *io.containerd.snapshotter*) echo "docker is on the containerd image store: $status" ;;
+            *)
+              echo "docker did not come back on the containerd image store: $status" >&2
+              echo "The builds below need it for rewrite-timestamp; nothing is built." >&2
+              exit 1
+              ;;
+          esac
+
       # `SOURCE_DATE_EPOCH` is the commit's own timestamp, never the clock's
       # (R12 CICD-9097). It was `$(date +%s)`, so two builds of one commit
       # embedded two different times and could never share a digest — the
@@ -746,15 +792,11 @@ jobs:
             recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}" --build-arg "QIP_SOURCE_COMMIT=${DEPLOY_SHA}")
           fi
           # Exported to a tarball and loaded, never written straight into the
-          # daemon's image store. deploy run 266 (2026-10-13) proved the
-          # difference: with `--output type=docker` and no `dest`, the
-          # runner's daemon (graphdriver storage, not the containerd image
-          # store) commits the layers itself and ignores `rewrite-timestamp`,
-          # so two builds whose /qip, config and history were byte-identical
-          # still had two sets of layer digests — every file's mtime was the
-          # build's clock. The tarball exporter is the code path that
-          # rewrites timestamps, and `docker load` takes the layers as they
-          # are in the tarball, so the image id is a function of the commit.
+          # daemon's image store: on the containerd store, which the step
+          # above switches to, `rewrite-timestamp` conflicts with the unpack
+          # a direct load implies, so the tarball exporter is the path that
+          # applies it, and `docker load` takes the layers as the tarball
+          # holds them. The image id is then a function of the commit.
           docker buildx build \
             "${recipe[@]}" \
             --output "type=docker,dest=${RUNNER_TEMP}/${{ matrix.binary }}.tar,rewrite-timestamp=true" \
