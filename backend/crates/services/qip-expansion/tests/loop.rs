@@ -9,7 +9,7 @@
 use qip_agents::tools::{ToolKind, ToolRegistry};
 use qip_contracts::expansion::{CapabilityVerb, GapClass};
 use qip_core::Decimal;
-use qip_expansion::campaigns::{TickCampaignDetector, TickCampaignTrigger};
+use qip_expansion::campaigns::{self, TickCampaignDetector, TickCampaignTrigger};
 use qip_expansion::curriculum::{Budget, State, TaskKind};
 use qip_expansion::desk::{Admission, CloseReason, DeskConfig, ExpansionDesk, question_for};
 use qip_expansion::detectors::{
@@ -18,7 +18,7 @@ use qip_expansion::detectors::{
     repeated_vetoes, split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
-use qip_expansion::plan::{Environment, ResearchPlan, Step};
+use qip_expansion::plan::{AcquisitionAction, Environment, ResearchPlan, Step};
 use qip_expansion::promotion::{
     Criterion, EvaluationRecord, Finding, Provenance, ResearchCampaign,
 };
@@ -294,6 +294,84 @@ fn lead_lag_and_reaction_residuals_open_a_campaign_past_their_threshold() {
                 set(&[])
             )
             .is_err()
+    );
+}
+
+/// RM-P9-08. A residual between what the twin replayed and what the venue
+/// filled — "live" read as paper, as the roadmap reads it — past its
+/// threshold opens a tick campaign, and the campaign becomes a curriculum
+/// item the desk queues with the tick-replay plan rather than a number on a
+/// counter nobody reads. Asserted through `raise` and `ExpansionDesk::offer`,
+/// the road every other observation takes, so the item is the desk's and not
+/// a list kept on the side.
+///
+/// Mutation: make `campaigns::observations` state nothing, so the campaign is
+/// opened and dropped — the count fails and nothing is queued.
+#[test]
+fn a_residual_above_threshold_between_replay_and_live_opens_a_curriculum_item() {
+    let mut detector = match TickCampaignDetector::new() {
+        Ok(d) => d,
+        Err(e) => panic!("{e}"),
+    };
+    let threshold = Decimal::from_int(25);
+    // Premise: at its threshold the residual opens nothing, so the item below
+    // is the residual's doing and not the detector's default.
+    assert!(matches!(
+        detector.observe_residual(
+            TickCampaignTrigger::FillPredictionError,
+            threshold,
+            threshold,
+            Some("XNYS"),
+            set(&["AAPL"]),
+        ),
+        Ok(None)
+    ));
+    let campaign = match detector.observe_residual(
+        TickCampaignTrigger::FillPredictionError,
+        Decimal::from_int(40),
+        threshold,
+        Some("XNYS"),
+        set(&["AAPL"]),
+    ) {
+        Ok(Some(c)) => c,
+        other => panic!("premise: 40 past 25 opens a campaign: {other:?}"),
+    };
+
+    let mut stated = match campaigns::observations(std::slice::from_ref(&campaign)) {
+        Ok(stated) => stated,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(stated.len(), 1, "one campaign, one observation: {stated:?}");
+    let raised = match raise(stated.remove(0)) {
+        Ok(r) => r,
+        Err(e) => panic!("a stated campaign must classify: {e}"),
+    };
+    let question = question_for(&raised);
+
+    // The tool is registered so the admission is decided by the item, not by
+    // a missing tool; that path has its own test below.
+    let mut desk = desk_with(&[("tick-replay", ToolKind::Simulator)]);
+    assert!(desk.queue().is_empty(), "premise: an empty desk");
+    assert_eq!(
+        desk.offer(raised, &set(&[]), &set(&["US"])),
+        Admission::Queued
+    );
+    let entry = desk
+        .queue()
+        .entry(&question)
+        .unwrap_or_else(|| panic!("the campaign's question is queued: {question}"));
+    assert_eq!(entry.kind(), TaskKind::Campaign);
+    let lineage = desk
+        .lineage(&question)
+        .unwrap_or_else(|| panic!("a queued item keeps its lineage"));
+    assert_eq!(lineage.class, GapClass::Execution);
+    assert_eq!(lineage.action, AcquisitionAction::ReplayTicks);
+    assert_eq!(lineage.derivation.rule, campaigns::ORIGIN);
+    let cited = format!("tick_campaign:{}:40/25", campaign.campaign_id);
+    assert!(
+        lineage.derivation.evidence.contains(&cited),
+        "the item cites the campaign that opened it: {:?}",
+        lineage.derivation.evidence
     );
 }
 
