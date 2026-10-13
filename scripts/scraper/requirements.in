@@ -1,0 +1,41 @@
+# qip-scraper's direct dependencies. Install from requirements.lock beside
+# this file, never from this one: the lock pins every package, transitive
+# ones included, to a version and a set of hashes, so that what runs is what
+# was reviewed.
+#
+# Regenerate the lock (Python 3.12, wheels only, every platform):
+#
+#   uv pip compile requirements.in --python-version 3.12 --universal \
+#     --only-binary :all: --generate-hashes -o requirements.lock
+#
+# Exact pins on purpose. Upgrading scrapegraphai is a review of its telemetry
+# module, its fetch path and its code-execution nodes, not a version bump:
+# README.md, "Upgrading", says what to re-read and which tests guard it.
+
+scrapegraphai==2.3.1
+
+# scrapegraphai drives Anthropic models through LangChain but does not
+# declare this package; without it the Anthropic path fails at runtime.
+langchain-anthropic==1.7.6
+
+# The model's answer is validated here. The library asks for the schema in
+# the prompt and parses JSON, but never validates the result against it.
+jsonschema==4.26.0
+
+# The tool's own fetcher: TLS verified, explicit connect and read timeouts,
+# the body streamed against a byte ceiling. The library never fetches.
+httpx==0.28.1
+
+# Test runner. The tool never imports it.
+pytest==9.1.1
+
+# Floors above advisories that scrapegraphai's own floors still admit.
+# langchain>=1.2.0 admits langchain-core releases affected by
+# GHSA-c67j-w6g6-q2cm (fixed in 1.2.5) and GHSA-pjwx-r37v-7724 (fixed in
+# 1.3.3).
+langchain-core>=1.3.3
+# simpleeval>=1.0.3 admits releases affected by GHSA-44vg-5wv2-h2hg (fixed in
+# 1.0.5). The tool never reaches simpleeval (the node that imports it is
+# refused by the import guard); the floor is so that it is not installed in
+# an affected version either.
+simpleeval>=1.0.5

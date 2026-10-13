@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 30] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 43] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -200,6 +200,27 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 30] = [
     // guard above: ADR 0117, which records its policy file and threshold.
     "scripts/sast-gate.mjs",
     "scripts/sast-gate.test.mjs",
+    // The ScrapeGraphAI extraction tool, built on the owner's direction of
+    // 2026-10-13 with the ADR waived for process only. Python because the
+    // library it wraps is Python, and the platform's language cannot host
+    // it: an operator-run proposal tool, linked into no crate, on no
+    // workflow path, and nothing in the platform reads what it writes
+    // (scripts/scraper/README.md). The tests are pytest, in the language of
+    // the code they load; CI does not run them, because ci.yml's scripts job
+    // runs `node --test` only.
+    "scripts/scraper/qip_scraper/__init__.py",
+    "scripts/scraper/qip_scraper/__main__.py",
+    "scripts/scraper/qip_scraper/cli.py",
+    "scripts/scraper/qip_scraper/extract.py",
+    "scripts/scraper/qip_scraper/fetch.py",
+    "scripts/scraper/qip_scraper/guard.py",
+    "scripts/scraper/qip_scraper/verify.py",
+    "scripts/scraper/tests/conftest.py",
+    "scripts/scraper/tests/test_cli.py",
+    "scripts/scraper/tests/test_extract.py",
+    "scripts/scraper/tests/test_fetch.py",
+    "scripts/scraper/tests/test_guard.py",
+    "scripts/scraper/tests/test_verify.py",
     // Sends the owner a text through a carrier email gateway over SMTP with
     // STARTTLS. Rust cannot do the job here: TLS in-tree is what ADR 0009
     // forbids, and a dependency needs an ADR. Not on a workflow path.
