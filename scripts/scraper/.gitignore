@@ -1,0 +1,5 @@
+# The operator's virtual environment (README.md, "Install").
+.venv/
+# Created if pytest is run without pytest.ini's -p no:cacheprovider.
+.pytest_cache/
+.ruff_cache/
