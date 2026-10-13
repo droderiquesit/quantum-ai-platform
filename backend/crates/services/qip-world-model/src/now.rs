@@ -1721,11 +1721,66 @@ pub struct RegionalState {
     pub variables: Vec<NowVariable>,
 }
 
+/// A feature value the NOW stage reads from the world model, with both of the
+/// instants the feature store holds for it.
+///
+/// The two feeders below returned the bare value until this existed, and the
+/// stage stamped what it got with its own pass instant, so one macro release,
+/// readable for its feature's 120 days, reached the NOW Brain as a new
+/// reading on every pass and tightened the belief on nothing new. A reader
+/// handed the stamps can tell a value it has already read from one it has
+/// not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldReading {
+    /// The feature-store name it was read under: `macro_surprise`, or a
+    /// company reading's metric.
+    pub feature: String,
+    /// What the series is keyed by: a macro series id, or an entity.
+    pub subject: String,
+    pub value: f64,
+    /// The instant the value describes: a release's reference date, a
+    /// filing's period end, a news item's publication.
+    pub valid_at: Timestamp,
+    /// When it became knowable here: the feature store's `available_at`.
+    pub available_at: Timestamp,
+}
+
+/// Every feature value readable at `now` in both time dimensions, keyed
+/// `feature/subject` exactly as [`WorldModel::state_at`] keys its features —
+/// so the feeders select precisely what they selected from it — but holding
+/// the stored value, stamps and all, rather than the bare number.
+fn readable(world: &WorldModel, now: Timestamp) -> BTreeMap<String, &crate::FeatureValue> {
+    let store = world.features();
+    store
+        .definitions()
+        .flat_map(|definition| {
+            store
+                .subjects_with(&definition.name, now, now)
+                .into_iter()
+                .filter_map(move |subject| {
+                    store
+                        .value_as_of(&definition.name, &subject, now, now)
+                        .map(|value| (format!("{}/{subject}", definition.name), value))
+                })
+        })
+        .collect()
+}
+
+fn world_reading(feature: &str, subject: &str, value: &crate::FeatureValue) -> WorldReading {
+    WorldReading {
+        feature: feature.to_string(),
+        subject: subject.to_string(),
+        value: value.value,
+        valid_at: value.valid_at,
+        available_at: value.available_at,
+    }
+}
+
 /// Company-scope readings from the world model (WORLD-3077's company scope):
 /// every feature value readable at `now` in both time dimensions whose
-/// subject is an entity in the knowledge graph, as `(feature, entity, value)`.
-/// Macro series are excluded; they are economy state, not a company's.
-pub fn company_features(world: &WorldModel, now: Timestamp) -> Vec<(String, String, f64)> {
+/// subject is an entity in the knowledge graph. Macro series are excluded;
+/// they are economy state, not a company's.
+pub fn company_features(world: &WorldModel, now: Timestamp) -> Vec<WorldReading> {
     use crate::graph::NodeKind;
     let entities: BTreeSet<String> = world
         .graph()
@@ -1733,30 +1788,34 @@ pub fn company_features(world: &WorldModel, now: Timestamp) -> Vec<(String, Stri
         .into_iter()
         .map(|n| n.id.clone())
         .collect();
-    let state = world.state_at(now, now);
-    state
-        .features
+    readable(world, now)
         .into_iter()
         .filter_map(|(name, value)| {
             let (feature, subject) = name.split_once('/')?;
-            if feature.starts_with("macro") || !entities.contains(subject) || !value.is_finite() {
+            if feature.starts_with("macro")
+                || !entities.contains(subject)
+                || !value.value.is_finite()
+            {
                 return None;
             }
-            Some((feature.to_string(), subject.to_string(), value))
+            Some(world_reading(feature, subject, value))
         })
         .collect()
 }
 
-/// Macro surprises readable at `now`, as `(series, value)`.
-pub fn macro_surprises(world: &WorldModel, now: Timestamp) -> Vec<(String, f64)> {
-    let prefix = format!("{}/", crate::vocabulary::names::MACRO_SURPRISE);
-    world
-        .state_at(now, now)
-        .features
+/// Macro surprises readable at `now`, one per series, the series id as the
+/// subject.
+pub fn macro_surprises(world: &WorldModel, now: Timestamp) -> Vec<WorldReading> {
+    let feature = crate::vocabulary::names::MACRO_SURPRISE;
+    let prefix = format!("{feature}/");
+    readable(world, now)
         .into_iter()
         .filter_map(|(name, value)| {
             let series = name.strip_prefix(&prefix)?;
-            value.is_finite().then(|| (series.to_string(), value))
+            value
+                .value
+                .is_finite()
+                .then(|| world_reading(feature, series, value))
         })
         .collect()
 }
@@ -1796,5 +1855,131 @@ mod tests {
         assert_eq!(confidence_at(&v, t(1)), 8_000);
         assert_eq!(confidence_at(&v, t(2)), 4_000);
         assert_eq!(confidence_at(&v, t(3)), 2_000);
+    }
+
+    /// The feeders hand the NOW stage each value with the two instants the
+    /// feature store holds for it, and select exactly what they selected from
+    /// `WorldModel::state_at` before they carried them. The stage tells a
+    /// re-read from a new value by these instants, so a feeder that swapped
+    /// or dropped one would break that silently. And the selection splits
+    /// `feature/subject` at the first `/`, so an alternative dataset outside
+    /// the vocabulary, `alt/{dataset}/{metric}`, keyed by an entity was never
+    /// a company reading and must not become one through how the keys are
+    /// read.
+    ///
+    /// Mutations: take `valid_at` from `available_at` in `world_reading`
+    /// (the macro reading's instants are wrong); split at the last `/` in
+    /// `company_features` (the alternative series becomes a company reading).
+    #[test]
+    fn the_feeders_carry_each_values_own_instants_and_select_what_state_at_selected() {
+        use crate::graph::NodeKind;
+        use crate::vocabulary::names;
+        use crate::{Feature, FeatureValue};
+        use qip_entity_resolution::entity::{Entity, EntityKind};
+        use qip_financial::intelligence::{FiscalPeriod, FundamentalUpdate, MacroObservation};
+        use qip_financial::quality::{DataQuality, Provenance};
+
+        let (now, reference, ingested) = (t(0), t(-20), t(-1));
+        let mut world = WorldModel::new();
+        world
+            .add_entity(Entity::new(
+                qip_core::EntityId::from_string("ent-acme"),
+                EntityKind::Company,
+                "Acme Corporation",
+                t(-400),
+            ))
+            .unwrap_or_else(|e| panic!("{e}"));
+        world.absorb_macro(&MacroObservation {
+            series_id: "US.CPI.YOY".to_string(),
+            region: "US".to_string(),
+            value: 3.4,
+            unit: "percent".to_string(),
+            reference_date: reference,
+            consensus: Some(3.1),
+            previous: None,
+            is_revision: false,
+            provenance: Provenance::new("wire", reference, ingested),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        });
+        world.absorb_fundamental(&FundamentalUpdate {
+            entity_id: "ent-acme".to_string(),
+            metric: names::REVENUE.to_string(),
+            value: Decimal::from_int(1_000),
+            unit: "USD".to_string(),
+            period_end: t(-35),
+            period: FiscalPeriod::Quarter,
+            consensus: Some(Decimal::from_int(900)),
+            prior_value: None,
+            is_restatement: false,
+            provenance: Provenance::new("filings", t(-35), t(-3)),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        });
+        world.features_mut().define(
+            Feature::new(
+                "alt/panel/visits",
+                "a dataset outside the vocabulary",
+                "panel",
+            )
+            .with_staleness(Duration::from_days(30)),
+        );
+        world.features_mut().record(
+            "alt/panel/visits",
+            "ent-acme",
+            FeatureValue::new(5.0, t(-2), t(-2)),
+        );
+
+        assert_eq!(
+            macro_surprises(&world, now),
+            vec![WorldReading {
+                feature: names::MACRO_SURPRISE.to_string(),
+                subject: "US.CPI.YOY".to_string(),
+                value: 3.4 - 3.1,
+                valid_at: reference,
+                available_at: ingested,
+            }],
+            "the macro reading does not carry the instants the store holds for it"
+        );
+
+        // The company selection as the feeder made it from `state_at`, before
+        // it carried the instants.
+        let entities: BTreeSet<String> = world
+            .graph()
+            .nodes_of_kind(NodeKind::Entity)
+            .into_iter()
+            .map(|n| n.id.clone())
+            .collect();
+        let before: Vec<(String, String, f64)> = world
+            .state_at(now, now)
+            .features
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let (feature, subject) = name.split_once('/')?;
+                (!feature.starts_with("macro") && entities.contains(subject) && value.is_finite())
+                    .then(|| (feature.to_string(), subject.to_string(), value))
+            })
+            .collect();
+        assert!(
+            before
+                .iter()
+                .any(|(feature, _, _)| feature == names::REVENUE),
+            "premise: the filing is a company reading: {before:?}"
+        );
+        assert!(
+            world
+                .features()
+                .current("alt/panel/visits", "ent-acme", now)
+                .is_some(),
+            "premise: the alternative series is readable for the entity"
+        );
+        let after: Vec<(String, String, f64)> = company_features(&world, now)
+            .into_iter()
+            .map(|r| (r.feature, r.subject, r.value))
+            .collect();
+        assert_eq!(
+            after, before,
+            "the company selection moved when the instants were added"
+        );
     }
 }

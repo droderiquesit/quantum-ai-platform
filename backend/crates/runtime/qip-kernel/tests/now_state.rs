@@ -14,10 +14,16 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, dec};
 use qip_events::{EventBody, Topic};
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::intelligence::{
+    EntityMention, FiscalPeriod, FundamentalUpdate, MacroObservation, NewsItem, NewsSource,
+    Sentiment,
+};
+use qip_financial::manifest::SourceManifest;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
+use qip_kernel::cycle::Stage;
 use qip_kernel::now_stage::NowReview;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
@@ -25,7 +31,10 @@ use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_streaming::envelope::StreamEnvelope;
-use qip_world_model::now::ScopeKind;
+use qip_world_model::graph::NodeKind;
+use qip_world_model::now::{
+    BeliefDelta, Domain, NowVariable, PartitionKey, Scope, ScopeKind, VariableKey,
+};
 
 const SYMBOLS: [&str; 2] = ["AAA", "BBB"];
 
@@ -214,5 +223,595 @@ fn the_cycle_produces_global_and_regional_state_and_a_surprise_only_where_a_resi
             surprise.sigmas.abs() >= qip_world_model::now::DEFAULT_SURPRISE_SIGMAS,
             "a surprise inside its bound: {surprise:?}"
         );
+    }
+}
+
+/// RM-P2-15 at the cycle seam: a cycle that absorbs no new macro release
+/// does not tighten the NOW Brain's belief about the surprise.
+///
+/// This failed until the fix that landed with it. The brain itself never
+/// shrinks a variable's variance on a step that brings it nothing
+/// (`qip-world-model`'s
+/// `the_state_covariance_never_shrinks_when_an_observation_is_withheld`). But
+/// `now_stage::own_observations` stamped every macro surprise `valid_at: now`
+/// on every pass, so one release, readable for the feature's 120 days,
+/// arrived as a new reading each cycle and the brain's idempotency filter
+/// could not tell. Measured on this fixture before the fix, the variance fell
+/// from 0.209 to 0.104, 0.069, 0.050, 0.040 and 0.033 over the five cycles
+/// and the confidence rose from 8,269 bp to 9,679 bp: confidence
+/// manufactured from one data point read again and again.
+///
+/// Mutation: in `now_stage::FirstReads::stamp`, stamp every world reading
+/// with the pass rather than its first read (fires at +1h).
+#[test]
+fn a_cycle_that_absorbs_no_new_macro_release_does_not_tighten_the_now_belief_about_it() {
+    let mut platform = platform();
+    let reference = start().saturating_sub(Duration::from_days(20));
+    let release = SensedRecord::Macro(Box::new(MacroObservation {
+        series_id: "US.CPI.YOY".to_string(),
+        region: "US".to_string(),
+        value: 3.4,
+        unit: "percent".to_string(),
+        reference_date: reference,
+        // A consensus, so the world model records a surprise.
+        consensus: Some(3.1),
+        previous: None,
+        is_revision: false,
+        provenance: Provenance::new(
+            "wire",
+            reference,
+            start().saturating_sub(Duration::from_days(1)),
+        ),
+        quality: DataQuality::clean(),
+        evidence_unretrievable: false,
+    }));
+    assert_eq!(
+        platform.observe(vec![release]),
+        1,
+        "premise: the release was absorbed"
+    );
+    let key = VariableKey::new(Scope::global(), "macro_surprise").unwrap();
+    let partition = PartitionKey::new(Domain::Economy, "global").unwrap();
+    platform.run_cycle(start());
+    let first = platform
+        .now_brain()
+        .brain()
+        .store()
+        .get(&partition, &key)
+        .cloned()
+        .expect("premise: the first cycle promoted the macro surprise");
+
+    for hour in 1..=5 {
+        platform.run_cycle(start().saturating_add(Duration::from_hours(hour)));
+        let later = platform
+            .now_brain()
+            .brain()
+            .store()
+            .get(&partition, &key)
+            .cloned()
+            .expect("premise: the macro surprise is still promoted");
+        // Premise: nothing new arrived. The belief rests on exactly the
+        // manifest it rested on after the release.
+        assert_eq!(
+            later.manifests, first.manifests,
+            "premise: a manifest other than the one release reached the belief"
+        );
+        assert!(
+            later.uncertainty >= first.uncertainty,
+            "the cycle at +{hour}h tightened the macro_surprise belief from {} to {} (confidence \
+             {} bp to {} bp) on no new release, still resting on {:?}",
+            first.uncertainty,
+            later.uncertainty,
+            first.confidence_bp,
+            later.confidence_bp,
+            later.manifests
+        );
+    }
+}
+
+fn hours(n: i64) -> Timestamp {
+    start().saturating_add(Duration::from_hours(n))
+}
+
+/// A release of `series` describing `period`, ingested at `ingested`, with a
+/// consensus so the world model records a surprise.
+fn release(
+    series: &str,
+    period: Timestamp,
+    ingested: Timestamp,
+    value: f64,
+    consensus: f64,
+) -> MacroObservation {
+    MacroObservation {
+        series_id: series.to_string(),
+        region: "US".to_string(),
+        value,
+        unit: "percent".to_string(),
+        reference_date: period,
+        consensus: Some(consensus),
+        previous: None,
+        is_revision: false,
+        provenance: Provenance::new("wire", period, ingested),
+        quality: DataQuality::clean(),
+        evidence_unretrievable: false,
+    }
+}
+
+fn observe_release(platform: &mut Platform, observation: MacroObservation) {
+    let series = observation.series_id.clone();
+    assert_eq!(
+        platform.observe(vec![SensedRecord::Macro(Box::new(observation))]),
+        1,
+        "premise: the world model absorbed the {series} release"
+    );
+}
+
+fn macro_key() -> VariableKey {
+    VariableKey::new(Scope::global(), "macro_surprise").unwrap()
+}
+
+/// The global macro surprise as the NOW Brain holds it.
+fn macro_belief(platform: &Platform) -> Option<NowVariable> {
+    platform
+        .now_brain()
+        .brain()
+        .store()
+        .get(
+            &PartitionKey::new(Domain::Economy, "global").unwrap(),
+            &macro_key(),
+        )
+        .cloned()
+}
+
+/// Every belief delta the journaled NOW reviews hold for the global macro
+/// surprise, with the instant of the pass that wrote it.
+fn macro_deltas(platform: &Platform) -> Vec<(Timestamp, BeliefDelta)> {
+    let key = macro_key();
+    reviews::<NowReview>(platform, "now:")
+        .into_iter()
+        .flat_map(|review| {
+            let at = review.at;
+            review
+                .deltas
+                .into_iter()
+                .filter(|delta| delta.key == key)
+                .map(|delta| (at, delta))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// How many passes absorbed a release of `series`: macro-surprise deltas
+/// whose manifests name it as their source.
+fn absorptions(platform: &Platform, series: &str) -> usize {
+    macro_deltas(platform)
+        .iter()
+        .filter(|(_, delta)| delta.manifests.iter().any(|m| m.source == series))
+        .count()
+}
+
+/// The NOW review the cycle numbered `cycle` journaled.
+fn review_of(platform: &Platform, cycle: u64) -> NowReview {
+    reviews::<NowReview>(platform, "now:")
+        .into_iter()
+        .find(|review| review.cycle == cycle)
+        .unwrap_or_else(|| panic!("cycle {cycle} journaled no NOW review"))
+}
+
+/// Every macro series feeds the one global `macro_surprise` belief, so a
+/// release of one series must never be filtered out behind another's.
+/// Release A, CPI for twenty days back, is absorbed first; release B, GDP for
+/// ninety days back, an earlier period than A's, reaches the platform after
+/// A was absorbed. B is new evidence and is absorbed exactly once, and
+/// neither release is absorbed again on the cycles after.
+///
+/// The obvious fix for the re-read is to stamp each reading with the period
+/// it describes, and this is where it breaks: B's period falls behind the
+/// mark A set, and B is filtered as already absorbed — a new release lost,
+/// with nothing to say so.
+///
+/// Mutation: in `now_stage::FirstReads::stamp`, stamp a newly read value
+/// with its `valid_at` rather than the pass (B is never absorbed).
+#[test]
+fn a_release_of_another_series_naming_an_earlier_period_is_absorbed_once_after_one_already_absorbed()
+ {
+    let mut platform = platform();
+    let a_period = start().saturating_sub(Duration::from_days(20));
+    let b_period = start().saturating_sub(Duration::from_days(90));
+    assert!(
+        b_period < a_period,
+        "premise: B describes an earlier period than A"
+    );
+    observe_release(
+        &mut platform,
+        release(
+            "US.CPI.YOY",
+            a_period,
+            start().saturating_sub(Duration::from_days(1)),
+            3.4,
+            3.1,
+        ),
+    );
+    platform.run_cycle(start());
+    assert_eq!(
+        absorptions(&platform, "US.CPI.YOY"),
+        1,
+        "premise: the first cycle absorbed A"
+    );
+
+    observe_release(
+        &mut platform,
+        release(
+            "US.GDP.QOQ",
+            b_period,
+            start().saturating_add(Duration::from_mins(30)),
+            2.0,
+            1.2,
+        ),
+    );
+    platform.run_cycle(hours(1));
+    let belief = macro_belief(&platform).expect("the macro surprise is promoted");
+    assert!(
+        belief.manifests.iter().any(|m| m.source == "US.GDP.QOQ"),
+        "B, another series' release for an earlier period, was not absorbed: the belief still \
+         rests on {:?}",
+        belief.manifests
+    );
+    for hour in 2..=4 {
+        platform.run_cycle(hours(hour));
+    }
+    assert_eq!(
+        absorptions(&platform, "US.GDP.QOQ"),
+        1,
+        "B was absorbed other than once: {:?}",
+        macro_deltas(&platform)
+    );
+    assert_eq!(
+        absorptions(&platform, "US.CPI.YOY"),
+        1,
+        "A was absorbed again after B arrived: {:?}",
+        macro_deltas(&platform)
+    );
+}
+
+/// A release ingested before one already absorbed, but delivered after it,
+/// is still absorbed exactly once.
+///
+/// Connectors stamp a record's ingestion instant from the caller's horizon
+/// and the streaming path delivers out of order, so this is where the second
+/// obvious fix for the re-read breaks: stamp each reading with when the
+/// platform ingested it. B here was ingested two days back, a day before A,
+/// and reaches the platform only after A has been absorbed; stamped with its
+/// ingestion instant it falls behind A's and is lost. B's period is later
+/// than A's, so only its ingestion instant is out of order.
+///
+/// Mutation: in `now_stage::FirstReads::stamp`, stamp a newly read value
+/// with its `available_at` rather than the pass (B is never absorbed).
+#[test]
+fn a_release_ingested_before_one_already_absorbed_but_delivered_after_it_is_absorbed_once() {
+    let mut platform = platform();
+    let a_ingested = start().saturating_sub(Duration::from_days(1));
+    let b_ingested = start().saturating_sub(Duration::from_days(2));
+    assert!(b_ingested < a_ingested, "premise: B was ingested before A");
+    observe_release(
+        &mut platform,
+        release(
+            "US.CPI.YOY",
+            start().saturating_sub(Duration::from_days(20)),
+            a_ingested,
+            3.4,
+            3.1,
+        ),
+    );
+    platform.run_cycle(start());
+    assert_eq!(
+        absorptions(&platform, "US.CPI.YOY"),
+        1,
+        "premise: the first cycle absorbed A"
+    );
+
+    observe_release(
+        &mut platform,
+        release(
+            "US.PPI.YOY",
+            start().saturating_sub(Duration::from_days(15)),
+            b_ingested,
+            2.9,
+            2.5,
+        ),
+    );
+    for hour in 1..=4 {
+        platform.run_cycle(hours(hour));
+    }
+    assert_eq!(
+        absorptions(&platform, "US.PPI.YOY"),
+        1,
+        "B, ingested before A and delivered after it, was absorbed other than once: {:?}",
+        macro_deltas(&platform)
+    );
+    assert_eq!(
+        absorptions(&platform, "US.CPI.YOY"),
+        1,
+        "A was absorbed again after B arrived: {:?}",
+        macro_deltas(&platform)
+    );
+}
+
+/// A release that arrives between two cycles run at the same instant is held
+/// to the next later cycle and absorbed there exactly once, rather than
+/// stamped with the instant the belief already rests on and lost.
+///
+/// `Platform::run_cycle` admits a cycle at the instant of the last one. A
+/// release first read at that second cycle and stamped with its instant ties
+/// the mark A set at the first, is filtered as already absorbed, and carries
+/// that stamp into every cycle after: never absorbed, and nothing says so.
+/// The hold-back is named in the review instead.
+///
+/// Mutation: in `now_stage::FirstReads::stamp`, drop the hold-back and stamp
+/// a newly read value at a pass no later than the last stamp (B is never
+/// absorbed).
+#[test]
+fn a_release_first_read_at_the_instant_of_the_last_cycle_is_held_to_the_next_cycle_and_absorbed_once()
+ {
+    let mut platform = platform();
+    observe_release(
+        &mut platform,
+        release(
+            "US.CPI.YOY",
+            start().saturating_sub(Duration::from_days(20)),
+            start().saturating_sub(Duration::from_days(1)),
+            3.4,
+            3.1,
+        ),
+    );
+    platform.run_cycle(start());
+    assert_eq!(
+        absorptions(&platform, "US.CPI.YOY"),
+        1,
+        "premise: the first cycle absorbed A"
+    );
+
+    observe_release(
+        &mut platform,
+        release(
+            "US.PPI.YOY",
+            start().saturating_sub(Duration::from_days(15)),
+            start().saturating_sub(Duration::from_hours(1)),
+            2.9,
+            2.5,
+        ),
+    );
+    let tied = platform.run_cycle(start());
+    assert!(
+        tied.stage(Stage::Understand).is_some_and(|stage| stage.ran),
+        "premise: the platform ran a second cycle at the instant of the first"
+    );
+    let held = review_of(&platform, tied.cycle);
+    assert!(
+        held.refused.iter().any(|(label, why)| {
+            label == "macro_surprise/US.PPI.YOY" && why.starts_with("first read at")
+        }),
+        "the cycle at the instant of the last did not name B as held back: {:?}",
+        held.refused
+    );
+    assert_eq!(
+        absorptions(&platform, "US.PPI.YOY"),
+        0,
+        "B was absorbed at the instant the belief already rested on"
+    );
+
+    platform.run_cycle(hours(1));
+    platform.run_cycle(hours(2));
+    assert_eq!(
+        absorptions(&platform, "US.PPI.YOY"),
+        1,
+        "B, held back at the tie, was absorbed other than once after it: {:?}",
+        macro_deltas(&platform)
+    );
+}
+
+/// A release delivered again is the same release; a revision of it is not.
+///
+/// A value is known by the period it describes and by the number itself,
+/// not by the instant it was ingested. A re-poll or an at-least-once
+/// redelivery re-stamps the stored value's `available_at` without bringing
+/// anything new, and absorbing it would be the re-read through another
+/// door; a revision changes the number for the same period and is new
+/// evidence, absorbed exactly once.
+///
+/// Mutations in `now_stage::FirstReads::stamp`: compare `available_at` as
+/// well (the redelivery tightens the belief); compare the period alone, not
+/// the number (the revision is never absorbed).
+#[test]
+fn a_release_delivered_again_is_not_absorbed_again_and_a_revision_of_it_is_absorbed_once() {
+    let mut platform = platform();
+    let period = start().saturating_sub(Duration::from_days(20));
+    let original = release(
+        "US.CPI.YOY",
+        period,
+        start().saturating_sub(Duration::from_days(1)),
+        3.4,
+        3.1,
+    );
+    observe_release(&mut platform, original.clone());
+    platform.run_cycle(start());
+    let first = macro_belief(&platform).expect("premise: the first cycle promoted the surprise");
+
+    let redelivered_at = start().saturating_add(Duration::from_mins(10));
+    let mut again = original.clone();
+    again.provenance = Provenance::new("wire", period, redelivered_at);
+    observe_release(&mut platform, again);
+    let stored = platform
+        .world()
+        .features()
+        .current("macro_surprise", "US.CPI.YOY", hours(1))
+        .map(|value| value.available_at);
+    assert_eq!(
+        stored,
+        Some(redelivered_at),
+        "premise: the redelivery re-stamped the value the world model holds"
+    );
+    platform.run_cycle(hours(1));
+    let after = macro_belief(&platform).expect("the macro surprise is still promoted");
+    assert!(
+        after.uncertainty >= first.uncertainty,
+        "the redelivered release tightened the belief from {} to {} (confidence {} bp to {} bp)",
+        first.uncertainty,
+        after.uncertainty,
+        first.confidence_bp,
+        after.confidence_bp
+    );
+
+    let mut revision = original;
+    revision.value = 3.6;
+    revision.is_revision = true;
+    revision.provenance = Provenance::new(
+        "wire",
+        period,
+        hours(1).saturating_add(Duration::from_mins(30)),
+    );
+    observe_release(&mut platform, revision);
+    platform.run_cycle(hours(2));
+    platform.run_cycle(hours(3));
+    let deltas = macro_deltas(&platform);
+    assert_eq!(
+        deltas.iter().filter(|(at, _)| *at == hours(2)).count(),
+        1,
+        "the revision was not absorbed at the cycle after it arrived: {deltas:?}"
+    );
+    assert_eq!(
+        deltas.len(),
+        2,
+        "the release and its revision were not each absorbed exactly once: {deltas:?}"
+    );
+}
+
+/// A cycle that absorbs no new fundamental does not tighten the NOW Brain's
+/// belief about the company either. Company features went through the same
+/// stamping as macro surprises, so a quarterly filing, readable for its
+/// feature's 200 days, and the news sentiment beside it were new readings on
+/// every cycle.
+///
+/// Mutation: as for the macro surprise, stamp every world reading with the
+/// pass in `now_stage::FirstReads::stamp` (fires at +1h).
+#[test]
+fn a_cycle_that_absorbs_no_new_fundamental_does_not_tighten_the_now_belief_about_the_company() {
+    let mut platform = platform();
+    // A company is an entity in the knowledge graph, and news is how one
+    // gets there.
+    let published_at = start().saturating_sub(Duration::from_hours(2));
+    let news = NewsItem {
+        item_id: "news-acme".to_string(),
+        headline: "Acme posts record earnings".to_string(),
+        manifest: SourceManifest::of(
+            "test-newswire",
+            "http://vendor.test/docs#acme",
+            start(),
+            b"Acme Corporation reported record earnings.",
+        )
+        .unwrap(),
+        source: NewsSource::Newswire,
+        published_at,
+        entities: vec![EntityMention {
+            text: "Acme Corporation".to_string(),
+            entity_id: None,
+            confidence: 0.95,
+            is_primary: true,
+            sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
+        }],
+        sentiment: Sentiment {
+            polarity: 0.6,
+            confidence: 0.9,
+            novelty: 0.8,
+        },
+        topics: vec!["earnings".to_string()],
+        provenance: Provenance::new("test-newswire", published_at, published_at),
+        quality: DataQuality::clean(),
+        evidence_unretrievable: false,
+    };
+    assert_eq!(
+        platform.observe(vec![SensedRecord::News(Box::new(news))]),
+        1,
+        "premise: the news item was absorbed"
+    );
+    let entity = {
+        let world = platform.world();
+        let entities = world.graph().nodes_of_kind(NodeKind::Entity);
+        assert_eq!(entities.len(), 1, "premise: the news item named one entity");
+        entities[0].id.clone()
+    };
+    let period_end = start().saturating_sub(Duration::from_days(35));
+    let filing = FundamentalUpdate {
+        entity_id: entity.clone(),
+        metric: "eps".to_string(),
+        value: dec!("2.40"),
+        unit: "USD".to_string(),
+        period_end,
+        period: FiscalPeriod::Quarter,
+        consensus: Some(dec!("2.00")),
+        prior_value: None,
+        is_restatement: false,
+        provenance: Provenance::new(
+            "test-filings",
+            period_end,
+            start().saturating_sub(Duration::from_days(3)),
+        ),
+        quality: DataQuality::clean(),
+        evidence_unretrievable: false,
+    };
+    assert_eq!(
+        platform.observe(vec![SensedRecord::Fundamental(Box::new(filing))]),
+        1,
+        "premise: the filing was absorbed"
+    );
+
+    let company = |platform: &Platform| {
+        platform
+            .now_brain()
+            .brain()
+            .store()
+            .partition(&PartitionKey::new(Domain::Companies, "global").unwrap())
+            .cloned()
+            .unwrap_or_default()
+    };
+    platform.run_cycle(start());
+    let first = company(&platform);
+    let eps = VariableKey::new(
+        Scope::new(ScopeKind::Company, entity.as_str()).unwrap(),
+        "fundamental.eps",
+    )
+    .unwrap();
+    assert!(
+        first.contains_key(&eps),
+        "premise: the first cycle promoted the filing for the company; it promoted {:?}",
+        first.keys().collect::<Vec<_>>()
+    );
+
+    for hour in 1..=5 {
+        platform.run_cycle(hours(hour));
+        let later = company(&platform);
+        assert_eq!(
+            later.keys().collect::<Vec<_>>(),
+            first.keys().collect::<Vec<_>>(),
+            "premise: the company's variables are the ones the first cycle promoted"
+        );
+        for (key, before) in &first {
+            let after = &later[key];
+            assert_eq!(
+                after.manifests, before.manifests,
+                "premise: a manifest other than the filing's or the news item's reached {key}"
+            );
+            assert!(
+                after.uncertainty >= before.uncertainty,
+                "the cycle at +{hour}h tightened {key} from {} to {} (confidence {} bp to {} bp) \
+                 on no new filing",
+                before.uncertainty,
+                after.uncertainty,
+                before.confidence_bp,
+                after.confidence_bp
+            );
+        }
     }
 }

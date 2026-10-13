@@ -37,7 +37,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
 use qip_world_model::now::{
     BeliefDelta, Constraint, Domain, FencingToken, ManifestRef, NowBrain, Observation,
-    PartitionKey, Scale, Scope, ScopeKind, SurpriseEvent, VariableKey, VariableSpec,
+    PartitionKey, Scale, Scope, ScopeKind, SurpriseEvent, VariableKey, VariableSpec, WorldReading,
 };
 /// Re-exported so a binary reading the surprise queue names the same types
 /// without a second dependency path to the world model.
@@ -93,10 +93,11 @@ pub struct NowInputs {
     pub halted: bool,
     /// Priced instruments too thin to read, over all priced instruments.
     pub blind_spot_share: Option<f64>,
-    /// `(series, surprise)` readable now.
-    pub macro_surprises: Vec<(String, f64)>,
-    /// `(feature, entity, value)` readable now.
-    pub company_features: Vec<(String, String, f64)>,
+    /// Macro surprises readable now, one per series, each with the instants
+    /// the world model holds for it.
+    pub macro_surprises: Vec<WorldReading>,
+    /// Company features readable now, each with its instants.
+    pub company_features: Vec<WorldReading>,
 }
 
 /// The pass, as the log keeps it. Compact by construction: deltas and
@@ -166,6 +167,7 @@ pub struct NowStage {
     /// Surprises ever raised; the sequence number of the newest.
     raised: u64,
     last_surprised: BTreeSet<String>,
+    first_reads: FirstReads,
 }
 
 impl NowStage {
@@ -178,6 +180,7 @@ impl NowStage {
             surprises: VecDeque::new(),
             raised: 0,
             last_surprised: BTreeSet::new(),
+            first_reads: FirstReads::default(),
         })
     }
 
@@ -213,9 +216,13 @@ impl NowStage {
     /// One pass.
     pub fn run(&mut self, inputs: NowInputs, now: Timestamp) -> NowReview {
         let mut refused = Vec::new();
-        for (feature, _, _) in &inputs.company_features {
-            if let Err(e) = self.brain.catalogue_mut().declare(company_spec(feature)) {
-                refused.push((company_name(feature), e.message().to_string()));
+        for reading in &inputs.company_features {
+            if let Err(e) = self
+                .brain
+                .catalogue_mut()
+                .declare(company_spec(&reading.feature))
+            {
+                refused.push((company_name(&reading.feature), e.message().to_string()));
             }
         }
         let (mut observations, mut built_refused) = observations(&inputs);
@@ -223,6 +230,17 @@ impl NowStage {
         let (mut own, mut own_refused) = own_observations(&inputs, now);
         observations.append(&mut own);
         refused.append(&mut own_refused);
+        let offered: Vec<(Feed, &WorldReading)> = inputs
+            .macro_surprises
+            .iter()
+            .map(|r| (Feed::Macro, r))
+            .chain(inputs.company_features.iter().map(|r| (Feed::Company, r)))
+            .collect();
+        let (stamped, mut unstamped) = self.first_reads.stamp(&offered, now);
+        refused.append(&mut unstamped);
+        let (mut world, mut world_refused) = world_observations(&stamped);
+        observations.append(&mut world);
+        refused.append(&mut world_refused);
         let step = match self.brain.step(self.token, observations, now) {
             Ok(step) => step,
             Err(e) => {
@@ -452,8 +470,14 @@ pub fn observations(inputs: &NowInputs) -> (Vec<Observation>, Vec<(String, Strin
 }
 
 /// Readings the platform states about itself at `now`: the book's exposure,
-/// the kill switch, blind spots, macro surprises and company fundamentals.
-/// Split from [`observations`] because their instant is the pass's own.
+/// the kill switch and blind spots. Split from [`observations`] because their
+/// instant is the pass's own — each is measured again on every pass, so every
+/// pass's reading is a new one.
+///
+/// Macro surprises and company features were here until they were found to
+/// be the opposite case: a value the world model holds is read again on
+/// every pass it stays readable, so stamped with the pass it reached the
+/// brain as a new reading every time. See `FirstReads`, below.
 pub fn own_observations(
     inputs: &NowInputs,
     now: Timestamp,
@@ -515,27 +539,370 @@ pub fn own_observations(
             format!("cycle-{cycle}"),
         );
     }
-    for (series, value) in &inputs.macro_surprises {
-        push(
-            Ok(Scope::global()),
-            "macro_surprise".into(),
-            Domain::Economy,
-            "global",
-            *value,
-            series,
-            format!("world/macro_surprise/{series}"),
-        );
+    (out, refused)
+}
+
+/// Which world feed a reading came from: part of what the stage remembers a
+/// reading by, so the two feeds can never be taken for one another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Feed {
+    Macro,
+    Company,
+}
+
+/// The value the stage last read for one world series, and when it first
+/// read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FirstRead {
+    /// The value's identity in the world model: the instant it describes and
+    /// the stored number, bit for bit. Not its `available_at`, which a
+    /// release delivered again — a re-poll, an at-least-once redelivery —
+    /// moves without being a new release; a revision changes the number and
+    /// is one.
+    valid_at: Timestamp,
+    bits: u64,
+    /// The pass this stage first read it at, which is its NOW stamp for as
+    /// long as it is read.
+    at: Timestamp,
+}
+
+/// The instant this stage first read each world-model value it still reads.
+///
+/// # The failure this prevents
+///
+/// The NOW Brain absorbs a reading only if its `valid_at` is later than
+/// every reading the variable already rests on: a high-water mark, which is
+/// how a pass that re-reads the same last bar is kept from counting it
+/// twice. This stage stamped every macro surprise and company feature with
+/// the pass's own instant, so a release the world model keeps readable for
+/// 120 days cleared that mark on every pass, and each cycle with nothing new
+/// tightened the belief and raised its confidence as if it had.
+///
+/// # Why the first read, and not the value's own instants
+///
+/// Every macro series feeds the one global `macro_surprise` variable, so the
+/// stamps of different series meet at one mark and must be ordered the way
+/// the readings reach the brain. A reference date is not: a quarterly series
+/// published after a monthly one names an earlier period, and stamped with
+/// it would fall behind the monthly release and be filtered as absorbed — a
+/// new release lost. An ingestion instant is not either: connectors stamp it
+/// from the caller's horizon and the streaming path delivers out of order,
+/// so a record ingested before one already absorbed can still arrive after
+/// it, and would be lost the same way. The pass this stage first read a
+/// value at is ordered by construction: a value read again keeps its stamp,
+/// and a value first read on a later pass is later. The value's own
+/// reference instant stays in the manifest reference, so a belief still
+/// names the release it rests on.
+///
+/// The stamp is never earlier than the value was knowable: a reading the
+/// world model says was not knowable at the pass, or that describes an
+/// instant after it, is refused rather than stamped, because a stamp of
+/// `now` would launder it into the present.
+///
+/// # A pass at the instant of the last
+///
+/// `Platform::run_cycle` admits a cycle at the instant of the one before. A
+/// value first read at a pass no later than the last instant this stage
+/// stamped a value at would tie the mark, be filtered as absorbed, and keep
+/// that stamp for good. It is held back instead, named in the review's
+/// refusals, and stamped at the first later pass.
+///
+/// # Bounded
+///
+/// After each pass the memory holds one entry per world series that pass
+/// read and nothing else, so it is never larger than the pass's own input,
+/// which the world model's feature store bounds. A value no longer offered
+/// is forgotten: it has gone stale or been superseded, and on passes that do
+/// not run backwards the world model does not offer it again.
+#[derive(Clone, Debug, Default)]
+struct FirstReads {
+    series: BTreeMap<(Feed, String, String), FirstRead>,
+    /// The latest pass at which a value was stamped as new.
+    last_stamped: Option<Timestamp>,
+}
+
+/// A world reading, the feed it came from, and its NOW stamp.
+type Stamped<'a> = (Feed, &'a WorldReading, Timestamp);
+
+impl FirstReads {
+    /// Stamp one pass's world readings with the pass each was first read at,
+    /// refusing, named, what cannot be stamped honestly, and forget every
+    /// series the pass did not offer.
+    fn stamp<'a>(
+        &mut self,
+        offered: &[(Feed, &'a WorldReading)],
+        now: Timestamp,
+    ) -> (Vec<Stamped<'a>>, Vec<(String, String)>) {
+        let mut offers: BTreeMap<(Feed, &str, &str), usize> = BTreeMap::new();
+        for (feed, r) in offered {
+            *offers
+                .entry((*feed, r.feature.as_str(), r.subject.as_str()))
+                .or_default() += 1;
+        }
+        let mut kept = BTreeMap::new();
+        let mut stamped = Vec::new();
+        let mut refused = Vec::new();
+        let mut stamped_new = false;
+        for &(feed, r) in offered {
+            let label = format!("{}/{}", r.feature, r.subject);
+            let offered_twice = offers
+                .get(&(feed, r.feature.as_str(), r.subject.as_str()))
+                .is_some_and(|&n| n > 1);
+            let refusal = if offered_twice {
+                Some(format!(
+                    "was offered more than once on the pass at {now}; a series holds one value \
+                     at a time, and which of them to believe is not this stage's guess"
+                ))
+            } else if r.available_at > now {
+                Some(format!(
+                    "knowable at {} but read at {now}; a NOW state cannot use a value the \
+                     platform did not yet have",
+                    r.available_at
+                ))
+            } else if r.valid_at > now {
+                Some(format!(
+                    "describes {}, after the pass at {now}; a value about the future is not a \
+                     reading of the present",
+                    r.valid_at
+                ))
+            } else {
+                None
+            };
+            if let Some(why) = refusal {
+                refused.push((label, why));
+                continue;
+            }
+            let key = (feed, r.feature.clone(), r.subject.clone());
+            let bits = r.value.to_bits();
+            let at = match self.series.get(&key) {
+                Some(seen) if seen.valid_at == r.valid_at && seen.bits == bits => seen.at,
+                _ => match self.last_stamped {
+                    Some(last) if now <= last => {
+                        refused.push((
+                            label,
+                            format!(
+                                "first read at {now}, no later than {last}, when this stage last \
+                                 stamped a new value; held to the next later pass, because \
+                                 stamped {now} it would tie what the NOW Brain already rests on \
+                                 and be filtered as absorbed for good"
+                            ),
+                        ));
+                        continue;
+                    }
+                    _ => {
+                        stamped_new = true;
+                        now
+                    }
+                },
+            };
+            kept.insert(
+                key,
+                FirstRead {
+                    valid_at: r.valid_at,
+                    bits,
+                    at,
+                },
+            );
+            stamped.push((feed, r, at));
+        }
+        self.series = kept;
+        if stamped_new {
+            self.last_stamped = Some(now);
+        }
+        (stamped, refused)
     }
-    for (feature, entity, value) in &inputs.company_features {
-        push(
-            Scope::new(ScopeKind::Company, entity.as_str()),
-            company_name(feature),
-            Domain::Companies,
-            "global",
-            *value,
-            "world/fundamental",
-            format!("{feature}/{entity}"),
-        );
+}
+
+/// The world model's readings as NOW observations, each stamped in both time
+/// dimensions with the pass this stage first read it at (see
+/// [`FirstReads`]). The manifest reference names the value by the instant it
+/// describes, so a delta resting on it says which release or filing it was.
+fn world_observations(stamped: &[Stamped<'_>]) -> (Vec<Observation>, Vec<(String, String)>) {
+    let mut out = Vec::new();
+    let mut refused = Vec::new();
+    for &(feed, r, at) in stamped {
+        let (name, built) = match feed {
+            Feed::Macro => (
+                "macro_surprise".to_string(),
+                world_observation(
+                    Ok(Scope::global()),
+                    "macro_surprise".to_string(),
+                    Domain::Economy,
+                    r,
+                    &r.subject,
+                    format!("world/macro_surprise/{}@{}", r.subject, r.valid_at),
+                    at,
+                ),
+            ),
+            Feed::Company => (
+                company_name(&r.feature),
+                world_observation(
+                    Scope::new(ScopeKind::Company, r.subject.as_str()),
+                    company_name(&r.feature),
+                    Domain::Companies,
+                    r,
+                    "world/fundamental",
+                    format!("{}/{}@{}", r.feature, r.subject, r.valid_at),
+                    at,
+                ),
+            ),
+        };
+        match built {
+            Ok(o) => out.push(o),
+            Err(e) => refused.push((name, e.message().to_string())),
+        }
     }
     (out, refused)
+}
+
+fn world_observation(
+    scope: Result<Scope>,
+    name: String,
+    domain: Domain,
+    reading: &WorldReading,
+    source: &str,
+    reference: String,
+    at: Timestamp,
+) -> Result<Observation> {
+    Ok(Observation {
+        key: VariableKey::new(scope?, name)?,
+        partition: PartitionKey::new(domain, "global")?,
+        value: reading.value,
+        source: source.to_string(),
+        valid_at: at,
+        known_at: at,
+        manifest: ManifestRef::new(source, reference)?,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::*;
+
+    fn now() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
+    }
+
+    fn inputs(macro_surprises: Vec<WorldReading>) -> NowInputs {
+        NowInputs {
+            cycle: 1,
+            home_region: "US".to_string(),
+            instruments: Vec::new(),
+            exposure_fraction: None,
+            halted: false,
+            blind_spot_share: None,
+            macro_surprises,
+            company_features: Vec::new(),
+        }
+    }
+
+    fn surprise(series: &str, valid_at: Timestamp, available_at: Timestamp) -> WorldReading {
+        WorldReading {
+            feature: "macro_surprise".to_string(),
+            subject: series.to_string(),
+            value: 0.3,
+            valid_at,
+            available_at,
+        }
+    }
+
+    /// A world reading the stage cannot stamp honestly is refused, named, and
+    /// never reaches the brain: one not yet knowable at the pass, one about an
+    /// instant after it, and a series offered twice. The stage replaces a
+    /// reading's instants with the pass it was first read at, so without
+    /// these refusals that stamp would launder the first two into the present
+    /// and let the third count one series twice. The one honest reading
+    /// beside them is absorbed, under a manifest naming the period it
+    /// describes.
+    ///
+    /// Mutations in `FirstReads::stamp`: drop the `available_at > now`
+    /// refusal, the `valid_at > now` refusal, or the offered-twice refusal
+    /// (each lets its series into the manifests); in `world_observations`,
+    /// drop `@{valid_at}` from the macro manifest reference.
+    #[test]
+    fn a_world_reading_that_cannot_be_stamped_honestly_is_refused_and_never_reaches_the_brain()
+    -> Result<()> {
+        let past = now().saturating_sub(Duration::from_days(1));
+        let future = now().saturating_add(Duration::from_mins(1));
+        let mut stage = NowStage::new()?;
+        let review = stage.run(
+            inputs(vec![
+                surprise("US.CPI.YOY", past, past),
+                surprise("US.PPI.YOY", past, future),
+                surprise("US.GDP.QOQ", future, past),
+                surprise("US.NFP", past, past),
+                surprise("US.NFP", past, past),
+            ]),
+            now(),
+        );
+        let key = VariableKey::new(Scope::global(), "macro_surprise")?;
+        let delta = review
+            .deltas
+            .iter()
+            .find(|d| d.key == key)
+            .unwrap_or_else(|| {
+                panic!(
+                    "premise: the honest reading was not absorbed; refused {:?}",
+                    review.refused
+                )
+            });
+        assert_eq!(
+            delta.manifests,
+            vec![ManifestRef::new(
+                "US.CPI.YOY",
+                format!("world/macro_surprise/US.CPI.YOY@{past}")
+            )?],
+            "the belief rests on something other than the one honest reading"
+        );
+        for series in ["US.PPI.YOY", "US.GDP.QOQ", "US.NFP"] {
+            let label = format!("macro_surprise/{series}");
+            assert!(
+                review.refused.iter().any(|(refused, _)| *refused == label),
+                "{label} was not refused by name: {:?}",
+                review.refused
+            );
+        }
+        Ok(())
+    }
+
+    /// The memory of first reads holds the series the last pass read and
+    /// nothing else, so it is never larger than the pass's own input; and a
+    /// series read again keeps the stamp of the pass that first read it.
+    ///
+    /// Mutation: in `FirstReads::stamp`, keep the earlier entries beside the
+    /// pass's own instead of replacing them (the memory keeps all eight).
+    #[test]
+    fn the_memory_of_first_reads_holds_only_the_series_the_last_pass_read() -> Result<()> {
+        let past = now().saturating_sub(Duration::from_days(1));
+        let later = now().saturating_add(Duration::from_hours(1));
+        let mut stage = NowStage::new()?;
+        let eight: Vec<WorldReading> = (0..8)
+            .map(|i| surprise(&format!("S{i}"), past, past))
+            .collect();
+        stage.run(inputs(eight), now());
+        assert_eq!(
+            stage.first_reads.series.len(),
+            8,
+            "premise: the first pass remembered the eight series it read"
+        );
+
+        stage.run(
+            inputs(vec![surprise("S0", past, past), surprise("S1", past, past)]),
+            later,
+        );
+        let remembered: Vec<(&str, Timestamp)> = stage
+            .first_reads
+            .series
+            .iter()
+            .map(|((_, _, series), read)| (series.as_str(), read.at))
+            .collect();
+        assert_eq!(
+            remembered,
+            vec![("S0", now()), ("S1", now())],
+            "the memory is not exactly the two series the last pass read, each stamped with the \
+             pass that first read it"
+        );
+        Ok(())
+    }
 }
