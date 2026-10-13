@@ -71,6 +71,18 @@ repository do not count.
   identity for agent sessions (a GitHub App or machine user) whose token
   cannot dispatch deploying workflows; that is a repository-settings act,
   not a file in this tree.
+  **Since 2026-10-13 that gap is, for `dev`, the owner's chosen posture
+  rather than an oversight.** The owner directed that the session operating
+  `dev` on their behalf drive the deployment end to end, and it dispatches
+  `infra.yml` (`diagnose`, `seed`, `apps`, `up`) through the owner's own
+  GitHub identity, which the dispatch check admits as the owner. What bounds
+  that is not the check: it is the workflow's own refusals (prod never, a
+  live venue key never, a held slot never overwritten without `rotate`), the
+  `agent boundary` check's demand for a person's approval of every
+  protected-path change before it is merged, and `deploy.yml`'s re-check.
+  A dispatch from an unmerged branch runs that branch's workflow with the
+  infra identity before any person has approved it; the owner accepted that
+  for `dev`, and no other environment is dispatched this way.
 - **Whether `agent boundary` is a required check.** Branch protection is a
   setting this repository cannot commit. `deploy.yml`'s re-check is the half
   that holds without it: an unapproved protected change can be merged, and
