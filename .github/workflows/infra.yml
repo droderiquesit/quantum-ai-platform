@@ -132,7 +132,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold none; applies no Terraform and touches no cluster)"
+        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold no version — or, with rotate, as a new version that retires the old; applies no Terraform, grants nothing and touches no cluster)"
         required: true
         default: "plan"
         type: choice
@@ -161,6 +161,11 @@ on:
         required: false
         default: ""
         type: string
+      rotate:
+        description: "Only for seed, with both Alpaca values: replace the credential a slot already holds — the value becomes a new version and every version that was enabled is disabled. Off by default, so a re-dispatch cannot resurrect a revoked key by accident."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -373,7 +378,7 @@ jobs:
       # custom role carries storage.buckets.setIamPolicy. Idempotent, and the
       # bootstrap script makes the same grant.
       - name: the state bucket grant
-        if: inputs.action != 'diagnose'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed'
         run: |
           gcloud storage buckets add-iam-policy-binding \
             "gs://${{ steps.identity.outputs.project }}-qip-tfstate" \
@@ -393,7 +398,7 @@ jobs:
       # second bucket with the same missing permission, not a wider deny that
       # one grant already closed. Idempotent, same shape as the grant above.
       - name: the egress bootstrap bucket grant
-        if: inputs.action != 'diagnose'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
@@ -449,7 +454,7 @@ jobs:
       # belt-and-braces convenience and could be deleted, when for three
       # roles it is the sole grant and deleting it breaks the plan.
       - name: the permissions the plan needs before it can grant them
-        if: inputs.action != 'diagnose'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed'
         run: |
           set -euo pipefail
           account="${{ steps.identity.outputs.account }}"
@@ -488,7 +493,7 @@ jobs:
           terraform_version: "1.9.8"
 
       - name: terraform init
-        if: inputs.action != 'diagnose'
+        if: inputs.action != 'diagnose' && inputs.action != 'seed'
         id: init
         run: |
           terraform -chdir=infrastructure/terraform init -input=false \
@@ -619,29 +624,15 @@ jobs:
       # on the envelope key, and run 113 on `qip-session-secret-dev`, which no
       # step had ever seeded. `apps` applies no Terraform, so on `apps` this
       # seeds only containers an earlier `up` created; the emptiness check is
-      # what makes running it on every dispatch of either action safe.
+      # what makes running it on every dispatch of either action safe. And on
+      # `seed`, which exists for the owner-supplied pair the step after this
+      # one writes: a dispatch that carries that pair should leave no
+      # generated slot empty either, so the first `apps` after it has nothing
+      # left to seed.
       - name: seed any credential that has no version
         if: inputs.action == 'up' || inputs.action == 'apps' || inputs.action == 'seed'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
-          # An owner-supplied credential the owner has stored in this
-          # repository's Actions secrets, read under QIP_<ENVIRONMENT>_<SLOT>:
-          # the slot's `qip-` prefix dropped and its dashes as underscores, so
-          # dev's Alpaca paper key id is QIP_DEV_ALPACA_API_KEY_ID. The lookup
-          # is by `format`, so a dev run resolves dev's secret and nobody
-          # else's, and a secret that is not set resolves to the empty
-          # string, which the loop below reads as "not handed over" and
-          # reports by name. GitHub masks these values wherever this job
-          # prints, and the step prints only the slot and the secret's name.
-          #
-          # Only the two Alpaca paper slots have such a pipe. They are the
-          # owner-supplied slots a dev service mounts, and the one dev's `apps`
-          # has died on since run 113 fixed the rest. `qip-venue-credential`
-          # deliberately has none: it is the live-class slot the paper
-          # boundary keeps unreadable, and a pipe that could fill it is a
-          # convenience pointing the wrong way.
-          OWNER_QIP_ALPACA_API_KEY_ID: ${{ secrets[format('QIP_{0}_ALPACA_API_KEY_ID', inputs.environment)] }}
-          OWNER_QIP_ALPACA_API_SECRET_KEY: ${{ secrets[format('QIP_{0}_ALPACA_API_SECRET_KEY', inputs.environment)] }}
         run: |
           set -euo pipefail
           project="${{ steps.identity.outputs.project }}"
@@ -696,26 +687,10 @@ jobs:
             qip-market-data-key qip-quantum-token qip-venue-credential \
             qip-github-app-argocd qip-github-app-kargo"
 
-          # Report, and write only what the owner handed over. An empty owner
-          # slot is not an error here — the infrastructure applied correctly —
-          # but it is the reason a later `apps` will refuse, and naming it now
-          # is cheaper than reading it out of a revision that would not start.
-          #
-          # A slot whose value the owner stored in this repository's Actions
-          # secrets (the step's `env` names the slots that have such a pipe,
-          # and the name each is read under) is filled from there: the same
-          # `versions add` the generated list uses, behind the same emptiness
-          # check, so a value an operator has since rotated by hand is never
-          # replaced by an older copy. What this step still never does is
-          # make an owner value up — `the_seeding_step_never_writes_a_value_
-          # for_a_credential_that_names_another_account` holds the two lists
-          # apart, and this loop writes nothing it was not given.
-          #
-          # A stored value carrying whitespace is refused, not trimmed. The one
-          # plausible way it gets there is a trailing newline from a paste,
-          # and a key written with one fails authentication in a way the
-          # connector reports as a bad credential — which sends somebody to
-          # rotate a key that was right.
+          # Report, never write. An empty owner slot is not an error here —
+          # the infrastructure applied correctly — but it is the reason a
+          # later `apps` will refuse, and naming it now is cheaper than
+          # reading it out of a revision that would not start.
           missing=""
           for secret in ${owner_supplied}; do
             name="$secret-$suffix"
@@ -723,29 +698,7 @@ jobs:
             existing="$(gcloud secrets versions list "$name" --project "$project" \
               --filter="state:ENABLED" --format="value(name)" --limit=1)"
             [ -n "$existing" ] && continue
-            var="OWNER_$(printf '%s' "$secret" | tr 'a-z-' 'A-Z_')"
-            if [ -z "${!var+x}" ]; then
-              # No pipe for this slot: only a person with gcloud fills it.
-              missing="${missing} ${name}"
-              continue
-            fi
-            github_name="QIP_$(printf '%s' "$suffix" | tr 'a-z-' 'A-Z_')_${var#OWNER_QIP_}"
-            value="${!var}"
-            if [ -z "$value" ]; then
-              missing="${missing} ${name}(repository secret ${github_name} is not set)"
-              continue
-            fi
-            case "$value" in
-              *[[:space:]]*)
-                echo "::error title=Owner-supplied credential refused::The repository secret ${github_name} holds whitespace, most likely a trailing newline from a paste. Nothing was written to ${name}. Re-save it as the bare value and re-run."
-                exit 1 ;;
-            esac
-            printf '%s' "$value" > "$scratch/payload"
-            gcloud secrets versions add "$name" --project "$project" \
-              --data-file="$scratch/payload" >/dev/null
-            rm -f "$scratch/payload"
-            echo "seeded $name from the repository secret ${github_name}"
-            seeded=1
+            missing="${missing} ${name}"
           done
           if [ -n "${missing}" ]; then
             # Built up in one variable and emitted on one physical line. A
@@ -758,11 +711,10 @@ jobs:
             # a statement about seven specific slots.
             note="These slots hold no enabled version and this step will not invent one,"
             note="${note} because a generated value would be a false credential rather than a"
-            note="${note} weak one. Any Cloud Run service mounting one cannot start until the"
-            note="${note} value is handed over: where a slot names a repository secret, store"
-            note="${note} the value under that name in this repository's Actions secrets and"
-            note="${note} re-run this action; for any slot, a person runs 'gcloud secrets"
-            note="${note} versions add <name> --project ${project} --data-file=-'. Empty:${missing}"
+            note="${note} weak one. Any Cloud Run service mounting one cannot start until a"
+            note="${note} person runs 'gcloud secrets versions add <name> --project ${project}"
+            note="${note} --data-file=-' — or, for the Alpaca paper pair, dispatches this workflow's"
+            note="${note} seed action with the values. Empty:${missing}"
             echo "::warning title=Owner-supplied credentials have no version::${note}"
           fi
 
@@ -819,42 +771,65 @@ jobs:
       # job's identity. What the road costs is stated rather than hidden:
       # GitHub keeps a run's inputs with the run, so a value given here
       # persists in that metadata, where a collaborator can re-run the
-      # workflow but no API returns the value; it is masked before any other
-      # line executes, so no step can print it; and the step accepts only
-      # the two Alpaca *paper* slots and only a paper key — Alpaca prefixes
-      # paper keys PK and live keys AK — so this road cannot carry a live
-      # venue credential into the platform, which is the line ADR 0003 drew.
+      # workflow but no API returns the value.
       #
-      # Written into an empty slot only, as every seed here is. A slot that
-      # holds a version is reported and left alone: a value arriving by this
-      # road is no more trustworthy than one an operator rotated by hand, and
-      # a version that a running revision resolved must not be replaced by a
-      # dispatch nobody reviewed.
+      # How the value stays out of the log, and why the first version of this
+      # step did not keep it out. The runner prints a step's evaluated `env`
+      # map, and its script with every `${{ }}` expanded, in the step's log
+      # header *before* the first line of the script runs; a dispatch input is
+      # not a registered secret, so nothing redacts it there. Run 115 bound
+      # both inputs in `env:` and masked them on the script's first line,
+      # which was one line too late: both values stood in the header of a
+      # public repository's run log until the logs were deleted and the keys
+      # rotated. So no `inputs.alpaca_*` expression appears anywhere in this
+      # step. The script reads the two inputs out of the event payload the
+      # runner wrote to `GITHUB_EVENT_PATH` — a file on the runner that
+      # nothing prints — and masks each the moment it is read, before any
+      # other command. The acceptance test holds all three: no such
+      # expression in the step, the read from the event file, and the mask
+      # ahead of the first other command.
+      #
+      # Only the two Alpaca *paper* slots are accepted, and only a paper key:
+      # Alpaca prefixes paper keys PK and live keys AK, and an AK key is
+      # refused by name, so this road cannot carry a live venue credential
+      # into the platform ADR 0003 keeps paper-only. A character outside
+      # A-Z, a-z and 0-9 is refused as a paste artefact rather than trimmed.
+      #
+      # Written only into a slot that holds no version in any state, unless
+      # `rotate` is set. A disabled version is how a leaked key is revoked,
+      # and it must read as "seeded, then revoked" and never as "empty": a
+      # step that refilled such a slot from a re-dispatched input would
+      # resurrect the revoked value. With `rotate: true` the value becomes a
+      # new version and every version that was enabled is disabled, which is
+      # the whole of a rotation. The running revision keeps the version it
+      # started with until the next `apps` stamps the new versions onto its
+      # template and Config Connector creates the revision that reads them.
       - name: seed the credentials handed to this dispatch
         if: inputs.action == 'seed'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
-          ALPACA_API_KEY_ID: ${{ inputs.alpaca_api_key_id }}
-          ALPACA_API_SECRET_KEY: ${{ inputs.alpaca_api_secret_key }}
+          ROTATE: ${{ inputs.rotate }}
         run: |
           set -euo pipefail
-          # Mask before any other line can print. The runner consumes a
-          # workflow command rather than echoing it, so these put nothing in
-          # the log; every later line that could print either value is
-          # redacted by them.
-          [ -z "${ALPACA_API_KEY_ID}" ] || echo "::add-mask::${ALPACA_API_KEY_ID}"
-          [ -z "${ALPACA_API_SECRET_KEY}" ] || echo "::add-mask::${ALPACA_API_SECRET_KEY}"
+          # Read, then mask, before anything else runs: each value is
+          # redacted from every later line the moment it is known. The
+          # runner consumes a workflow command rather than printing it, so
+          # the mask lines themselves put nothing in the log.
+          key_id="$(jq -r '.inputs.alpaca_api_key_id // ""' "${GITHUB_EVENT_PATH}")"
+          [ -z "${key_id}" ] || echo "::add-mask::${key_id}"
+          secret_key="$(jq -r '.inputs.alpaca_api_secret_key // ""' "${GITHUB_EVENT_PATH}")"
+          [ -z "${secret_key}" ] || echo "::add-mask::${secret_key}"
           project="${{ steps.identity.outputs.project }}"
           suffix="${ENVIRONMENT}"
-          if [ -z "${ALPACA_API_KEY_ID}" ] && [ -z "${ALPACA_API_SECRET_KEY}" ]; then
+          if [ -z "${key_id}" ] && [ -z "${secret_key}" ]; then
             echo "seed was dispatched with no credential; the step above seeded the generated slots and nothing else was written."
             exit 0
           fi
-          if [ -z "${ALPACA_API_KEY_ID}" ] || [ -z "${ALPACA_API_SECRET_KEY}" ]; then
+          if [ -z "${key_id}" ] || [ -z "${secret_key}" ]; then
             echo "::error title=half a credential::alpaca_api_key_id and alpaca_api_secret_key are given together or not at all; one without the other is a slot the API would read and fail on. Nothing was written." >&2
             exit 1
           fi
-          case "${ALPACA_API_KEY_ID}" in
+          case "${key_id}" in
             PK*) ;;
             AK*)
               echo "::error title=live key refused::the key id given is a live-trading key: Alpaca prefixes live keys AK and paper keys PK. This platform is paper-only (ADR 0003), and this step writes no live venue credential anywhere. Nothing was written." >&2
@@ -863,7 +838,7 @@ jobs:
               echo "::error title=not an Alpaca key id::the key id given does not start with PK, so it is not an Alpaca paper key id. Nothing was written." >&2
               exit 1 ;;
           esac
-          for value in "${ALPACA_API_KEY_ID}" "${ALPACA_API_SECRET_KEY}"; do
+          for value in "${key_id}" "${secret_key}"; do
             case "${value}" in
               *[![:alnum:]]*)
                 echo "::error title=credential refused::a value given holds a character outside A-Z, a-z and 0-9 — most likely a trailing newline or a quote from a paste. Nothing was written; re-dispatch with the bare values." >&2
@@ -874,25 +849,40 @@ jobs:
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
           write_once() {
-            local name="$1" value="$2" existing
+            local name="$1" value="$2" held newest version
             if ! gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1; then
               echo "::error title=no such slot::${name} does not exist in ${project}; an up's apply creates it. Nothing was written." >&2
               return 1
             fi
-            existing="$(gcloud secrets versions list "$name" --project "$project" \
-              --filter="state:ENABLED" --format="value(name)" --limit=1)"
-            if [ -n "$existing" ]; then
-              echo "${name} already holds an enabled version; the value given was not written. Disable that version first if it is to be replaced."
+            # Any version in any state counts as held. No state filter here,
+            # on purpose: a slot whose only version is disabled is a revoked
+            # credential, and refilling it would be a resurrection.
+            held="$(gcloud secrets versions list "$name" --project "$project" \
+              --format="value(name)" --limit=1)"
+            if [ -n "$held" ] && [ "${ROTATE}" != "true" ]; then
+              echo "${name} already holds a version (enabled, disabled or destroyed); the value given was not written. To replace what it holds, dispatch seed again with rotate=true."
               return 0
             fi
             printf '%s' "$value" > "$scratch/payload"
             gcloud secrets versions add "$name" --project "$project" \
               --data-file="$scratch/payload" >/dev/null
             rm -f "$scratch/payload"
-            echo "seeded ${name} with a first version from this dispatch; the value was not printed."
+            if [ -n "$held" ]; then
+              newest="$(gcloud secrets versions list "$name" --project "$project" \
+                --filter="state:ENABLED" --sort-by=~createTime --format="value(name)" --limit=1)"
+              for version in $(gcloud secrets versions list "$name" --project "$project" \
+                  --filter="state:ENABLED" --format="value(name)"); do
+                [ "$version" = "$newest" ] && continue
+                gcloud secrets versions disable "${version##*/}" --secret "$name" --project "$project" >/dev/null
+                echo "disabled ${name} version ${version##*/}"
+              done
+              echo "rotated ${name}: version ${newest##*/} is now its one enabled version; the value was not printed. The next apps stamps it onto the revisions that mount it."
+            else
+              echo "seeded ${name} with a first version from this dispatch; the value was not printed."
+            fi
           }
-          write_once "qip-alpaca-api-key-id-${suffix}" "${ALPACA_API_KEY_ID}"
-          write_once "qip-alpaca-api-secret-key-${suffix}" "${ALPACA_API_SECRET_KEY}"
+          write_once "qip-alpaca-api-key-id-${suffix}" "${key_id}"
+          write_once "qip-alpaca-api-secret-key-${suffix}" "${secret_key}"
 
       # Put back into state what the teardown deliberately left in the
       # project, before the apply below plans to create it a second time.
@@ -1432,9 +1422,9 @@ jobs:
           # **This repository is public**, so Argo CD clones it anonymously
           # and its credential buys a higher rate limit rather than access.
           # Missing, it warns and carries on. Kargo's is different: Kargo
-          # *pushes* promotion commits, which anonymous access cannot do, so a
-          # missing Kargo credential fails — at phase 11, where Kargo is,
-          # rather than here.
+          # *pushes* promotion commits, which anonymous access cannot do, so
+          # without it phase 11, where Kargo is, applies nothing of Kargo and
+          # says so; the warning here is the early notice of that.
           have_argocd_credential=0
           if gcloud secrets versions list "qip-github-app-argocd-${ENVIRONMENT}" \
                --project "${GCP_PROJECT}" --filter='state:ENABLED' --format='value(name)' 2>/dev/null | grep -q .; then
@@ -1453,7 +1443,7 @@ jobs:
               --project "${GCP_PROJECT}" --out-file "${scratch}/kargo.json"
             have_kargo_credential=1
           else
-            echo "::warning title=no Kargo App credential::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version. Kargo pushes promotion commits and cannot do that anonymously, so phase 11 will refuse."
+            echo "::warning title=no Kargo App credential::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version. Kargo pushes promotion commits and cannot do that anonymously, so phase 11 will apply no Project and no promotion chain, and say so."
           fi
           python3 - "$scratch" "https://github.com/${repository}.git" "${have_argocd_credential}" "${have_kargo_credential}" <<'PY'
           import json, sys
@@ -1775,73 +1765,108 @@ jobs:
                 ;;
             esac
 
-            # A revision that died on an empty secret is retried here, and
-            # nowhere else retries it.
+            # Secret versions are part of a revision's identity, and this is
+            # where that is made true.
             #
             # Cloud Run validates every mounted secret when it *creates* a
             # revision, refuses one whose container holds no enabled version
             # ("Secret .../versions/latest was not found"), and never looks
             # again: a version seeded a minute later changes nothing, because
-            # that revision is already dead and nothing creates another.
-            # Config Connector creates one only when the template differs
-            # from what Cloud Run holds, and seeding a secret changes no
-            # template. So the seed step above can fill every empty slot and
-            # the service it filled them for stays down. Run 113's portal
-            # died on `qip-session-secret-dev`; a re-run after seeding it
-            # would have found the same dead revision, printed the same
-            # message, and sent somebody to check a secret that was there.
+            # that revision is already dead and nothing creates another. A
+            # rotation is the same fact from the other side: `latest` is
+            # resolved when an instance starts, so a revision keeps the
+            # version it started with. Config Connector creates a revision
+            # only when the template differs from what Cloud Run holds, and
+            # neither seeding nor rotating a secret changes a template. So the
+            # seed step above can fill every empty slot and the service it
+            # filled them for stays down — run 113's portal died on
+            # `qip-session-secret-dev`, and a re-run after seeding it would
+            # have found the same dead revision and printed the same message.
             #
-            # The manifest is the only remedy ADR 0036 admits, and this acts
-            # on the manifest's own live object: the RunService in `qip-run`
-            # gets one annotation on its template, valued by the enabled
-            # version of each secret the dead revision named. Config
-            # Connector sees a template that differs and creates a revision.
-            # The value comes from the versions rather than from the clock,
-            # so a later dispatch over the same versions writes the same
-            # annotation and creates nothing. Argo CD keeps reporting Synced:
-            # its diff is a three-way merge of the manifest over the live
-            # object, and a field the manifest does not name survives it,
-            # exactly as a mutating webhook's annotation does; the next real
-            # manifest change carries it along and supersedes it.
+            # So every RunService's template carries one annotation,
+            # `qip.algorik.ai/secret-versions`, valued by the enabled version
+            # of each secret its template mounts, written here on every
+            # `apps`. A service whose stamp is current is left alone. One
+            # whose stamp differs — a slot seeded since, a key rotated since —
+            # gets a template that differs, and Config Connector creates the
+            # revision that reads the versions that exist now. A service with
+            # a mounted slot that still holds no enabled version is not
+            # stamped and is left for the Healthy wait and the diagnosis to
+            # name: a nudge that re-ran a revision that would die again hides
+            # the cause behind a new name.
             #
-            # Only a revision whose failure names a secret, and only when
-            # every secret it names now holds an enabled version. Any other
-            # failure — a container that exits, a path that does not exist —
-            # is left for the Healthy wait to report, and so is a revision
-            # that names two secrets of which one is still empty: a nudge
-            # that re-ran a revision that would die again hides the cause
-            # behind a new name, which is worse than the dead revision.
-            retry_seeded() {
-              local services service latest conditions names name enabled versions
-              services="$(gcloud run services list --project "${GCP_PROJECT}" --region "${region}" \
-                --format='value(metadata.name)' 2>/dev/null | grep "^qip-${ENVIRONMENT}-" || true)"
+            # What this is, said plainly: deliberate drift on the live object.
+            # ADR 0036 decision 7 puts selfHeal there so a hand-edited service
+            # goes back to what the manifest says, and decision 10 traces every
+            # revision through a promotion commit. This annotation is in no
+            # manifest and is traced through nothing in git; it is derived
+            # from Secret Manager, which the manifest already defers to by
+            # mounting `versionRef: latest` without being able to say which
+            # version that is. Argo CD's three-way diff keeps a field the
+            # manifest does not name, as it keeps a mutating webhook's, so the
+            # drift is invisible to the sync, and that invisibility is the
+            # cost. It is taken rather than the alternative — a workflow that
+            # commits a version number into a manifest on every rotation —
+            # because which version a secret is at is a fact about the
+            # environment and not a decision anybody reviews.
+            #
+            # After a stamp, two things are waited for. Config Connector must
+            # observe the new generation before Argo CD's health is asked,
+            # because until it does the Ready condition is the previous
+            # reconcile's. And a sync with hooks is started, because the
+            # revision a stamp creates is outside any sync, and ADR 0036
+            # decision 7's PostSync hook, `qip-prove-serving`, is the proof
+            # that a revision serves; a revision no hook judged is a claim.
+            #
+            # The services are read from the RunServices in `qip-run`, not
+            # from Cloud Run's list: a Cloud Run service no manifest owns
+            # (every manifest abandons on delete) has nothing here to patch,
+            # and a patch that fails for any reason is a warning and the next
+            # service, never the end of the step.
+            stamp_secret_versions() {
+              local services service secrets name enabled versions current generation
+              stamped=0
+              services="$(kubectl -n qip-run get runservices -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
               for service in ${services}; do
-                latest="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
-                  --format='value(status.latestCreatedRevisionName)' 2>/dev/null || true)"
-                [ -n "${latest}" ] || continue
-                conditions="$(gcloud run revisions describe "${latest}" --project "${GCP_PROJECT}" --region "${region}" \
-                  --format='value(status.conditions[].message)' 2>/dev/null || true)"
-                # Each secret the dead revision names, once.
-                names="$(printf '%s\n' "${conditions}" \
-                  | grep -o 'secrets/qip-[a-z0-9-]*/versions/latest was not found' \
-                  | sed 's|secrets/\(.*\)/versions/latest was not found|\1|' | sort -u || true)"
-                [ -n "${names}" ] || continue
+                secrets="$(kubectl -n qip-run get "runservice/${service}" -o json 2>/dev/null \
+                  | jq -r '[ ((.spec.template.volumes // [])[] | .secret.secretRef.external // empty),
+                             ((.spec.template.containers // [])[] | (.env // [])[] | .valueSource.secretKeyRef.secretRef.external // empty) ]
+                           | unique | .[]' || true)"
+                [ -n "${secrets}" ] || continue
                 versions=""
-                for name in ${names}; do
+                for name in ${secrets}; do
                   enabled="$(gcloud secrets versions list "${name}" --project "${GCP_PROJECT}" \
-                    --filter='state:ENABLED' --format='value(name)' --limit=1 2>/dev/null || true)"
+                    --filter='state:ENABLED' --sort-by=~createTime --format='value(name)' --limit=1 2>/dev/null || true)"
                   if [ -z "${enabled}" ]; then
-                    echo "${service}: ${latest} died on ${name}, which still holds no enabled version; there is nothing to retry until it is seeded."
+                    echo "${service}: mounts ${name}, which holds no enabled version; not stamped, and no revision of it can start until that slot is seeded."
                     versions=""
                     break
                   fi
                   versions="${versions}${versions:+,}${name}:${enabled##*/}"
                 done
                 [ -n "${versions}" ] || continue
-                echo "${service}: ${latest} died on a secret that has since been seeded (${versions}); asking Config Connector for a new revision."
-                kubectl -n qip-run patch "runservice/${service}" --type merge \
-                  -p "{\"spec\":{\"template\":{\"annotations\":{\"qip.algorik.ai/secret-versions\":\"${versions}\"}}}}" >/dev/null
+                current="$(kubectl -n qip-run get "runservice/${service}" -o json 2>/dev/null \
+                  | jq -r '.spec.template.annotations["qip.algorik.ai/secret-versions"] // ""' || true)"
+                [ "${current}" = "${versions}" ] && continue
+                echo "${service}: its template is stamped '${current:-nothing}' and its secrets are at ${versions}; asking Config Connector for a revision that reads them."
+                if ! generation="$(kubectl -n qip-run patch "runservice/${service}" --type merge \
+                    -p "{\"spec\":{\"template\":{\"annotations\":{\"qip.algorik.ai/secret-versions\":\"${versions}\"}}}}" \
+                    -o jsonpath='{.metadata.generation}')"; then
+                  echo "::warning title=stamp not applied::${service}: the RunService could not be patched; it is left for the Healthy wait to report."
+                  continue
+                fi
+                stamped=1
+                kubectl -n qip-run wait "runservice/${service}" \
+                  --for=jsonpath='{.status.observedGeneration}'="${generation}" --timeout=120s >/dev/null 2>&1 \
+                  || echo "${service}: Config Connector has not observed generation ${generation} within 120s; the Healthy wait decides."
               done
+              if [ "${stamped}" = 1 ]; then
+                # A sync with hooks, so qip-prove-serving judges the revisions
+                # the stamps created rather than the ones it judged last time.
+                kubectl -n argocd patch "application/qip-${ENVIRONMENT}" --type merge \
+                  -p '{"operation":{"initiatedBy":{"username":"qip-bootstrap"},"sync":{"syncStrategy":{"hook":{}}}}}' >/dev/null 2>&1 \
+                  || echo "::warning title=no proving sync::a sync could not be started after stamping, so the Healthy wait judges Config Connector's Ready condition and not the hook's proof."
+              fi
             }
 
             echo "waiting for the ${ENVIRONMENT} Application to sync and report healthy..."
@@ -1857,15 +1882,15 @@ jobs:
               why
               exit 1
             fi
-            # The retry runs before the first wait and between the later
-            # ones, because a dead revision can exist at either moment: the
-            # auto-sync that followed the merge may have created and lost one
-            # before this dispatch began, and the sync just proven may be
-            # creating one as this line runs. Three waits of 200s are the
-            # 600s this gate has always allowed, spent in pieces so a
-            # revision that dies during the first can be retried before the
-            # last; on the third expiry the diagnosis below is the answer.
-            retry_seeded
+            # The stamp runs before the first wait and between the later
+            # ones, because a dead or stale revision can exist at either
+            # moment: the auto-sync that followed the merge may have created
+            # and lost one before this dispatch began, and the sync just
+            # proven may be creating one as this line runs. Three waits of
+            # 200s are the 600s this gate has always allowed, spent in pieces
+            # so a revision that dies during the first can be replaced before
+            # the last; on the third expiry the diagnosis below is the answer.
+            stamp_secret_versions
             attempt=1
             until kubectl -n argocd wait --for=jsonpath='{.status.health.status}'=Healthy \
                 "application/qip-${ENVIRONMENT}" --timeout=200s; do
@@ -1876,7 +1901,7 @@ jobs:
                 exit 1
               fi
               attempt=$((attempt + 1))
-              retry_seeded
+              stamp_secret_versions
             done
             echo "bootstrapped ${cluster}; qip-${ENVIRONMENT} is Synced and Healthy, and Argo CD reconciles ${gitops}/envs/${ENVIRONMENT} from here on."
 
@@ -2138,8 +2163,8 @@ jobs:
             # chain that is absent promotes nothing, which is exactly the
             # state the pinned digests were in before. The warning names the
             # secret and the command, and this phase's closing line says
-            # Kargo is not bootstrapped rather than letting a green run imply
-            # it is.
+            # Kargo was not applied by this run rather than letting a green
+            # run imply it was.
             if [ ! -f "${scratch}/secret-kargo.json" ]; then
               echo "::warning title=Kargo not bootstrapped::qip-github-app-kargo-${ENVIRONMENT} holds no enabled version, and Kargo cannot push a promotion commit anonymously, so its Project and promotion chain were not applied. Argo CD serves the digests the manifests pin; nothing promotes a new one into them until the credential is seeded as infrastructure/gitops/bootstrap/README.md describes: gcloud secrets versions add qip-github-app-kargo-${ENVIRONMENT} --project ${GCP_PROJECT} --data-file=<app.json> — then re-run this action."
               kargo_bootstrapped=0
@@ -2162,7 +2187,7 @@ jobs:
             if [ "${kargo_bootstrapped}" = 1 ]; then
               echo "bootstrapped Kargo; its chain promotes into ${gitops}/envs/${ENVIRONMENT} from here on."
             else
-              echo "Kargo is not bootstrapped: no Project, no chain, no promotion. ${gitops}/envs/${ENVIRONMENT} serves the digests it pins until qip-github-app-kargo-${ENVIRONMENT} is seeded and this action is run again."
+              echo "Kargo was not applied by this run: without a credential there is no Project, no chain and no promotion from here, and whatever an earlier run applied is unchanged with its credential unrefreshed. ${gitops}/envs/${ENVIRONMENT} serves the digests it pins until qip-github-app-kargo-${ENVIRONMENT} is seeded and this action is run again."
             fi
           fi
 
