@@ -68,7 +68,7 @@ spec:
       - name: QIP_STORAGE_TARGET
         value: memory
       - name: QIP_UNIVERSE_PATH
-        value: /etc/qip/7ec25303c3f3ecac/universe.json
+        value: /etc/qip/931c5fe44d20d1d9/universe.json
       volumeMounts:
       - name: capital-envelope-key
         mountPath: /var/run/secrets/qip/capital-envelope-key

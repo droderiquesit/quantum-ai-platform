@@ -30,14 +30,33 @@ so Config Connector's first reconcile acquires and changes nothing:
 - secret volumes mount at `/var/run/secrets/qip/<key>` and project
   `<file_name>` at mode 0400 (`256`); the secret id is `<name>-<env>` as
   `modules/secrets` names it.
-- `/etc/qip/7ec25303c3f3ecac/universe.json` is the hash-named directory the
-  module publishes the committed `data/datasets/universe.json` under
-  (`substr(sha256(sha256(content)), 0, 16)`); a change to that file is a new
-  directory in the bucket and a new path here, in one commit, and the parity
-  test compares this path to the module's `config_file_paths` output.
-- the egress sidecar's `-c /etc/envoy/envoy-fc9574203f973d2d.yaml` is the
-  object `modules/egress-proxy` publishes from the committed bootstrap,
-  named by its hash; port 9900 is its health listener.
+- `QIP_UNIVERSE_PATH` is `/etc/qip/<prefix>/universe.json`: the hash-named
+  directory the module publishes the committed `data/datasets/universe.json`
+  under, `substr(sha256(join("\n", [sha256(content)])), 0, 16)` — the first
+  sixteen hex characters of the SHA-256 of the file's own lowercase-hex
+  SHA-256 digest, the join being that one digest while no tfvars names a
+  second file. **No value is written here, and this bullet is why.** It
+  carried a literal prefix and said "the parity test compares this path to
+  the module's `config_file_paths` output"; no such test existed. So when
+  `universe.json` changed in `4a571de6` (2026-09-21) the bucket got a new
+  directory, the twelve manifests kept the old one, and `infra.yml` run
+  114's diagnose (2026-10-13) found every `fastbrain` exiting 78 unable to
+  read a path the bucket no longer held. A change to that file is a new
+  directory in the bucket and a new path in every manifest, in one commit.
+  Recompute with
+  `sha256sum data/datasets/universe.json | cut -c1-64 | tr -d '\n' | sha256sum | cut -c1-16`;
+  `gitops.rs`'s
+  `every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under`
+  recomputes it from the bytes and refuses a manifest whose literal differs.
+- the egress sidecar's `-c /etc/envoy/envoy-<hash>.yaml` is the object
+  `modules/egress-proxy` publishes from the committed bootstrap,
+  `envoy-${substr(sha256(file), 0, 16)}.yaml` — the first sixteen hex
+  characters of the SHA-256 of `infrastructure/egress/envoy.yaml`'s bytes.
+  Same rule, same test, same history: the bootstrap changed in `349638db`
+  (2026-10-05), eight manifests kept the old name, and run 114 found
+  `deepbrain`'s Envoy dying on `Invalid path`. Recompute with
+  `sha256sum infrastructure/egress/envoy.yaml | cut -c1-16`. Port 9900 is
+  its health listener.
 - `cpuIdle` is `min_instances == 0`, `startupCpuBoost` is on, the probes are
   the module's, `timeout` is 300s, gen2, `ALL_TRAFFIC` through the zone's
   subnet with the zone's tag.
