@@ -81,7 +81,7 @@ spec:
       - name: capital-envelope-key
         mountPath: /var/run/secrets/qip/capital-envelope-key
       - name: config-files
-        mountPath: /etc/qip
+        mountPath: /etc/qip/931c5fe44d20d1d9
       startupProbe:
         initialDelaySeconds: 2
         periodSeconds: 3
@@ -132,14 +132,41 @@ spec:
           mode: 256
           versionRef:
             external: latest
+    # The committed Envoy bootstrap as a secret volume, for the reason
+    # config-files gives below: the CRD has no `gcs`, the field was pruned, and
+    # infra.yml run 117 (2026-10-13) found this sidecar dying on
+    # `Invalid path: /etc/envoy/envoy-760e37df4041e228.yaml`. Mode 292 (0444):
+    # Envoy runs as its image's non-root user, and the bytes are a reviewed
+    # file, not a credential.
     - name: egress-bootstrap
-      gcs:
-        bucket: qip-egress-dev-algorik-qip-dev
-        readOnly: true
+      secret:
+        secretRef:
+          external: qip-egress-bootstrap-dev
+        defaultMode: 292
+        items:
+        - path: envoy-760e37df4041e228.yaml
+          mode: 292
+          versionRef:
+            external: latest
+    # The committed universe.json, projected flat by a secret volume, so the
+    # hash directory QIP_UNIVERSE_PATH names is the mount point itself. It was
+    # a `gcs` volume: the RunService CRD (v1.156.0, byte-identical at master)
+    # admits only cloudSqlInstance, emptyDir and secret, so the API server
+    # pruned the field, no revision ever held the file, and infra.yml run 117
+    # (2026-10-13) found the fast brain exiting 78 unable to read the path
+    # (ADR 0036, amendment of 2026-10-13). Mode 292 (0444) rather than the
+    # credentials' 256 (0400): the bytes are a committed, reviewed file, not
+    # a credential, and the image runs as a non-root user.
     - name: config-files
-      gcs:
-        bucket: qip-config-dev-deepbrain-algorik-qip-dev
-        readOnly: true
+      secret:
+        secretRef:
+          external: qip-universe-catalogue-dev
+        defaultMode: 292
+        items:
+        - path: universe.json
+          mode: 292
+          versionRef:
+            external: latest
   traffic:
   - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST
     percent: 100

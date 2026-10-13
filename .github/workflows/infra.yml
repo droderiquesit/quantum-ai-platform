@@ -132,7 +132,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold no version — or, with rotate, as a new version that retires the old; applies no Terraform, grants nothing and touches no cluster), urls (read-only: where the environment answers — every qip-<env>-* Cloud Run URL and whether IAP reads enabled on it, how Argo CD and Kargo are reached, and the commands that read the OpenObserve root login; writes nothing, grants nothing, prints no secret), grant (admit one person or group to the console through IAP: requires iap_member, grants roles/iap.httpsResourceAccessor and nothing else, and reads the binding back)"
+        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version and the two committed files — the instrument universe and the Envoy egress bootstrap — into any slot not already holding their bytes, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold no version — or, with rotate, as a new version that retires the old; applies no Terraform, grants nothing and touches no cluster), urls (read-only: where the environment answers — every qip-<env>-* Cloud Run URL and whether IAP reads enabled on it, how Argo CD and Kargo are reached, and the commands that read the OpenObserve root login; writes nothing, grants nothing, prints no secret), grant (admit one person or group to the console through IAP: requires iap_member, grants roles/iap.httpsResourceAccessor and nothing else, and reads the binding back)"
         required: true
         default: "plan"
         type: choice
@@ -593,7 +593,8 @@ jobs:
       # `cnrm.cloud.google.com/deletion-policy: abandon` on every manifest.
 
       # Seed a first version into a secret that terraform declared and
-      # nothing has ever written to.
+      # nothing has ever written to — and, for the two committed files named
+      # below, a version holding the bytes the repository holds.
       #
       # This exists because the apply that created the OpenObserve service
       # failed on `Secret .../versions/latest was not found`: terraform
@@ -626,6 +627,34 @@ jobs:
       # second `up`, and this comment is where that is recorded rather than
       # discovered.
       #
+      # A third kind of slot, since run 117, holds no credential at all.
+      #
+      # COMMITTED: bytes this repository holds — the instrument universe at
+      # `data/datasets/universe.json` and the Envoy egress bootstrap at
+      # `infrastructure/egress/envoy.yaml` — versioned here so that a Config
+      # Connector RunService can mount them. Its CRD has exactly one volume
+      # kind that carries a file, `secret`; there is no `gcs` volume, which
+      # is how run 117's api and deepbrain died on `Invalid path:
+      # /etc/envoy/envoy-<hash>.yaml` and its fastbrain on a
+      # `QIP_UNIVERSE_PATH` it could not read: both files were committed,
+      # reviewed, and never reached a container. These are not secrets in
+      # the sense the two lists in the script are. Nobody chose them at
+      # random and nobody holds them at another account; they are text a
+      # reviewer has read, so this step prints each one's path and digest,
+      # which it does for nothing on the other two lists. They still belong
+      # in Secret Manager rather than in an image: a change to the universe
+      # must not need a rebuild of three binaries, and the Envoy image is
+      # the upstream one, mirrored at its digest and attested by
+      # `vendor.yml`, so a bootstrap of ours cannot be baked into it. The
+      # write is content-addressed — the committed file's sha256 against the
+      # latest version's — so a changed file becomes a new version, the
+      # `apps` stamp (`stamp_secret_versions`) turns that version into a new
+      # revision, and a slot that already holds the bytes is never
+      # rewritten. The emptiness rule above is therefore not this kind's
+      # rule: an empty committed slot and a stale one are the same
+      # condition, a service that would start reading the wrong file, and
+      # both are written.
+      #
       # On `apps` too, because `apps` is the action that starts revisions, and
       # both times a revision died on an empty container it died there: run 80
       # on the envelope key, and run 113 on `qip-session-secret-dev`, which no
@@ -648,8 +677,10 @@ jobs:
           umask 077
           scratch="$(mktemp -d)"
           trap 'rm -rf "$scratch"' EXIT
-          # Two lists, and which list a secret is on is a security decision
-          # rather than a convenience.
+          # Three lists, and which list a slot is on is a security decision
+          # rather than a convenience. Two are declared here; the third,
+          # COMMITTED, is declared beside its own loop below, and the header
+          # comment above says why it is not a secret in the sense these are.
           #
           # GENERATED: a platform-internal key whose *correct* value is random
           # bytes nobody chose. There is no "real" capital-envelope key to go
@@ -761,8 +792,45 @@ jobs:
             echo "seeded $name with a first version"
             seeded=1
           done
+
+          # COMMITTED: the slot holds bytes the repository holds, so the
+          # question is not "is it empty" but "does it hold this file". Each
+          # committed file is hashed, the latest version's payload is hashed
+          # on the way through and kept nowhere, and a version is added only
+          # when the two differ. A committed path that is missing from the
+          # checkout fails the step here, on purpose: a slot left holding
+          # yesterday's file is the condition this list exists to end.
+          committed="qip-universe-catalogue=data/datasets/universe.json \
+            qip-egress-bootstrap=infrastructure/egress/envoy.yaml"
+          empty="$(sha256sum < /dev/null | cut -c1-64)"
+          for pair in ${committed}; do
+            slot="${pair%%=*}"
+            path="${pair#*=}"
+            name="$slot-$suffix"
+            if ! gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1; then
+              echo "$name does not exist yet; an up's apply creates it and the next up or apps seeds it"
+              continue
+            fi
+            want="$(sha256sum "$path" | cut -c1-64)"
+            # A failed access — no version yet, or the latest one disabled —
+            # and an empty payload both read as "holds nothing", which any
+            # committed file differs from. The read sits in the `if` so that
+            # pipefail reports the failure to the branch instead of ending
+            # the step on it, which is the ordinary case on a fresh container.
+            if ! held="$(gcloud secrets versions access latest --secret "$name" --project "$project" 2>/dev/null \
+                | sha256sum | cut -c1-64)" || [ "$held" = "$empty" ]; then
+              held=""
+            fi
+            if [ "$held" = "$want" ]; then
+              echo "$name already holds the committed bytes (sha256 ${want:0:16}); leaving it alone"
+              continue
+            fi
+            gcloud secrets versions add "$name" --project "$project" --data-file="$path" >/dev/null
+            echo "seeded $name from $path (sha256 ${want:0:16})"
+            seeded=1
+          done
           if [ "$seeded" = 1 ]; then
-            echo "A credential was written. This step did not log any value; read one with:"
+            echo "A value was written. This step logged no credential; read one with:"
             echo "  gcloud secrets versions access latest --secret <name>-$suffix --project $project"
           fi
 
