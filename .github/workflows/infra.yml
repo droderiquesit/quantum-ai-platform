@@ -132,7 +132,7 @@ on:
           - test
           - stage
       action:
-        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run)"
+        description: "plan (read-only), up (apply Terraform and install the control plane: Argo CD, Config Connector, the front door, cert-manager, Kargo), apps (apply the Argo CD Application and the Kargo chain onto a control plane up already built, and prove they sync — re-runnable on its own), suspend (destroy the control-plane cluster and nothing else — the one resource that bills while idle; a later up recreates it), down (destroy the execution nodes; no environment declares any, so it is a no-op today), teardown (delete the environment: cluster, services, then a targeted destroy of every module but the identity running this job — the owner's act, by name), force-unlock (release a state lock a cancelled run left behind; requires its id), diagnose (read-only: what Cloud Run says about each service, the failing revisions' conditions and what their containers printed — applies nothing, waits for nothing, and exists because reading three lines should not cost an eleven-minute apps run), seed (seed the generated slots that hold no version, then write the Alpaca paper credential handed to this dispatch into its two slots if they hold none; applies no Terraform and touches no cluster)"
         required: true
         default: "plan"
         type: choice
@@ -145,8 +145,19 @@ on:
           - teardown
           - force-unlock
           - diagnose
+          - seed
       lock_id:
         description: "Only for force-unlock: the lock ID Terraform printed. Required, and deliberately not defaulted — see the step."
+        required: false
+        default: ""
+        type: string
+      alpaca_api_key_id:
+        description: "Only for seed: the Alpaca PAPER key id (PK…) to write into qip-alpaca-api-key-id-<env>, if that slot holds no version. Masked before any step can print it; a live key (AK…) is refused. Given together with alpaca_api_secret_key or not at all."
+        required: false
+        default: ""
+        type: string
+      alpaca_api_secret_key:
+        description: "Only for seed: the Alpaca paper secret that pairs with alpaca_api_key_id, for qip-alpaca-api-secret-key-<env>. Same handling."
         required: false
         default: ""
         type: string
@@ -610,7 +621,7 @@ jobs:
       # seeds only containers an earlier `up` created; the emptiness check is
       # what makes running it on every dispatch of either action safe.
       - name: seed any credential that has no version
-        if: inputs.action == 'up' || inputs.action == 'apps'
+        if: inputs.action == 'up' || inputs.action == 'apps' || inputs.action == 'seed'
         env:
           ENVIRONMENT: ${{ inputs.environment }}
           # An owner-supplied credential the owner has stored in this
@@ -795,6 +806,93 @@ jobs:
             echo "A credential was written. This step did not log any value; read one with:"
             echo "  gcloud secrets versions access latest --secret <name>-$suffix --project $project"
           fi
+
+      # The owner-supplied credential this dispatch was handed, written once.
+      #
+      # Why a dispatch input carries a credential at all, when every other
+      # line of this workflow argues against a value anywhere but Secret
+      # Manager. The session that operates this environment on the owner's
+      # behalf holds no Google credential, and this repository's Actions
+      # secrets are closed to it; on 2026-10-13 the owner directed that the
+      # deployment be driven from that session end to end, with the keys
+      # already in hand. A dispatch input is the one road from there to this
+      # job's identity. What the road costs is stated rather than hidden:
+      # GitHub keeps a run's inputs with the run, so a value given here
+      # persists in that metadata, where a collaborator can re-run the
+      # workflow but no API returns the value; it is masked before any other
+      # line executes, so no step can print it; and the step accepts only
+      # the two Alpaca *paper* slots and only a paper key — Alpaca prefixes
+      # paper keys PK and live keys AK — so this road cannot carry a live
+      # venue credential into the platform, which is the line ADR 0003 drew.
+      #
+      # Written into an empty slot only, as every seed here is. A slot that
+      # holds a version is reported and left alone: a value arriving by this
+      # road is no more trustworthy than one an operator rotated by hand, and
+      # a version that a running revision resolved must not be replaced by a
+      # dispatch nobody reviewed.
+      - name: seed the credentials handed to this dispatch
+        if: inputs.action == 'seed'
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ALPACA_API_KEY_ID: ${{ inputs.alpaca_api_key_id }}
+          ALPACA_API_SECRET_KEY: ${{ inputs.alpaca_api_secret_key }}
+        run: |
+          set -euo pipefail
+          # Mask before any other line can print. The runner consumes a
+          # workflow command rather than echoing it, so these put nothing in
+          # the log; every later line that could print either value is
+          # redacted by them.
+          [ -z "${ALPACA_API_KEY_ID}" ] || echo "::add-mask::${ALPACA_API_KEY_ID}"
+          [ -z "${ALPACA_API_SECRET_KEY}" ] || echo "::add-mask::${ALPACA_API_SECRET_KEY}"
+          project="${{ steps.identity.outputs.project }}"
+          suffix="${ENVIRONMENT}"
+          if [ -z "${ALPACA_API_KEY_ID}" ] && [ -z "${ALPACA_API_SECRET_KEY}" ]; then
+            echo "seed was dispatched with no credential; the step above seeded the generated slots and nothing else was written."
+            exit 0
+          fi
+          if [ -z "${ALPACA_API_KEY_ID}" ] || [ -z "${ALPACA_API_SECRET_KEY}" ]; then
+            echo "::error title=half a credential::alpaca_api_key_id and alpaca_api_secret_key are given together or not at all; one without the other is a slot the API would read and fail on. Nothing was written." >&2
+            exit 1
+          fi
+          case "${ALPACA_API_KEY_ID}" in
+            PK*) ;;
+            AK*)
+              echo "::error title=live key refused::the key id given is a live-trading key: Alpaca prefixes live keys AK and paper keys PK. This platform is paper-only (ADR 0003), and this step writes no live venue credential anywhere. Nothing was written." >&2
+              exit 1 ;;
+            *)
+              echo "::error title=not an Alpaca key id::the key id given does not start with PK, so it is not an Alpaca paper key id. Nothing was written." >&2
+              exit 1 ;;
+          esac
+          for value in "${ALPACA_API_KEY_ID}" "${ALPACA_API_SECRET_KEY}"; do
+            case "${value}" in
+              *[![:alnum:]]*)
+                echo "::error title=credential refused::a value given holds a character outside A-Z, a-z and 0-9 — most likely a trailing newline or a quote from a paste. Nothing was written; re-dispatch with the bare values." >&2
+                exit 1 ;;
+            esac
+          done
+          umask 077
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          write_once() {
+            local name="$1" value="$2" existing
+            if ! gcloud secrets describe "$name" --project "$project" >/dev/null 2>&1; then
+              echo "::error title=no such slot::${name} does not exist in ${project}; an up's apply creates it. Nothing was written." >&2
+              return 1
+            fi
+            existing="$(gcloud secrets versions list "$name" --project "$project" \
+              --filter="state:ENABLED" --format="value(name)" --limit=1)"
+            if [ -n "$existing" ]; then
+              echo "${name} already holds an enabled version; the value given was not written. Disable that version first if it is to be replaced."
+              return 0
+            fi
+            printf '%s' "$value" > "$scratch/payload"
+            gcloud secrets versions add "$name" --project "$project" \
+              --data-file="$scratch/payload" >/dev/null
+            rm -f "$scratch/payload"
+            echo "seeded ${name} with a first version from this dispatch; the value was not printed."
+          }
+          write_once "qip-alpaca-api-key-id-${suffix}" "${ALPACA_API_KEY_ID}"
+          write_once "qip-alpaca-api-secret-key-${suffix}" "${ALPACA_API_SECRET_KEY}"
 
       # Put back into state what the teardown deliberately left in the
       # project, before the apply below plans to create it a second time.
