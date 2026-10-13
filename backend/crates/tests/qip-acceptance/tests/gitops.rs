@@ -3141,24 +3141,24 @@ fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step(
             let mut references = Vec::new();
             find_key(&service.value, "secretRef", &mut references);
             for reference in references {
-                let secret = text_at(reference, &["external"])
+                let slot = text_at(reference, &["external"])
                     .or_else(|| text_at(reference, &["name"]))
                     .unwrap_or_else(|| panic!("{describe} has a secretRef naming no secret"));
-                let secret = secret.rsplit('/').next().unwrap_or_default();
+                let slot = slot.rsplit('/').next().unwrap_or_default();
                 // The step seeds `<name>-<environment>`; a reference without
                 // that suffix is a secret the step could not reach either way.
-                let base = secret
+                let base = slot
                     .strip_suffix(&format!("-{environment}"))
                     .unwrap_or_else(|| {
                         panic!(
-                            "{describe} references `{secret}`, which lacks the \
+                            "{describe} references `{slot}`, which lacks the \
                              `-{environment}` suffix the seeding step appends, so no list \
                              there can cover it"
                         )
                     });
                 assert!(
                     generated.contains(base) || owner.contains(base),
-                    "{describe} references `{secret}`, and `{base}` is on neither of the \
+                    "{describe} references `{slot}`, and `{base}` is on neither of the \
                      seeding step's lists: nothing writes it a version and no warning names \
                      it, so its revision cannot start and nothing says why until Cloud Run \
                      does. A platform-internal key belongs on `generated`; a credential for an \
