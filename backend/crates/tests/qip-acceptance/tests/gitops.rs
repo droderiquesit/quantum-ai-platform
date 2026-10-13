@@ -2420,6 +2420,125 @@ fn container_env(container: &Value) -> Vec<(String, Option<String>, bool)> {
         .collect()
 }
 
+/// The volume kinds the RunService CRD admits (Config Connector v1.156.0,
+/// byte-identical at upstream `master` on 2026-10-13). `gcs` is not among
+/// them, and the API server prunes an unknown kind silently rather than
+/// refusing the object.
+const ADMITTED_VOLUME_KINDS: [&str; 3] = ["cloudSqlInstance", "emptyDir", "secret"];
+
+/// The kinds a volume entry declares: every key of it but `name`.
+fn volume_kinds(volume: &Value) -> Vec<String> {
+    volume
+        .as_object()
+        .map(|map| map.keys().filter(|key| *key != "name").cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The one bootstrap path the `qip-egress` container's `-c` argument names.
+fn sidecar_bootstrap_argument(describe: &str, sidecar: &Value) -> String {
+    let args: Vec<String> = list_at(sidecar, &["args"])
+        .iter()
+        .filter_map(|arg| arg.as_str().map(str::to_string))
+        .collect();
+    let configs: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| arg.as_str() == "-c")
+        .filter_map(|(index, _)| args.get(index + 1))
+        .collect();
+    assert_eq!(
+        configs.len(),
+        1,
+        "{describe}'s qip-egress container passes `-c` {} time(s) in {args:?}; Envoy takes \
+         exactly one bootstrap",
+        configs.len()
+    );
+    configs[0].clone()
+}
+
+/// A committed file's volume, in the shape ADR 0036's amendment of 2026-10-13
+/// gives every file a RunService reads out of this checkout: `volume` is the
+/// `spec.template.volumes` entry named `volume_name`, `slot` the Secret
+/// Manager container it must project, `file_name` the one item it must
+/// project it as.
+///
+/// A `secret` volume and no other kind, because the CRD admits
+/// `ADMITTED_VOLUME_KINDS` and the API server prunes anything else silently:
+/// the manifests carried a `gcs` volume for three weeks, no revision ever
+/// received the file, and Argo CD reported the three services OutOfSync
+/// forever. Exactly one item, at the file's own name, from `latest`, because
+/// a secret volume projects its items flat and the process opens the path it
+/// was told and no other — `infra.yml` run 117 (2026-10-13) read Envoy dying
+/// on `Invalid path` and the fast brain exiting 78 off the containers. Mode
+/// 292 (0444) rather than a credential's 256 (0400): the bytes are a reviewed
+/// file, and both images run as a non-root user that 0400 would lock out.
+fn assert_committed_file_volume(
+    describe: &str,
+    volume: &Value,
+    volume_name: &str,
+    slot: &str,
+    file_name: &str,
+) {
+    let kinds = volume_kinds(volume);
+    assert_eq!(
+        kinds,
+        vec!["secret".to_string()],
+        "{describe}'s `{volume_name}` volume is of kind(s) {kinds:?}; the RunService CRD admits \
+         only {ADMITTED_VOLUME_KINDS:?}, the API server prunes any other kind silently, and a \
+         `secret` volume is the one of the three that carries a committed file (ADR 0036, \
+         amendment of 2026-10-13)"
+    );
+    let secret = at(volume, &["secret"]).expect("asserted present above");
+    let referenced = text_at(secret, &["secretRef", "external"])
+        .or_else(|| text_at(secret, &["secretRef", "name"]))
+        .unwrap_or_default();
+    assert_eq!(
+        referenced, slot,
+        "{describe}'s `{volume_name}` volume projects secret `{referenced}` rather than `{slot}`, \
+         the container Terraform creates beside every other slot and infra.yml's seed step \
+         writes the committed bytes into"
+    );
+    assert_eq!(
+        text_at(secret, &["defaultMode"]).as_deref(),
+        Some("292"),
+        "{describe}'s `{volume_name}` volume has defaultMode {:?} rather than 292 (0444): a \
+         reviewed file the image's non-root user must be able to read, not a credential",
+        text_at(secret, &["defaultMode"])
+    );
+    let items = list_at(secret, &["items"]);
+    assert_eq!(
+        items.len(),
+        1,
+        "{describe}'s `{volume_name}` volume projects {} item(s); the file is one item at \
+         `{file_name}`, and a secret volume projects its items flat, so a second item is a \
+         second file the process was never told about",
+        items.len()
+    );
+    let item = items[0];
+    assert_eq!(
+        text_at(item, &["path"]).as_deref(),
+        Some(file_name),
+        "{describe}'s `{volume_name}` volume projects its item at {:?} rather than \
+         `{file_name}`, the name the process opens",
+        text_at(item, &["path"])
+    );
+    assert_eq!(
+        text_at(item, &["versionRef", "external"]).as_deref(),
+        Some("latest"),
+        "{describe}'s `{volume_name}` volume projects `{file_name}` from version {:?} rather \
+         than `latest`, the version the seed step writes whenever the committed bytes change",
+        text_at(item, &["versionRef", "external"])
+    );
+    assert_eq!(
+        text_at(item, &["mode"]).as_deref(),
+        Some("292"),
+        "{describe}'s `{volume_name}` volume projects `{file_name}` with mode {:?} rather than \
+         292 (0444): a reviewed file the image's non-root user must be able to read, not a \
+         credential",
+        text_at(item, &["mode"])
+    );
+}
+
 #[test]
 fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held() {
     // ADR 0036 decision 4. `modules/cloudrun` held every property that had
@@ -2453,6 +2572,7 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
     let mut services_checked = 0usize;
     let mut secrets_checked = 0usize;
     let mut sidecars_seen = 0usize;
+    let mut committed_volumes_checked = 0usize;
     for environment in environment_directories() {
         let project = tfvars_value(&environment, "project_id")
             .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_id"));
@@ -2748,22 +2868,111 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
                 );
             }
 
-            // The committed configuration: a read-only mount of the workload's
-            // own bucket at /etc/qip, which is where every _PATH variable
-            // above was just shown to point.
+            // The committed configuration: the universe, projected by a
+            // `secret` volume at exactly the directory QIP_UNIVERSE_PATH
+            // names, which the walk above showed is under /etc/qip. The
+            // directory is derived from the variable rather than written
+            // here, because it is a hash of the file's bytes and changes
+            // whenever they do; the parity test recomputes that hash, and a
+            // literal here would be a second copy of it. This was a
+            // read-only `gcs` mount of the workload's bucket at /etc/qip,
+            // which the RunService CRD cannot carry (ADR 0036, amendment of
+            // 2026-10-13); `assert_committed_file_volume` says what it is now.
+            let universe_path = env
+                .iter()
+                .find(|(name, _, _)| name == "QIP_UNIVERSE_PATH")
+                .and_then(|(_, value, _)| value.clone())
+                .unwrap_or_else(|| panic!("{describe} sets no QIP_UNIVERSE_PATH"));
+            let (universe_directory, universe_file) = universe_path
+                .rsplit_once('/')
+                .filter(|(directory, file)| !directory.is_empty() && !file.is_empty())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{describe} sets QIP_UNIVERSE_PATH={universe_path}, which does not name \
+                         a file inside a directory"
+                    )
+                });
             assert_eq!(
                 mounts.get("config-files").map(String::as_str),
-                Some("/etc/qip"),
-                "{describe} does not mount `config-files` at /etc/qip; it mounts {mounts:?}"
+                Some(universe_directory),
+                "{describe} does not mount `config-files` at {universe_directory}, the directory \
+                 QIP_UNIVERSE_PATH={universe_path} names; it mounts {mounts:?}. A secret volume \
+                 projects its items flat, so the mount point is the hash directory itself and \
+                 not /etc/qip above it"
             );
             let config_volume = volumes
                 .get("config-files")
                 .unwrap_or_else(|| panic!("{describe} declares no `config-files` volume"));
-            assert_eq!(
-                at(config_volume, &["gcs", "readOnly"]),
-                Some(&Value::Bool(true)),
-                "{describe}'s config-files volume is not a read-only GCS mount"
+            assert_committed_file_volume(
+                &describe,
+                config_volume,
+                "config-files",
+                &format!("qip-universe-catalogue-{environment}"),
+                universe_file,
             );
+            committed_volumes_checked += 1;
+
+            // The Envoy bootstrap the same way, wherever there is a sidecar to
+            // read it: the one item is the name the sidecar's `-c` opens and
+            // the mount is that name's directory. A sidecar without the
+            // volume dies on `Invalid path` (infra.yml run 117, 2026-10-13);
+            // a volume without the sidecar is a mount nothing reads.
+            let sidecar = list_at(&service.value, &["spec", "template", "containers"])
+                .into_iter()
+                .find(|other| text_at(other, &["name"]).as_deref() == Some("qip-egress"));
+            let bootstrap_volume = volumes.get("egress-bootstrap");
+            assert_eq!(
+                sidecar.is_some(),
+                bootstrap_volume.is_some(),
+                "{describe} {} and {}; the sidecar reads nothing but that volume and the volume \
+                 feeds nothing but the sidecar",
+                if sidecar.is_some() {
+                    "carries a qip-egress container"
+                } else {
+                    "carries no qip-egress container"
+                },
+                if bootstrap_volume.is_some() {
+                    "declares an `egress-bootstrap` volume"
+                } else {
+                    "declares no `egress-bootstrap` volume"
+                }
+            );
+            if let (Some(sidecar), Some(bootstrap_volume)) = (sidecar, bootstrap_volume) {
+                let bootstrap_path = sidecar_bootstrap_argument(&describe, sidecar);
+                let (bootstrap_directory, bootstrap_file) = bootstrap_path
+                    .rsplit_once('/')
+                    .filter(|(directory, file)| !directory.is_empty() && !file.is_empty())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{describe}'s qip-egress container starts with `-c {bootstrap_path}`, \
+                             which does not name a file inside a directory"
+                        )
+                    });
+                let sidecar_mounts: BTreeMap<String, String> = list_at(sidecar, &["volumeMounts"])
+                    .iter()
+                    .map(|mount| {
+                        (
+                            text_at(mount, &["name"]).unwrap_or_default(),
+                            text_at(mount, &["mountPath"]).unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    sidecar_mounts.get("egress-bootstrap").map(String::as_str),
+                    Some(bootstrap_directory),
+                    "{describe}'s qip-egress container does not mount `egress-bootstrap` at \
+                     {bootstrap_directory}, the directory its `-c {bootstrap_path}` names; it \
+                     mounts {sidecar_mounts:?}"
+                );
+                assert_committed_file_volume(
+                    &describe,
+                    bootstrap_volume,
+                    "egress-bootstrap",
+                    &format!("qip-egress-bootstrap-{environment}"),
+                    bootstrap_file,
+                );
+                committed_volumes_checked += 1;
+            }
 
             // The zone: the subnet and the tag both name the entry's trust
             // zone, so the zone's firewall rules are the ones that apply.
@@ -2847,6 +3056,13 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
         sidecars_seen,
         2 * 4,
         "{sidecars_seen} sidecars were seen; api and deepbrain carry one in each environment"
+    );
+    assert_eq!(
+        committed_volumes_checked,
+        12 + 2 * 4,
+        "{committed_volumes_checked} committed-file volumes were checked; a universe in each \
+         of twelve services and a bootstrap beside each of eight sidecars is twenty, and a walk \
+         that found fewer skipped a mount a revision will die on"
     );
     assert!(
         overrides_seen.get() >= 1,
@@ -3090,16 +3306,20 @@ fn every_run_service_names_the_network_terraform_put_its_subnetwork_on() {
 /// either writes or names, and that step runs on the action that starts
 /// revisions.
 ///
-/// The step keeps two lists: platform-internal keys it writes a first version
-/// into, and owner-supplied credentials it refuses to invent and names in a
-/// warning instead. A secret on neither list is the silent case — Terraform
-/// creates the container, nothing writes a version, no warning names it, and
-/// the first anybody hears of it is a revision that will not start. That is
-/// `infra.yml` run 113: the portal mounted `qip-session-secret-dev`, which
-/// `scripts/deploy-frontends.sh` had seeded until the portal became a
-/// manifest (ADR 0094) and which nothing seeded afterwards. And the step ran
-/// only on `up`, so even a listed key would have waited for the next apply
-/// while `apps` failed on it — which is how run 80 died on the envelope key.
+/// The step keeps three lists: platform-internal keys it writes a first
+/// version into, owner-supplied credentials it refuses to invent and names in
+/// a warning instead, and — since ADR 0036's amendment of 2026-10-13 —
+/// committed files it writes from the checkout as `<slot>=<path>` pairs
+/// whenever the file's digest differs from the latest version's. A secret on
+/// no list is the silent case — Terraform creates the container, nothing
+/// writes a version, no warning names it, and the first anybody hears of it
+/// is a revision that will not start. That is `infra.yml` run 113: the portal
+/// mounted `qip-session-secret-dev`, which `scripts/deploy-frontends.sh` had
+/// seeded until the portal became a manifest (ADR 0094) and which nothing
+/// seeded afterwards. And the step ran only on `up`, so even a listed key
+/// would have waited for the next apply while `apps` failed on it — which is
+/// how run 80 died on the envelope key. A slot on two lists is the opposite
+/// failure: seeded twice, by two rules that disagree about what it holds.
 #[test]
 fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step() {
     let workflow = read(INFRA_WORKFLOW);
@@ -3120,7 +3340,7 @@ fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step(
         "the seeding step runs under `{condition}`, not on `apps` — the action that starts \
          revisions, and the one runs 80 and 113 both died in on an empty container"
     );
-    let list = |name: &str| -> BTreeSet<String> {
+    let list = |name: &str| -> Vec<String> {
         step.split(&format!("{name}=\""))
             .nth(1)
             .and_then(|rest| rest.split('"').next())
@@ -3130,8 +3350,57 @@ fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step(
             .map(str::to_string)
             .collect()
     };
-    let generated = list("generated");
-    let owner = list("owner_supplied");
+    let generated: BTreeSet<String> = list("generated").into_iter().collect();
+    let owner: BTreeSet<String> = list("owner_supplied").into_iter().collect();
+    // The third list is `<slot>=<path>` pairs: the slot is what the loop
+    // seeds and the path is what it seeds it from. The step hashes the path
+    // and fails on a missing one, on purpose, so a path that is not in the
+    // checkout fails here first rather than in every `apps` afterwards.
+    let mut committed: BTreeSet<String> = BTreeSet::new();
+    for pair in list("committed") {
+        let (slot, path) = pair.split_once('=').unwrap_or_else(|| {
+            panic!(
+                "the seeding step's `committed` list holds `{pair}`, which is not a \
+                 `<slot>=<path>` pair; the loop reads the slot before the `=` and seeds it \
+                 from the path after"
+            )
+        });
+        assert!(
+            !slot.is_empty() && !path.is_empty(),
+            "the seeding step's `committed` list holds `{pair}`, whose slot or path is empty"
+        );
+        assert!(
+            repository_root().join(path).is_file(),
+            "the seeding step's `committed` list seeds `{slot}` from `{path}`, which is not a \
+             file in this checkout; the step hashes that path and fails on a missing one, so \
+             every `apps` would die there"
+        );
+        assert!(
+            committed.insert(slot.to_string()),
+            "the seeding step's `committed` list names `{slot}` twice"
+        );
+    }
+    assert!(
+        !committed.is_empty(),
+        "the seeding step's `committed` list is empty; the universe and the Envoy bootstrap \
+         reach a revision only through it (ADR 0036, amendment of 2026-10-13)"
+    );
+    // No slot on two lists. Each loop seeds by its own rule — random bytes,
+    // nothing, the checkout's file — and a slot on two of them is seeded
+    // twice by rules that disagree about what it holds, so which bytes a
+    // revision reads depends on the order the loops happened to run in.
+    for (first_name, first, second_name, second) in [
+        ("generated", &generated, "owner_supplied", &owner),
+        ("generated", &generated, "committed", &committed),
+        ("owner_supplied", &owner, "committed", &committed),
+    ] {
+        let shared: Vec<&String> = first.intersection(second).collect();
+        assert!(
+            shared.is_empty(),
+            "the seeding step lists {shared:?} on both `{first_name}` and `{second_name}`; a \
+             slot on two lists is seeded twice by two rules that disagree about what it holds"
+        );
+    }
 
     let mut referenced = 0usize;
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -3156,13 +3425,25 @@ fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step(
                              there can cover it"
                         )
                     });
-                assert!(
-                    generated.contains(base) || owner.contains(base),
-                    "{describe} references `{slot}`, and `{base}` is on neither of the \
-                     seeding step's lists: nothing writes it a version and no warning names \
-                     it, so its revision cannot start and nothing says why until Cloud Run \
-                     does. A platform-internal key belongs on `generated`; a credential for an \
-                     account somebody else holds belongs on `owner_supplied`"
+                let lists: Vec<&str> = [
+                    ("generated", generated.contains(base)),
+                    ("owner_supplied", owner.contains(base)),
+                    ("committed", committed.contains(base)),
+                ]
+                .into_iter()
+                .filter_map(|(name, listed)| listed.then_some(name))
+                .collect();
+                assert_eq!(
+                    lists.len(),
+                    1,
+                    "{describe} references `{slot}`, and `{base}` is on {} of the seeding \
+                     step's three lists ({lists:?}) rather than exactly one. On none, nothing \
+                     writes it a version and no warning names it, so its revision cannot start \
+                     and nothing says why until Cloud Run does; on two, it is seeded twice by \
+                     rules that disagree. A platform-internal key belongs on `generated`; a \
+                     credential for an account somebody else holds belongs on `owner_supplied`; \
+                     a file in this repository belongs on `committed` as `<slot>=<path>`",
+                    lists.len()
                 );
                 referenced += 1;
                 seen.insert(base.to_string());
@@ -3170,7 +3451,8 @@ fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step(
         }
     }
     // Premise: the walk found references, including the one that started
-    // this test, so a parse that stopped finding `secretRef` cannot pass it.
+    // this test and the two the third list exists for, so a parse that
+    // stopped finding `secretRef` cannot pass it.
     assert!(
         referenced >= 30,
         "only {referenced} secret references were found across the RunServices"
@@ -3179,6 +3461,14 @@ fn every_secret_a_run_service_references_is_seeded_or_named_by_the_seeding_step(
         seen.contains("qip-session-secret"),
         "the portal's session key was not among the references checked: {seen:?}"
     );
+    for slot in ["qip-universe-catalogue", "qip-egress-bootstrap"] {
+        assert!(
+            seen.contains(slot),
+            "`{slot}` was not among the references checked: {seen:?}; the committed files \
+             reach a revision only as that secret's versions (ADR 0036, amendment of \
+             2026-10-13)"
+        );
+    }
 }
 
 #[test]
@@ -5338,6 +5628,84 @@ fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_c
         sidecars >= 8,
         "{sidecars} qip-egress bootstrap argument(s) were checked; api and deepbrain in four \
          environments is eight, and a walk that found fewer read the wrong tree"
+    );
+}
+
+/// No manifest under `envs/` carries a `gcs` key, in any document, anywhere.
+///
+/// The RunService CRD (Config Connector v1.156.0, byte-identical at upstream
+/// `master` on 2026-10-13) admits `cloudSqlInstance`, `emptyDir` and
+/// `secret` volumes and nothing else, and the API server prunes an unknown
+/// key silently rather than refusing the object. The manifests carried a
+/// `gcs` volume for three weeks: Config Connector reconciled a service with
+/// no such mount, Argo CD reported the three services OutOfSync forever
+/// because the target held a field the live object can never hold, and
+/// `infra.yml` run 117 (2026-10-13) read the consequence off the containers
+/// — Envoy dying on `Invalid path`, the fast brain exiting 78 unable to read
+/// the universe. ADR 0036's amendment of that day moved both files into
+/// secret versions and says this suite refuses the pruned mount coming back
+/// by habit.
+///
+/// Every document and every key, not the volume list alone, because a `gcs`
+/// key nested anywhere is pruned the same way; and the walk is over the
+/// parsed value, which never sees a comment, so a manifest explaining why it
+/// carries no `gcs` volume is allowed to say so. Beside it, every volume a
+/// RunService does declare is exactly one of the three admitted kinds, so a
+/// fourth kind the CRD also lacks — `nfs`, say — is refused by the same
+/// test rather than by the next outage.
+#[test]
+fn no_manifest_declares_a_gcs_volume_because_the_run_service_crd_has_none_and_the_api_server_prunes_it_silently()
+ {
+    let manifests = manifests_under(ENVS);
+    // Premise: the walk read the services, so a reader that stopped parsing
+    // the volume list could not pass this by finding nothing.
+    let run_services = manifests
+        .iter()
+        .filter(|manifest| manifest.kind() == "RunService")
+        .count();
+    assert!(
+        run_services >= 12,
+        "only {run_services} RunService(s) were read under {ENVS}; three catalogue workloads \
+         in four environments is twelve, and a walk that found fewer read the wrong tree"
+    );
+    let mut volumes_seen = 0usize;
+    for manifest in &manifests {
+        let mut found = Vec::new();
+        find_key(&manifest.value, "gcs", &mut found);
+        assert!(
+            found.is_empty(),
+            "{} carries a `gcs` key ({} of them); the RunService CRD admits only the volume \
+             kinds {ADMITTED_VOLUME_KINDS:?}, the API server prunes an unknown key silently \
+             rather than refusing the object, Config Connector reconciles a service with no \
+             such mount, and Argo CD reports the service OutOfSync forever because its target \
+             holds a field the live object can never hold. A committed file travels as a \
+             secret version (ADR 0036, amendment of 2026-10-13)",
+            manifest.describe(),
+            found.len()
+        );
+        if manifest.kind() != "RunService" {
+            continue;
+        }
+        for volume in list_at(&manifest.value, &["spec", "template", "volumes"]) {
+            let name = text_at(volume, &["name"]).unwrap_or_default();
+            let kinds = volume_kinds(volume);
+            assert!(
+                kinds.len() == 1 && ADMITTED_VOLUME_KINDS.contains(&kinds[0].as_str()),
+                "{}'s volume `{name}` is of kind(s) {kinds:?}; the RunService CRD admits \
+                 exactly one of {ADMITTED_VOLUME_KINDS:?} per volume and the API server prunes \
+                 anything else silently, so the mount never reaches a revision and the \
+                 service never reaches Synced",
+                manifest.describe()
+            );
+            volumes_seen += 1;
+        }
+    }
+    // Premise: the kind check saw the volumes it exists for — a universe in
+    // each of twelve services and a bootstrap beside each of eight sidecars.
+    assert!(
+        volumes_seen >= 12 + 2 * 4,
+        "only {volumes_seen} volume(s) were seen across the RunServices; twelve universes and \
+         eight bootstraps are more"
     );
 }
 
