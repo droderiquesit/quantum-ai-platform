@@ -802,8 +802,7 @@ fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its
     // the curriculum to hear, and the property below would pass on silence.
     assert!(
         round.campaigns_opened > 0,
-        "premise: the sweep opened no tick campaign: {}",
-        round.describe()
+        "premise: the sweep opened no tick campaign"
     );
 
     let from_campaigns: Vec<_> = round
@@ -813,16 +812,13 @@ fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its
             signal.evidence_ids().first().map(String::as_str) == Some("detector:tick_campaign")
         })
         .collect();
+    // The messages state the failure and format nothing read off the round:
+    // the loop holds the package store, so CodeQL's cleartext-logging taint
+    // covers every value a sweep returns (`83b413fc`, ADR 0117).
     assert!(
         !from_campaigns.is_empty(),
-        "the sweep opened {} tick campaign(s) and no signal names the tick-campaign \
-         detector as its origin; the signals it raised name {:?}",
-        round.campaigns_opened,
-        round
-            .signals
-            .iter()
-            .map(|signal| signal.evidence_ids().first().cloned())
-            .collect::<Vec<_>>()
+        "the sweep opened tick campaigns and no signal names the tick-campaign detector as \
+         its origin"
     );
     // And it is the campaign at this venue on this instrument, not a stray:
     // the evidence carries the instrument the fills were on.
@@ -831,10 +827,6 @@ fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its
             .evidence_ids()
             .iter()
             .any(|id| id == "instrument:BTC-USD")),
-        "a tick-campaign signal does not carry the fills' instrument: {:?}",
-        from_campaigns
-            .iter()
-            .map(|signal| signal.evidence_ids())
-            .collect::<Vec<_>>()
+        "a tick-campaign signal does not carry the fills' instrument"
     );
 }

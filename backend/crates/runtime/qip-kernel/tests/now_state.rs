@@ -395,7 +395,7 @@ fn review_of(platform: &Platform, cycle: u64) -> NowReview {
     reviews::<NowReview>(platform, "now:")
         .into_iter()
         .find(|review| review.cycle == cycle)
-        .unwrap_or_else(|| panic!("cycle {cycle} journaled no NOW review"))
+        .unwrap_or_else(|| panic!("the cycle asked for journaled no NOW review"))
 }
 
 /// Every macro series feeds the one global `macro_surprise` belief, so a

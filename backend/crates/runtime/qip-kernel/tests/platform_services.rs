@@ -900,20 +900,18 @@ fn a_seeded_simulation_run_reproduces_the_same_event_log_hash() -> Result<()> {
     for (name, run) in [("first", &first), ("second", &second)] {
         assert_eq!(
             run.cycles, 3,
-            "the {name} run journalled {} cycle entries for three cycles",
-            run.cycles
+            "the {name} run did not journal one cycle entry per cycle"
         );
         assert!(
             run.records > run.cycles,
-            "the {name} run appended {} record(s): nothing beyond its cycle entries reached the \
-             log, so the run exercised nothing a replay would need",
-            run.records
+            "the {name} run appended nothing beyond its cycle entries, so it exercised nothing a \
+             replay would need"
         );
         for head in [&run.head, &run.journal_head] {
             assert_eq!(
                 head.len(),
                 qip_events::log::GENESIS_HASH.len(),
-                "the {name} run's head is not a SHA-256 hex digest: {head:?}"
+                "the {name} run's head is not a SHA-256 hex digest"
             );
             assert_ne!(
                 head.as_str(),
