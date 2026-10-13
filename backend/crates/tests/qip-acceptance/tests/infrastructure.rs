@@ -3584,6 +3584,179 @@ fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
     );
 }
 
+/// A revision that died on an empty secret is retried once the secret holds
+/// a version — by the `apps` stage, after the sync is proven and before
+/// health is judged.
+///
+/// Not hypothetical. `infra.yml` run 113's portal revision died on
+/// `qip-session-secret-dev/versions/latest was not found`, and run 114's
+/// `diagnose` found that same dead revision still the latest one. Cloud Run
+/// validates a mounted secret when it creates a revision and never looks
+/// again; Config Connector creates a revision only when the template
+/// differs; seeding a secret changes no template. So the seed step can fill
+/// every empty slot and the service stays down, and a re-run prints the
+/// message that sent somebody to check a secret that was there. The retry
+/// is the one place a seeded version becomes a new revision.
+///
+/// Three properties, each load-bearing. It runs after the Synced wait and
+/// around the Healthy wait, or it acts on the previous manifest's revisions
+/// or judges a revision it never retried. It patches only after every
+/// secret the dead revision names holds an enabled version, or it re-runs a
+/// revision that dies again under a new name. And it patches the
+/// RunService's template through Kubernetes rather than Cloud Run through
+/// gcloud, because the manifest's live object is the only remedy ADR 0036
+/// admits.
+#[test]
+fn a_revision_that_died_on_a_secret_seeded_since_is_retried_between_the_sync_and_the_health_wait() {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let step = steps
+        .iter()
+        .find(|step| step.contains("name: bootstrap the GitOps controllers"))
+        .expect("infra.yml has the bootstrap step");
+
+    let at = |needle: &str| {
+        step.find(needle)
+            .unwrap_or_else(|| panic!("the bootstrap step does not contain {needle}"))
+    };
+    let defined = at("retry_seeded() {");
+    let synced = at("'{.status.sync.status}'=Synced");
+    let healthy = at("'{.status.health.status}'=Healthy");
+
+    // Where the function is *called*: a line holding the bare name. The
+    // definition's line holds more than the name, so it is not counted.
+    let mut called = Vec::new();
+    let mut offset = 0;
+    for line in step.lines() {
+        if line.trim() == "retry_seeded" {
+            called.push(offset);
+        }
+        offset += line.len() + 1;
+    }
+
+    // Premise: the two waits exist in the order they have always had.
+    assert!(
+        synced < healthy,
+        "the Synced wait no longer precedes the Healthy wait"
+    );
+    assert!(
+        called.len() >= 2,
+        "retry_seeded is called {} time(s); once before the first Healthy wait and once \
+         between later ones is the least that catches a revision dying during the first",
+        called.len()
+    );
+    assert!(
+        called.iter().all(|&call| synced < call),
+        "a retry runs before the sync is proven, so it acts on the previous manifest's revisions"
+    );
+    assert!(
+        called.iter().any(|&call| call < healthy),
+        "no retry runs before the Healthy wait, so a revision dead before this dispatch is \
+         judged and never retried"
+    );
+    assert!(
+        called.iter().any(|&call| healthy < call),
+        "no retry runs after a Healthy wait expires, so a revision that dies during the wait \
+         is never retried"
+    );
+    assert!(
+        defined < called[0],
+        "retry_seeded is called at offset {} and defined at {defined}, after its first call",
+        called[0]
+    );
+
+    // The function's body, bounded by its closing brace at its own indent.
+    let body = &step[defined..];
+    let body = &body[..body.find("\n            }\n").expect("retry_seeded closes")];
+    let enabled = body
+        .find("--filter='state:ENABLED'")
+        .expect("retry_seeded reads whether the named secret holds an enabled version");
+    let patch = body
+        .find("kubectl -n qip-run patch \"runservice/${service}\"")
+        .expect("retry_seeded patches the RunService");
+    assert!(
+        enabled < patch,
+        "the patch is written before the enabled version is read, so a revision is re-run \
+         on a secret that is still empty"
+    );
+    assert!(
+        body.contains("versions=\"\"\n                    break"),
+        "a revision naming one empty secret among several is still patched, so it is re-run \
+         and dies again under a new name"
+    );
+    assert!(
+        body.contains("{\\\"spec\\\":{\\\"template\\\":{\\\"annotations\\\":"),
+        "the patch does not touch the template's annotations, so Config Connector sees no \
+         change and creates no revision"
+    );
+    assert!(
+        !body.contains("gcloud run services update") && !body.contains("gcloud run deploy"),
+        "the retry writes Cloud Run directly, which ADR 0036 reserves for the manifest's \
+         reconciler"
+    );
+}
+
+/// A missing Kargo credential warns and skips the promotion chain; it does
+/// not fail the job, because the console's IAP gate is the step after it.
+///
+/// The refusal it replaces read as correct until what followed it was
+/// counted. Phase 11 of the bootstrap step ran after every service had been
+/// proven Synced and Healthy and before the step that enables IAP on the
+/// portal, and a step after a failed one does not run. So an environment
+/// whose owner had not yet made a GitHub App for Kargo — which promotes
+/// digests and serves nothing — ended every `apps` dispatch red, with the
+/// console deployed and its gate never applied. The portal has no allUsers
+/// invoker, so that state answers 403 to everyone; safe, and not the
+/// protected console the job claims to produce.
+///
+/// Two properties. The missing credential is reported as a warning naming
+/// the secret, never as the job's exit; and the IAP gate is still a later
+/// step than the bootstrap, so the first property is what lets it run.
+#[test]
+fn a_missing_kargo_credential_warns_and_skips_the_chain_rather_than_failing_the_job_before_the_iap_gate()
+ {
+    let infra = read(".github/workflows/infra.yml");
+    let steps = job_steps(&infra);
+    let position = |needle: &str| {
+        steps
+            .iter()
+            .position(|step| step.contains(needle))
+            .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
+    };
+    let bootstrap = position("name: bootstrap the GitOps controllers");
+    let gate = position("name: the console's IAP gate");
+
+    // Premise: the gate is a later step of the same job, which is the whole
+    // reason an exit in the bootstrap step would cost it.
+    assert!(
+        bootstrap < gate,
+        "the IAP gate (step {gate}) no longer follows the bootstrap (step {bootstrap}); \
+         this test's reasoning assumes it does"
+    );
+
+    let step = &steps[bootstrap];
+    let phase = step
+        .find("secret-kargo.json")
+        .expect("the bootstrap step reads the Kargo credential it fetched");
+    let phase = &step[phase..];
+    assert!(
+        phase.contains(
+            "::warning title=Kargo not bootstrapped::qip-github-app-kargo-${ENVIRONMENT}"
+        ),
+        "a missing Kargo credential is no longer reported as a warning naming the secret"
+    );
+    assert!(
+        !phase.contains("::error title=no Kargo App credential"),
+        "a missing Kargo credential is reported as an error again, which is the exit that \
+         skipped the IAP gate"
+    );
+    assert!(
+        phase.contains("kargo_bootstrapped=0") && phase.contains("kargo_bootstrapped=1"),
+        "the phase no longer records whether Kargo was bootstrapped, so its closing line \
+         cannot say which happened"
+    );
+}
+
 #[test]
 fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
     let secrets = read("infrastructure/terraform/modules/secrets/main.tf");

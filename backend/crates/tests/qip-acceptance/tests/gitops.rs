@@ -5148,6 +5148,199 @@ fn the_egress_sidecar_in_every_manifest_holds_no_credential_and_the_workload_wai
     );
 }
 
+/// The instrument universe every central root reads at start-up, which
+/// `modules/cloudrun` publishes under a directory named by its hash.
+const UNIVERSE_CATALOGUE: &str = "data/datasets/universe.json";
+
+/// The one Envoy bootstrap, which `modules/egress-proxy` publishes as an
+/// object named by its hash.
+const EGRESS_BOOTSTRAP: &str = "infrastructure/egress/envoy.yaml";
+
+/// The root variables `catalogue.tf`'s `optional_config_files` local keys a
+/// second configuration file on. Read from the catalogue rather than listed
+/// here, because a list goes stale silently: a variable added there and not
+/// here would be the one this walk never checked.
+fn optional_config_file_variables() -> BTreeSet<String> {
+    block_under(
+        &without_comments(&read(CATALOGUE)),
+        "optional_config_files = {",
+    )
+    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+    .filter_map(|token| token.strip_prefix("var."))
+    .filter(|name| name.ends_with("_file"))
+    .map(str::to_string)
+    .collect()
+}
+
+/// Two paths in every `RunService` are not values anybody chose. They are
+/// names Terraform derives from the bytes of a committed file, and they
+/// change whenever the file does.
+///
+/// `modules/cloudrun` publishes `data/datasets/universe.json` under
+/// `/etc/qip/<prefix>/universe.json`, where `<prefix>` is
+/// `substr(sha256(join("\n", [sha256(content) …])), 0, 16)`: the first
+/// sixteen hex characters of the SHA-256 of the file's own lowercase-hex
+/// SHA-256 digest, the universe being the only file in the join while no
+/// tfvars names a second one. `modules/egress-proxy` publishes
+/// `infrastructure/egress/envoy.yaml` as
+/// `envoy-${substr(sha256(bootstrap), 0, 16)}.yaml`. Each manifest carries
+/// the result as a literal — `QIP_UNIVERSE_PATH`, and the sidecar's `-c`.
+///
+/// Nothing compared the literal to the bytes. `envs/README.md` said a parity
+/// test did; none existed. So `universe.json` changed in `4a571de6`
+/// (2026-09-21) and the bootstrap in `349638db` (2026-10-05), Terraform
+/// published both under their new names, and the twelve manifests kept
+/// naming the old ones. `infra.yml` run 114's diagnose (2026-10-13) found the
+/// result: `qip-dev-fastbrain` exiting 78 with "QIP_UNIVERSE_PATH names
+/// /etc/qip/7ec25303c3f3ecac/universe.json, which cannot be read: No such
+/// file or directory", and `qip-dev-deepbrain`'s Envoy dying on "Invalid
+/// path: /etc/envoy/envoy-fc9574203f973d2d.yaml". The bucket held both
+/// files; the revision was told the wrong names.
+///
+/// This test recomputes both names from the committed bytes with the in-tree
+/// SHA-256 `qip-core` proves against FIPS 180-4, and refuses any manifest
+/// whose literal differs. Exact comparison, never `contains`: a hash is
+/// sixteen characters that are a substring of nothing else by accident, but
+/// the rule is the rule.
+#[test]
+fn every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under()
+ {
+    // Premise: both committed files exist and hold bytes. A hash of an empty
+    // file is a perfectly good hash, and a manifest pinned to it would be
+    // pinned to nothing.
+    let universe = std::fs::read(repository_root().join(UNIVERSE_CATALOGUE))
+        .unwrap_or_else(|error| panic!("cannot read {UNIVERSE_CATALOGUE}: {error}"));
+    assert!(
+        !universe.is_empty(),
+        "{UNIVERSE_CATALOGUE} is empty; the prefix this test derives would name nothing"
+    );
+    let bootstrap = std::fs::read(repository_root().join(EGRESS_BOOTSTRAP))
+        .unwrap_or_else(|error| panic!("cannot read {EGRESS_BOOTSTRAP}: {error}"));
+    assert!(
+        !bootstrap.is_empty(),
+        "{EGRESS_BOOTSTRAP} is empty; the object name this test derives would name nothing"
+    );
+
+    // Premise: the universe is the only file in every workload's
+    // `config_files`. The module's prefix is the hash of every file's digest
+    // joined in key order, so one more file is a different prefix for that
+    // workload, and this test — which derives the prefix from the universe
+    // alone — would then be asserting the wrong name with confidence.
+    let optional = optional_config_file_variables();
+    assert!(
+        !optional.is_empty(),
+        "{CATALOGUE}'s `optional_config_files` local names no `var.*_file`; the scan that \
+         proves no environment mounts a second configuration file read nothing"
+    );
+    let environments = environment_directories();
+    for environment in &environments {
+        for variable in &optional {
+            assert!(
+                tfvars_value(environment, variable).is_none(),
+                "{environment}'s tfvars set `{variable}`, so that workload's `config_files` \
+                 holds a second file and modules/cloudrun's prefix is the hash of both \
+                 digests joined; this test derives the prefix from the universe alone and \
+                 must be extended before that environment's manifests can be right"
+            );
+        }
+    }
+
+    // modules/cloudrun/main.tf: `config_file_hashes[key] = sha256(content)`
+    // (lowercase hex) and `config_prefix = substr(sha256(join("\n", [hashes
+    // in key order])), 0, 16)`. One file, so the join is its digest alone.
+    let universe_digest = qip_core::sha256_hex(&universe);
+    let config_prefix = qip_core::sha256_hex(universe_digest.as_bytes())[..16].to_string();
+    let universe_path = format!("/etc/qip/{config_prefix}/universe.json");
+    // modules/egress-proxy/main.tf:
+    // `name = "envoy-${substr(sha256(local.bootstrap), 0, 16)}.yaml"`.
+    let bootstrap_path = format!(
+        "/etc/envoy/envoy-{}.yaml",
+        &qip_core::sha256_hex(&bootstrap)[..16]
+    );
+
+    let mut universe_paths = 0usize;
+    let mut sidecars = 0usize;
+    for environment in &environments {
+        for (key, entry, service, _) in run_services(environment) {
+            if entry.is_none() {
+                continue;
+            }
+            let describe = service.describe();
+            let container = workload_container(&service, &key);
+            let under_config_root: Vec<(String, String)> = container_env(container)
+                .into_iter()
+                .filter_map(|(name, value, _)| value.map(|value| (name, value)))
+                .filter(|(_, value)| value.starts_with("/etc/qip/"))
+                .collect();
+            assert_eq!(
+                under_config_root.len(),
+                1,
+                "{describe} mounts {} path(s) under /etc/qip ({under_config_root:?}); the \
+                 universe is the one configuration file every environment mounts, and a second \
+                 changes the directory both are published under",
+                under_config_root.len()
+            );
+            let (name, value) = &under_config_root[0];
+            assert_eq!(
+                name.as_str(),
+                "QIP_UNIVERSE_PATH",
+                "{describe}'s one path under /etc/qip is `{name}`, not QIP_UNIVERSE_PATH"
+            );
+            assert_eq!(
+                value, &universe_path,
+                "{describe} sets QIP_UNIVERSE_PATH={value}; Terraform publishes the committed \
+                 {UNIVERSE_CATALOGUE} at {universe_path} and nowhere else, so the process exits \
+                 78 at start-up unable to read it (infra.yml run 114, 2026-10-13)"
+            );
+            universe_paths += 1;
+
+            let containers = list_at(&service.value, &["spec", "template", "containers"]);
+            let Some(sidecar) = containers
+                .iter()
+                .find(|container| text_at(container, &["name"]).as_deref() == Some("qip-egress"))
+            else {
+                continue;
+            };
+            let args: Vec<String> = list_at(sidecar, &["args"])
+                .iter()
+                .filter_map(|arg| arg.as_str().map(str::to_string))
+                .collect();
+            let configs: Vec<&String> = args
+                .iter()
+                .enumerate()
+                .filter(|(_, arg)| arg.as_str() == "-c")
+                .filter_map(|(index, _)| args.get(index + 1))
+                .collect();
+            assert_eq!(
+                configs.len(),
+                1,
+                "{describe}'s qip-egress container passes `-c` {} time(s) in {args:?}; Envoy \
+                 takes exactly one bootstrap",
+                configs.len()
+            );
+            assert_eq!(
+                configs[0], &bootstrap_path,
+                "{describe}'s qip-egress container starts with `-c {}`; modules/egress-proxy \
+                 publishes the committed {EGRESS_BOOTSTRAP} as {bootstrap_path} and nowhere \
+                 else, so Envoy dies on `Invalid path` and the workload waiting on it never \
+                 starts (infra.yml run 114, 2026-10-13)",
+                configs[0]
+            );
+            sidecars += 1;
+        }
+    }
+    assert!(
+        universe_paths >= 12,
+        "{universe_paths} QIP_UNIVERSE_PATH value(s) were checked; three catalogue workloads \
+         in four environments is twelve, and a walk that found fewer read the wrong tree"
+    );
+    assert!(
+        sidecars >= 8,
+        "{sidecars} qip-egress bootstrap argument(s) were checked; api and deepbrain in four \
+         environments is eight, and a walk that found fewer read the wrong tree"
+    );
+}
+
 /// The two IAM members that name everybody. `allUsers` is the public
 /// internet; `allAuthenticatedUsers` is every Google account in existence,
 /// and reads as a restriction in an audit while being none.
