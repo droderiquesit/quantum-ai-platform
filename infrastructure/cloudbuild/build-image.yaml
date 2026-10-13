@@ -59,19 +59,25 @@ steps:
         --label "org.opencontainers.image.source=${_SOURCE}"
       )
 
+      # Through the tarball exporter and `docker load`, as deploy.yml does:
+      # written straight into a graphdriver daemon's image store,
+      # `rewrite-timestamp` is ignored and every layer carries the build's
+      # clock (deploy run 266, 2026-10-13).
       docker buildx build "${recipe[@]}" \
-        --output "type=docker,rewrite-timestamp=true" \
+        --output "type=docker,dest=/workspace/build.tar,rewrite-timestamp=true" \
         "${labels[@]}" \
         --tag "${_IMAGE}" \
         "${_CONTEXT:-.}"
+      docker load --input /workspace/build.tar
       first="$(docker image inspect --format '{{.Id}}' "${_IMAGE}")"
 
       if [ "${_REPRODUCIBLE}" = "true" ]; then
         docker buildx build --no-cache "${recipe[@]}" \
-          --output "type=docker,rewrite-timestamp=true" \
+          --output "type=docker,dest=/workspace/rebuild.tar,rewrite-timestamp=true" \
           "${labels[@]}" \
           --tag "qip-reproducibility/${_BINARY}:${_REVISION}" \
           "${_CONTEXT:-.}"
+        docker load --input /workspace/rebuild.tar
         second="$(docker image inspect --format '{{.Id}}' "qip-reproducibility/${_BINARY}:${_REVISION}")"
         if [ "$first" != "$second" ]; then
           echo "two builds of ${_REVISION} in the private pool produced two images: ${first} and ${second}." >&2

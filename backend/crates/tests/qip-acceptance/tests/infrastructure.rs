@@ -11459,10 +11459,23 @@ fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
         "the Dockerfile builds without an epoch instead of refusing"
     );
     // The layers' file times are clamped to it too, or the commit's epoch
-    // fixes the config and leaves every file's mtime to the build.
-    assert!(
-        deploy.contains("--output \"type=docker,rewrite-timestamp=true\""),
-        "deploy.yml does not clamp layer timestamps to the epoch"
+    // fixes the config and leaves every file's mtime to the build. Through
+    // the tarball exporter (`dest=`) and `docker load`, in both builds: with
+    // no `dest`, the runner's graphdriver daemon commits the layers itself
+    // and ignores `rewrite-timestamp` — deploy run 266 had byte-identical
+    // binaries, configs and histories and two sets of layer digests.
+    assert_eq!(
+        deploy
+            .matches(".tar,rewrite-timestamp=true\"")
+            .count(),
+        2,
+        "deploy.yml's two builds do not both export through the tarball exporter with \
+         rewrite-timestamp; the daemon's own image store ignores it"
+    );
+    assert_eq!(
+        deploy.matches("docker load --input \"${RUNNER_TEMP}/${{ matrix.binary }}").count(),
+        2,
+        "deploy.yml's two builds are not both loaded from their tarball"
     );
     // And the check is made: a second, uncached build compared by image id.
     assert!(
