@@ -22,27 +22,24 @@ resources:
 images:
 - name: qip-api
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-api
-  digest: sha256:14fd83be4ed0357212723e9248edec0a4e7d105623ccece040014e454ae39175
+  digest: sha256:abf392d2925a8bfc4be340745d1b1b8ff922e4afd31717c89d8251e513c0105a
 - name: qip-fastbrain
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-fastbrain
-  digest: sha256:c9f2cb45c72165beb6ada19f88ac7fefcdb9dfe4c50420557e3328142e2dd25c
+  digest: sha256:c61ae84d8cab85caeb0eb7c3fcddbdb3c5aefe01e9aaff9a73812312b6150ca9
 - name: qip-deepbrain
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-deepbrain
-  digest: sha256:ab01314a2b2ff156df2663622beab6984cfeb7fd4eb4cc24b46710f3af6edd19
-# The console (ADR 0094). `TO-PIN` rather than a digest, and it is the honest
-# value rather than a placeholder somebody forgot: `deploy.yml` gained the
-# portal's build in the same commit as this line, and no run of it has
-# happened, so this repository has never held bytes for `qip-portal` and there
-# is no digest to write. Argo CD will not reconcile a service whose image is
-# this string, which is the correct behaviour — a console that deploys from a
-# name nobody attested is exactly what Binary Authorization exists to stop.
-# It goes when a `deploy.yml` run has built, scanned and attested the image
-# and the digest is reviewed. Wiring `qip-portal` into Kargo's warehouse, so a
-# promotion keeps it pinned the way it keeps the three binaries pinned, is
-# named in ADR 0094 as the follow-on and is deliberately not done here.
+  digest: sha256:3d1bd51e93a2d0efd23af257cd8b292d81646f5d4471876452d746aa3c4c4bcb
+# The console (ADR 0094). Pinned by hand to the first digest any run has
+# produced: deploy.yml run 268 (2026-10-13, commit 0053f401) built, scanned,
+# pushed and attested it — `docker push` reported this digest and the run's
+# attestation step signed it under the dev attestor. Until that run this was
+# `TO-PIN`, because the repository had never held bytes for `qip-portal`.
+# By hand, and not by Kargo, because wiring `qip-portal` into Kargo's
+# warehouse is ADR 0094's named follow-on and is still not done: until it
+# is, every later portal digest is a reviewed edit of this line.
 - name: qip-portal
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/qip-portal
-  digest: TO-PIN
+  digest: sha256:11183f8dbfa530921c312acd4e75197511b7105b27f78059a1f75618ccb9f0f8
 - name: openobserve
   newName: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev/vendor/openobserve
   digest: sha256:88fb692ac791d3eaff69653a4a4686f1c7eceb9e105491d58d29ac2739560b3b
