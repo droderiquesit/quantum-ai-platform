@@ -491,3 +491,50 @@ existed only for these webhooks is exactly why it returns with them. Where
 this record says the cluster runs Config Connector, Argo CD and Kargo, read
 cert-manager beside them; `bootstrap/README.md` carries the order and the
 reasoning.
+
+## Amendment, 2026-10-13: a committed file reaches a RunService as a secret version, because the CRD has no `gcs` volume
+
+Decision 4 moved the services into `RunService` manifests and kept the
+cloudrun module's way of handing a workload its committed files: a bucket
+object named by the bytes' hash, mounted as a `gcs` volume. The manifests
+carried that volume for three weeks and no service ever received the file.
+`infrastructure/gitops/envs/README.md` had asked the question honestly — a
+schema that prunes the unknown field and a reconcile that removes the mount
+was named as what must not happen — and that is what happened. The
+`RunService` CRD at the vendored v1.156.0, byte-identical to upstream
+`master` on the day of this amendment (sha256 `e698dadd…`), admits
+`cloudSqlInstance`, `emptyDir` and `secret` volumes and nothing else; the
+API server drops `gcs` from the applied object, Config Connector reconciles
+a service with no such mount, and Argo CD reports the three RunServices
+that carry one OutOfSync forever, because its target has a field the live
+object can never have. `infra.yml` run 117 read the consequence off the
+containers: the API's and the deep brain's Envoy sidecar dying on
+`Invalid path: /etc/envoy/envoy-<hash>.yaml`, the fast brain exiting 78
+unable to read `/etc/qip/<hash>/universe.json`. Config Connector 1.145.0
+added a GCS volume to `RunJob`; nothing has added one to `RunService`.
+
+**The committed instrument universe and the Envoy bootstrap now travel as
+Secret Manager secret versions**, `qip-universe-catalogue-<env>` and
+`qip-egress-bootstrap-<env>`, created by Terraform beside every other
+container, written by `infra.yml`'s seed step from the checkout whenever
+the file's sha256 differs from the latest enabled version's, mounted by
+the manifests as `secret` volumes at exactly the paths the processes
+already read, and stamped onto each revision by `apps` like every other
+mounted version. They are not secrets: both are reviewed in a diff, and
+the container's secrecy is incidental. What the container gives is the one
+file-carrying volume this CRD can mount, a versioned audit trail of which
+bytes a revision read, and a path that needs no image rebuild — which the
+Envoy image, vendored upstream, could not have offered.
+
+**What it costs.** A reader of the volume list now sees two "secrets" that
+hold public bytes, and has this paragraph to explain it. The buckets and
+objects `modules/cloudrun` and `modules/egress-proxy` publish are kept:
+they remain Terraform's record of the bytes and the source of the hashed
+names the parity test recomputes, and retiring them is a change of its
+own. Secret Manager caps a version at 64 KiB; the bootstrap is a little
+over half that, and a file that outgrows it needs a different road.
+
+**What would make this wrong.** A `RunService` CRD that carries `gcs`; on
+that day the module's design returns and this amendment's two containers
+retire. Until then `gitops.rs` refuses a `gcs` key in any manifest, so the
+pruned mount cannot be reintroduced by habit.
