@@ -343,6 +343,41 @@ module "secrets" {
     # the secret holds no version, so an unseeded environment gets a control
     # plane nobody can log into rather than one with a blank password.
     "qip-argocd-admin-password",
+    # Two committed files, and no credential in either. What these two slots
+    # hold is public by construction — every byte in them was reviewed in a
+    # diff — so the container's secrecy is incidental, and what it buys is a
+    # versioned, audited record of which bytes each revision was given.
+    #
+    # They are secret containers at all because a Secret Manager volume is
+    # the one file-carrying volume Config Connector's `RunService` can mount.
+    # Its CRD (v1.156.0, byte-identical at upstream master) admits
+    # `cloudSqlInstance`, `emptyDir` and `secret` as volume kinds and no
+    # `gcs`: the API server pruned the GCS volumes the manifests under
+    # `gitops/envs/<env>/` declared, the mounts never existed, and
+    # `infra.yml` runs 116 and 117 show the API and the deep brain dying on
+    # `Invalid path: /etc/envoy/envoy-760e37df4041e228.yaml` and the fast
+    # brain on `QIP_UNIVERSE_PATH … cannot be read`. A bucket object is a
+    # file a revision cannot reach; a secret version is one it can.
+    #
+    # Written by `infra.yml`'s seed step, from the checkout, as a new version
+    # whenever the file's sha256 differs from the latest enabled version's —
+    # never by Terraform, because a version in a plan is a value in state,
+    # and never by an operator, because the reviewed commit is the only
+    # author these bytes may have. The bucket objects `modules/cloudrun` and
+    # `modules/egress-proxy` publish stay: they are Terraform's record and
+    # the source of the hash each mount path is named by. The module's
+    # 90-day rotation schedule applies to these two as to every container,
+    # so a rotation notice will name them; the answer to it is the next
+    # commit that changes the file, which the seed step writes, and not an
+    # operator rotating anything.
+    #
+    # The instrument universe, `data/datasets/universe.json`, read by the
+    # three central roots at start-up from `QIP_UNIVERSE_PATH`.
+    "qip-universe-catalogue",
+    # The Envoy bootstrap, `infrastructure/egress/envoy.yaml`, the egress
+    # sidecar's `-c` beside the API and the deep brain. The fast brain
+    # carries no sidecar and is granted no read on it; see the grant below.
+    "qip-egress-bootstrap",
   ]
 
   # The venue credential is readable only by an environment that could use it,
@@ -382,6 +417,63 @@ module "secrets" {
   # The console's identity and its one grant, created only where the console
   # has a route to the platform at all (ADR 0018).
   console_enabled = var.console_egress_cidr != null
+}
+
+# The read each central workload needs on the two committed files above.
+#
+# At the root rather than in `modules/cloudrun`, deliberately. That module's
+# `mounted` grant is keyed on `secret_mounts`, and every entry there is a
+# parity contract: its `env_file_variable` must appear, as a `_FILE` value,
+# in every `RunService` under `gitops/envs/<env>/`. The universe already
+# reaches the binaries as `QIP_UNIVERSE_PATH` from `config_files`, and the
+# bootstrap reaches the sidecar as its `-c` argument, so adding either to
+# `secret_mounts` would demand a second variable in every manifest that no
+# process reads — a mount declared to satisfy a grant rather than a grant
+# that follows a mount. The grant is made here instead, on the identity the
+# catalogue created, for the container `module.secrets` created, and the
+# manifest is what pairs the two.
+#
+# An explicit map rather than a product of workloads and secrets, because the
+# shape is not a product: the fast brain carries no egress sidecar
+# (`catalogue.tf` holds `egress_proxy = false` on it as a precondition), and a
+# read on the bootstrap for an identity that mounts none would be a standing
+# grant on a file it has no way to use. `secretAccessor` and nothing wider —
+# the reader never writes a version; `infra.yml`'s seed step does, as the
+# infrastructure identity.
+#
+# Each entry names the container by its resource id, not by a `secret = "…"`
+# attribute resolved below: `scripts/check-secrets.sh` reads a quoted value
+# assigned to a key called `secret` as a credential, and a scanner exception
+# for a shape that is harmless here would be an exception a real key could
+# wear next time.
+resource "google_secret_manager_secret_iam_member" "committed_file" {
+  for_each = {
+    "api-universe" = {
+      workload  = "api"
+      secret_id = module.secrets.secret_ids["qip-universe-catalogue"]
+    }
+    "api-egress-bootstrap" = {
+      workload  = "api"
+      secret_id = module.secrets.secret_ids["qip-egress-bootstrap"]
+    }
+    "deepbrain-universe" = {
+      workload  = "deepbrain"
+      secret_id = module.secrets.secret_ids["qip-universe-catalogue"]
+    }
+    "deepbrain-egress-bootstrap" = {
+      workload  = "deepbrain"
+      secret_id = module.secrets.secret_ids["qip-egress-bootstrap"]
+    }
+    "fastbrain-universe" = {
+      workload  = "fastbrain"
+      secret_id = module.secrets.secret_ids["qip-universe-catalogue"]
+    }
+  }
+
+  project   = var.project_id
+  secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${module.cloud_run[each.value.workload].service_account_email}"
 }
 
 # The egress proxy: the one committed bootstrap, published for every rendering.

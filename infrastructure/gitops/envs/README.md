@@ -27,9 +27,12 @@ so Config Connector's first reconcile acquires and changes nothing:
   of each secret mount, the `_PATH` of each configuration file — **sorted by
   name**, because Terraform iterates a map sorted and Cloud Run compares the
   list in order; a reordering is a new revision.
-- secret volumes mount at `/var/run/secrets/qip/<key>` and project
-  `<file_name>` at mode 0400 (`256`); the secret id is `<name>-<env>` as
-  `modules/secrets` names it.
+- credential secret volumes mount at `/var/run/secrets/qip/<key>` and
+  project `<file_name>` at mode 0400 (`256`); the secret id is
+  `<name>-<env>` as `modules/secrets` names it. The two committed
+  configuration files are secret volumes too, at the paths the next two
+  bullets give and at mode 0444 (`292`); the section below on
+  `config-files` and `egress-bootstrap` says why the mode differs.
 - `QIP_UNIVERSE_PATH` is `/etc/qip/<prefix>/universe.json`: the hash-named
   directory the module publishes the committed `data/datasets/universe.json`
   under, `substr(sha256(join("\n", [sha256(content)])), 0, 16)` — the first
@@ -42,7 +45,8 @@ so Config Connector's first reconcile acquires and changes nothing:
   directory, the twelve manifests kept the old one, and `infra.yml` run
   114's diagnose (2026-10-13) found every `fastbrain` exiting 78 unable to
   read a path the bucket no longer held. A change to that file is a new
-  directory in the bucket and a new path in every manifest, in one commit.
+  directory in the bucket, a new path and mount point in every manifest,
+  and a new secret version, in one commit.
   Recompute with
   `sha256sum data/datasets/universe.json | cut -c1-64 | tr -d '\n' | sha256sum | cut -c1-16`;
   `gitops.rs`'s
@@ -55,20 +59,29 @@ so Config Connector's first reconcile acquires and changes nothing:
   Same rule, same test, same history: the bootstrap changed in `349638db`
   (2026-10-05), eight manifests kept the old name, and run 114 found
   `deepbrain`'s Envoy dying on `Invalid path`. Recompute with
-  `sha256sum infrastructure/egress/envoy.yaml | cut -c1-16`. Port 9900 is
-  its health listener.
+  `sha256sum infrastructure/egress/envoy.yaml | cut -c1-16`. The same
+  name is the one item the `egress-bootstrap` secret volume projects, so
+  a stale hash is caught in the argument and in the item by the same
+  test. Port 9900 is its health listener.
 - `cpuIdle` is `min_instances == 0`, `startupCpuBoost` is on, the probes are
   the module's, `timeout` is 300s, gen2, `ALL_TRAFFIC` through the zone's
   subnet with the zone's tag.
 
-## `gcs` volumes — read before the first sync
+## `config-files` and `egress-bootstrap` are secret volumes, because the CRD has no `gcs`
 
-The egress bootstrap and `universe.json` reach the running services as Cloud
-Storage volumes (`gcs { bucket, read_only }` on the Terraform resource). The
-Config Connector `RunService` reference lists no `gcs` volume — and that is
-now a schema reading rather than a documentation reading. The CRD the
-vendored operator version installs was fetched and its volume schema
-enumerated on 2026-09-06:
+The egress bootstrap and `universe.json` reach a revision as Secret Manager
+secret versions — `qip-egress-bootstrap-<env>` and
+`qip-universe-catalogue-<env>`, mounted as `secret` volumes — and not as
+the `gcs { bucket, read_only }` volumes `modules/cloudrun` rendered on the
+Terraform resource before ADR 0036 moved the service into a manifest. This
+section used to pose a question about those `gcs` volumes, with three
+outcomes a first sync could answer and a fourth it named as what must not
+happen. The question is answered, and the answer is the fourth (ADR 0036,
+amendment of 2026-10-13).
+
+The schema reading has not changed. The CRD the vendored operator installs
+was fetched and its volume schema enumerated on 2026-09-06, and it was
+byte-identical at upstream `master` on 2026-10-13:
 
 ```
 curl -sS https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/v1.156.0/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_runservices.run.cnrm.cloud.google.com.yaml
@@ -78,33 +91,79 @@ grep -ci gcs  →  0
 spec.template.volumes items: cloudSqlInstance, emptyDir, name, secret
 ```
 
-Four properties, and `gcs` is not one of them; nor is `nfs`. What was not
-checked, because this environment's proxy refuses the GitHub contents API,
-is whether a second CRD elsewhere in that directory serves the same kind —
-so read this as "the CRD that generates `run.cnrm.cloud.google.com/v1beta1
-RunService` from the Terraform provider carries no `gcs` volume", which is
-the one these manifests are validated against.
+Four properties, three of them volume kinds, and `gcs` is not among them;
+nor is `nfs`. What the earlier version of this section hoped was that
+`Validate=true` on the Application would turn that into a refused sync — a
+validation error, nothing changed in Cloud Run. It did not. The API server
+pruned the unknown key rather than rejecting the object, Config Connector
+reconciled a service with no such mount, and Argo CD reported exactly these
+three `RunService`s OutOfSync: the target carries a field the live object
+can never carry, so no sync converges and the diff never closes.
+`infra.yml` run 116 (`apps`, dev, 2026-10-13) failed in its bootstrap step
+with the Application still reading `OutOfSync Healthy` when the wait gave
+up and all three revisions failing their startup probes, and run 117
+(`diagnose`, dev, the same day) read the consequence off the containers — the API's and the deep
+brain's Envoy sidecar dying on `Invalid path: /etc/envoy/envoy-<hash>.yaml`,
+and the fast brain exiting 78 because `QIP_UNIVERSE_PATH` named
+`/etc/qip/<hash>/universe.json`, "which cannot be read". A process that
+starts with no `universe.json` at the path it was told, and a proxy with no
+bootstrap: the sentence this section wrote as a warning is the one it now
+records as a finding. Why `Validate=true` did not refuse the object was not
+established and this file does not guess at it; what is established is
+that it did not, and a gate that is believed to fire and does not is worse
+than no gate, because nobody looks behind it.
 
-These manifests carry them anyway, as the services run, and the Application
-syncs with `Validate=true`. Three outcomes are possible on the first sync of
-`dev`, and only the third is acceptable:
+**What travels now, and what did not move.** Terraform declares the two
+containers beside every other slot `modules/secrets` names; `infra.yml`'s
+seed step writes a version from the checkout's bytes when the file's digest
+differs from the latest enabled version's; each manifest mounts the
+container as a `secret` volume; and `apps` stamps the version onto the
+revision exactly as it stamps every mounted credential. The paths the
+processes read did not move — `QIP_UNIVERSE_PATH` is still
+`/etc/qip/<prefix>/universe.json` and the sidecar still reads
+`-c /etc/envoy/envoy-<hash>.yaml` — because a path a process opens is the
+contract and the volume behind it is not. What moved is one mount point: a
+secret volume projects its items flat, so `config-files` mounts at the hash
+directory itself rather than at `/etc/qip` with the hash as a subdirectory
+the bucket used to supply. `egress-bootstrap` still mounts at `/etc/envoy`
+and projects the bootstrap under its hashed name.
 
-1. The schema does not admit `gcs` and the sync is refused with a
-   validation error. Nothing changes in Cloud Run. ADR 0036 decision 4
-   cannot be applied to these four workloads until the addon carries the
-   field, and the ADR's rejected alternative (Terraform keeps the service)
-   is the honest fallback for them.
-2. The schema admits it but reconciles it differently from the provider —
-   a new revision appears. The remedy is the manifest, never a manual
-   `gcloud run services update`.
-3. The schema admits it and the revision count does not move. That is the
-   evidence the ADR asks for; record it in the commit that lands the
-   change, with the run URL and its terminal status.
+Both items are mode `292` (0444) where every credential mount is `256`
+(0400), and each manifest says why beside the value: the bytes are a
+committed, reviewed file, not a credential, and both the Envoy image and
+the workload image run as a non-root user. The parity test keeps asserting
+`256` on every volume the catalogue entry names as a secret and says
+nothing about these two, which is the right split — a mode that is correct
+for a file anyone can read in this repository is the wrong one for a key.
 
-What must not happen is a schema that prunes the unknown field and a
-reconcile that removes the mount: a process that starts with no
-`universe.json` at the path it was told, and a proxy with no bootstrap.
-`Validate=true` is the line between outcome 1 and that.
+**What is kept, on purpose.** The buckets and hash-named objects
+`modules/cloudrun` and `modules/egress-proxy` publish are still created and
+still Terraform's record of the bytes, and the hashed names — `<prefix>`
+and `envoy-<hash>` — are still what `gitops.rs`'s
+`every_hash_named_path_a_manifest_mounts_is_the_name_terraform_publishes_the_committed_bytes_under`
+recomputes from the committed files and refuses a manifest for disagreeing
+with. So the rule in the section above holds, with one more clause: a
+change to either file is a new hashed name, a new literal in every
+manifest, **and a new secret version**, in one commit. The parity test
+catches a stale literal. A stale version is caught by the seed step
+comparing digests before it writes — the workflow's own comments are the
+record of that rule — and by nothing in this repository's gates, which is
+named here rather than closed. Secret Manager caps a version at 64 KiB;
+`wc -c infrastructure/egress/envoy.yaml data/datasets/universe.json` is
+the check, no figure is written here because the bootstrap grows, and a
+file that outgrows the cap needs a different road.
+
+**What refuses the pruned mount coming back by habit** is
+`grep -rnE 'gcs[:]' infrastructure/gitops/envs` printing nothing — the
+key, not the word, because every manifest's comment names the word, and
+the brackets so that this sentence does not match the check it cites: a
+check whose own citation matches it reads itself — and the parity
+assertion in `gitops.rs` on the `config-files` volume, the one that
+required a read-only `gcs` mount at `/etc/qip` until this change and the
+place the secret-volume assertion belongs. The day a `RunService` CRD
+carries `gcs`, the module's design returns and the two containers retire;
+the ADR amendment says so. Until then a `gcs` key in any manifest here is a
+mount nobody will ever receive, reported as OutOfSync forever.
 
 ## The metrics collector, when a digest is finally pinned
 
@@ -139,12 +198,14 @@ the manifests for `fastbrain` and `deepbrain` then need:
         limits:
           cpu: '1'
           memory: 256Mi
-    volumes:
-    - name: metrics-collector-config
-      gcs:
-        bucket: qip-metrics-<env>-<name>-<project>
-        readOnly: true
 ```
+
+plus a `volumes` entry named `metrics-collector-config` of the shape
+`config-files` takes in every manifest here — a `secret` volume projecting
+one item, `config.yaml`, at mode `292` — naming a container nothing
+declares today. Not a `gcs` volume of `qip-metrics-<env>-<name>-<project>`,
+which is what this fragment showed until 2026-10-13: the section above
+records what the API server does with one.
 
 Three things this section had wrong or left unsaid until 2026-09-15, found by
 reading Google's own instructions for the sidecar and the tests that would
@@ -188,26 +249,28 @@ is not only a paste.
   the module's `collector_mount_path`, the volume names that workload's own
   `qip-metrics-<env>-<name>-<project>` — and it does not exist yet. Write it
   in the same commit as the fragment, not after.
-- **Whether the document should arrive from a bucket at all is an open
-  question, and it is the one decision the day cannot paste its way past.**
-  Google documents the custom configuration arriving as a Secret Manager
-  volume mounted at `/etc/rungmp`, with the secret version projected as
-  `config.yaml`. This repository publishes it to a bucket and would mount a
-  `gcs` volume — and the vendored CRD's volume schema, enumerated in the
-  section above, lists `cloudSqlInstance`, `emptyDir`, `name` and `secret`
-  and no `gcs`. Of the three `gcs` volumes these manifests carry, the
-  collector's is therefore the only one with a documented alternative that
-  the schema is known to admit. Moving it is not a manifest edit: the
-  bucket, the `objectViewer` grant and the two outputs in `modules/cloudrun`
-  would become a secret, a version and a `secretAccessor` grant, and that is
-  an ADR, taken by a person, on the day. Recorded here so the next reader
-  meets it before writing the mount rather than after a sync prunes it.
+- **Whether the document arrives from a bucket is no longer open, and
+  it is still the one decision the day cannot paste its way past.** Google
+  documents the custom configuration arriving as a Secret Manager volume
+  mounted at `/etc/rungmp`, with the secret version projected as
+  `config.yaml`. This repository publishes it to a bucket, and a `gcs`
+  volume is what the section above records the API server pruning from
+  the other two files — so the document arrives as a secret version or
+  it does not arrive. Moving it is not a manifest edit: the bucket, the
+  `objectViewer` grant and the two outputs in `modules/cloudrun` become a
+  container, a version the seed step writes from the rendered document
+  and a `secretAccessor` grant — the road ADR 0036's amendment of
+  2026-10-13 built for the universe and the bootstrap — and that is a
+  Terraform change taken by a person, on the day. Recorded here so the
+  next reader meets it before writing the mount rather than after a sync
+  prunes it.
 
-That volume is a `gcs` volume, so it is subject in full to the section
-above: if the schema prunes `gcs`, the collector mounts nothing, reads its
-built-in default and — per the paragraph above — charts something that looks
-like a scrape. Prove the mount before believing a scrape, and do not flip
-`workload_metrics_exist` on a manifest that merely applied.
+A collector whose document never arrived mounts nothing, reads its
+built-in default and — per the paragraph above — charts something that
+looks like a scrape; the section above records that a `gcs` volume is
+exactly how a document never arrives, silently. Prove the mount before
+believing a scrape, and do not flip `workload_metrics_exist` on a manifest
+that merely applied.
 
 ## Other fields whose accepted form was not confirmable offline
 

@@ -106,21 +106,27 @@ on any ingress but internal, a `qip-*` image in a Pod, a missing
 
 ## Two things a reader should know before believing this tree
 
-**`gcs` volumes.** The API and the deep brain mount the egress proxy's
-bootstrap, and all three central workloads mount `universe.json`, as Cloud
-Storage volumes — `modules/cloudrun` created them that way and the running
-`dev` services carry them. The Config Connector `RunService` reference
-(`run.cnrm.cloud.google.com/v1beta1`, read on 2026-09-04) lists
-`secret`, `emptyDir` and `cloudSqlInstance` volumes and no `gcs`. The
-manifests here carry the `gcs` volumes anyway, exactly as the services run,
-and every Application syncs with `Validate=true`: if the operator's schema
-does not admit the field, the sync is refused with a validation error and
-nothing is stripped from the running service. If it does admit it, the
-first sync acquires the service unchanged. What must not happen is the
-third thing — a schema that silently prunes the volume and a reconcile that
-removes the mount — and the validation flag is what makes it the first
-thing instead. Until a real sync has answered which, ADR 0036 decision 4 is
-not proven for these four workloads. `envs/README.md` has the detail.
+**Committed files reach a service as secret versions, not `gcs` volumes.**
+The API and the deep brain mount the egress proxy's bootstrap, and all three
+central workloads mount `universe.json`. `modules/cloudrun` once rendered
+those as Cloud Storage volumes, and until 2026-10-13 the manifests here
+carried `gcs` volumes "exactly as the services ran", with this paragraph
+saying that `Validate=true` on the Application would turn a schema without
+the field into a refused sync and nothing stripped. The Config Connector
+`RunService` schema (v1.156.0, byte-identical at upstream `master`) lists
+`secret`, `emptyDir` and `cloudSqlInstance` volumes and no `gcs`, and the
+sync did not refuse it: the API server pruned the unknown key, Config
+Connector reconciled a template with no such mount, Argo CD reported the
+three `RunService`s OutOfSync on every pass, and runs 116 and 117 found the
+api, deepbrain and fastbrain revisions dead on a file that was never there.
+That is the one outcome the earlier paragraph said could not happen. Since
+the ADR 0036 amendment of 2026-10-13 each committed file is a version of
+`qip-universe-catalogue-<env>` or `qip-egress-bootstrap-<env>`: `infra.yml`'s
+seeding step writes the committed bytes whenever the held version's digest
+differs, the volumes are `secret` volumes at the hash-named paths the
+workloads already read, and `gitops.rs` refuses a `gcs` key in any manifest
+here. `grep -rnE 'gcs[:]' infrastructure/gitops/envs` prints nothing.
+`envs/README.md` has the detail.
 
 **One registry per environment.** `deploy.yml` builds into the environment
 it targets and each environment has its own attestor, so an image in

@@ -11582,6 +11582,19 @@ fn the_diagnose_action_reaches_no_step_that_writes() {
     }
 }
 
+/// A step's own `if:` expression — the key at the step's indent, so a shell
+/// line inside `run:` is never read as the gate.
+///
+/// Shared by every walk below that reads reach from control flow rather than
+/// from text: the `seed`, `urls` and `grant` walks each decide which steps a
+/// dispatch reaches from this line and nothing else.
+fn gate_of(step: &str) -> Option<&str> {
+    let key_indent = indent_of(step.lines().next().unwrap_or("")) + 2;
+    step.lines()
+        .find(|line| indent_of(line) == key_indent && line.trim_start().starts_with("if:"))
+        .map(|line| line.trim_start()["if:".len()..].trim())
+}
+
 /// The `seed` action reaches no step that grants, writes state or applies.
 ///
 /// `seed` exists so a credential can be handed to an environment from a
@@ -11625,14 +11638,6 @@ fn a_seed_dispatch_reaches_no_step_that_grants_writes_state_or_applies() {
         "services update",
     ];
 
-    // The step's own `if:` expression — the key at the step's indent, so a
-    // shell line inside `run:` is never read as the gate.
-    fn gate_of(step: &str) -> Option<&str> {
-        let key_indent = indent_of(step.lines().next().unwrap_or("")) + 2;
-        step.lines()
-            .find(|line| indent_of(line) == key_indent && line.trim_start().starts_with("if:"))
-            .map(|line| line.trim_start()["if:".len()..].trim())
-    }
     fn gated_off_seed(gate: &str) -> bool {
         gate.contains("!= 'seed'")
             || (gate.contains("inputs.action ==") && !gate.contains("== 'seed'"))
@@ -11714,6 +11719,320 @@ fn a_seed_dispatch_reaches_no_step_that_grants_writes_state_or_applies() {
         [handed],
         "the steps reachable under `seed` that disable a secret version are {disablers:?}; \
          only the dispatch-seeding step ({handed}) retires a version, and only on rotate=true"
+    );
+}
+
+/// The `urls` action reaches no step that writes — not even the one write
+/// `seed` is permitted.
+///
+/// `urls` exists so that finding the platform's addresses needs no hand-run
+/// gcloud: it prints each service's URL and IAP reading, how Argo CD and
+/// Kargo are reached, and the commands that read the OpenObserve login. An
+/// action documented as "where does the environment answer" is the one an
+/// operator dispatches without re-reading the workflow, which is the reason
+/// the `diagnose` walk above exists — and that walk is the one that found
+/// the three self-grant steps and `terraform init` running under a
+/// read-only action, because a step with no action gate runs for every
+/// action. So the walk is repeated for `urls`, with the full list of write
+/// verbs: `urls` prints two `secrets versions access` commands and runs
+/// neither, and it adds no version anywhere.
+///
+/// Reach is read from each step's `if:` line, the control flow the runner
+/// evaluates, exactly as the `seed` walk reads it: a step is out of reach
+/// when its gate names `!= 'urls'`, when it names some other action and not
+/// `'urls'`, or when it requires `steps.init.outcome == 'success'` and the
+/// `init` step is itself out of reach. The job's final step lists remote
+/// state and is skipped under `urls` only because `init` is; take `urls` out
+/// of `init`'s gate and both come back, which is the mutation this test was
+/// proven against.
+#[test]
+fn a_urls_dispatch_reaches_no_step_that_writes() {
+    let workflow = read(".github/workflows/infra.yml");
+    let jobs = workflow_jobs(&workflow);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "terraform")
+        .expect("infra.yml has a `terraform` job");
+
+    // Every verb the diagnose walk refuses. The seed walk drops `versions
+    // add` because that is the write seed exists for; urls is for no write
+    // at all.
+    const WRITES: [&str; 8] = [
+        "add-iam-policy-binding",
+        "terraform apply",
+        "terraform destroy",
+        "versions add",
+        "state rm",
+        "terraform init",
+        "state list",
+        "services update",
+    ];
+
+    fn gated_off_urls(gate: &str) -> bool {
+        gate.contains("!= 'urls'")
+            || (gate.contains("inputs.action ==") && !gate.contains("== 'urls'"))
+    }
+
+    let steps = job_steps(body);
+    // Premise: the walk found the step list and the urls step is in it and
+    // in reach. An empty walk, or a gate reader that refused everything,
+    // would satisfy every absence below while proving nothing.
+    assert!(
+        steps.len() > 10,
+        "the terraform job parsed to {} step(s); the walk is not reading the job",
+        steps.len()
+    );
+    let urls = steps
+        .iter()
+        .position(|step| step.lines().any(|line| line.trim() == "- name: urls"))
+        .expect("infra.yml has a `urls` step");
+    let init = steps
+        .iter()
+        .position(|step| step.lines().any(|line| line.trim() == "id: init"))
+        .expect("the terraform init step carries `id: init`, which the final step's gate names");
+    let init_reachable = !gate_of(&steps[init]).is_some_and(gated_off_urls);
+    let reachable = |step: &str| match gate_of(step) {
+        None => true,
+        Some(gate) => {
+            !gated_off_urls(gate)
+                && (init_reachable || !gate.contains("steps.init.outcome == 'success'"))
+        }
+    };
+    assert!(
+        reachable(&steps[urls]),
+        "the urls step is out of reach under `urls`; the gate reader is not reading gates"
+    );
+
+    for (index, step) in steps.iter().enumerate() {
+        if !reachable(step) {
+            continue;
+        }
+        for verb in WRITES {
+            assert!(
+                !step.contains(verb),
+                "step {index} is reachable under `urls` and runs `{verb}`. The action exists to \
+                 print where the environment answers and nothing else; an operator dispatches \
+                 it to find an address, not to grant, init or apply. Gate the step with \
+                 `inputs.action != 'urls'`.\n{step}"
+            );
+        }
+    }
+}
+
+/// A `grant` dispatch admits one person or group, through IAP, and holds no
+/// other role in its hand.
+///
+/// `grant` is the IAP gate's closing line — the `gcloud iap web
+/// add-iam-policy-binding` an operator was told to run by hand — as a
+/// dispatch, so admitting somebody to the console takes the owner's dispatch
+/// and not the owner's shell. Four things make it safe to offer, and each is
+/// asserted on the workflow's text because each is one edit from gone:
+///
+///   * it runs under exactly `inputs.action == 'grant'`, so no other action
+///     reads a member it was never handed;
+///   * the member is a person or a group: the whole-string shape is pinned,
+///     and `serviceAccount:`, `domain:` and `allUsers` are each refused by
+///     name in a `case` arm that exits. An IAM member is an account
+///     identifier and the console is for people — a domain admits accounts
+///     that do not exist yet, and `allUsers` is the public internet IAP is
+///     in front of the console to refuse (ADR 0095 decision 6);
+///   * the only role it grants is `roles/iap.httpsResourceAccessor`: every
+///     binding it adds carries that role, and no other `roles/` string
+///     appears anywhere in the step. The self-grant loop above it shows how
+///     a list of roles grows one line at a time;
+///   * it reaches no other write. Reach is read from the `if:` lines as the
+///     `seed` and `urls` walks read it, and under `grant` the only steps
+///     that add a binding are this one — so the three self-grants and
+///     `terraform init` are out of reach, and remote state is neither
+///     opened nor listed while an operator's attention is on a person.
+#[test]
+fn a_grant_dispatch_admits_only_a_person_and_only_to_iap() {
+    let workflow = read(".github/workflows/infra.yml");
+    let jobs = workflow_jobs(&workflow);
+    let (_, body) = jobs
+        .iter()
+        .find(|(name, _)| name == "terraform")
+        .expect("infra.yml has a `terraform` job");
+    let steps = job_steps(body);
+    assert!(
+        steps.len() > 10,
+        "the terraform job parsed to {} step(s); the walk is not reading the job",
+        steps.len()
+    );
+    let grant = steps
+        .iter()
+        .position(|step| step.lines().any(|line| line.trim() == "- name: grant"))
+        .expect("infra.yml has a `grant` step");
+    let step = &steps[grant];
+    let at = |needle: &str| {
+        step.find(needle)
+            .unwrap_or_else(|| panic!("the grant step does not contain {needle}"))
+    };
+
+    // The gate, exactly: a gate that admits a second action is not this one.
+    assert_eq!(
+        gate_of(step),
+        Some("inputs.action == 'grant'"),
+        "the grant step runs under something other than exactly the `grant` action"
+    );
+
+    // The member arrives as an environment value, once, and nowhere as text
+    // the runner pastes into the script. It is not a credential, so the
+    // header print of `env:` is accepted here; what is not accepted is an
+    // expression inside `run:`, where a newline in the value is a command.
+    assert_eq!(
+        step.matches("inputs.iap_member").count(),
+        1,
+        "the grant step names inputs.iap_member more than once; the one mention is its \
+         `env:` binding, and any other is an expression the runner expands into the script"
+    );
+    assert!(
+        step.contains("IAP_MEMBER: ${{ inputs.iap_member }}"),
+        "the grant step no longer binds iap_member in its `env:`; an expression inside `run:` \
+         is text the runner pastes in before bash parses it"
+    );
+    // The shape, as a whole-string match: `user:` or `group:`, one `@`, no
+    // whitespace. A per-line tool would admit a second line.
+    let shape = "^(user|group):[^@[:space:]]+@[^@[:space:]]+$";
+    assert!(
+        step.contains(shape),
+        "the grant step no longer pins the member to `{shape}`, so a value that is not a \
+         person or a group reaches gcloud"
+    );
+
+    // The three kinds of member that are not a person, each refused by name
+    // in an arm that exits. An arm's label is its first line ending in `)`;
+    // an `echo` line ends in `>&2`.
+    fn label(arm: &str) -> &str {
+        arm.lines()
+            .map(str::trim)
+            .find(|line| line.ends_with(')'))
+            .unwrap_or("")
+    }
+    let case = &step[at("case \"${IAP_MEMBER}\" in")..];
+    let case = &case[..case
+        .find("\n          esac")
+        .expect("the member case closes")];
+    let arms: Vec<&str> = case.split(";;").collect();
+    // The text after the last `;;` is not an arm.
+    let arms = &arms[..arms.len() - 1];
+    assert!(
+        arms.len() >= 4,
+        "premise: the member case has {} arm(s), fewer than the empty, character-set and \
+         three not-a-person refusals this test reads",
+        arms.len()
+    );
+    for refused in ["serviceAccount:", "domain:", "allUsers"] {
+        let arm = arms
+            .iter()
+            .find(|arm| label(arm).contains(refused))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the grant step has no case arm refusing `{refused}`; the console is for \
+                     people, and a member of that kind reaches gcloud as a grant"
+                )
+            });
+        assert!(
+            arm.contains("exit 1"),
+            "the arm refusing `{refused}` does not exit, so the refusal is a message and the \
+             grant goes ahead: {arm}"
+        );
+    }
+
+    // The role: every binding the step adds carries the IAP accessor role on
+    // its own command line, and that is the only role the step names at all.
+    let bindings: Vec<String> = folded_commands(step)
+        .into_iter()
+        .filter(|command| command.contains("add-iam-policy-binding"))
+        .collect();
+    assert!(
+        bindings.len() >= 2,
+        "the grant step adds {} binding(s); it admits to the portal and, where the gateway is \
+         published, to the project, so fewer than two is a step that stopped granting",
+        bindings.len()
+    );
+    for binding in &bindings {
+        assert!(
+            binding.contains("--role=roles/iap.httpsResourceAccessor"),
+            "a binding the grant step adds carries a role other than the IAP accessor, or \
+             none on its own line: {binding}"
+        );
+    }
+    let roles: std::collections::BTreeSet<&str> = step
+        .match_indices("roles/")
+        .map(|(offset, _)| {
+            let rest = &step[offset..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '/' || c == '.'))
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .collect();
+    assert_eq!(
+        roles,
+        ["roles/iap.httpsResourceAccessor"].into_iter().collect(),
+        "the grant step names the roles {roles:?}; the one role a grant dispatch may hold is \
+         the IAP accessor, and a second here is a second thing a person is admitted to"
+    );
+
+    // Reach: under `grant`, the only steps that add a binding are this one,
+    // and nothing applies, inits or lists state.
+    fn gated_off_grant(gate: &str) -> bool {
+        gate.contains("!= 'grant'")
+            || (gate.contains("inputs.action ==") && !gate.contains("== 'grant'"))
+    }
+    let init = steps
+        .iter()
+        .position(|step| step.lines().any(|line| line.trim() == "id: init"))
+        .expect("the terraform init step carries `id: init`, which the final step's gate names");
+    let init_reachable = !gate_of(&steps[init]).is_some_and(gated_off_grant);
+    let reachable = |step: &str| match gate_of(step) {
+        None => true,
+        Some(gate) => {
+            !gated_off_grant(gate)
+                && (init_reachable || !gate.contains("steps.init.outcome == 'success'"))
+        }
+    };
+    assert!(
+        reachable(step),
+        "the grant step is out of reach under `grant`; the gate reader is not reading gates"
+    );
+    const OTHER_WRITES: [&str; 7] = [
+        "terraform apply",
+        "terraform destroy",
+        "versions add",
+        "state rm",
+        "terraform init",
+        "state list",
+        "services update",
+    ];
+    let reached: Vec<(usize, &String)> = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| reachable(step.as_str()))
+        .collect();
+    for (index, step) in &reached {
+        for verb in OTHER_WRITES {
+            assert!(
+                !step.contains(verb),
+                "step {index} is reachable under `grant` and runs `{verb}`. The action exists to \
+                 add one IAP binding for one person; an operator dispatches it with their \
+                 attention on that person, not on state or an apply. Gate the step with \
+                 `inputs.action != 'grant'`.\n{step}"
+            );
+        }
+    }
+    let binders: Vec<usize> = reached
+        .iter()
+        .filter(|(_, step)| step.contains("add-iam-policy-binding"))
+        .map(|(index, _)| *index)
+        .collect();
+    assert_eq!(
+        binders,
+        [grant],
+        "the steps reachable under `grant` that add an IAM binding are {binders:?}; only the \
+         grant step ({grant}) may, and another is this job's own identity granting itself a \
+         role beside an operator who dispatched a grant for a person"
     );
 }
 

@@ -202,10 +202,13 @@ What is not:
   `infrastructure/gitops/envs/README.md` now carries the exact two
   fragments to add on that day, and the module exports
   `collector_mount_path` and `collector_config_path` so the manifest agrees
-  with one source rather than a second spelling. Note the mount is a `gcs`
-  volume and the RunService CRD at the vendored operator version admits no
-  such volume type (that README's `gcs` section has the schema and the
-  command); until a sync proves otherwise, "the document is published
+  with one source rather than a second spelling. Note the module publishes
+  the document to a bucket, and the RunService CRD at the vendored operator
+  version admits no `gcs` volume: a sync into `dev` on 2026-10-13 proved
+  the API server prunes one silently rather than refusing it (that
+  README's secret-volume section has the schema, the command and the
+  outcome), so the document reaches the collector as a Secret Manager
+  version or it does not reach it, and "the document is published
   correctly" is not "the collector can read it".
 - **The sidecar has never been applied, though this module has.** This entry
   used to read "Nothing has been applied. ADR 0024 records that no plan has
@@ -329,10 +332,12 @@ alarm.
   `metrics_collector_image_digest` in an environment's tfvars.
 - The sidecar container and its `/etc/rungmp` volume written into the two
   brains' `RunService` manifests in the same commit as that digest — the
-  fragments are in `infrastructure/gitops/envs/README.md` — and a sync that
-  proves the `gcs` volume was admitted rather than pruned. A pruned volume
-  is a collector reading its built-in default, which is the same silent
-  failure the object path just stopped being.
+  fragments are in `infrastructure/gitops/envs/README.md` — as a `secret`
+  volume of a container the seed step fills from the rendered document,
+  never a `gcs` volume: the 2026-10-13 sync proved the API server prunes
+  `gcs` from a `RunService`, and a pruned volume is a collector reading its
+  built-in default, which is the same silent failure the object path just
+  stopped being.
 - A plan read and applied by a person, and both brains' revisions admitted
   carrying the sidecar.
 - A node applied from a non-empty `execution_nodes`, and a
