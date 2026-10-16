@@ -65,7 +65,10 @@ so Config Connector's first reconcile acquires and changes nothing:
   test. Port 9900 is its health listener.
 - `cpuIdle` is `min_instances == 0`, `startupCpuBoost` is on, the probes are
   the module's, `timeout` is 300s, gen2, `ALL_TRAFFIC` through the zone's
-  subnet with the zone's tag.
+  subnet with the zone's tag. Every probe's `timeoutSeconds` is strictly
+  below its `periodSeconds`, because Cloud Run refuses the template
+  otherwise and the `gcloud run services update` behind the IAP gate was
+  refused on exactly that in run 119; the `gitops` suite holds it.
 
 ## `config-files` and `egress-bootstrap` are secret volumes, because the CRD has no `gcs`
 

@@ -112,7 +112,7 @@ spec:
       startupProbe:
         initialDelaySeconds: 1
         periodSeconds: 2
-        timeoutSeconds: 2
+        timeoutSeconds: 1
         failureThreshold: 15
         httpGet:
           path: /healthz

@@ -48,8 +48,10 @@
 #     (`terraform providers schema -json` at 6.50.0: present in google-beta's
 #     `google_cloud_run_v2_service`, absent from google's). So the enable bit
 #     is set by `infra.yml`'s `apps` stage with `gcloud run services update
-#     --iap`, which then reads `iapEnabled` back and fails the job if it is
-#     not true, and this module's README says what closes the gap.
+#     --iap`, which then reads the `run.googleapis.com/iap-enabled`
+#     annotation back — the v1 annotation `--iap` writes; gcloud's own
+#     describe shows it as "Iap Enabled" — and fails the job if it is not
+#     `true`, and this module's README says what closes the gap.
 #
 # ## IAP's own service agent, created here because nothing else does now
 #

@@ -376,7 +376,18 @@ jobs:
         with:
           # The bootstrap's kubectl authenticates to GKE through this plugin;
           # gcloud no longer embeds the credential in the kubeconfig itself.
-          install_components: gke-gcloud-auth-plugin
+          # `beta` because the IAP gate's `update --iap` fallback calls
+          # `gcloud beta run`: without the component gcloud prompts to install
+          # it before it parses `--quiet`, a CI session cannot answer, and run
+          # 119 died on that prompt. On this runner setup-gcloud installs the
+          # latest SDK, whose GA `update` already carries `--iap` (570.0.0),
+          # so here the fallback is a second, identical v1 attempt; it is
+          # kept so that a pinned older SDK whose GA surface lacks the flag
+          # still has a road, and this one component install is its cost.
+          # Installing it here leaves prompts enabled everywhere else. The
+          # read-backs do not need it: both tracks' `describe` render the
+          # same v1 shape.
+          install_components: gke-gcloud-auth-plugin,beta
 
       # Overwriting Terraform state needs storage.objects.delete, and the
       # project-level role this account holds deliberately lacks it so nothing
@@ -2334,17 +2345,30 @@ jobs:
             echo "Config Connector creates it from infrastructure/gitops/envs/${ENVIRONMENT}/portal.yaml once that manifest names a digest rather than TO-PIN. Re-run this action after a deploy.yml run has built and attested qip-portal."
             exit 0
           fi
-          # GA first, then `gcloud beta`, and the fallback is not
-          # belt-and-braces. `iap_enabled` is a Cloud Run **v2** field that
-          # exists only on the `google-beta` Terraform provider — the whole
-          # reason this step exists at all rather than a line in
-          # `portal.yaml` — and gcloud's GA `run` surface tracks the v1
-          # shape, so the release track that carries `--iap` and the one that
-          # projects `iapEnabled` back can differ on any given gcloud build.
-          # Whichever answers, the read-back below is unconditional: a
-          # fallback that made the gate easier to enable and the check easier
-          # to skip would be the step reporting a protected console either
-          # way, which is the failure this step was written against.
+          # GA first, then `gcloud beta`. On this runner setup-gcloud installs
+          # the latest SDK, whose GA `update` already carries `--iap`
+          # (570.0.0), so the beta fallback is a second, identical attempt at
+          # the same v1 surface — BetaUpdate subclasses Update and submits the
+          # same template through the same connection context. It is kept so
+          # that a pinned older SDK whose GA surface lacks the flag still has
+          # a road, at the cost of one component install. It is not a second
+          # chance at the read-back: both tracks' `describe` call the same
+          # Cloud Run v1 GetService and render the v1 Service, which has no
+          # `iapEnabled` field at all. The state `--iap` writes is the v1
+          # annotation `run.googleapis.com/iap-enabled` — gcloud names the
+          # key once, as IAP_ANNOTATION in api_lib/run/service.py, and the
+          # "Iap Enabled" line its describe printer shows is that annotation
+          # — so that annotation is what the read-back below reads, by name,
+          # through jq rather than a gcloud projection, because a key holding
+          # dots and a slash is fragile in projection quoting. In run 119 the
+          # GA update was refused server-side, the beta fallback died on the
+          # component prompt, and the read-back was never reached;
+          # `value(iapEnabled)` reads '' on any track, so the first run past
+          # the update would have failed at the read-back instead. Whichever
+          # track enables it, the read-back is unconditional: a fallback that
+          # made the gate easier to enable and the check easier to skip would
+          # be the step reporting a protected console either way, which is
+          # the failure this step was written against.
           if ! gcloud run services update "$service" \
                  --project "${GCP_PROJECT}" --region "$region" --iap --quiet 2>/tmp/iap-update.err; then
             sed 's/^/  ga: /' /tmp/iap-update.err >&2
@@ -2356,23 +2380,32 @@ jobs:
             fi
             echo "the GA surface refused --iap and gcloud beta accepted it; the read-back below is what decides whether the gate is on."
           fi
-          enabled="$(gcloud run services describe "$service" \
-            --project "${GCP_PROJECT}" --region "$region" \
-            --format='value(iapEnabled)' 2>/dev/null || true)"
-          if [ -z "$enabled" ]; then
-            # Empty is not false. The GA projection may simply not carry a v2
-            # field; ask the track that does before concluding anything.
-            enabled="$(gcloud beta run services describe "$service" \
-              --project "${GCP_PROJECT}" --region "$region" \
-              --format='value(iapEnabled)' 2>/dev/null || true)"
+          # The describe and the jq read are two commands so that a service
+          # this step cannot read is reported as unread, not as absent. Piped,
+          # a describe that failed — a transient error, a missing permission,
+          # the service gone — fed jq an empty stdin, jq printed nothing, and
+          # '' then read as "the annotation is absent": the right decision
+          # (refuse) under the wrong report. `unread` is its own arm below for
+          # the same reason.
+          json="$(gcloud run services describe "$service" \
+            --project "${GCP_PROJECT}" --region "$region" --format=json 2>/dev/null || true)"
+          if [ -z "$json" ]; then
+            enabled=unread
+          else
+            enabled="$(printf '%s' "$json" \
+              | jq -r '.metadata.annotations["run.googleapis.com/iap-enabled"] // ""' 2>/dev/null || echo unread)"
           fi
           case "$enabled" in
-            True|true)
-              echo "IAP is enabled on ${service}; it is read back as iapEnabled=${enabled} rather than assumed from the update returning zero."
+            true)
+              echo "IAP is enabled on ${service}; it is read back as the run.googleapis.com/iap-enabled annotation (${enabled}) rather than assumed from the update returning zero."
+              ;;
+            unread)
+              echo "::error title=the console's IAP state could not be read::the describe of ${service} returned nothing or jq failed, so this step cannot say whether the gate is on; it fails rather than guess." >&2
+              exit 1
               ;;
             *)
-              echo "::error title=the console is not gated::${service} reports iapEnabled='${enabled}' after --iap was applied, on the GA surface and on gcloud beta." >&2
-              echo "An empty value means neither release track answered, not that the gate reads false; both readings fail this step, because neither is the proof it is required to produce." >&2
+              echo "::error title=the console is not gated::${service}'s run.googleapis.com/iap-enabled annotation read '${enabled}' after --iap was applied." >&2
+              echo "Empty means the annotation is absent: IAP is not enabled on the service (never enabled, or disabled since; --no-iap deletes the annotation rather than writing false). That is not a reading of false, but it is still not the gate, and this step fails on either, because neither is the proof it is required to produce." >&2
               echo "Do not treat this as cosmetic. The service is INGRESS_TRAFFIC_ALL and has no allUsers invoker, so right now it answers 403 to everyone, which is the safe direction — but it is not the protected console this step claims to have produced." >&2
               echo "If this is the first time IAP has been enabled in a project with no organisation, Google cannot create the OAuth client programmatically: enable IAP once on this service in the Cloud console, or configure a custom OAuth client, then re-run this action." >&2
               exit 1
@@ -2638,25 +2671,31 @@ jobs:
             url="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
               --region "${region}" --format='value(status.url)' 2>/dev/null || true)"
             echo "    url: ${url:-none; no revision has served yet}"
-            # `iapEnabled` is a Cloud Run **v2** field and `gcloud run
-            # services describe` projects the v1 shape, so the GA surface can
-            # answer empty for a service on which IAP is genuinely enabled.
-            # An empty answer is therefore reported as unread rather than as
-            # false: "IAP is off" and "this gcloud did not say" are different
-            # facts, and printing the second as the first is how a diagnosis
-            # sends somebody to re-enable a gate that was never off.
-            iap="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
-              --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
-            surface="run services describe"
-            if [ -z "${iap}" ]; then
-              iap="$(gcloud beta run services describe "${service}" --project "${GCP_PROJECT}" \
-                --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
-              surface="beta run services describe"
-            fi
-            if [ -z "${iap}" ]; then
-              echo "    iapEnabled: not reported by either gcloud surface; this is not a reading of false"
+            # The state `--iap` writes is the v1 annotation
+            # `run.googleapis.com/iap-enabled`, not a field; read it by name.
+            # The describe and the jq read are two commands because the
+            # distinction that matters here is unread versus absent. Piped, a
+            # describe that failed — a transient error, a missing permission,
+            # a service gone between the list and this read — fed jq nothing
+            # and printed as absent, and a transient failure reported as "not
+            # enabled" sends somebody to re-enable a gate that is on. Absent
+            # is still absent rather than false: `--no-iap` deletes the
+            # annotation rather than writing false, so there is no false to
+            # read.
+            json="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format=json 2>/dev/null || true)"
+            if [ -z "${json}" ]; then
+              iap=unread
             else
-              echo "    iapEnabled: ${iap} (read with gcloud ${surface})"
+              iap="$(printf '%s' "${json}" \
+                | jq -r '.metadata.annotations["run.googleapis.com/iap-enabled"] // ""' 2>/dev/null || echo unread)"
+            fi
+            if [ "${iap}" = unread ]; then
+              echo "    iap-enabled annotation: unread (the describe returned nothing or jq failed; this is not a reading)"
+            elif [ -z "${iap}" ]; then
+              echo "    iap-enabled annotation: absent (IAP is not enabled on this service: never enabled, or disabled since; gcloud removes the annotation on --no-iap)"
+            else
+              echo "    iap-enabled annotation: ${iap}"
             fi
             gcloud run services describe "${service}" --project "${GCP_PROJECT}" --region "${region}" \
               --format='value[separator="; "](status.conditions.map().format("service {0}={1} {2}", type, status, message).list())' 2>&1 \
@@ -2736,25 +2775,26 @@ jobs:
             url="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
               --region "${region}" --format='value(status.url)' 2>/dev/null || true)"
             echo "  ${service}: ${url:-none; no revision has served yet}"
-            # `iapEnabled` is a Cloud Run **v2** field and `gcloud run
-            # services describe` projects the v1 shape, so the GA surface can
-            # answer empty for a service on which IAP is genuinely enabled.
-            # An empty answer is reported as unread rather than as false:
-            # "IAP is off" and "this gcloud did not say" are different facts,
-            # and printing the second as the first sends somebody to
-            # re-enable a gate that was never off.
-            iap="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
-              --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
-            surface="run services describe"
-            if [ -z "${iap}" ]; then
-              iap="$(gcloud beta run services describe "${service}" --project "${GCP_PROJECT}" \
-                --region "${region}" --format='value(iapEnabled)' 2>/dev/null || true)"
-              surface="beta run services describe"
-            fi
-            if [ -z "${iap}" ]; then
-              echo "    iapEnabled: not reported by either gcloud surface; this is not a reading of false"
+            # The state `--iap` writes is the v1 annotation
+            # `run.googleapis.com/iap-enabled`, not a field; read it by name,
+            # as `diagnose` does, and in two commands for the reason given
+            # there: a describe this step could not read is unread, which is
+            # not absent. Absent is printed as absent, not as false: `--no-iap`
+            # deletes the annotation rather than writing false.
+            json="$(gcloud run services describe "${service}" --project "${GCP_PROJECT}" \
+              --region "${region}" --format=json 2>/dev/null || true)"
+            if [ -z "${json}" ]; then
+              iap=unread
             else
-              echo "    iapEnabled: ${iap} (read with gcloud ${surface})"
+              iap="$(printf '%s' "${json}" \
+                | jq -r '.metadata.annotations["run.googleapis.com/iap-enabled"] // ""' 2>/dev/null || echo unread)"
+            fi
+            if [ "${iap}" = unread ]; then
+              echo "    iap-enabled annotation: unread (the describe returned nothing or jq failed; this is not a reading)"
+            elif [ -z "${iap}" ]; then
+              echo "    iap-enabled annotation: absent (IAP is not enabled on this service: never enabled, or disabled since; gcloud removes the annotation on --no-iap)"
+            else
+              echo "    iap-enabled annotation: ${iap}"
             fi
           done
 
