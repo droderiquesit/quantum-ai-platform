@@ -5438,6 +5438,109 @@ fn the_egress_sidecar_in_every_manifest_holds_no_credential_and_the_workload_wai
     );
 }
 
+/// Every probe's `timeoutSeconds` is strictly below its `periodSeconds`, on
+/// every container of every RunService in every environment.
+///
+/// Not hypothetical. Cloud Run refuses a probe whose timeout is not smaller
+/// than its period, on both of its API surfaces, but Config Connector's v2
+/// create admitted `dev/portal.yaml`'s startup probe at 5 over 3 and the
+/// service served. `infra.yml` run 119's IAP gate was the first thing to
+/// re-submit that template through the v1 surface — `gcloud run services
+/// update --iap` — and v1 refused it: `startup_probe.timeout_seconds: must
+/// be less than period_seconds`. The console stayed ungated, and eight more
+/// probes — the egress sidecar's startup probe in api and deepbrain, every
+/// environment, at 2 over 2 — were waiting to fail the same way the first
+/// time anything re-submitted them. So the rule is held here for every
+/// probe rather than for the one that failed: the refusal arrives only on
+/// whichever surface happens to re-read the template next, and nothing in
+/// the manifest tree says which that will be.
+///
+/// Strict, not `<=`: 2 over 2 is what the sidecars carried, and equality is
+/// the case Cloud Run's message names. A field the manifest omits is judged
+/// at the value Cloud Run gives it rather than skipped, because a probe that
+/// omits its period is still a probe Cloud Run validates.
+#[test]
+fn every_probe_times_out_before_its_period_because_cloud_run_refuses_the_update_otherwise() {
+    // Cloud Run's values for an absent field.
+    const DEFAULT_TIMEOUT_SECONDS: u64 = 1;
+    const DEFAULT_PERIOD_SECONDS: u64 = 10;
+    // A floor rather than an equality, so adding a probe does not fail here;
+    // but a floor all the same, because a walk that found fewer has lost a
+    // file, a container or a probe kind and would otherwise pass over
+    // exactly the probe it was written to catch. The arithmetic on
+    // 2026-10-13: four environments times (api 3, deepbrain 3, fastbrain 2),
+    // plus dev's openobserve 2 and portal 2.
+    const PROBES_IN_THE_TREE: usize = 4 * (3 + 3 + 2) + 2 + 2;
+
+    let seconds = |probe: &Value, field: &str, default: u64, probe_description: &str| -> u64 {
+        match text_at(probe, &[field]) {
+            None => default,
+            Some(text) => text.parse::<u64>().unwrap_or_else(|_| {
+                panic!("{probe_description} has {field}: `{text}`, not a whole number of seconds")
+            }),
+        }
+    };
+
+    let mut probes = 0usize;
+    let mut containers_seen = 0usize;
+    for environment in environment_directories() {
+        for (_, _, service, _) in run_services(&environment) {
+            let describe = service.describe();
+            let containers = list_at(&service.value, &["spec", "template", "containers"]);
+            assert!(
+                !containers.is_empty(),
+                "{describe} declares no containers; nothing here would be probed"
+            );
+            for container in containers {
+                let container_name = text_at(container, &["name"])
+                    .unwrap_or_else(|| panic!("{describe} has a container with no name"));
+                // Premise: the walk sees probes. modules/cloudrun gave every
+                // container a startup probe and the manifests kept it, so a
+                // container with none is the reader on the wrong key, not a
+                // container Cloud Run would run unprobed.
+                assert!(
+                    at(container, &["startupProbe"]).is_some(),
+                    "{describe}'s `{container_name}` container has no startupProbe; every \
+                     container under envs/ carries one, so the walk is reading the wrong key"
+                );
+                containers_seen += 1;
+                for kind in ["startupProbe", "livenessProbe"] {
+                    let Some(probe) = at(container, &[kind]) else {
+                        continue;
+                    };
+                    let probe_description = format!("{describe}'s `{container_name}` {kind}");
+                    let timeout = seconds(
+                        probe,
+                        "timeoutSeconds",
+                        DEFAULT_TIMEOUT_SECONDS,
+                        &probe_description,
+                    );
+                    let period = seconds(
+                        probe,
+                        "periodSeconds",
+                        DEFAULT_PERIOD_SECONDS,
+                        &probe_description,
+                    );
+                    assert!(
+                        timeout < period,
+                        "{describe}: container `{container_name}` {kind} has timeoutSeconds \
+                         {timeout} over periodSeconds {period}. Cloud Run refuses a probe whose \
+                         timeoutSeconds is not smaller than periodSeconds; run 119's IAP-gate \
+                         update was refused on dev/portal.yaml's 5 over 3"
+                    );
+                    probes += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        probes >= PROBES_IN_THE_TREE,
+        "{probes} probe(s) on {containers_seen} container(s) were checked; the tree held \
+         {PROBES_IN_THE_TREE} on 2026-10-13, so the walk has lost a file, a container or a \
+         probe kind and the probe it would miss is the one this test exists for"
+    );
+}
+
 /// The instrument universe every central root reads at start-up, which
 /// `modules/cloudrun` publishes under a directory named by its hash.
 const UNIVERSE_CATALOGUE: &str = "data/datasets/universe.json";
