@@ -34,3 +34,16 @@
 suite, and — for a validation change — a real plan proving the gate fires on a
 bad value **and admits a good one**. The second half is what distinguishes a
 working gate from one that refuses everything.
+
+## Known gap (flagged 2026-10-17, no rule changed)
+
+`.claude/rules/02-change-management.md` says `prod` is refused by both
+`infra.yml` and the deploy gate. Read against the workflows, only half of that
+holds as written: `infra.yml` refuses `prod` unconditionally (lines 261-264,
+"prod infrastructure is never changed from this workflow"), while
+`deploy.yml` lists `prod` as a `workflow_dispatch` option (lines 65-69) and its
+refusal step (lines 135-137) fires only when `TARGET_ENVIRONMENT == 'prod'`
+**and** the event is not `workflow_dispatch`. A human dispatch of `deploy.yml`
+for `prod` is therefore not refused by that step; the remaining protection is
+the human dispatch itself and whatever the later jobs and environment
+protection require. Re-read both files before relying on either description.

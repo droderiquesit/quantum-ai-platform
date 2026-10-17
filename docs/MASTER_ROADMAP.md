@@ -1,3 +1,15 @@
+> **SUPERSEDED / STALE (flagged 2026-10-17).** This file is a 2026-10-04
+> measurement at commit `37644d0f`, which is not in this repository. It is not a
+> current status. The live sources are `docs/blueprint/v12-completion-plan.md`
+> and the register under `docs/blueprint/assessment/` and `requirements/`.
+> Two statements below were already false when this note was written: ADR 0101
+> has a body and is **Accepted for the adoption in direction only**
+> (`docs/adr/0101-*.md`), not "unwritten"; and the dependency set is not "two
+> only" but the ADR 0109 allow-list (`scripts/dependency-allowlist.txt`;
+> `./scripts/check-dependencies.sh` printed "42 third-party package(s), all
+> permitted" on 2026-10-17). Also, `execution_nodes` is `{}` in test, stage and
+> prod; dev declares `newyork-1` with `execution_nodes_enabled = false`.
+
 # Master roadmap (v12.0 build order)
 
 Source: `docs/blueprint/source/algorik-master-blueprint-v12.0.txt` section 30 (Phases 0-10), plus
@@ -6,17 +18,16 @@ Forecast Lattice). Measured against this worktree at `37644d0f` on 2026-10-04.
 
 This is a **plan and a measurement, not a delivery claim.** No test was run to write it. Status
 words come from reading the tree (`ls`, `grep`), not from a green gate. Nothing is deployed:
-`execution_nodes = {}` everywhere and the GitOps plane is suspended (ADR 0093).
+`execution_nodes = {}` in test/stage/prod, dev declared but `execution_nodes_enabled = false` (2026-10-17), and the GitOps plane is suspended (ADR 0093).
 
 ## Ground rules
 
 - **Paper trading is absolute** (ADR 0003, ADR 0021, `.claude/rules/01-security-and-safety.md`).
   Any item that needs live capital or an external action is `BLOCKED`, and is built only as far as
   its shadow, paper or simulated form. Nothing here proposes weakening the three paper layers.
-- **v12 is not yet the architecture of record.** ADR 0099 adopted v11.6; ADR 0101 is claimed
-  in `docs/adr/README.md` (2026-10-04, body not written) to adopt v12.0 on 0099's terms. Until it
-  lands, every standing decision a v12 item contradicts keeps its force. That is item RM-P0-12.
-- **Two dependencies only** (ADR 0002, 0009). Items whose v12 wording implies a new class of
+- **v12 is not yet the architecture of record.** ADR 0099 adopted v11.6; ADR 0101 was claimed
+  in `docs/adr/README.md` on 2026-10-04 with the body unwritten; the body now exists and is Accepted for direction only (2026-10-17 reading). Until it is fully accepted, every standing decision a v12 item contradicts keeps its force. That is item RM-P0-12.
+- **Dependencies by allow-list** (ADR 0109, which superseded ADR 0002/0009's "two dependencies only"; this line was the 2026-10-04 reading). Items whose v12 wording implies a new class of
   dependency (consensus, async runtime, QML libraries, Z3/OR-Tools) cite the conflict (C2, C5 in
   ADR 0099) as their blocker and are built only as far as in-tree code allows.
 - **Status vocabulary**: `COMPLETE` (none claimed here), `PARTIAL` (code exists, named
@@ -89,7 +100,7 @@ H follows E; J last and gated.
 | RM-P0-09 | 3-zone regional quorum | SA, CPE | RM-P0-08, RM-P0-12 | `a_write_acknowledged_by_two_of_three_zones_survives_the_loss_of_one_zone` (not writable in-tree until C2) | NOT STARTED. ADR 0100 says its availability requirements "are not met" by the single-node build. No replication in tree | C2 consensus dependency record; ADR 0100 "Replication appearing in-tree before C2's record" is a named wrong; external: GCP zones and billing | N |
 | RM-P0-10 | Rust SDK | BE | RM-P0-08 | `a_producer_that_loses_the_broker_spools_and_drains_in_order_on_return` | PARTIAL. `qip-transport/src/event_fabric/{producer,consumer,transport,protocol}.rs`; spool exists per ADR 0100 | none | Y |
 | RM-P0-11 | Benchmark harness | TE | RM-P0-08 | `the_fabric_benchmark_reports_percentile_latency_against_the_declared_slo` (`qip-acceptance/tests/slo.rs`, `performance.rs`) | PARTIAL. `performance.rs`, `slo.rs` exist; `qip-quantum/src/benchmark.rs` is quantum-only. No fabric throughput harness found | none | Y |
-| RM-P0-12 | Adopt v12.0 as architecture of record (ADR 0101) | SA, TW | none | `the_adr_index_links_a_body_for_every_claimed_number` (`qip-acceptance/tests/documentation.rs`) | NOT STARTED. Number 0101 claimed 2026-10-04 in `docs/adr/README.md`, body to follow. 0097 is also a claimed-and-unwritten number | Owner acceptance of ADR text; must keep ADR 0021 and the three paper layers verbatim | Y |
+| RM-P0-12 | Adopt v12.0 as architecture of record (ADR 0101) | SA, TW | none | `the_adr_index_links_a_body_for_every_claimed_number` (`qip-acceptance/tests/documentation.rs`) | STALE (2026-10-04 text: "NOT STARTED, body to follow"). ADR 0101 body now exists, Accepted for direction only. 0097 is also a claimed-and-unwritten number | Owner acceptance of ADR text; must keep ADR 0021 and the three paper layers verbatim | Y |
 
 ## Phase 1 - One Reflex Cell
 
@@ -247,4 +258,4 @@ First in each stream: A, RM-P0-12; B, RM-P0-08 and 10; C, RM-P1-06; D, RM-P2-03;
 
 - That any listed test exists, passes or was mutation-verified. Existing files are named only as the nearest evidence.
 - That the in-flight main-checkout files compile or are correct. They were read, not built.
-- That v12 is adopted. It is not until ADR 0101 has a body and is accepted.
+- That v12 is adopted. ADR 0101 has a body and is Accepted for direction only (2026-10-17); read it for what that does and does not settle.
