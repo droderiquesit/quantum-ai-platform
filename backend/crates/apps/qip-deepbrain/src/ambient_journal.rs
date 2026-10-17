@@ -114,6 +114,11 @@ impl JournalDestination {
 pub struct AmbientJournal {
     log: EventLog,
     written: u64,
+    /// The correlation the latest [`Self::record`] filed its sweep under, so
+    /// the agency intake files a draft under the same chain
+    /// (R12-AGENCY-7029): a draft whose correlation is not the detection's
+    /// cannot be joined back to it.
+    last_correlation: Option<CorrelationId>,
 }
 
 impl AmbientJournal {
@@ -134,11 +139,20 @@ impl AmbientJournal {
         // Ids continue from the last sequence, not the retained count: a
         // log that evicted records holds fewer than it ever wrote.
         let written = log.events().last().map_or(0, |e| e.sequence);
-        Ok(Self { log, written })
+        Ok(Self {
+            log,
+            written,
+            last_correlation: None,
+        })
     }
 
     pub fn log(&self) -> &EventLog {
         &self.log
+    }
+
+    /// The correlation id of the sweep most recently recorded.
+    pub fn last_correlation(&self) -> Option<&CorrelationId> {
+        self.last_correlation.as_ref()
     }
 
     /// Append one sweep's signals and attention events, each attention
@@ -148,6 +162,7 @@ impl AmbientJournal {
             CorrelationId::from_string(format!("ambient-sweep-{cycle}-{}", self.written)),
             AMBIENT_ORIGIN,
         );
+        self.last_correlation = Some(lineage.correlation_id.clone());
         let mut by_signal: BTreeMap<&str, EventId> = BTreeMap::new();
         let mut count = 0usize;
         for signal in &round.signals {

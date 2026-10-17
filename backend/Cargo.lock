@@ -389,6 +389,7 @@ dependencies = [
 name = "qip-deepbrain"
 version = "0.1.0"
 dependencies = [
+ "qip-agency",
  "qip-agents",
  "qip-ai",
  "qip-contracts",

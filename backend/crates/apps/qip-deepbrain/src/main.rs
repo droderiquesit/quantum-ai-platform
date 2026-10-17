@@ -861,6 +861,20 @@ fn run() -> Result<()> {
     .map_err(configuration)?;
     let mut ambient = qip_deepbrain::ambient_journal::AmbientJournal::open(&ambient_destination)?;
     println!("  ambient journal:  {}", ambient_destination.describe());
+    // The ambient mesh's door to the agency (`ambient_agency.rs`,
+    // R12-AGENCY-7029): promotion, the action guard, then an append to an
+    // internal outbox and nothing else. A broken outbox chain stops the
+    // process here, as the journal's does.
+    let outbox_destination = qip_deepbrain::ambient_agency::destination(
+        std::env::var(qip_deepbrain::ambient_agency::AGENCY_OUTBOX_VARIABLE).ok(),
+        &config.event_log,
+    )
+    .map_err(configuration)?;
+    let mut agency = qip_deepbrain::ambient_agency::AmbientAgency::open(&outbox_destination)?;
+    println!(
+        "  agency outbox:    {} (drafts only; external action stays refused)",
+        outbox_destination.describe()
+    );
     let mut operations = qip_deepbrain::operations::Operations::new(started)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \
@@ -900,6 +914,7 @@ fn run() -> Result<()> {
             tick: Some(&mut tick_desk),
             permissions: permission_watch.as_mut(),
             ambient: Some(&mut ambient),
+            agency: Some(&mut agency),
         },
         |outcome| {
             println!();
@@ -981,6 +996,9 @@ fn run() -> Result<()> {
                 println!("  {}", round.describe());
             }
             if let Some(round) = &outcome.research {
+                println!("  {}", round.describe());
+            }
+            if let Some(round) = &outcome.agency {
                 println!("  {}", round.describe());
             }
             if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {

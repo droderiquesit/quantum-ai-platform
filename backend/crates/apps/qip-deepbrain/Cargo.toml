@@ -43,6 +43,9 @@ qip-quant.workspace = true
 qip-numerics.workspace = true
 qip-lifecycle.workspace = true
 qip-contracts.workspace = true
+# The ambient mesh's one door to the agency (R12-AGENCY-7029): promotion, the
+# action guard and a drafting-only outbox. Workspace-internal.
+qip-agency.workspace = true
 # Source discovery (§7.4-§7.6.2): ASSESS, REGISTER and SCORE, all
 # workspace-internal. `Platform::assess_sources` already wraps
 # `DataFinder::assess`; this root is where the candidate catalogue and the

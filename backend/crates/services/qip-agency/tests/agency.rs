@@ -2000,3 +2000,60 @@ fn execute_reports_withheld_rather_than_shadow_when_the_guard_refuses_in_shadow(
     assert!(matches!(acted.execution, Execution::Withheld(_)));
     assert_eq!(log.failed(), Some(Stage::Act));
 }
+
+/// R12-AGENCY-1063 / 1064: one voice posing as several. Two steps send the
+/// same message, the second under another name: withheld before either call,
+/// with no approval record. Two checks stand against it and the cheaper one
+/// fires first: the identity check (`guard.rs`, "fabricated identity") runs
+/// before the coordinated-voices check, and every step's identity must equal
+/// the goal's, so the voices check is the backstop for the day that equality
+/// is relaxed, not the line that fires today. Mutation: delete the
+/// `draft.sender_identity != registration.acting_identity ...` refusal in
+/// `ActionGuard::preflight` and this test fails on the reason, which becomes
+/// `coordinated_voices` — proof the backstop holds and is the only thing then
+/// between the sockpuppet and the adapter.
+#[test]
+fn the_same_message_under_two_identities_is_withheld_before_any_call() {
+    let policy = narrow();
+    // Premise: the fixture without the second voice clears every gate.
+    let baseline = run(request(), Some(&policy), &mut Counting::default()).unwrap();
+    assert!(
+        matches!(baseline.outcome, Outcome::Executed(_)),
+        "{:?}",
+        baseline.outcome
+    );
+    let mut r = request();
+    r.tool_edges.push(EdgeDecl {
+        variable: "quote_size".into(),
+        edge: edge("quoter2", 30, "quote", &[]),
+    });
+    r.proposals = vec![ProposalDraft {
+        root: PlanNode::Sequence(vec![step("quoter", 20), step("quoter2", 20)]),
+        comparison: prediction(d(5), true),
+    }];
+    let g = r.guards.as_mut().unwrap();
+    g.tools.push(ToolRegistration {
+        acting_identity: "desk-agent-2".into(),
+        max_actions_per_window: 10,
+        budget_units: 1_000,
+        ..tool("quoter2")
+    });
+    g.conduct.authorized_identities.push("desk-agent-2".into());
+    let mut second = quote_draft();
+    second.id = "quote-2".into();
+    second.sender_identity = "desk-agent-2".into();
+    g.communications.insert("quoter2".into(), second);
+    let mut adapter = Counting::default();
+    let report = run(r, Some(&policy), &mut adapter).unwrap();
+    let Outcome::Stopped(reason) = &report.outcome else {
+        panic!("expected withheld, got {:?}", report.outcome)
+    };
+    assert!(reason.contains("fabricated identity"), "{reason}");
+    assert!(adapter.calls.is_empty(), "an adapter was called");
+    assert!(report.approvals.is_none());
+    assert!(
+        report.audit.is_empty(),
+        "nothing was charged: {:?}",
+        report.audit
+    );
+}

@@ -2077,6 +2077,17 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          of a contract nobody has made; a default here would be rights nobody \
          evaluated.",
     ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_AGENCY_OUTBOX",
+        "Unset, the agency's drafting outbox is written beside the event log \
+         the deployment already sets (`<log>.outbox.jsonl`), on the same \
+         volume and under the same retention, and is held in memory only \
+         when the log itself is (`ambient_agency::destination`). The variable \
+         is an override for a second location, and a default for it would put \
+         a record of what the platform drafted somewhere its event log is \
+         not. A blank value is refused rather than read as unset.",
+    ),
 ];
 
 /// Round 2's tick learning desk, all nine of its variables.

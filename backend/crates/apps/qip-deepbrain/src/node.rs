@@ -130,6 +130,9 @@ pub struct StepOutcome {
     /// What the research loop's sweep did, on the cycles where one ran
     /// (`research.rs`). A fourth cadence beside the three above.
     pub research: Option<crate::research::ResearchRound>,
+    /// What routing the sweep's activated attention events through the
+    /// agency's door did (`ambient_agency.rs`).
+    pub agency: Option<crate::ambient_agency::AgencyRound>,
     /// What the operations loop observed of this iteration (`operations.rs`).
     pub operations: Option<crate::operations::OperationsRound>,
     /// What the tick desk's round did, on the cycles where one ran
@@ -218,6 +221,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         refetch: None,
         source_alpha: None,
         research: None,
+        agency: None,
         operations: None,
         tick: None,
         side_failures: Vec::new(),
@@ -349,6 +353,11 @@ pub struct Loops<'a> {
     /// journaled (`ambient_journal.rs`). A sweep whose record cannot be
     /// written is a side failure on the cycle line, never a stopped node.
     pub ambient: Option<&'a mut crate::ambient_journal::AmbientJournal>,
+    /// The ambient mesh's door to the agency (`ambient_agency.rs`,
+    /// R12-AGENCY-7029): each activated attention event is promoted, guarded
+    /// and drafted to an internal outbox. A sweep it cannot route is a side
+    /// failure on the cycle line, never a stopped node.
+    pub agency: Option<&'a mut crate::ambient_agency::AmbientAgency>,
 }
 
 /// [`run_with`] and no research or operations loop.
@@ -532,6 +541,20 @@ pub fn run_with(
                 outcome
                     .side_failures
                     .push(format!("ambient journal: {}", error.message()));
+            }
+            if let (Some(round), Some(agency)) =
+                (outcome.research.as_ref(), loops.agency.as_deref_mut())
+            {
+                let shared = loops
+                    .ambient
+                    .as_deref()
+                    .and_then(|journal| journal.last_correlation().cloned());
+                match agency.route(cycles, round, shared.as_ref(), now) {
+                    Ok(routed) => outcome.agency = Some(routed),
+                    Err(error) => outcome
+                        .side_failures
+                        .push(format!("ambient agency: {}", error.message())),
+                }
             }
         }
         if let Some(desk) = loops.tick.as_deref_mut() {
