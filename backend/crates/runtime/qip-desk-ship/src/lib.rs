@@ -95,10 +95,12 @@ pub const FABRIC_TOKEN_VARIABLE: &str = "QIP_FABRIC_TOKEN";
 /// The partition the desk's chain is produced to.
 pub const FABRIC_PARTITION_VARIABLE: &str = "QIP_FABRIC_PARTITION";
 
-/// The producer id the broker fences by: one desk, one id. A second desk
-/// process starting against the same partition fences this one, which is
-/// the intent — two desks writing one chain is a forked ledger.
-pub const PRODUCER_ID: &str = "desk";
+/// The fast brain's producer id, which is its desk chain: one desk, one id. A
+/// second process starting against the same partition under the same id
+/// fences this one, which is the intent — two desks writing one chain is a
+/// forked ledger. Every other process ships under its own chain
+/// ([`ShipSettings::shipper_for`]).
+pub const PRODUCER_ID: &str = qip_kernel::desk_ledger::DESK_CELL;
 
 /// The region stamped on the envelopes opened before a send. The desk is the
 /// centre's own book, and the ledger reads as `central`.
@@ -208,6 +210,21 @@ impl ShipSettings {
     /// downgraded, because the configuration that wrote the URL believed the
     /// link was the other kind.
     pub fn shipper(self, clock: Arc<dyn Clock>, link: &LinkSecurity) -> Result<DeskShipper> {
+        self.shipper_for(PRODUCER_ID, clock, link)
+    }
+
+    /// [`Self::shipper`] for the desk on `chain`
+    /// ([`qip_kernel::config::PlatformConfig::desk_chain`]), which is also the
+    /// producer id the broker fences by and the `reflex:<chain>` identity the
+    /// fabric grants own-key produce to. One chain, one producer: a second
+    /// process shipping under the same id fences the first.
+    pub fn shipper_for(
+        self,
+        chain: &str,
+        clock: Arc<dyn Clock>,
+        link: &LinkSecurity,
+    ) -> Result<DeskShipper> {
+        qip_kernel::desk_ledger::validate_chain(chain)?;
         let scheme = format!("{}://", link.scheme());
         let Some(authority) = self.url.strip_prefix(&scheme) else {
             return Err(Error::invalid(format!(
@@ -217,17 +234,14 @@ impl ShipSettings {
                 link.describe()
             )));
         };
-        let seed = u64::from_str_radix(
-            sha256_hex(PRODUCER_ID.as_bytes()).get(..16).unwrap_or("0"),
-            16,
-        )
-        .unwrap_or(0);
+        let seed = u64::from_str_radix(sha256_hex(chain.as_bytes()).get(..16).unwrap_or("0"), 16)
+            .unwrap_or(0);
         let class = QosClass::P1Outcomes;
         let producer = Producer::new(ProducerConfig {
             transport: Box::new(HttpTransport::over(link, authority, self.token)?),
             stream: bindings::REFLEX_OUTCOMES_STREAM.to_string(),
             partition: self.partition,
-            producer_id: PRODUCER_ID.to_string(),
+            producer_id: chain.to_string(),
             qos_class: class,
             ack_profile: class.ack_floor(),
             retry_policy: RetryPolicy::default(),
@@ -244,6 +258,65 @@ impl ShipSettings {
             format!("{} over {}", self.url, link.describe()),
         )
     }
+}
+
+/// The desk shipper a composition root starts with, and the issued workload
+/// certificate its link holds, which the caller keeps alive.
+///
+/// `workload` names the process to the certificate authority; `chain` is its
+/// desk's chain ([`ShipSettings::shipper_for`]); `lookup` is how the caller
+/// reads its configuration — the environment, in a binary — so this crate
+/// reads none itself.
+///
+/// Unset endpoint: a shipper that only reports that it ships nothing. The
+/// process still starts, because a developer's local desk has no fabric and a
+/// refusal would make it unusable there; what makes that safe is that it is
+/// loud (the banner, `qip_desk_ship_configured`) and bounded (the feed's
+/// 10,000-record queue, past which fills are counted unledgered and healed
+/// from the event log when room opens). Set but invalid: refused, as
+/// everything configured wrongly is. ADR 0112: mutual TLS with this process's
+/// workload certificate unless the deployment is `local` and said
+/// `plaintext`. No fallback.
+pub fn build(
+    workload: &str,
+    chain: &str,
+    deployment: qip_core::deployment::Deployment,
+    clock: &Arc<dyn Clock>,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<(DeskShipper, Option<qip_transport::cas::CasIdentity>)> {
+    use qip_transport::tls::{TlsSource, WorkloadIdentity};
+    let Some(settings) = read_settings(lookup)? else {
+        return Ok((DeskShipper::unshipped(FABRIC_URL_VARIABLE), None));
+    };
+    let source = qip_transport::tls::link_source(deployment, lookup)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    let mut issued = None;
+    let link = match &source {
+        Some(TlsSource::Files(paths)) => {
+            LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?))
+        }
+        Some(TlsSource::Issued(tls)) => {
+            let started = qip_storage::gcp::workload_certificate::workload_certificate(
+                tls,
+                workload,
+                Arc::clone(clock),
+            )?;
+            if let Some(error) = started.status().last_error() {
+                eprintln!(
+                    "{workload}: no workload certificate yet; the fabric link refuses until one \
+                     arrives and the desk's records stay pending. The CA said: {error}"
+                );
+            }
+            let link = LinkSecurity::issued(started.identity());
+            issued = Some(started);
+            link
+        }
+        None => LinkSecurity::Plaintext,
+    };
+    Ok((
+        settings.shipper_for(chain, Arc::clone(clock), &link)?,
+        issued,
+    ))
 }
 
 /// The queue of desk ledger records the shipper drains, and the places it
@@ -472,8 +545,11 @@ impl DeskShipper {
                 qip_kernel::desk_ledger::DESK_OUTBOX_CAPACITY
             ),
             Mode::Shipping(shipping) => format!(
-                "desk outcomes: shipping to {} as producer {PRODUCER_ID} on {}:{}",
-                self.destination, shipping.route.stream, shipping.route.partition
+                "desk outcomes: shipping to {} as producer {} on {}:{}",
+                self.destination,
+                shipping.route.producer_id,
+                shipping.route.stream,
+                shipping.route.partition
             ),
         }
     }
@@ -851,6 +927,25 @@ impl Shipping {
         let mut previous: Option<u64> = None;
         for outcome in candidates {
             let sequence = outcome.record.entry.sequence;
+            // A record from another desk's chain under this producer's id
+            // would be accepted by the broker and forked into this chain by
+            // the ledger. Configuration, not data, puts one here — a
+            // platform built on one chain handed to a shipper for another —
+            // so it is held back loudly, not sent.
+            if outcome.record.cell != self.route.producer_id {
+                if records.is_empty() {
+                    return Err((
+                        sequence,
+                        format!(
+                            "the record is on desk chain `{}` and this shipper produces for \
+                             `{}`; the platform's desk_chain and the shipper's chain must be \
+                             the same name",
+                            outcome.record.cell, self.route.producer_id
+                        ),
+                    ));
+                }
+                break;
+            }
             let expected = match previous {
                 Some(last) => last.checked_add(1),
                 None => self.next_expected,

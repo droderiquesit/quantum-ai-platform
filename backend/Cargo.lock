@@ -115,6 +115,7 @@ dependencies = [
  "qip-core",
  "qip-cost-router",
  "qip-data-finder",
+ "qip-deepbrain",
  "qip-edge",
  "qip-edge-node",
  "qip-entity-resolution",
@@ -202,6 +203,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
+ "qip-desk-ship",
  "qip-edge",
  "qip-events",
  "qip-execution-engine",
@@ -397,6 +399,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
+ "qip-desk-ship",
  "qip-events",
  "qip-evolution",
  "qip-expansion",
@@ -423,6 +426,21 @@ dependencies = [
  "qip-twin",
  "qip-world-model",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-desk-ship"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "qip-events",
+ "qip-execution-engine",
+ "qip-kernel",
+ "qip-observability",
+ "qip-storage",
+ "qip-transport",
  "serde_json",
 ]
 
@@ -563,6 +581,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
+ "qip-desk-ship",
  "qip-events",
  "qip-execution-engine",
  "qip-financial",

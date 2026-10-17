@@ -72,7 +72,6 @@ use qip_transport::server::{Handler, Request, Response, Server, ServerLimits};
 use qip_transport::tls::LinkSecurity;
 
 const OUTCOMES: &str = REFLEX_OUTCOMES_STREAM;
-const DESK_IDENTITY: &str = "reflex:desk";
 const DESK_PRODUCER: &str = "desk";
 const GROUP: &str = "ledger";
 const EVENTUALLY: StdDuration = StdDuration::from_secs(90);
@@ -80,6 +79,20 @@ const EVENTUALLY: StdDuration = StdDuration::from_secs(90);
 /// Fixture strings inside the bearer alphabet, not credentials for anything.
 fn desk_token(unique: u64) -> String {
     format!("fixture-token-desk-ship-{unique}-000000000000000000000000000")
+}
+
+/// The three desk chains: the fast brain's, qip-api's and the deep brain's.
+const DESK_CHAINS: [&str; 3] = [
+    qip_fastbrain::ship::PRODUCER_ID,
+    qip_api::DESK_CHAIN,
+    qip_deepbrain::node::DESK_CHAIN,
+];
+
+fn chain_token(chain: &str, unique: u64) -> String {
+    if chain == qip_fastbrain::ship::PRODUCER_ID {
+        return desk_token(unique);
+    }
+    format!("fixture-token-{chain}-ship-{unique}-0000000000000000000000000")
 }
 fn ledger_token(unique: u64) -> String {
     format!("fixture-token-ledger-ship-{unique}-0000000000000000000000000")
@@ -149,7 +162,7 @@ impl Fabric {
     fn start() -> Self {
         let unique = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
         let root = temp_dir("fabric");
-        let mut catalogue: serde_json::Value = serde_json::from_slice(
+        let catalogue: serde_json::Value = serde_json::from_slice(
             &std::fs::read(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../../../infrastructure/event-fabric/streams.local.json"),
@@ -157,22 +170,29 @@ impl Fabric {
             .expect("the committed local catalogue"),
         )
         .unwrap();
-        catalogue["grants"]
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::json!({
-                "identity": DESK_IDENTITY,
-                "stream": OUTCOMES,
-                "permission": "produce",
-                "key_scope": "own_key"
-            }));
+        // The committed catalogue grants each desk chain own-key produce on
+        // the outcomes stream; the harness adds nothing, so a grant removed
+        // from the file fails here first.
+        for chain in DESK_CHAINS {
+            let identity = format!("reflex:{chain}");
+            assert!(
+                catalogue["grants"].as_array().unwrap().iter().any(|grant| {
+                    grant["identity"] == identity.as_str()
+                        && grant["stream"] == OUTCOMES
+                        && grant["permission"] == "produce"
+                }),
+                "the committed catalogue grants {identity} no produce on {OUTCOMES}"
+            );
+        }
         let catalogue = Catalogue::parse(&serde_json::to_vec(&catalogue).unwrap()).unwrap();
-        let identities = IdentityTable::parse(&format!(
-            "{DESK_IDENTITY} {}\n{GROUP} {}\n",
-            sha256_hex(desk_token(unique).as_bytes()),
-            sha256_hex(ledger_token(unique).as_bytes())
-        ))
-        .unwrap();
+        let mut table = format!("{GROUP} {}\n", sha256_hex(ledger_token(unique).as_bytes()));
+        for chain in DESK_CHAINS {
+            table.push_str(&format!(
+                "reflex:{chain} {}\n",
+                sha256_hex(chain_token(chain, unique).as_bytes())
+            ));
+        }
+        let identities = IdentityTable::parse(&table).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let broker = Arc::new(Broker::open(root.join("broker"), clock.clone()).unwrap());
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
@@ -236,16 +256,26 @@ impl Fabric {
     }
 
     fn shipper(&self) -> DeskShipper {
+        self.shipper_for(qip_fastbrain::ship::PRODUCER_ID)
+    }
+
+    /// A shipper for the desk on `chain`, authenticated as `reflex:<chain>`.
+    fn shipper_for(&self, chain: &str) -> DeskShipper {
+        let token = chain_token(chain, self.unique);
         let settings = read_settings(&|name: &str| match name {
             FABRIC_URL_VARIABLE => Some(self.url()),
-            FABRIC_TOKEN_VARIABLE => Some(desk_token(self.unique)),
+            FABRIC_TOKEN_VARIABLE => Some(token.clone()),
             FABRIC_PARTITION_VARIABLE => Some("0".to_string()),
             _ => None,
         })
         .expect("valid settings")
         .expect("configured");
         settings
-            .shipper(Arc::new(SystemClock), &LinkSecurity::plaintext_for_tests())
+            .shipper_for(
+                chain,
+                Arc::new(SystemClock),
+                &LinkSecurity::plaintext_for_tests(),
+            )
             .expect("a shipper")
     }
 
@@ -1534,4 +1564,130 @@ fn find_quota(value: &serde_json::Value, stream: &str) -> Option<u64> {
         serde_json::Value::Array(items) => items.iter().find_map(|v| find_quota(v, stream)),
         _ => None,
     }
+}
+
+// --- three desks, three chains ---------------------------------------------------
+
+/// The fast brain, qip-api and the deep brain each book fills on their own
+/// chain and ship them under their own identity to one broker and one ledger,
+/// at the same time. Before each had its own chain, two of them shipping would
+/// have written position 0 of one chain twice (a forked ledger) under one
+/// producer id (each fencing the other); only the fast brain shipped at all.
+///
+/// Asserted: every desk's queue drains, nothing is fenced or refused, the
+/// ledger holds each chain complete with its own tail, nothing is parked, and
+/// each posting is attributed to the chain that booked it.
+///
+/// Mutation: build the platforms without `with_desk_chain`, so all three book
+/// on `desk` — the premise that each desk's records sit on its own chain
+/// fails (and, past it, the other two shippers would hold every record back
+/// as another chain's).
+#[test]
+fn three_desks_ship_on_their_own_chains_to_one_ledger_without_fencing_or_forking() {
+    let fabric = Fabric::start();
+    let ledger = fabric.start_ledger(&temp_dir("ledger-three-desks"));
+    let mut desks: Vec<(String, Platform, DeskShipper)> = DESK_CHAINS
+        .iter()
+        .map(|chain| {
+            let platform =
+                warm_platform_with(PlatformConfig::default().with_desk_chain(*chain)).unwrap();
+            (chain.to_string(), platform, fabric.shipper_for(chain))
+        })
+        .collect();
+    let per_desk = [3usize, 4, 5];
+    for ((chain, platform, _), count) in desks.iter_mut().zip(per_desk) {
+        for n in 0..count {
+            fill_despite_rejections(platform, alternating(n), &format!("{chain}-{n}"));
+        }
+        assert_eq!(
+            platform.pending_desk_outcomes().len(),
+            count,
+            "premise: {chain}"
+        );
+        assert!(
+            platform
+                .pending_desk_outcomes()
+                .iter()
+                .all(|o| o.record.cell == *chain),
+            "premise: {chain}'s records sit on its own chain"
+        );
+    }
+
+    // Interleaved, as three processes would be.
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        let mut drained = true;
+        for (chain, platform, shipper) in desks.iter_mut() {
+            let report = shipper.ship(platform).expect("bookkeeping holds");
+            assert!(
+                !matches!(report.outcome, ShipOutcome::Fenced | ShipOutcome::Refused),
+                "{chain}: {report:?}"
+            );
+            drained &= report.pending == 0 && !report.in_flight;
+        }
+        if drained {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the three desks did not drain");
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+
+    let total: usize = per_desk.iter().sum();
+    wait_until("the ledger booked every desk's fills", || {
+        ledger.store().events().unwrap().len() == total
+    });
+    for (chain, count) in DESK_CHAINS.iter().zip(per_desk) {
+        let tail = ledger
+            .store()
+            .tail(chain)
+            .unwrap()
+            .unwrap_or_else(|| panic!("no tail for {chain}"));
+        assert_eq!(
+            tail.sequence,
+            count as u64 - 1,
+            "{chain}'s chain is not complete"
+        );
+    }
+    assert!(
+        ledger.store().parked().unwrap().is_empty(),
+        "a chain was parked"
+    );
+    let events = ledger.store().events().unwrap();
+    for chain in DESK_CHAINS {
+        let booked = events
+            .iter()
+            .filter(|event| event.source().cell == chain)
+            .count();
+        assert!(booked > 0, "nothing was attributed to {chain}");
+    }
+    ledger.stop();
+}
+
+/// A platform on one chain handed to a shipper for another is held back, not
+/// sent: under the other chain's producer id the broker would take it and the
+/// ledger would fork it into a chain it does not belong to.
+///
+/// Mutation: drop the chain check in `prepare` — the record is shipped and
+/// the outcome is not `Refused`.
+#[test]
+fn a_shipper_refuses_records_from_another_desks_chain() {
+    let fabric = Fabric::start();
+    let mut platform =
+        warm_platform_with(PlatformConfig::default().with_desk_chain(qip_api::DESK_CHAIN)).unwrap();
+    fill_despite_rejections(&mut platform, Side::Buy, "wrong-chain");
+    let mut shipper = fabric.shipper_for(qip_fastbrain::ship::PRODUCER_ID);
+    let report = shipper.ship(&mut platform).expect("bookkeeping holds");
+    assert_eq!(report.outcome, ShipOutcome::Refused, "{report:?}");
+    assert!(
+        report
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("desk_chain")),
+        "{report:?}"
+    );
+    assert_eq!(
+        fabric.desk_records(),
+        0,
+        "a record from another chain reached the broker"
+    );
 }

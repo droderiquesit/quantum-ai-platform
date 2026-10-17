@@ -822,6 +822,18 @@ fn variables_read_by(
         if mentions_identifier(source, "link_source") {
             by_delegation.extend(variables_read_through_link_source());
         }
+        // A binary that starts the shared desk shipper through
+        // `qip_desk_ship::build` (or the fast brain's `ship::build`
+        // re-export) reads the shipper's three fabric variables and the link's
+        // through the lookup it hands in, and names none of them itself.
+        if source.contains("ship::build(") {
+            by_delegation.extend(
+                ["QIP_FABRIC_URL", "QIP_FABRIC_TOKEN", "QIP_FABRIC_PARTITION"]
+                    .into_iter()
+                    .map(str::to_string),
+            );
+            by_delegation.extend(variables_read_through_link_source());
+        }
         literal.extend(variable_literals(source));
         for (identifier, variables) in constants {
             if mentions_identifier(source, identifier) {
@@ -1482,7 +1494,116 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "QIP_FABRIC_PARTITION",
         NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
     ),
-    // The fast brain's desk shipper (qip-fastbrain/src/ship.rs) carries the
+    // qip-api's and the deep brain's desks ship their fills through the same
+    // shared shipper (`qip_desk_ship::build`) on their own chains, reading the
+    // same fabric and link variables for the same reasons as the fast brain's
+    // below.
+    (
+        "qip-api",
+        "QIP_FABRIC_URL",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-api",
+        "QIP_FABRIC_TOKEN",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-api",
+        "QIP_FABRIC_PARTITION",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-api",
+        "QIP_TLS_MODE",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-api",
+        "QIP_TLS_CERTIFICATE_CHAIN_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-api",
+        "QIP_TLS_PRIVATE_KEY_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-api",
+        "QIP_TLS_TRUST_ROOTS_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-api",
+        "QIP_CAS_CA_POOL",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-api",
+        "QIP_CAS_CERTIFICATE_TEMPLATE",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-api",
+        "QIP_CAS_LIFETIME_SECS",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_FABRIC_URL",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_FABRIC_TOKEN",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_FABRIC_PARTITION",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_TLS_MODE",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_TLS_CERTIFICATE_CHAIN_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_TLS_PRIVATE_KEY_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_TLS_TRUST_ROOTS_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_CAS_CA_POOL",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_CAS_CERTIFICATE_TEMPLATE",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_CAS_LIFETIME_SECS",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GOOGLE_TLS_ROOTS_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    // The fast brain's desk shipper (qip-desk-ship, re-exported as `ship`) carries the
     // desk's booked fills to qip-ledgerd over the fabric, with the edge node's
     // variables and the same link variables `link_source` reads for it.
     (

@@ -65,6 +65,8 @@ qip-ledgerd = { path = "../../apps/qip-ledgerd" }
 # app, so nothing ships depending on it and `runtime_reachability`, which
 # counts `[dependencies]` only, is unmoved.
 qip-fastbrain = { path = "../../apps/qip-fastbrain" }
+# The deep brain's desk chain name, for the three-desk shipping suite.
+qip-deepbrain = { path = "../../apps/qip-deepbrain" }
 
 # The stress, chaos and performance suites reach the edge stack directly: the
 # cell and its journal, the books it prices from, the sequencer that decides a

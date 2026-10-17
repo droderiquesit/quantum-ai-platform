@@ -24,11 +24,12 @@ any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
 Recounted **2026-10-17** with `python3 -I` over `docs/blueprint/assessment/*.json`:
-COMPLETE 170, PARTIAL 1156, MISSING 159, BLOCKED 31, INCORRECT 1,
+COMPLETE 172, PARTIAL 1154, MISSING 159, BLOCKED 31, INCORRECT 1,
 NEEDS-VALIDATION 1 (= 1518). It was COMPLETE 161, PARTIAL 1165 earlier the
 same day; nine rows (AMBIENT-1026, -1140, -1144, -7025, EXPAND-1113, -1114,
 -1120, -6045, WORLD-9004) were promoted after an independent re-grade found
-their text older than the code and the named tests were run and mutated. Of the 177 COMPLETE rows on that date, a W0.10
+their text older than the code and the named tests were run and mutated;
+LEDGER-5002 and LEDGER-5012 followed once their missing refusal tests landed. Of the 177 COMPLETE rows on that date, a W0.10
 independent re-audit confirmed 156 and re-graded 21 to PARTIAL (11.9%; reasons
 in each row's `notes`). A later independent grading of six rows this work
 touched (RISK-3022, QUANT-4028, CONTRACT-7089, AGENCY-7029, COVERAGE-7190,

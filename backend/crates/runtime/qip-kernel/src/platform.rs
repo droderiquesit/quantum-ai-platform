@@ -4972,7 +4972,7 @@ impl Platform {
             capture_problems: Vec::new(),
             sensed_pending: Vec::new(),
             sensed_unlisted: 0,
-            desk_ledger: DeskLedgerFeed::new(),
+            desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -18887,7 +18887,8 @@ impl Platform {
                     record.event.lineage.correlation_id.as_str().to_string(),
                 ));
             }
-            let derived = crate::desk_ledger::outcomes_with_correlation(
+            let derived = crate::desk_ledger::outcomes_with_correlation_on(
+                self.desk_ledger.chain(),
                 fills
                     .iter()
                     .map(|(fill, correlation)| (fill, correlation.as_str())),

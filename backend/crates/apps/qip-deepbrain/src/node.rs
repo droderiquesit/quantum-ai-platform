@@ -358,7 +358,21 @@ pub struct Loops<'a> {
     /// and drafted to an internal outbox. A sweep it cannot route is a side
     /// failure on the cycle line, never a stopped node.
     pub agency: Option<&'a mut crate::ambient_agency::AmbientAgency>,
+    /// Ships the desk's ledger records to qip-ledgerd after each cycle, on
+    /// the deep brain's own chain ([`DESK_CHAIN`]), and flushes what is
+    /// pending at shutdown. A delivery that fails is retried by the shipper,
+    /// never a stopped node; a shipper whose bookkeeping fails is a side
+    /// failure on the cycle line.
+    pub desk: Option<&'a mut qip_desk_ship::DeskShipper>,
 }
+
+/// The ledger chain the deep brain's desk books its fills on, and the producer
+/// id it ships them under. Its own, not the fast brain's `desk`: two
+/// processes on one chain fork the ledger and fence each other's producers.
+pub const DESK_CHAIN: &str = "desk-deep";
+
+/// How long the shutdown flush may wait for the desk's last batch.
+const DESK_FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// [`run_with`] and no research or operations loop.
 #[allow(clippy::too_many_arguments)]
@@ -460,6 +474,13 @@ pub fn run_with(
 
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
+        if let Some(shipper) = loops.desk.as_deref_mut()
+            && let Err(error) = shipper.ship(platform)
+        {
+            outcome
+                .side_failures
+                .push(format!("desk shipper: {}", error.message()));
+        }
         if let Some(Err(error)) = revised {
             outcome
                 .side_failures
@@ -655,6 +676,17 @@ pub fn run_with(
     };
 
     set_status(status, NodeStatus::stopping);
+    // What is pending goes now, within a budget: an unreachable fabric costs
+    // the budget and no more, and what it does not reach is re-queued from
+    // the event log by the next start.
+    if let Some(shipper) = loops.desk.as_deref_mut()
+        && let Err(error) = shipper.flush(platform, DESK_FLUSH_BUDGET)
+    {
+        eprintln!(
+            "qip-deepbrain: the desk shipper's final flush failed: {}",
+            error.message()
+        );
+    }
 
     Ok(RunSummary {
         stopped_because: reason,

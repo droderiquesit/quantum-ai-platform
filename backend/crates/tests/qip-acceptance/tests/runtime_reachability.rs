@@ -309,7 +309,7 @@ const PROBES: &[Probe] = &[
     // that back.
     Probe {
         symbol: "DeskShipper::ship",
-        defined_in: "apps/qip-fastbrain/src/ship.rs",
+        defined_in: "runtime/qip-desk-ship/src/lib.rs",
         needle: "shipper.ship(",
     },
     Probe {
@@ -634,6 +634,69 @@ fn evaluate(
         Ok(table)
     } else {
         Err(format!("{table}\n{}", errors.join("\n")))
+    }
+}
+
+/// Every process that books desk fills ships them, each on its own chain. The
+/// probe above is satisfied by any one caller, and for a while there was
+/// exactly one: the fast brain shipped, while qip-api and the deep brain
+/// booked fills into a queue nothing drained. Checked per binary, in
+/// production code with test items stripped: each composition root builds
+/// the shared shipper for its own chain constant, its platform is configured
+/// on that same chain, and something in the binary's crate calls `.ship(`.
+///
+/// Mutation: delete the `shipper.ship(` call from qip-api's cycle handler —
+/// the qip-api row fails.
+#[test]
+fn every_process_that_books_desk_fills_ships_them_on_its_own_chain() {
+    let root = crates_root();
+    let crates = load_crates(&root);
+    let sources = production_sources(&root, &crates);
+    // (crate dir, the chain constant as the binary names it)
+    let roots = [
+        ("apps/qip-fastbrain/", "qip_fastbrain::ship::PRODUCER_ID"),
+        ("apps/qip-api/", "qip_api::DESK_CHAIN"),
+        ("apps/qip-deepbrain/", "qip_deepbrain::node::DESK_CHAIN"),
+    ];
+    for (dir, chain) in roots {
+        let files: Vec<&(String, String)> = sources
+            .iter()
+            .filter(|(rel, _)| rel.starts_with(dir))
+            .collect();
+        assert!(
+            !files.is_empty(),
+            "premise: read {dir}'s production sources"
+        );
+        let all: String = files
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact: String = all.split_whitespace().collect();
+        assert!(
+            compact.contains("ship::build(") || compact.contains("qip_desk_ship::build("),
+            "{dir} never builds the desk shipper"
+        );
+        assert!(
+            compact.contains(&chain.split_whitespace().collect::<String>()),
+            "{dir} never names its desk chain {chain}"
+        );
+        assert!(
+            all.contains("shipper.ship("),
+            "{dir} builds a desk shipper and never ships with it"
+        );
+    }
+    // The fast brain ships on the default chain; the other two must configure
+    // theirs, or their platforms book on `desk` and fork it.
+    for dir in ["apps/qip-api/", "apps/qip-deepbrain/"] {
+        let named = sources
+            .iter()
+            .filter(|(rel, _)| rel.starts_with(dir))
+            .any(|(_, t)| t.contains(".with_desk_chain("));
+        assert!(
+            named,
+            "{dir}'s platform is not configured on its own desk chain"
+        );
     }
 }
 

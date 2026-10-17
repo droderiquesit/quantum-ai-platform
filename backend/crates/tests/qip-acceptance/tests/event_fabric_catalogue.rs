@@ -377,6 +377,21 @@ fn every_process_identity_in_the_slice_holds_exactly_the_grants_the_slice_uses()
             "release-controller",
             BTreeSet::from([("control.local", "produce", "any")]),
         ),
+        // Each desk writes its own chain of outcomes and nothing else: the
+        // fast brain's, qip-api's and the deep brain's, own-key so a desk can
+        // produce only to the partition of its own chain name.
+        (
+            "reflex:desk",
+            BTreeSet::from([("reflex-outcomes.local", "produce", "own_key")]),
+        ),
+        (
+            "reflex:desk-api",
+            BTreeSet::from([("reflex-outcomes.local", "produce", "own_key")]),
+        ),
+        (
+            "reflex:desk-deep",
+            BTreeSet::from([("reflex-outcomes.local", "produce", "own_key")]),
+        ),
         (
             "ledger",
             BTreeSet::from([("reflex-outcomes.local", "consume", "any")]),

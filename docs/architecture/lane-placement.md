@@ -107,6 +107,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-world-model | 3 | the single long-horizon store; bitemporal |
 | qip-confidential | 3 | confidential-computing seam; no remote call in the order path |
 | qip-kernel | 3 | composes every service into one cycle; hosts the slowest function it composes |
+| qip-desk-ship | 3 | ships a desk's ledger records to qip-ledgerd off the cycle, on its own worker thread; drains a `qip_kernel::Platform`, so it sits with the kernel it reads |
 | qip-fastbrain | 3 | millisecond-budget central cycle that runs the full kernel cycle, so it hosts Lane 3 work (ARCH-019) |
 | qip-deepbrain | 3 | minute-scale cycle with no ceiling on its length |
 | qip-api | 3 | operator API composing the kernel |

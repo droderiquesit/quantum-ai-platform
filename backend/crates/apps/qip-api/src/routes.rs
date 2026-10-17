@@ -879,6 +879,11 @@ pub struct Api {
     /// Shared so two dashboards watching the same process agree about which
     /// transition they are looking at; see [`HealthPulse`].
     pulse: Arc<HealthPulse>,
+    /// Ships the desk's ledger records after each cycle. A shipper with no
+    /// fabric configured reports, loudly, that it ships nothing; `None` is an
+    /// `Api` assembled directly (tests, embedders) that ships nothing and says
+    /// nothing.
+    desk_shipper: Option<Mutex<qip_desk_ship::DeskShipper>>,
 }
 
 impl std::fmt::Debug for Api {
@@ -910,6 +915,7 @@ impl Api {
             credential_variables: None,
             stream_limits: StreamLimits::default(),
             pulse: Arc::new(HealthPulse::default()),
+            desk_shipper: None,
         }
     }
 
@@ -1103,6 +1109,12 @@ impl Api {
     /// without this the audit trail is only ever as long as the current
     /// process has been up — and the one question an incident review asks is
     /// what happened before the restart.
+    /// Ship the desk's ledger records after every cycle this API runs.
+    pub fn with_desk_shipper(mut self, shipper: qip_desk_ship::DeskShipper) -> Self {
+        self.desk_shipper = Some(Mutex::new(shipper));
+        self
+    }
+
     pub fn with_archive(mut self, archive: Arc<ChainArchive>) -> Self {
         self.archive = Some(archive);
         self
@@ -2270,6 +2282,28 @@ impl Api {
                 // shows the cycle even when the archive or the mesh does not.
                 if let Some(overview) = &self.overview {
                     overview.record(&report);
+                }
+                // The desk's fills go to the ledger's stream on the same
+                // rhythm. `ship` never blocks: it hands a batch to the
+                // shipper's own thread and collects the last one's result, so
+                // nothing network-bound runs under the platform lock. A
+                // failure is the shipper's bookkeeping, not delivery, and is
+                // said rather than allowed to fail a cycle that happened.
+                if let Some(shipper) = &self.desk_shipper {
+                    match shipper.lock() {
+                        Ok(mut shipper) => {
+                            if let Err(error) = shipper.ship(&mut *platform) {
+                                eprintln!(
+                                    "qip-api: the desk shipper's bookkeeping failed: {}",
+                                    error.message()
+                                );
+                            }
+                        }
+                        Err(_) => eprintln!(
+                            "qip-api: the desk shipper's lock is poisoned; the desk's records \
+                             stay pending until a restart re-queues them"
+                        ),
+                    }
                 }
                 // The mesh backbone rides this same rhythm: drain the cell
                 // deltas into the platform while its lock is held, snapshot

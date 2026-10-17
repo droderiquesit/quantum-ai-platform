@@ -274,7 +274,15 @@ fn run() -> Result<()> {
     // one is announced in the banner below rather than discovered as a full
     // queue. `_certificate` is held for the life of `run`: dropping an issued
     // workload certificate stops its renewal.
-    let (mut shipper, _certificate) = build_shipper(deployment, &clock)?;
+    // The fast brain's desk ships on the `desk` chain, which it shipped on
+    // first; qip-api and the deep brain each name their own.
+    let (mut shipper, _certificate) = qip_fastbrain::ship::build(
+        "qip-fastbrain",
+        qip_fastbrain::ship::PRODUCER_ID,
+        deployment,
+        &clock,
+        &|name| std::env::var(name).ok(),
+    )?;
 
     // The durable trial book, on the same storage the event log archives to.
     // The factory the plane was built with charges holdout evaluations to an
@@ -441,60 +449,6 @@ fn run() -> Result<()> {
     )?;
     println!("  shutdown:         {}", flushed.describe());
     Ok(())
-}
-
-/// The desk shipper for this deployment, and the issued workload certificate
-/// its link holds, which the caller keeps alive.
-///
-/// Unset endpoint: a shipper that only reports that it ships nothing. The
-/// process still starts, because a developer's local desk has no fabric and a
-/// refusal would make it unusable there; what makes that safe is that it is
-/// loud (the banner, `qip_desk_ship_configured`) and bounded (the feed's
-/// 10,000-record queue, past which fills are counted unledgered). Set but
-/// invalid: refused, as everything configured-wrongly is.
-fn build_shipper(
-    deployment: qip_core::deployment::Deployment,
-    clock: &Arc<dyn Clock>,
-) -> Result<(
-    qip_fastbrain::ship::DeskShipper,
-    Option<qip_transport::cas::CasIdentity>,
-)> {
-    use qip_fastbrain::ship;
-    use qip_transport::tls::{LinkSecurity, TlsSource, WorkloadIdentity};
-    let Some(settings) = ship::read_settings(&|name| std::env::var(name).ok())? else {
-        return Ok((
-            ship::DeskShipper::unshipped(ship::FABRIC_URL_VARIABLE),
-            None,
-        ));
-    };
-    // ADR 0112: mutual TLS with this process's workload certificate unless the
-    // deployment is `local` and said `plaintext`. No fallback.
-    let source = qip_transport::tls::link_source(deployment, &|name| std::env::var(name).ok())
-        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let mut issued = None;
-    let link = match &source {
-        Some(TlsSource::Files(paths)) => {
-            LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?))
-        }
-        Some(TlsSource::Issued(tls)) => {
-            let started = qip_storage::gcp::workload_certificate::workload_certificate(
-                tls,
-                "qip-fastbrain",
-                Arc::clone(clock),
-            )?;
-            if let Some(error) = started.status().last_error() {
-                eprintln!(
-                    "qip-fastbrain: no workload certificate yet; the fabric link refuses until \
-                     one arrives and the desk's records stay pending. The CA said: {error}"
-                );
-            }
-            let link = LinkSecurity::issued(started.identity());
-            issued = Some(started);
-            link
-        }
-        None => LinkSecurity::Plaintext,
-    };
-    Ok((settings.shipper(Arc::clone(clock), &link)?, issued))
 }
 
 /// What this process will do, before it does any of it.

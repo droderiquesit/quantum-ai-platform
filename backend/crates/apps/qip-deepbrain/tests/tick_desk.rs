@@ -402,6 +402,7 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
         0,
         None,
         Loops {
+            desk: None,
             research: None,
             operations: None,
             tick: Some(&mut desk),

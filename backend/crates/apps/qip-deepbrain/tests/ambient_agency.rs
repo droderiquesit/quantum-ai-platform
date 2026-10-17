@@ -95,6 +95,7 @@ fn run_node(every: u64, attach_agency: bool, outbox: EventLog) -> Ran {
         0,
         None,
         Loops {
+            desk: None,
             research: Some(&mut research),
             ambient: Some(&mut ambient),
             agency: if attach_agency {

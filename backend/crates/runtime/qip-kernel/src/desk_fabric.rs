@@ -27,7 +27,7 @@
 //! fill is [`Error::denied`], which also keeps the paper boundary structural
 //! at this seam — a live fill cannot be built into a record that ships.
 
-use crate::desk_ledger::{DESK_CELL, DESK_SESSION, DeskOutcome};
+use crate::desk_ledger::{DESK_CELL, DESK_SESSION, DeskOutcome, validate_chain};
 use qip_contracts::reflex::Decision;
 use qip_core::canonical::canonical_json;
 use qip_core::error::{Error, Result};
@@ -51,16 +51,22 @@ const KIND: &str = "p1.outcome_recorded";
 /// the chain and nothing else, so a resend after a crash carries the id the
 /// first send did and the broker's and ledger's duplicate rules apply.
 pub fn event_id(sequence: u64) -> String {
-    sha256_hex(format!("{DESK_CELL}|{DESK_SESSION}|{sequence}|{KIND}").as_bytes())
+    event_id_on(DESK_CELL, sequence)
+}
+
+/// [`event_id`] on the named desk chain.
+pub fn event_id_on(chain: &str, sequence: u64) -> String {
+    sha256_hex(format!("{chain}|{DESK_SESSION}|{sequence}|{KIND}").as_bytes())
 }
 
 /// The fabric record for one desk outcome, or the reason the ledger would
 /// not take it.
 pub fn fabric_record(outcome: &DeskOutcome) -> Result<Record> {
     let record = &outcome.record;
-    if record.cell != DESK_CELL || record.session != DESK_SESSION {
+    if validate_chain(&record.cell).is_err() || record.session != DESK_SESSION {
         return Err(Error::invalid(format!(
-            "a desk outcome names chain {}/{}; the desk ships only {DESK_CELL}/{DESK_SESSION}",
+            "a desk outcome names chain {}/{}; a desk ships only a desk chain at session \
+             {DESK_SESSION}",
             record.cell, record.session
         )));
     }
@@ -107,7 +113,7 @@ pub fn fabric_record(outcome: &DeskOutcome) -> Result<Record> {
     let payload = serde_json::to_value(record)
         .map_err(|error| Error::schema(format!("a desk outcome would not serialise: {error}")))?;
     let payload_hash = sha256_hex(canonical_json(&payload).as_bytes());
-    let id = event_id(record.entry.sequence);
+    let id = event_id_on(&record.cell, record.entry.sequence);
     let event = AnyEvent {
         event_id: EventId::from_string(id.clone()),
         topic: binding.topic,

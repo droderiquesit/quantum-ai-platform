@@ -294,6 +294,20 @@ pub struct PlatformConfig {
     #[serde(default)]
     pub event_log: EventLogDestination,
 
+    /// The name of the ledger chain this process's desk books its fills on,
+    /// and so the producer identity its records are shipped under. One per
+    /// process that books fills: two desks writing one chain fork the ledger
+    /// (both claim position 0), and two producers sharing an id fence each
+    /// other. `desk` for the fast brain, which shipped first; every other
+    /// composition root names its own. Validated at assembly as an account
+    /// name. Omitted from serialisation at its default, so a configuration
+    /// written before this field existed reads and digests identically.
+    #[serde(
+        default = "default_desk_chain",
+        skip_serializing_if = "is_default_desk_chain"
+    )]
+    pub desk_chain: String,
+
     /// Who is accountable for what this deployment collects and registers.
     ///
     /// Carried here rather than derived because a registered data source needs
@@ -540,6 +554,14 @@ where
         .map_err(|error| serde::de::Error::custom(error.message()))
 }
 
+fn default_desk_chain() -> String {
+    crate::desk_ledger::DESK_CELL.to_string()
+}
+
+fn is_default_desk_chain(chain: &str) -> bool {
+    chain == crate::desk_ledger::DESK_CELL
+}
+
 impl Default for PlatformConfig {
     fn default() -> Self {
         Self {
@@ -555,6 +577,7 @@ impl Default for PlatformConfig {
             agent_review_interval: Duration::from_days(90),
             central: CentralConfig::default(),
             event_log: EventLogDestination::default(),
+            desk_chain: default_desk_chain(),
             owner: default_owner(),
             data_user_agent: default_data_user_agent(),
             initial_equity: default_initial_equity(),
@@ -614,6 +637,13 @@ impl PlatformConfig {
     /// one line is one a reviewer can see.
     pub fn with_event_log_file(self, path: impl Into<PathBuf>) -> Self {
         self.with_event_log(EventLogDestination::file(path))
+    }
+
+    /// Name the ledger chain this process's desk books on (see
+    /// [`PlatformConfig::desk_chain`]).
+    pub fn with_desk_chain(mut self, chain: impl Into<String>) -> Self {
+        self.desk_chain = chain.into();
+        self
     }
 
     /// State the share of the book that may be spent on information gain

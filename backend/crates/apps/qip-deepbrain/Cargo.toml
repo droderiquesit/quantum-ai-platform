@@ -28,6 +28,9 @@ qip-investment-agents.workspace = true
 qip-risk.workspace = true
 qip-risk-engine.workspace = true
 qip-kernel.workspace = true
+# Ships this process's desk fills to qip-ledgerd, on the deep brain's own
+# desk chain (`node::DESK_CHAIN`).
+qip-desk-ship.workspace = true
 # The evolution loop: the grammar and trial ledger, the harness that scores a
 # generated candidate on observed bars, and the evidence types the factory's
 # gate reads. All workspace-internal; the app is the composition root where

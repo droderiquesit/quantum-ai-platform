@@ -28,13 +28,18 @@
   },
   {
     "id": "R12-LEDGER-5002",
-    "status": "PARTIAL",
-    "current": "LedgerEvent::new refuses unbalanced, <2 posting and non-positive events and deserialisation goes through it; only the per-unit imbalance and wire-tamper refusals have tests.",
+    "status": "COMPLETE",
+    "current": "LedgerEvent::new refuses events with fewer than two postings, non-positive amounts, or debits unequal to credits in any unit, and never plugs the difference; deserialisation goes through new. qip-ledgerd reaches it via store.apply -> qip_portfolio::ledger::post. Every refusal has a test.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs::a_set_unbalanced_by_one_nano_unit_is_refused_and_not_plugged",
-      "backend/crates/libs/qip-contracts/src/ledger.rs::an_event_read_off_the_wire_meets_the_same_balance_refusal"
+      "backend/crates/libs/qip-contracts/src/ledger.rs::an_event_read_off_the_wire_meets_the_same_balance_refusal",
+      "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::new",
+      "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEventWire",
+      "backend/crates/libs/qip-contracts/src/ledger.rs::tests::fewer_than_two_postings_or_a_non_positive_amount_is_refused",
+      "backend/crates/libs/qip-portfolio/src/ledger.rs::post",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply"
     ],
-    "gap": "Tests for fewer than two postings and non-positive amounts (grep finds none).",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -42,10 +47,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ledger_event; cargo test -p qip-portfolio --test ledger_postings",
+    "verification": "cargo test -p qip-contracts --lib ledger",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Two named clauses have no test that fails if removed."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Two named clauses have no test that fails if removed. Promoted 2026-10-17: the missing refusal tests were added and mutation-verified (posting floor lowered to one, positivity check removed, digest check removed: each failed its test, restored byte-compared), and an independent grader that wrote none of it graded the row COMPLETE from code and tests (ledgerd main -> PartitionWorker -> store.apply -> post -> LedgerEvent::new)."
   },
   {
     "id": "R12-LEDGER-5003",
@@ -76,7 +81,7 @@
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ledgerd.rs::desk_fills_are_booked_by_the_real_store_and_agree_with_the_platforms_book",
       "backend/crates/runtime/qip-kernel/src/platform.rs:18707 take_desk_outcomes",
-      "backend/crates/apps/qip-fastbrain/src/ship.rs::DeskShipper",
+      "backend/crates/runtime/qip-desk-ship/src/lib.rs::DeskShipper",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::desk_fills_reach_the_ledger_balanced_attributed_and_acknowledged"
     ],
     "gap": "Production reconciliation or read path making the ledger the authority over kernel/cell positions; desk shipping not deployed (no broker, desk grant or token), only fastbrain ships.",
@@ -245,14 +250,18 @@
   },
   {
     "id": "R12-LEDGER-5012",
-    "status": "PARTIAL",
-    "current": "SourceEvent (backend/crates/libs/qip-contracts/src/ledger.rs:133) with refuse_unnamed checks in LedgerEvent::new (backend/crates/libs/qip-contracts/src/ledger.rs:208-210).",
+    "status": "COMPLETE",
+    "current": "SourceEvent names the cell, session, journal sequence and digest, and the order; LedgerEvent::new refuses an empty cell, digest or order id, built in code or deserialised, with a field-by-field test. qip-ledgerd's post copies the source from the outcome it was given.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:133 SourceEvent",
       "backend/crates/libs/qip-contracts/src/ledger.rs:208 refuse_unnamed source fields",
-      "backend/crates/libs/qip-contracts/tests/ledger_event.rs"
+      "backend/crates/libs/qip-contracts/src/ledger.rs::SourceEvent",
+      "backend/crates/libs/qip-contracts/src/ledger.rs::refuse_unnamed",
+      "backend/crates/libs/qip-contracts/src/ledger.rs::tests::an_event_whose_source_names_no_cell_digest_or_order_is_refused",
+      "backend/crates/libs/qip-portfolio/src/ledger.rs::post",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply"
     ],
-    "gap": "Source-required refusal in LedgerEvent::new has no test.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -260,10 +269,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ledger_event",
+    "verification": "cargo test -p qip-contracts --lib ledger",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The refusal of an event with no named source is untested; deleting the refuse_unnamed calls fails no test."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The refusal of an event with no named source is untested; deleting the refuse_unnamed calls fails no test. Promoted 2026-10-17: the missing refusal tests were added and mutation-verified (posting floor lowered to one, positivity check removed, digest check removed: each failed its test, restored byte-compared), and an independent grader that wrote none of it graded the row COMPLETE from code and tests (ledgerd main -> PartitionWorker -> store.apply -> post -> LedgerEvent::new)."
   },
   {
     "id": "R12-LEDGER-5013",

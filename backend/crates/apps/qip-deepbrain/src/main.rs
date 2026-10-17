@@ -185,7 +185,8 @@ fn run() -> Result<()> {
             .with_central(central)
             .with_live_ceiling(AutonomyLevel::deployable(
                 std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
-            )?),
+            )?)
+            .with_desk_chain(qip_deepbrain::node::DESK_CHAIN),
     )?;
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape
@@ -304,6 +305,16 @@ fn run() -> Result<()> {
     // R12-GOV-6121: a deployed process states the commit it was built from,
     // or it does not start — every decision it journals would otherwise name
     // code nobody can check out (`qip_kernel::decision_record`).
+    // The desk's fills, shipped to qip-ledgerd on this process's own chain
+    // after every cycle. Unset QIP_FABRIC_URL: loud, and bounded by the feed.
+    let (mut desk_shipper, _desk_certificate) = qip_desk_ship::build(
+        "qip-deepbrain",
+        qip_deepbrain::node::DESK_CHAIN,
+        deployment,
+        &clock,
+        &|name| std::env::var(name).ok(),
+    )?;
+    println!("  {}", desk_shipper.banner());
     qip_kernel::decision_record::require_source_commit(deployment)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
@@ -915,6 +926,7 @@ fn run() -> Result<()> {
             permissions: permission_watch.as_mut(),
             ambient: Some(&mut ambient),
             agency: Some(&mut agency),
+            desk: Some(&mut desk_shipper),
         },
         |outcome| {
             println!();

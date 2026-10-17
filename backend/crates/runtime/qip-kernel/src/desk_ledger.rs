@@ -48,9 +48,35 @@ use qip_execution_engine::order::Side;
 use qip_portfolio::ledger::{PaperFill, post};
 use std::collections::BTreeSet;
 
-/// The chain the desk's fills sit on. A cell is named for where it runs; the
-/// desk is the centre's own book, and no cell carries this name.
+/// The chain the fast brain's desk fills sit on, and the default for any
+/// platform that names none. A cell is named for where it runs; a desk is a
+/// central process's own book, and no cell carries a desk's name. Every other
+/// process that books fills names its own chain
+/// ([`crate::config::PlatformConfig::desk_chain`]): two desks on one chain
+/// fork the ledger.
 pub const DESK_CELL: &str = "desk";
+
+/// Refuse a chain name the ledger could not hold as an account name, or one
+/// a cell could also carry.
+pub fn validate_chain(chain: &str) -> Result<()> {
+    if chain.is_empty()
+        || !chain
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(Error::invalid(format!(
+            "desk chain `{chain}` must be non-empty lowercase ASCII letters, digits and `-`: it \
+             becomes a ledger account name and a fabric producer identity"
+        )));
+    }
+    if !chain.starts_with(DESK_CELL) {
+        return Err(Error::invalid(format!(
+            "desk chain `{chain}` must start with `{DESK_CELL}`, so no regional cell's name can \
+             collide with it"
+        )));
+    }
+    Ok(())
+}
 
 /// The digest a chain's first entry chains onto: the same text as
 /// `qip_edge::Journal::GENESIS` and `qip_ledgerd::store::GENESIS`, restated
@@ -126,6 +152,17 @@ pub fn outcome_for(
     sequence: u64,
     previous: &str,
 ) -> Result<OutcomeRecord> {
+    outcome_on(DESK_CELL, booked, strategy, sequence, previous)
+}
+
+/// [`outcome_for`] on the named desk chain.
+pub fn outcome_on(
+    chain: &str,
+    booked: &FillBooked,
+    strategy: &str,
+    sequence: u64,
+    previous: &str,
+) -> Result<OutcomeRecord> {
     let decision = Decision::Filled {
         order_id: booked.order_id.clone(),
         venue: booked.venue.clone(),
@@ -143,7 +180,7 @@ pub fn outcome_for(
     };
     let (decision, digest) = seal_v2(previous, sequence, booked.at, decision);
     let record = OutcomeRecord {
-        cell: DESK_CELL.to_string(),
+        cell: chain.to_string(),
         session: DESK_SESSION,
         journal_sequence: sequence,
         journal_digest: digest.clone(),
@@ -163,8 +200,10 @@ pub fn outcome_for(
 }
 
 /// The desk's chain tail, its duplicate index and the records not yet taken.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DeskLedgerFeed {
+    /// The chain this feed's records sit on; see [`DESK_CELL`].
+    chain: String,
     next_sequence: u64,
     tail_digest: Option<String>,
     seen: BTreeSet<(String, String)>,
@@ -182,9 +221,39 @@ pub struct DeskLedgerFeed {
     gap: bool,
 }
 
+impl Default for DeskLedgerFeed {
+    fn default() -> Self {
+        Self {
+            chain: DESK_CELL.to_string(),
+            next_sequence: 0,
+            tail_digest: None,
+            seen: BTreeSet::new(),
+            outbox: Vec::new(),
+            acknowledged_through: None,
+            gap: false,
+        }
+    }
+}
+
 impl DeskLedgerFeed {
+    /// A feed on the fast brain's chain, [`DESK_CELL`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A feed on a named chain, refused if the name is not one
+    /// [`validate_chain`] admits.
+    pub fn on_chain(chain: &str) -> Result<Self> {
+        validate_chain(chain)?;
+        Ok(Self {
+            chain: chain.to_string(),
+            ..Self::default()
+        })
+    }
+
+    /// The chain this feed's records sit on.
+    pub fn chain(&self) -> &str {
+        &self.chain
     }
 
     /// The sequence the next record will carry; equal to the number recorded.
@@ -218,7 +287,13 @@ impl DeskLedgerFeed {
         if self.seen.contains(&key) {
             return Ok(Admission::Duplicate);
         }
-        let record = outcome_for(booked, strategy, self.next_sequence, self.previous())?;
+        let record = outcome_on(
+            &self.chain,
+            booked,
+            strategy,
+            self.next_sequence,
+            self.previous(),
+        )?;
         let next = self.next_sequence.checked_add(1).ok_or_else(|| {
             Error::numeric("the desk's ledger chain has no sequence left to give".to_string())
         })?;
@@ -258,7 +333,13 @@ impl DeskLedgerFeed {
     /// Within a process the OMS keeps ids unique, which is the scope the
     /// duplicate index is sound over.
     pub fn fold_booked(&mut self, booked: &FillBooked, strategy: &str) -> Result<u64> {
-        let record = outcome_for(booked, strategy, self.next_sequence, self.previous())?;
+        let record = outcome_on(
+            &self.chain,
+            booked,
+            strategy,
+            self.next_sequence,
+            self.previous(),
+        )?;
         let next = self.next_sequence.checked_add(1).ok_or_else(|| {
             Error::numeric("the desk's ledger chain has no sequence left to give".to_string())
         })?;
@@ -280,7 +361,13 @@ impl DeskLedgerFeed {
         strategy: &str,
         correlation: &str,
     ) -> Result<Admission> {
-        let record = outcome_for(booked, strategy, self.next_sequence, self.previous())?;
+        let record = outcome_on(
+            &self.chain,
+            booked,
+            strategy,
+            self.next_sequence,
+            self.previous(),
+        )?;
         let next = self.next_sequence.checked_add(1).ok_or_else(|| {
             Error::numeric("the desk's ledger chain has no sequence left to give".to_string())
         })?;
@@ -478,13 +565,22 @@ pub fn outcomes_with_correlation<'a>(
     booked: impl IntoIterator<Item = (&'a FillBooked, &'a str)>,
     strategy: &str,
 ) -> Vec<DeskOutcome> {
+    outcomes_with_correlation_on(DESK_CELL, booked, strategy)
+}
+
+/// [`outcomes_with_correlation`] on the named desk chain.
+pub fn outcomes_with_correlation_on<'a>(
+    chain: &str,
+    booked: impl IntoIterator<Item = (&'a FillBooked, &'a str)>,
+    strategy: &str,
+) -> Vec<DeskOutcome> {
     let mut outcomes: Vec<DeskOutcome> = Vec::new();
     for (fill, correlation) in booked {
         let previous = outcomes
             .last()
             .map_or(GENESIS, |last| last.record.journal_digest.as_str());
         let sequence = outcomes.len() as u64;
-        if let Ok(record) = outcome_for(fill, strategy, sequence, previous) {
+        if let Ok(record) = outcome_on(chain, fill, strategy, sequence, previous) {
             outcomes.push(DeskOutcome {
                 record,
                 correlation_id: correlation.to_string(),

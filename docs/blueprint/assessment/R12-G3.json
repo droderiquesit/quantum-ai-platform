@@ -3967,12 +3967,12 @@
   {
     "id": "R12-LEDGER-10179",
     "status": "PARTIAL",
-    "current": "Cell outcomes reach ledgerd and commit once in effect. Desk fills become OutcomeRecords (DeskLedgerFeed) and qip-fastbrain's DeskShipper carries them to the P1 stream, acknowledging only after the fabric answers. The acknowledged watermark (DeskLedgerAcknowledged) is logged in the event log and resume_book re-queues unshipped fills. Loopback tests with the real ledger store show a resend after a crash, an outage or a fence posts once. No broker is deployed and no desk identity, grant or token exists (streams.local.json grants produce only to reflex:cell-local), so nothing ships in any environment.",
+    "current": "Desk fills become OutcomeRecords on a per-process desk chain (PlatformConfig::desk_chain: desk for the fast brain, desk-api for qip-api, desk-deep for the deep brain) and the shared qip-desk-ship shipper carries them to the P1 stream after each cycle in all three binaries, acknowledging only after the fabric answers; restart and overflow gaps are re-queued or healed from the event log; ledgerd dedupes by chain position. The committed catalogue grants each reflex:<chain> own-key produce. A property test drives desk records from all three chains through random duplication, re-sent runs, rewinds and a cut write-ahead log into the real store and asserts single-delivery balances and complete chains.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/desk_ledger.rs::DeskLedgerFeed",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ledgerd.rs::the_same_record_applied_twice_posts_once",
       "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
-      "backend/crates/apps/qip-fastbrain/src/ship.rs::DeskShipper",
+      "backend/crates/runtime/qip-desk-ship/src/lib.rs::DeskShipper",
       "backend/crates/apps/qip-fastbrain/src/node.rs::run",
       "backend/crates/apps/qip-fastbrain/src/main.rs::build_shipper",
       "backend/crates/runtime/qip-kernel/src/desk_fabric.rs::fabric_record",
@@ -3984,9 +3984,16 @@
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_queue_longer_than_one_quota_window_still_drains",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::the_fill_past_the_queue_bound_is_healed_from_the_log_when_room_opens",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order",
-      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs::an_archived_ack_is_polled_at_the_fixed_interval_not_on_the_retry_ladder"
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs::an_archived_ack_is_polled_at_the_fixed_interval_not_on_the_retry_ladder",
+      "backend/crates/runtime/qip-desk-ship/src/lib.rs::build",
+      "backend/crates/apps/qip-api/src/routes.rs::Api::with_desk_shipper",
+      "backend/crates/apps/qip-deepbrain/src/node.rs::run_with",
+      "backend/crates/tests/qip-acceptance/tests/desk_ledger_property.rs::for_any_redelivery_and_crash_schedule_three_desks_records_book_single_delivery_balances",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::three_desks_ship_on_their_own_chains_to_one_ledger_without_fencing_or_forking",
+      "backend/crates/tests/qip-acceptance/tests/runtime_reachability.rs::every_process_that_books_desk_fills_ships_them_on_its_own_chain",
+      "infrastructure/event-fabric/streams.local.json"
     ],
-    "gap": "Deployment: a desk identity, grant and token, and a deployed broker. Only fastbrain ships; qip-api and the deep brain do not. Desk session is always 0; ids stay distinct across restarts only because resume_book continues the order counter past the log's (2026-10-17). The fill past the 10,000-record queue bound is booked, counted unledgered and not queued; the next acknowledgement that makes room re-derives it from the event log and queues it in chain order (tested with 10,001 real fills, and equal to what a restart re-queues). Delivery is now about 1.1s a batch of ~127 records, measured (was 3.3-3.8s): the Archived ack is polled every 50ms instead of on the retry ladder, and what remains is the outcomes stream's own 1000ms seal cadence. Tests are example-based, not a property test over redelivery and crash schedules. No fastbrain binary -> real broker -> ledgerd run.",
+    "gap": "Not deployed: no broker runs anywhere and no token for any desk identity is provisioned, so nothing ships outside tests. Desk session is fixed at 0 by design (one chain per desk, continued across restarts); ids stay distinct because the order counter resumes past the log's. Delivery ~1.1s a batch, bounded by the stream's 1000ms seal cadence.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4000,7 +4007,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it. Shipper added 2026-10-17 (84e4e33d, 54b9a01a); independent grader (wrote none of the code, ran nothing) held PARTIAL. The earlier 'no non-test caller' / 'shipper does not exist' text is false for acknowledge_desk_outcomes. 2026-10-17: queuing 300+ records found the shipper wedged for ever (a 256-record batch exceeded the broker's per-second byte quota); batches are now capped at 131,072 payload bytes. Live gap heal added 2026-10-17 (DeskLedgerFeed::fill_gap via Platform::heal_desk_gap)."
+    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it. Shipper added 2026-10-17 (84e4e33d, 54b9a01a); independent grader (wrote none of the code, ran nothing) held PARTIAL. The earlier 'no non-test caller' / 'shipper does not exist' text is false for acknowledge_desk_outcomes. 2026-10-17: queuing 300+ records found the shipper wedged for ever (a 256-record batch exceeded the broker's per-second byte quota); batches are now capped at 131,072 payload bytes. Live gap heal added 2026-10-17 (DeskLedgerFeed::fill_gap via Platform::heal_desk_gap). 2026-10-17: qip-api and the deep brain ship on their own chains; property test over desk records added (mutation: store treating a re-sent last position as new parks a clean chain). Status left for an independent grader."
   },
   {
     "id": "R12-MODEL-10180",
