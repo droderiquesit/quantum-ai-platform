@@ -388,6 +388,15 @@ pub struct OrderManager {
     /// them; a venue-wide grid is the coarser statement for a venue whose
     /// instruments all share one.
     instrument_feasibility: BTreeMap<String, VenueFeasibility>,
+    /// The instruments this manager will take an order for, keyed on the exact
+    /// string an order's `object_id` renders to. `None` is a manager
+    /// assembled without a universe (a test or a demonstration), which takes
+    /// any id; the platform always installs one, so on the desk an instrument
+    /// outside the universe is refused before a gate, a venue or a position
+    /// can see it. Held here, not only checked by the caller, because every
+    /// desk order passes this manager and a check in one caller guards one
+    /// door.
+    known_instruments: Option<BTreeSet<String>>,
     /// Venues withdrawn on feasibility evidence, keyed on [`Broker::name`].
     /// A subtractive set: a name here is refused at step 5 of
     /// [`Self::submit`], and nothing in this manager reads it to admit
@@ -422,6 +431,7 @@ impl OrderManager {
             reconciliation_breaks: Vec::new(),
             feasibility: BTreeMap::new(),
             instrument_feasibility: BTreeMap::new(),
+            known_instruments: None,
             withdrawn_venues: BTreeSet::new(),
             sessions: SessionRecorder::default(),
             working_axes: BTreeMap::new(),
@@ -487,6 +497,23 @@ impl OrderManager {
         model: VenueFeasibility,
     ) -> Self {
         self.instrument_feasibility.insert(object_id.into(), model);
+        self
+    }
+
+    /// Restrict this manager to the instruments of one universe.
+    ///
+    /// An order for any other `object_id` is refused as malformed before it
+    /// reaches a gate, a venue or the book. Before this existed an order for
+    /// an instrument the platform held no record of was risk-checked against a
+    /// book with no figures for it, filled at its own arrival price and booked
+    /// as a position.
+    #[must_use]
+    pub fn with_known_instruments<I, S>(mut self, instruments: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.known_instruments = Some(instruments.into_iter().map(Into::into).collect());
         self
     }
 
@@ -629,6 +656,26 @@ impl OrderManager {
                 &order,
                 RefusalReason::Malformed {
                     detail: error.message().to_string(),
+                },
+            );
+            self.record_refusal(order, at, result.clone());
+            return result;
+        }
+
+        // 1b. An instrument outside the universe this manager was given.
+        //     Fails closed: an unknown id is never read as an equity with no
+        //     limits to breach.
+        if let Some(known) = &self.known_instruments
+            && !known.contains(order.object_id.as_str())
+        {
+            let result = refuse(
+                &order,
+                RefusalReason::Malformed {
+                    detail: format!(
+                        "instrument {} is not in the universe this desk was assembled \
+                         with; an order for it has no fill, position or posting",
+                        order.object_id.as_str()
+                    ),
                 },
             );
             self.record_refusal(order, at, result.clone());

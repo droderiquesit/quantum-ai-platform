@@ -631,6 +631,36 @@ fn the_order_manager_never_calls_the_broker_for_a_breach_or_a_halt() {
     );
 }
 
+/// The one instrument this suite's platform trades. The order manager refuses
+/// an order for an instrument outside the universe the platform was assembled
+/// with, so a fixture that traded an unlisted id would be testing that refusal
+/// and not the notional cap it names.
+fn listed_universe() -> Universe {
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let mut universe = Universe::new();
+    universe
+        .insert(
+            FinancialObject::builder(
+                object(),
+                "ACME",
+                InstrumentType::CommonStock,
+                LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(dec!("100"))
+            .provenance(Provenance::synthetic("order-paths", t(0)))
+            .build(t(0))
+            .expect("valid instrument"),
+        )
+        .expect("insertable");
+    universe
+}
+
 fn platform() -> Platform {
     let config = PlatformConfig::default();
     let clock = Arc::new(ManualClock::new(t(0)));
@@ -639,7 +669,7 @@ fn platform() -> Platform {
         config,
         context,
         Telemetry::silent(),
-        Universe::new(),
+        listed_universe(),
         LimitSet::conservative_default(),
     )
     .expect("the platform assembles")

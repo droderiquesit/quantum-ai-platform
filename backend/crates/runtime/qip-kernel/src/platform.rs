@@ -4407,6 +4407,11 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // The ids the desk will take an order for: this universe's, and no
+        // others. Installed on the order manager below so an instrument the
+        // platform holds no record of is refused at the door every desk order
+        // passes, not risk-checked against a book with no figures for it.
+        let known_instruments: Vec<String> = asset_classes.keys().cloned().collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -4898,10 +4903,13 @@ impl Platform {
             // Every instrument's grid installed at assembly, keyed on the
             // object id an order carries, so the feasibility gate is a
             // control that can fire rather than a module nothing reaches.
-            orders: instrument_grids.into_iter().fold(
-                OrderManager::new(PreTradeChecker::new(limits.clone())),
-                |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
-            ),
+            orders: instrument_grids
+                .into_iter()
+                .fold(
+                    OrderManager::new(PreTradeChecker::new(limits.clone())),
+                    |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
+                )
+                .with_known_instruments(known_instruments),
             broker,
             autonomy: AutonomyController::with_live_ceiling(config.autonomy_ceiling),
             monitor: RiskMonitor::new(limits, config.monitor),
@@ -20828,6 +20836,42 @@ fn mechanism_for(
     }
 }
 
+/// The universe the unit-test platforms below trade in: the symbols named, listed.
+///
+/// `Universe::new()` installs no instrument, and the order manager now refuses
+/// an order for an instrument outside the universe the platform was assembled
+/// with. A fixture that trades a symbol it never listed was exercising a desk
+/// that took orders for instruments it held no record of, which is the defect
+/// that refusal ends; the symbol is listed here instead of the refusal relaxed.
+#[cfg(test)]
+fn listed_test_universe(symbols: &[&str]) -> Universe {
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let now = Timestamp::from_secs(1_760_000_000);
+    let mut universe = Universe::new();
+    for symbol in symbols.iter().copied() {
+        universe
+            .insert(
+                FinancialObject::builder(
+                    qip_core::ObjectId::from_string(symbol),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNAS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", now))
+                .build(now)
+                .expect("valid object"),
+            )
+            .expect("insertable");
+    }
+    universe
+}
+
 #[cfg(test)]
 mod decide_tests {
     //! The decide stage stops being a stub: unit tests, because the seam
@@ -20848,7 +20892,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -20869,7 +20913,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -20900,7 +20944,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -21425,7 +21469,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -25801,7 +25845,6 @@ mod rule_attribution_tests {
 
     use super::*;
     use qip_core::dec;
-    use qip_financial::universe::Universe;
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
@@ -25816,7 +25859,7 @@ mod rule_attribution_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["obj-AAA"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -25939,7 +25982,6 @@ mod rule_review_tests {
     use super::*;
     use crate::rule_review::{RULE_DORMANCY_CYCLES, RULE_DORMANCY_MIN_ORDERS};
     use qip_core::dec;
-    use qip_financial::universe::Universe;
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
@@ -25956,7 +25998,7 @@ mod rule_review_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["obj-AAA"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -26872,7 +26914,7 @@ mod rule_review_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["obj-AAA"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles over the file-backed log")

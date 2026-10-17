@@ -841,18 +841,28 @@ fn a_platform_with_no_market_data_runs_legibly_and_trades_nothing() -> Result<()
     Ok(())
 }
 
-/// KNOWN DEFECT, characterised rather than hidden (report finding D2).
+/// An order for an instrument outside the universe is refused and leaves no
+/// trace (report finding D2, fixed).
 ///
-/// `Platform::submit_order` never asks whether the instrument is in the
-/// universe: an order for `obj-GHOST` is risk-checked against a book that has
-/// no figures for it, filled by the simulated venue at the order's own arrival
-/// price, and booked as a position. Nothing in the ACT stage can reach this
-/// (its legs come from the universe), but `submit_order` is `pub`. The
-/// correct behaviour is a refusal under `order-validation`; when the kernel
-/// owner adds that check this test fails, and its assertions invert.
+/// `Platform::submit_order` used to ask nothing about the instrument: an order
+/// for `obj-GHOST` was risk-checked against a book with no figures for it,
+/// filled by the simulated venue at the order's own arrival price, and booked
+/// as a position. The order manager now holds the universe the platform was
+/// assembled from and refuses any other id before a gate, a venue or the book
+/// sees it. The refusal is a recorded one, so it is distinguishable from a
+/// decision nobody made.
 #[test]
-fn known_defect_an_order_outside_the_universe_is_filled_today() -> Result<()> {
+fn an_order_outside_the_universe_is_refused_and_leaves_no_trace() -> Result<()> {
     let mut platform = warm_platform()?;
+    let before = book(&platform);
+    let refusals_before = platform.orders().refusals().len();
+    // Premise: a valid instrument is accepted by this same platform, so the
+    // refusal below is about the instrument and not about the fixture.
+    let valid = order(&mut platform, dec!("100"), vec!["hyp-valid".to_string()]);
+    platform.submit_order(valid, later())?;
+    let after_valid = book(&platform);
+    assert_eq!(after_valid.fills, before.fills + 1, "premise: a fill");
+
     let ghost = platform.order_from(
         ObjectId::from_string("obj-GHOST"),
         Side::Buy,
@@ -862,15 +872,51 @@ fn known_defect_an_order_outside_the_universe_is_filled_today() -> Result<()> {
         vec!["hyp-ghost".to_string()],
         later(),
     );
-    let outcome = platform.submit_order(ghost, later());
+    let ghost_id = ghost.order_id.clone();
+    let error = platform
+        .submit_order(ghost, later())
+        .expect_err("an order for an instrument outside the universe was accepted");
     assert!(
-        outcome.is_ok(),
-        "the defect is fixed (good): invert this test to assert a refusal ({outcome:?})"
+        error.message().contains("not in the universe"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(
+        book(&platform),
+        after_valid,
+        "the refused order moved cash, a position, costs or a fill"
+    );
+    assert!(!platform.positions_at_cost().contains_key("obj-GHOST"));
+    assert!(
+        platform
+            .orders()
+            .refusals()
+            .iter()
+            .skip(refusals_before)
+            .any(|refusal| refusal.order_id == ghost_id && !refusal.accepted),
+        "the refusal was not recorded"
     );
     assert!(
-        platform.positions_at_cost().contains_key("obj-GHOST"),
-        "premise of the characterisation: the fill became a position"
+        platform
+            .orders()
+            .fills()
+            .iter()
+            .all(|fill| fill.order_id != ghost_id),
+        "a fill exists for the refused order"
     );
+
+    // A replay of the refused id is still a replay, not a second chance.
+    let replay = platform.order_from(
+        ObjectId::from_string("obj-GHOST"),
+        Side::Buy,
+        dec!("100"),
+        dec!("100"),
+        "prop-ghost",
+        vec!["hyp-ghost".to_string()],
+        later(),
+    );
+    assert!(platform.submit_order(replay, later()).is_err());
+    assert_eq!(book(&platform), after_valid);
     Ok(())
 }
 
