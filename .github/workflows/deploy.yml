@@ -13,11 +13,13 @@
 # ci succeeded. On the manual path it asks GitHub whether ci succeeded for the
 # commit being deployed, because "somebody pressed the button" is not evidence.
 #
-# **Production is never automatic.** The automatic path deploys to `dev` and
-# nowhere else. `test`, `stage` and `prod` need a person to dispatch the
-# workflow, and the `prod` GitHub environment is expected to carry
-# required reviewers — a repository setting, not something this file can
-# create. See docs/operations/external-dependencies.md.
+# **Production is never deployed from here.** The automatic path deploys to
+# `dev` and nowhere else. `test` and `stage` need a person to dispatch the
+# workflow. `prod` is not a dispatch choice, and the gate job refuses it on
+# every trigger, a dispatch included; the `prod` GitHub environment's
+# required reviewers (a repository setting, not something this file can
+# create; see docs/operations/external-dependencies.md) are a third layer
+# and not the only one.
 #
 # There is no service-account key anywhere here. The pipeline authenticates by
 # exchanging the OIDC token GitHub mints for one job, through the workload
@@ -58,7 +60,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Which environment to deploy to. Production is never reached any other way."
+        description: "Which environment to deploy to. prod is refused: it is not a choice here and the gate refuses it on every trigger."
         required: true
         default: "dev"
         type: choice
@@ -66,7 +68,6 @@ on:
           - dev
           - test
           - stage
-          - prod
 
 # Read-only by default. The jobs that need to mint an OIDC token ask for it
 # explicitly, so the blast radius of a compromised action is visible in the diff
@@ -132,12 +133,6 @@ jobs:
               --actor "$who" --workflow deploy.yml
           done
 
-      - name: refuse a production deployment that nobody dispatched
-        if: env.TARGET_ENVIRONMENT == 'prod' && github.event_name != 'workflow_dispatch'
-        run: |
-          echo "prod is not deployed automatically." >&2
-          exit 1
-
       # The two values every job below is built from, checked before anything
       # is believed about either. This job gates the rest — `images` needs it
       # and `deploy` needs `images` — so a refusal here is a refusal for the
@@ -172,6 +167,31 @@ jobs:
             exit 1
           fi
           echo "deploying ${DEPLOY_SHA} to ${TARGET_ENVIRONMENT}"
+
+      # Production is refused on every trigger, a person's dispatch included.
+      # The step before this one has already held the value to one line of
+      # lowercase letters, digits and `-`, so the comparison below is a
+      # comparison and not a parser's first sight of somebody else's script.
+      #
+      # It used to fire only when the event was not `workflow_dispatch`
+      # (`prod` was a dispatch choice), which left a human dispatch gated by
+      # nothing but the `prod` GitHub environment's required reviewers: a
+      # repository setting this file cannot create, read or prove
+      # (docs/operations/external-dependencies.md). The rule in
+      # .claude/rules/02-change-management.md says prod is refused by both
+      # infra.yml and the deploy gate; a refusal that a button press skips is
+      # not that. `prod` is also absent from the dispatch choices, so this
+      # step is the second layer for a fork that adds it back, exactly as in
+      # infra.yml. Production's project is still `unprovisioned`; lifting this
+      # refusal is an ADR (0024 decision 3, 0036 decision 6), not an edit.
+      - name: refuse a production deployment on every trigger
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_ENVIRONMENT" = "prod" ]; then
+            echo "prod is never deployed from this workflow, automatically or by dispatch." >&2
+            echo "Lifting this refusal needs an ADR (0024 decision 3, 0036 decision 6)." >&2
+            exit 1
+          fi
 
       # Whose commit this is, checked before its conclusion is believed.
       #

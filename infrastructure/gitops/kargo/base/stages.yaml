@@ -21,8 +21,10 @@
 # `paper` only because a person promoted it out of `replay` after the replay
 # of the event log under it held, and reaches `stage` only because a person
 # promoted it out of `paper` after the paper-trading soak held. What each
-# person checks is in kargo/README.md; that the check itself is not yet an
-# automated verification is said there too.
+# person checks is in kargo/README.md. `paper` alone also runs
+# `verify-paper-ceiling` before it records anything (papertask.yaml): the
+# paper-trading ceiling in the manifests the freight will roll out under is
+# asserted, not remembered. The `replay` check is still a person's.
 #
 # `prod` is the stage that exists so a person can see what would be
 # eligible, and whose promotion does nothing but fail. There is no
@@ -144,6 +146,12 @@ spec:
         - name: warehouseRegistry
           value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
       steps:
+        # The automated check, first: a promotion that fails here has
+        # recorded nothing, so `stage` is offered nothing. See
+        # papertask.yaml for what it asserts and what it cannot.
+        - task:
+            name: verify-paper-ceiling
+          as: verify
         - task:
             name: record-gate
           as: record

@@ -1,0 +1,120 @@
+# The paper gate's automated check (R12-CICD-7120): before freight is
+# recorded as having passed `paper`, assert that the posture it will run under
+# is paper trading, on every service in the two environments the gate guards
+# -- `stage`, which paper-passed freight is promoted to next, and `prod`,
+# which it can never reach until an ADR says so.
+#
+# Why this exists. The gate used to be a person's act and nothing else
+# (kargo/README.md said "this gate is a soak, not a change of posture" and
+# checked nothing): a promotion out of `paper` recorded freight as having
+# passed whatever the committed configuration said. Terraform's
+# `autonomy_ceiling` refusal and `AutonomyLevel::deployable` each hold the
+# line in their own place; neither is evidence, at the moment of promotion,
+# that the manifests this freight will be rolled out under still name
+# `paper_trading`. A `kubectl edit`-free, reviewed-but-wrong commit to
+# `envs/stage/api.yaml` is exactly the case this catches.
+#
+# What it checks, and what it does not. It reads each RunService manifest
+# from the default branch -- the tree Argo CD reconciles -- and requires the
+# `QIP_AUTONOMY_CEILING` container environment entry to be exactly the string
+# `paper_trading`. Exact equality, not a deny-list: a missing entry, an empty
+# one, `supervised_live`, `limited_autonomous_live`, `autonomous_live` and a
+# value nobody has invented yet all fail the same comparison, which is the
+# restrictive default (CLAUDE.md principle 3). It does not read the image: the
+# digests are opaque to Kargo, and the image's own refusal is
+# `AutonomyLevel::deployable` at start-up.
+#
+# Why a promotion step and not a Kargo `verification`: verifications need Argo
+# Rollouts' AnalysisTemplates, which are not installed (kargo/README.md). A
+# step that fails the promotion before `record-gate` runs has the property
+# that matters -- nothing is recorded, so `stage` is offered nothing -- with
+# no new controller.
+#
+# Unproven against a live Kargo: the control plane is suspended (ADR 0093),
+# so the expression below has been read, parsed and pinned by
+# `qip-acceptance`'s `gitops` suite, and has never been evaluated by a
+# controller. The first promotion through `paper` is its test.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: verify-paper-ceiling
+  namespace: qip
+spec:
+  vars:
+    - name: gitRepo
+      value: https://github.com/droderiquesit/quantum-ai-platform.git
+    - name: branch
+      value: main
+  steps:
+    - uses: git-clone
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        checkout:
+          - branch: ${{ vars.branch }}
+            path: ./repo
+    - uses: yaml-parse
+      as: stage_api
+      config:
+        path: ./repo/infrastructure/gitops/envs/stage/api.yaml
+        outputs:
+          - name: ceiling
+            fromExpression: join(map(filter(flatten(map(spec.template.containers, {.env ?? []})), {.name == "QIP_AUTONOMY_CEILING"}), {.value}), ",")
+    - uses: fail
+      if: ${{ task.outputs.stage_api.ceiling != "paper_trading" }}
+      config:
+        message: envs/stage/api.yaml does not set QIP_AUTONOMY_CEILING to exactly `paper_trading`; the paper gate records no freight whose rollout could run under any other ceiling (ADR 0003).
+    - uses: yaml-parse
+      as: stage_fastbrain
+      config:
+        path: ./repo/infrastructure/gitops/envs/stage/fastbrain.yaml
+        outputs:
+          - name: ceiling
+            fromExpression: join(map(filter(flatten(map(spec.template.containers, {.env ?? []})), {.name == "QIP_AUTONOMY_CEILING"}), {.value}), ",")
+    - uses: fail
+      if: ${{ task.outputs.stage_fastbrain.ceiling != "paper_trading" }}
+      config:
+        message: envs/stage/fastbrain.yaml does not set QIP_AUTONOMY_CEILING to exactly `paper_trading`; the paper gate records no freight whose rollout could run under any other ceiling (ADR 0003).
+    - uses: yaml-parse
+      as: stage_deepbrain
+      config:
+        path: ./repo/infrastructure/gitops/envs/stage/deepbrain.yaml
+        outputs:
+          - name: ceiling
+            fromExpression: join(map(filter(flatten(map(spec.template.containers, {.env ?? []})), {.name == "QIP_AUTONOMY_CEILING"}), {.value}), ",")
+    - uses: fail
+      if: ${{ task.outputs.stage_deepbrain.ceiling != "paper_trading" }}
+      config:
+        message: envs/stage/deepbrain.yaml does not set QIP_AUTONOMY_CEILING to exactly `paper_trading`; the paper gate records no freight whose rollout could run under any other ceiling (ADR 0003).
+    - uses: yaml-parse
+      as: prod_api
+      config:
+        path: ./repo/infrastructure/gitops/envs/prod/api.yaml
+        outputs:
+          - name: ceiling
+            fromExpression: join(map(filter(flatten(map(spec.template.containers, {.env ?? []})), {.name == "QIP_AUTONOMY_CEILING"}), {.value}), ",")
+    - uses: fail
+      if: ${{ task.outputs.prod_api.ceiling != "paper_trading" }}
+      config:
+        message: envs/prod/api.yaml does not set QIP_AUTONOMY_CEILING to exactly `paper_trading`; the paper gate records no freight whose rollout could run under any other ceiling (ADR 0003).
+    - uses: yaml-parse
+      as: prod_fastbrain
+      config:
+        path: ./repo/infrastructure/gitops/envs/prod/fastbrain.yaml
+        outputs:
+          - name: ceiling
+            fromExpression: join(map(filter(flatten(map(spec.template.containers, {.env ?? []})), {.name == "QIP_AUTONOMY_CEILING"}), {.value}), ",")
+    - uses: fail
+      if: ${{ task.outputs.prod_fastbrain.ceiling != "paper_trading" }}
+      config:
+        message: envs/prod/fastbrain.yaml does not set QIP_AUTONOMY_CEILING to exactly `paper_trading`; the paper gate records no freight whose rollout could run under any other ceiling (ADR 0003).
+    - uses: yaml-parse
+      as: prod_deepbrain
+      config:
+        path: ./repo/infrastructure/gitops/envs/prod/deepbrain.yaml
+        outputs:
+          - name: ceiling
+            fromExpression: join(map(filter(flatten(map(spec.template.containers, {.env ?? []})), {.name == "QIP_AUTONOMY_CEILING"}), {.value}), ",")
+    - uses: fail
+      if: ${{ task.outputs.prod_deepbrain.ceiling != "paper_trading" }}
+      config:
+        message: envs/prod/deepbrain.yaml does not set QIP_AUTONOMY_CEILING to exactly `paper_trading`; the paper gate records no freight whose rollout could run under any other ceiling (ADR 0003).

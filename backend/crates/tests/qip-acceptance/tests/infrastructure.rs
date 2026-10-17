@@ -6889,14 +6889,16 @@ fn production_is_never_deployed_automatically() {
         deploy.contains("TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}"),
         "the automatic path does not default to dev"
     );
+    // The refusal is unconditional since R12 Decision 6: it used to skip a
+    // `workflow_dispatch`, which left a human dispatch gated only by a
+    // repository setting. `prod_is_refused_on_every_trigger_by_deploy_and_infra`
+    // in prod_guard.rs drives it; this pins that it is still there.
     assert!(
-        deploy.contains("refuse a production deployment that nobody dispatched"),
-        "nothing refuses an automatic production deployment"
+        deploy.contains("refuse a production deployment on every trigger"),
+        "nothing refuses a production deployment"
     );
     assert!(
-        deploy.contains(
-            "env.TARGET_ENVIRONMENT == 'prod' && github.event_name != 'workflow_dispatch'"
-        ),
+        deploy.contains("[ \"$TARGET_ENVIRONMENT\" = \"prod\" ]"),
         "the refusal does not test what it claims to"
     );
     assert!(

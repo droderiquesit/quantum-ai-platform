@@ -2087,7 +2087,19 @@ fn every_link_promotes_the_digest_built_once_in_the_one_registry() {
                 .first()
                 .and_then(|step| text_at(step, &["task", "name"]))
                 .unwrap_or_default();
-            let expected_task = if GATES.contains(&link) {
+            // `paper` runs its automated ceiling check first and records
+            // second; the order is pinned by
+            // `the_paper_stage_cannot_promote_without_asserting_the_paper_trading_ceiling_first`.
+            let expected_task = if link == "paper" {
+                assert!(
+                    steps
+                        .iter()
+                        .any(|step| text_at(step, &["task", "name"]).as_deref()
+                            == Some("record-gate")),
+                    "Stage `paper` records nothing"
+                );
+                "verify-paper-ceiling"
+            } else if GATES.contains(&link) {
                 "record-gate"
             } else {
                 "promote-cloud-run"
@@ -4442,10 +4454,8 @@ fn the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_pr
     }
     let deploy = read(DEPLOY_WORKFLOW);
     assert!(
-        deploy.contains("refuse a production deployment that nobody dispatched")
-            && deploy.contains(
-                "env.TARGET_ENVIRONMENT == 'prod' && github.event_name != 'workflow_dispatch'"
-            ),
+        deploy.contains("refuse a production deployment on every trigger")
+            && deploy.contains("[ \"$TARGET_ENVIRONMENT\" = \"prod\" ]"),
         "{DEPLOY_WORKFLOW} lost its prod refusal; Kargo's policy is the third refusal, not a \
          replacement for this one"
     );
@@ -6814,5 +6824,164 @@ fn a_cloud_run_service_with_cnrm_deletion_policy_abandon_survives_gitops_control
             service.describe(),
             deletion_policy
         );
+    }
+}
+
+// --- the paper gate's automated check (R12-CICD-7120) ----------------------
+
+/// The environments the paper gate's check reads: the one paper-passed
+/// freight is promoted to next, and the one it can never reach.
+const PAPER_CHECKED: [&str; 2] = ["stage", "prod"];
+const PAPER_SERVICES: [&str; 3] = ["api", "fastbrain", "deepbrain"];
+const LIVE_CEILINGS: [&str; 3] = [
+    "supervised_live",
+    "limited_autonomous_live",
+    "autonomous_live",
+];
+
+#[test]
+fn the_paper_stage_cannot_promote_without_asserting_the_paper_trading_ceiling_first() {
+    // Before this, `paper` was a person's act and nothing else: its template
+    // recorded the freight and no step looked at the posture it would run
+    // under. Three halves, because each alone is one edit from gone: the stage
+    // runs the check before it records; the check has a step per manifest the
+    // freight could roll out under; and each step fails the promotion on
+    // anything but exactly `paper_trading`.
+    for environment in ENVIRONMENTS {
+        let rendered = kargo_rendered(environment);
+        let stages = stages_by_name(&rendered);
+        let paper = &stages["paper"];
+        let steps = list_at(
+            &paper.value,
+            &["spec", "promotionTemplate", "spec", "steps"],
+        );
+        let tasks: Vec<String> = steps
+            .iter()
+            .map(|step| text_at(step, &["task", "name"]).unwrap_or_default())
+            .collect();
+        let verify = tasks.iter().position(|t| t == "verify-paper-ceiling");
+        let record = tasks.iter().position(|t| t == "record-gate");
+        assert!(
+            record.is_some(),
+            "{environment}: {} no longer runs record-gate ({tasks:?}); this test cannot see the \
+             step it orders the check before",
+            paper.describe()
+        );
+        assert!(
+            verify.is_some() && verify < record,
+            "{environment}: {} runs {tasks:?}; the paper-trading ceiling must be asserted by \
+             `verify-paper-ceiling` before `record-gate` writes anything, or freight can pass the \
+             gate with no check",
+            paper.describe()
+        );
+
+        let task = of_kind(&rendered, "PromotionTask")
+            .into_iter()
+            .find(|task| task.name() == "verify-paper-ceiling")
+            .unwrap_or_else(|| panic!("{environment}'s chain declares no verify-paper-ceiling"));
+        let task_steps = list_at(&task.value, &["spec", "steps"]);
+        assert_eq!(
+            task_steps
+                .first()
+                .and_then(|step| text_at(step, &["uses"]))
+                .as_deref(),
+            Some("git-clone"),
+            "verify-paper-ceiling must read the committed tree first"
+        );
+        for checked in PAPER_CHECKED {
+            for service in PAPER_SERVICES {
+                let alias = format!("{checked}_{service}");
+                let path = format!("{GITOPS}/envs/{checked}/{service}.yaml");
+                assert!(
+                    repository_root().join(&path).is_file(),
+                    "{path} does not exist; the check reads it"
+                );
+                let parse = task_steps
+                    .iter()
+                    .position(|step| text_at(step, &["as"]).as_deref() == Some(alias.as_str()))
+                    .unwrap_or_else(|| panic!("verify-paper-ceiling has no `{alias}` step"));
+                let parse_step = task_steps[parse];
+                assert_eq!(
+                    text_at(parse_step, &["uses"]).as_deref(),
+                    Some("yaml-parse")
+                );
+                assert!(
+                    text_at(parse_step, &["config", "path"])
+                        .unwrap_or_default()
+                        .ends_with(&path),
+                    "`{alias}` does not read {path}"
+                );
+                let outputs = list_at(parse_step, &["config", "outputs"]);
+                let expression = outputs
+                    .iter()
+                    .filter(|o| text_at(o, &["name"]).as_deref() == Some("ceiling"))
+                    .filter_map(|o| text_at(o, &["fromExpression"]))
+                    .next()
+                    .unwrap_or_default();
+                assert!(
+                    expression.contains("QIP_AUTONOMY_CEILING"),
+                    "`{alias}` does not select QIP_AUTONOMY_CEILING: `{expression}`"
+                );
+                let refusal = task_steps
+                    .get(parse + 1)
+                    .unwrap_or_else(|| panic!("`{alias}` is the last step; nothing refuses"));
+                assert_eq!(
+                    text_at(refusal, &["uses"]).as_deref(),
+                    Some("fail"),
+                    "the step after `{alias}` does not fail the promotion"
+                );
+                let condition = text_at(refusal, &["if"]).unwrap_or_default();
+                let wanted = format!("task.outputs.{alias}.ceiling != \"paper_trading\"");
+                assert!(
+                    condition.contains(&wanted),
+                    "`{alias}`'s refusal tests `{condition}`, not `{wanted}`. Exact equality is \
+                     the fail-closed form: a deny-list of live names misses the next one."
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_ceiling_the_paper_check_reads_is_paper_trading_in_every_manifest_it_could_roll_out() {
+    // The other side of the check: the committed manifests satisfy it. Run
+    // here with the check's own semantics (every env entry named
+    // QIP_AUTONOMY_CEILING across every container, joined) so a manifest that
+    // would make the gate refuse every promotion, or one that would slip a
+    // live ceiling past it, is found at build time. Premise first: the three
+    // services each carry exactly one entry, so "all equal" is not vacuous.
+    for environment in ENVIRONMENTS {
+        for service in PAPER_SERVICES {
+            let path = format!("{ENVS}/{environment}/{service}.yaml");
+            let manifests = manifests_under(&path.replace(&format!("/{service}.yaml"), ""));
+            let manifest = manifests
+                .iter()
+                .find(|m| m.path.ends_with(&format!("{environment}/{service}.yaml")))
+                .unwrap_or_else(|| panic!("{path} holds no document"));
+            let mut ceilings = Vec::new();
+            for container in list_at(&manifest.value, &["spec", "template", "containers"]) {
+                for (name, value, _) in container_env(container) {
+                    if name == "QIP_AUTONOMY_CEILING" {
+                        ceilings.push(value.unwrap_or_default());
+                    }
+                }
+            }
+            assert_eq!(
+                ceilings.len(),
+                1,
+                "{path} sets QIP_AUTONOMY_CEILING {} time(s); exactly one is the premise of the \
+                 paper gate's check",
+                ceilings.len()
+            );
+            assert_eq!(
+                ceilings.join(","),
+                "paper_trading",
+                "{path} sets a ceiling other than paper_trading (ADR 0003)"
+            );
+            assert!(
+                !LIVE_CEILINGS.contains(&ceilings[0].as_str()),
+                "{path} names a live ceiling"
+            );
+        }
     }
 }
