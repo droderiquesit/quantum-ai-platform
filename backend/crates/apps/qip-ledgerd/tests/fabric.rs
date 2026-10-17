@@ -536,6 +536,86 @@ fn a_live_fill_on_the_stream_parks_its_cell_and_another_cell_keeps_booking() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A record rewritten after the writer built it, as a producer that is newer
+/// than the ledger, or a hand on the wire, would leave it.
+fn rewritten(record: &Record, edit: impl FnOnce(&mut AnyEvent)) -> Record {
+    let mut event = record.decode_payload(PayloadCodec::CanonicalJson).unwrap();
+    edit(&mut event);
+    Record::from_any_event(&event, PayloadCodec::CanonicalJson).unwrap()
+}
+
+/// R12-CONTRACT-7089 through the composed path: the ledger opens every
+/// record as a `FabricEnvelope`, so a record of a schema version it does not
+/// read, and a record whose payload no longer matches its hash, each stall
+/// their partition with the reason on `/health` and book nothing from that
+/// batch — not even the good fill that preceded the bad record in it —
+/// while the other partition keeps booking.
+///
+/// Mutation: in `consumer::decode_batch`, never open the envelope (guard
+/// the `open_decoded` branch with `false`) — the version-2 stall's reason no
+/// longer names the fabric envelope, and the tampered fill is no longer
+/// refused at all; the first assertion fails (verified).
+#[test]
+fn a_record_the_envelope_refuses_stalls_its_partition_and_books_nothing_from_its_batch() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let mut other = Journal::new("cell-b");
+    let good = cell.fill("o-good", 3, "100", true);
+    let newer = rewritten(&cell.fill("o-newer", 1, "100", true), |e| {
+        e.schema_version = 2;
+    });
+    let fine = other.fill("o-fine", 2, "50", true);
+    fabric.produce(0, vec![good, newer]);
+    fabric.produce(1, vec![fine]);
+
+    let dir = temp_dir("envelope-version");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until(
+        "the other partition books and partition 0 reports why it stalls",
+        || {
+            ledger.store().events().unwrap().len() == 1
+                && ledger
+                    .statuses()
+                    .get(&0)
+                    .and_then(|s| s.last_error.clone())
+                    .is_some()
+        },
+    );
+    let reason = ledger.statuses()[&0].last_error.clone().unwrap();
+    assert!(reason.contains("fabric envelope"), "{reason}");
+    assert!(reason.contains("schema version 2"), "{reason}");
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(
+        ledger.store().balances().unwrap(),
+        refold(&[("o-fine", 2, "50")], "cell-b"),
+        "nothing from the refused batch was booked"
+    );
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let tampered = rewritten(&cell.fill("o-tampered", 9, "100", true), |e| {
+        // The payload changes; the hash the producer sealed does not.
+        e.payload["entry"]["decision"]["Filled"]["quantity"] = serde_json::json!("9000");
+    });
+    fabric.produce(0, vec![tampered]);
+    let dir = temp_dir("envelope-tamper");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("partition 0 reports the tamper", || {
+        ledger
+            .statuses()
+            .get(&0)
+            .and_then(|s| s.last_error.clone())
+            .is_some()
+    });
+    let reason = ledger.statuses()[&0].last_error.clone().unwrap();
+    assert!(reason.contains("payload hash"), "{reason}");
+    assert!(ledger.store().events().unwrap().is_empty());
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// One balance read back over the started ledger's read API.
 fn balance_over_http(address: &str, account: &str, unit: &str) -> Decimal {
     let (status, body) = http_get(

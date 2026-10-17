@@ -155,6 +155,7 @@ impl FabricSettings {
     pub fn sink(
         self,
         cell: &str,
+        region: &str,
         clock: Arc<dyn Clock>,
         link: &LinkSecurity,
     ) -> Result<FabricSink> {
@@ -199,7 +200,7 @@ impl FabricSettings {
             self.journal_token,
             2,
         )?;
-        FabricSink::new(outcomes, journal)
+        FabricSink::new(outcomes, journal, region)
     }
 }
 
@@ -253,6 +254,7 @@ mod tests {
             plaintext
                 .sink(
                     "london-1",
+                    "eu-west",
                     Arc::clone(&clock),
                     &LinkSecurity::plaintext_for_tests()
                 )
@@ -266,7 +268,12 @@ mod tests {
         .expect("configured");
         assert!(
             tls_endpoint
-                .sink("london-1", clock, &LinkSecurity::plaintext_for_tests())
+                .sink(
+                    "london-1",
+                    "eu-west",
+                    clock,
+                    &LinkSecurity::plaintext_for_tests()
+                )
                 .is_err(),
             "an https endpoint was downgraded onto a plaintext link"
         );

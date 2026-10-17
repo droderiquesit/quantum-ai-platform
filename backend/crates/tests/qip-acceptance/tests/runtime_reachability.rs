@@ -276,6 +276,21 @@ const PROBES: &[Probe] = &[
         defined_in: "services/qip-market-ingestion/src/connector_feed.rs",
         needle: ".drain_evidence(",
     },
+    // R12-CONTRACT-7089: the envelope is the unit both ends of the fabric
+    // read. The producer's drain opens every record before it sends one
+    // (qip-edge-node drain.rs); the ledger's consumer opens every ledger
+    // record it applies (qip-ledgerd consumer.rs). Two probes, because one
+    // caller disappearing must not hide behind the other.
+    Probe {
+        symbol: "FabricEnvelope::open_all (producer drain)",
+        defined_in: "libs/qip-events/src/event_fabric/envelope.rs",
+        needle: "FabricEnvelope::open_all(",
+    },
+    Probe {
+        symbol: "FabricEnvelope::open_decoded (ledger consumer)",
+        defined_in: "libs/qip-events/src/event_fabric/envelope.rs",
+        needle: "FabricEnvelope::open_decoded(",
+    },
     Probe {
         symbol: "absorb_evidence (kernel)",
         defined_in: "runtime/qip-kernel/src/evidence_intake.rs",

@@ -1077,6 +1077,7 @@ fn run() -> Result<()> {
             );
             sinks.push(Box::new(fabric.sink(
                 &config.cell_id,
+                &config.region,
                 Arc::clone(&clock),
                 &link,
             )?));
