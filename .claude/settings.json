@@ -1,5 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "CLAUDE_CODE_TMPDIR": "/dev/shm",
+    "CLAUDE_MEM_TELEMETRY": "off",
+    "CLAUDE_MEM_TELEMETRY_ERRORS": "off"
+  },
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": [
@@ -91,6 +96,17 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-rust-after-edit.py",
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh",
+            "timeout": 900
           }
         ]
       }

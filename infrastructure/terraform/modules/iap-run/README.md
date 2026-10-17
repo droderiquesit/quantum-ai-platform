@@ -27,9 +27,11 @@ The derivation is kept rather than replaced by a `data` source read, because
 a data source on a service that does not exist yet fails the plan in every
 environment whose portal has not been deployed — which is all of them. What
 makes that safe is that the reading is a minute away and free: `diagnose`
-applies nothing, waits for nothing and prints `url:` and `iapEnabled:` for
-every service. The `apps` stage prints the same `status.url` after it enables
-the gate.
+applies nothing, waits for nothing and prints `url:` and
+`iap-enabled annotation:` for every service — the latter is the v1 annotation
+`run.googleapis.com/iap-enabled` that `--iap` writes, read back by name; the
+"Iap Enabled" line in gcloud's own describe output is that annotation. The
+`apps` stage prints the same `status.url` after it enables the gate.
 
 Nobody types either form into a registrar and nobody waits for it to
 provision; that part is true of both families.
@@ -84,9 +86,11 @@ graduates, Config Connector gets it, the manifest carries `iapEnabled: true`,
 and the workflow step below is deleted.
 
 Until then the enable bit is set imperatively, once per apply, by `infra.yml`'s
-`apps` stage — and that step **reads `iapEnabled` back and fails the job if it
-is not true**, because a step that enables a gate and does not check is a step
-that reports a protected console either way.
+`apps` stage — and that step **reads the `run.googleapis.com/iap-enabled`
+annotation back and fails the job if it is not `true`** — the v1 annotation
+`--iap` writes, which gcloud's own describe shows as "Iap Enabled" — because a
+step that enables a gate and does not check is a step that reports a
+protected console either way.
 
 ### What happens if that step never runs
 

@@ -160,10 +160,19 @@ spec:
       # gate above — and a rendered page rather than a static file, so what is
       # proven ready is the Next server and not the disk it reads from. Cloud
       # Run's probes originate inside the runtime and never pass through IAP.
+      #
+      # The timeout sits below the period because Cloud Run refuses a probe
+      # whose timeoutSeconds is not smaller than periodSeconds, on both API
+      # surfaces. Config Connector's v2 create admitted 5 over 3; infra.yml run
+      # 119's IAP gate was the first thing to re-submit the template through
+      # the v1 surface, which refused it ("startup_probe.timeout_seconds: must
+      # be less than period_seconds") and left the console ungated. gitops.rs's
+      # every_probe_times_out_before_its_period_because_cloud_run_refuses_the_update_otherwise
+      # holds the rule for every probe in every manifest.
       startupProbe:
         initialDelaySeconds: 2
         periodSeconds: 3
-        timeoutSeconds: 5
+        timeoutSeconds: 2
         failureThreshold: 20
         httpGet:
           path: /sign-in

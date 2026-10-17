@@ -3895,6 +3895,570 @@ fn a_missing_kargo_credential_warns_and_skips_the_chain_rather_than_failing_the_
     );
 }
 
+/// Every `gcloud beta run services <subcommand>` invocation in a workflow's
+/// shell bodies, as the step's name and the folded command.
+///
+/// Comment lines are dropped by [`folded_commands`], so the comment above
+/// the component-install line and the error message that names both
+/// surfaces in prose cannot count as an invocation. The boundary before
+/// `gcloud` is the start of the command, a space, the `!` of a negated
+/// test or the `$(` a read-back opens with — never a letter, a hyphen or an
+/// underscore, so a variable or a path merely ending in `gcloud` does not
+/// read as the binary — and the subcommand must end at whitespace or the
+/// end of the command, so `update` is not found inside `updates`.
+fn gcloud_beta_run_invocations(workflow: &str, subcommand: &str) -> Vec<(String, String)> {
+    let needle = format!("gcloud beta run services {subcommand}");
+    let invokes = |command: &str| -> bool {
+        command.match_indices(&needle).any(|(start, _)| {
+            let bounded_before = start == 0
+                || command[..start].chars().next_back().is_some_and(|before| {
+                    !(before.is_alphanumeric() || before == '-' || before == '_')
+                });
+            let bounded_after = command[start + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(char::is_whitespace);
+            bounded_before && bounded_after
+        })
+    };
+    shell_bodies(workflow)
+        .into_iter()
+        .flat_map(|(step, body)| {
+            folded_commands(&body)
+                .into_iter()
+                .filter(|command| invokes(command))
+                .map(move |command| (step.clone(), command))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The `beta` gcloud component is installed where `infra.yml` sets up
+/// gcloud, because the IAP gate's `update --iap` fallback calls
+/// `gcloud beta run services update`.
+///
+/// Not hypothetical. Run 119's IAP gate fell back to `gcloud beta run
+/// services update --iap --quiet` and died before parsing its flags: a
+/// gcloud without the component asks whether to install it, `--quiet` has
+/// not been read when it asks, and a CI session cannot answer. That prompt
+/// is where run 119's gate step ended — before any read-back ran, so
+/// nothing about what the gate would have read is known from that run.
+/// Installing the component is what makes the fallback a fallback.
+///
+/// The fallback is the only reason. An earlier version of this test also
+/// said the diagnose and urls read-backs needed `beta`, and that runs 119
+/// and 120 had read `iapEnabled` as "not reported" through it. Neither
+/// held: both tracks' `describe` call the same Cloud Run v1 GetService and
+/// render the same v1 Service, so a beta `describe` reads nothing a GA one
+/// does not, and those fallbacks are gone — the next test pins the
+/// annotation read that replaced them. A premise counting them would have
+/// kept this component installed for a caller that no longer exists.
+///
+/// Two halves, and the first is the premise. The workflow still invokes
+/// `gcloud beta run services update` — counted on shell lines with comments
+/// dropped and a word boundary before `gcloud`, so neither the comment
+/// above the install line nor the error message that names both surfaces
+/// in prose counts — or the component is dead weight and this test would be
+/// guarding an install nothing needs. Then the token: `beta` is one entry
+/// of the comma-separated list, split and trimmed rather than searched for
+/// as a substring, because `betafoo` contains it and installs nothing of
+/// the kind.
+#[test]
+fn the_gcloud_beta_component_is_installed_because_the_iap_gates_update_fallback_calls_it() {
+    let infra = read(".github/workflows/infra.yml");
+
+    // Premise: the fallback exists. The tree holds exactly one, in the IAP
+    // gate; at least one rather than exactly one, because a second `update`
+    // fallback would be one more reason for the component, not a defect.
+    let updates = gcloud_beta_run_invocations(&infra, "update");
+    assert!(
+        !updates.is_empty(),
+        "infra.yml's shell bodies invoke `gcloud beta run services update` nowhere, so the \
+         `beta` component setup-gcloud installs has no caller and is dead weight: either the \
+         IAP gate's `--iap` fallback is gone, or it no longer goes through `gcloud beta`"
+    );
+
+    // The one setup-gcloud step, with comment lines dropped so the comment
+    // that explains the component cannot satisfy the check for it.
+    let steps = job_steps(&infra);
+    let setup: Vec<&String> = steps
+        .iter()
+        .filter(|step| {
+            step.lines()
+                .any(|line| line.trim() == "- uses: google-github-actions/setup-gcloud@v2")
+        })
+        .collect();
+    assert_eq!(
+        setup.len(),
+        1,
+        "infra.yml has {} setup-gcloud@v2 step(s); one, or the install list below is \
+         ambiguous",
+        setup.len()
+    );
+    let components_line = setup[0]
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("install_components:"))
+        .unwrap_or_else(|| panic!("infra.yml's setup-gcloud step installs no components at all"));
+    let components: Vec<&str> = components_line
+        .split(',')
+        .map(str::trim)
+        .filter(|component| !component.is_empty())
+        .collect();
+    assert!(
+        components.contains(&"beta"),
+        "infra.yml's setup-gcloud installs {components:?} and not `beta`; the IAP gate's \
+         `--iap` fallback calls `gcloud beta run services update` at {updates:?}, and without \
+         the component gcloud prompts to install it before it parses `--quiet`, which is the \
+         prompt run 119's gate step died on, before any read-back"
+    );
+    // And the plugin the bootstrap's kubectl authenticates through is still
+    // in the list: adding `beta` by replacing the value would take it away.
+    assert!(
+        components.contains(&"gke-gcloud-auth-plugin"),
+        "infra.yml's setup-gcloud installs {components:?} and no longer the GKE auth plugin \
+         the bootstrap's kubectl needs"
+    );
+}
+
+/// Every IAP read-back in `infra.yml` reads the
+/// `run.googleapis.com/iap-enabled` annotation off the v1 Service through
+/// jq, reports a describe it could not read as unread rather than as an
+/// absent annotation, and nothing asks any gcloud track for `iapEnabled`.
+///
+/// The first failure. `gcloud run services update --iap` is
+/// `SetAnnotationChange('run.googleapis.com/iap-enabled', 'true')`: the SDK
+/// names the key once, as `IAP_ANNOTATION` in `api_lib/run/service.py`,
+/// and the "Iap Enabled" line its describe printer renders — the line
+/// Google's documentation tells a person to look for — is that annotation.
+/// Both the GA and the beta `describe` call the same Cloud Run v1
+/// GetService (`DescribeBeta` subclasses `Describe`, and
+/// `connection_context._GetApiVersion` returns `v1` for Run on every
+/// track), and the v1 Service message has no `iapEnabled` field. So
+/// `--format='value(iapEnabled)'` printed `''` on both tracks,
+/// unconditionally, whether or not IAP was on; a v1 Service carrying the
+/// annotation, run through gcloud's own printer offline, gives `''` for
+/// that projection and `true` for the annotation. Run 120's diagnose
+/// printed "not reported by either gcloud surface" for every service for
+/// that reason. In run 119 the GA update was refused server-side, the beta
+/// fallback died on the component prompt, and the read-back was never
+/// reached; `value(iapEnabled)` reads `''` on any track, so the first run
+/// past the update would have fallen to the `*)` arm, printed "the console
+/// is not gated" and failed the job on a console that was gated: a
+/// read-back asking for a key the shape it reads does not carry.
+///
+/// The second failure, substantiated under a stub gcloud when the first
+/// fix was reviewed. The describe and the jq were one pipeline,
+/// `describe … 2>/dev/null | jq -r … || true`. A describe that failed — a
+/// transient error, a missing permission, the service gone between the
+/// list and the read — or a jq that was missing fed the rest of the pipe
+/// nothing, `|| true` swallowed the status, and the result was the same
+/// `''` as an absent annotation. The gate refused either way, which is the
+/// right decision, but its error said the annotation was absent, and
+/// diagnose and urls printed "not enabled": a cause nobody had read, which
+/// sends somebody to re-enable a gate that is on. gcloud never writes the
+/// annotation as `false` — `--no-iap` deletes it — so the possible readings
+/// are `true`, absent and unread, and the third is not a reading.
+///
+/// What is pinned. Exactly three describes ask for the v1 Service as
+/// `--format=json` — in the gate, diagnose and urls steps — and every jq
+/// whose filter names the IAP state (`iap-enabled`, or an `iapEnabled`
+/// nothing carries) is the jq of one of them, so a read-back in a shape
+/// this test does not parse cannot sit in a fourth step unread.
+/// Each is the same six commands: the describe captured into `json` and
+/// guarded by `|| true`, because the three steps run under `set -euo
+/// pipefail` and an unguarded substitution that fails ends the step inside
+/// the assignment, before anything can say unread; `if [ -z "$json" ]`
+/// assigning `unread` to the variable the step then switches on; else the
+/// jq read of `"$json"`, with `-r` — without it jq prints `"true"` with its
+/// quotes and the gate's `true)` arm never matches a gated console — whose
+/// filter names the key `run.googleapis.com/iap-enabled` exactly, read off
+/// `.metadata.annotations`, cut out and compared whole rather than searched
+/// for, because the key is the one thing in this read-back a typo turns
+/// back into an unconditional `''`; and `|| echo unread` on that read, so a
+/// jq that fails is unread and not absent. No shell body carries
+/// `value(iapEnabled)` and none invokes `gcloud beta run services
+/// describe`: a beta `describe` is the same v1 read, and its presence would
+/// claim a track can differ on a field neither has.
+///
+/// The gate's `case` on the variable its read-back assigns has exactly the
+/// arms `true)`, `unread)` and `*)`, in that order — the annotation is the
+/// lowercase string, so a Title-case pattern admits nothing. In each
+/// refusing arm the first `exit` is `exit 1` and no line is `exit 0`: a
+/// refusing arm that can succeed first admits an ungated console, and a
+/// review mutation that inserted `exit 0` as the first line of `*)`
+/// survived the previous assertion, which asked only that `exit 1` appear
+/// somewhere in the arm. The accepting arm does not exit. diagnose and urls
+/// print three labels, each under its own condition and after the
+/// read-back: `unread` when the variable is `unread`, `absent` when it is
+/// empty, and otherwise the value read, verbatim, rather than a word the
+/// step chose for it.
+#[test]
+fn the_iap_state_is_read_back_as_the_run_googleapis_com_iap_enabled_annotation_because_no_gcloud_track_projects_iapenabled()
+ {
+    const KEY: &str = "run.googleapis.com/iap-enabled";
+    const DESCRIBE: &str = "gcloud run services describe";
+    const GATE: &str = "the console's IAP gate";
+    const LABEL: &str = "iap-enabled annotation: ";
+    let infra = read(".github/workflows/infra.yml");
+    let bodies = shell_bodies(&infra);
+    let folded: Vec<(&str, Vec<String>)> = bodies
+        .iter()
+        .map(|(step, body)| (step.as_str(), folded_commands(body)))
+        .collect();
+    // `$name` and `${name}` are one reference; the three sites write both.
+    let refs = |name: &str| [format!("${name}"), format!("${{{name}}}")];
+
+    // Premise: every describe that asks for the whole v1 Service as JSON,
+    // with the step it sits in and where in that step's commands it falls.
+    // Three, one per step, or a read-back is gone — and that step then
+    // reports IAP from nothing — or a fourth has appeared that this test
+    // has not read.
+    let describes: Vec<(&str, &[String], usize)> = folded
+        .iter()
+        .flat_map(|(step, commands)| {
+            commands
+                .iter()
+                .enumerate()
+                .filter(|(_, command)| {
+                    command.split_once(DESCRIBE).is_some_and(|(_, args)| {
+                        args.split_whitespace()
+                            .any(|token| token == "--format=json")
+                    })
+                })
+                .map(|(at, _)| (*step, commands.as_slice(), at))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let steps: std::collections::BTreeSet<&str> =
+        describes.iter().map(|(step, _, _)| *step).collect();
+    let expected: std::collections::BTreeSet<&str> =
+        [GATE, "diagnose", "urls"].into_iter().collect();
+    assert!(
+        describes.len() == 3 && steps == expected,
+        "infra.yml reads the v1 Service as JSON through `gcloud run services describe` {} \
+         time(s), in the step(s) {steps:?}; expected exactly three, one each in {expected:?}: \
+         {:#?}",
+        describes.len(),
+        describes
+            .iter()
+            .map(|(step, commands, at)| (step, &commands[*at]))
+            .collect::<Vec<_>>()
+    );
+
+    // Nothing asks any track for `iapEnabled`: the v1 Service both render
+    // has no such field, so the projection is '' whatever the state is.
+    let projections: Vec<(&str, &str)> = folded
+        .iter()
+        .flat_map(|(step, commands)| {
+            commands
+                .iter()
+                .filter(|command| command.to_ascii_lowercase().contains("value(iapenabled)"))
+                .map(|command| (*step, command.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        projections.is_empty(),
+        "infra.yml still projects `value(iapEnabled)` at {projections:?}; the v1 Service every \
+         gcloud track's describe renders has no iapEnabled field, so that read is '' \
+         unconditionally and a successful --iap reads as \"the console is not gated\""
+    );
+    let beta_describes = gcloud_beta_run_invocations(&infra, "describe");
+    assert!(
+        beta_describes.is_empty(),
+        "infra.yml invokes `gcloud beta run services describe` at {beta_describes:?}; both \
+         tracks call the same v1 GetService, so a beta describe is not a second reading and \
+         its presence claims a difference between the tracks that does not exist"
+    );
+
+    // Each read-back: the describe into `json`, guarded; `unread` when that
+    // is empty; otherwise `jq -r` over `"$json"`, naming the annotation
+    // `--iap` writes by its exact key, and `unread` again when jq fails.
+    let mut sites: Vec<(&str, &[String], &str, usize)> = Vec::new();
+    for (step, commands, at) in &describes {
+        let site = &commands[*at..];
+        assert!(
+            site.len() >= 6,
+            "{step}'s IAP read-back is cut short after its describe; the describe, the empty \
+             test on json, the unread assignment, else, the jq read and fi are six commands: \
+             {site:?}"
+        );
+        let describe = site[0].as_str();
+        assert!(
+            describe.starts_with("json=\"$("),
+            "{step}'s IAP describe is not captured into `json`, the variable the empty test \
+             below reads: {describe}"
+        );
+        assert!(
+            describe.ends_with("|| true)\""),
+            "{step}'s IAP describe is not guarded by `|| true`; the step runs under `set -euo \
+             pipefail`, so a describe that fails ends the step inside the assignment, before \
+             anything can say unread: {describe}"
+        );
+        assert!(
+            refs("json")
+                .iter()
+                .any(|json| site[1] == format!("if [ -z \"{json}\" ]; then")),
+            "{step}'s IAP describe is not followed by the empty test on `json`, so a describe \
+             that returned nothing is not told apart from an absent annotation: {:?}",
+            site[1]
+        );
+        let variable = site[2]
+            .strip_suffix("=unread")
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{step}'s IAP read-back does not assign `=unread` when the describe \
+                     returned nothing: {:?}; an empty describe then reads as an absent \
+                     annotation, and the step reports a cause nobody read",
+                    site[2]
+                )
+            });
+        assert_eq!(
+            site[3],
+            "else",
+            "{step}'s IAP read-back does not take the jq branch as the `else` of the empty \
+             test, so the two readings are not exclusive: {:?}",
+            &site[..5]
+        );
+        let jq = site[4].as_str();
+        assert!(
+            jq.starts_with(&format!("{variable}=\"$(printf")),
+            "{step}'s jq read does not assign to `{variable}`, the variable the unread arm \
+             assigns and the step then switches on: {jq}"
+        );
+        let (fed, read) = jq.split_once("| jq").unwrap_or_else(|| {
+            panic!("{step}'s IAP read-back does not pipe the describe's output into jq: {jq}")
+        });
+        assert!(
+            refs("json")
+                .iter()
+                .any(|json| fed.contains(&format!("\"{json}\""))),
+            "{step}'s jq read is not fed `\"$json\"`, the describe's output, so it is reading \
+             something other than the v1 Service: {jq}"
+        );
+        assert!(
+            jq.ends_with("|| echo unread)\""),
+            "{step}'s jq read does not fall to `echo unread` when jq fails — missing, or the \
+             JSON unparseable — so that failure reads as '', an absent annotation: {jq}"
+        );
+        assert_eq!(
+            site[5],
+            "fi",
+            "{step}'s IAP read-back does not close with `fi` after the jq read: {:?}",
+            &site[..6]
+        );
+        let (flags, filter) = read
+            .split_once('\'')
+            .and_then(|(flags, rest)| rest.split_once('\'').map(|(filter, _)| (flags, filter)))
+            .unwrap_or_else(|| panic!("{step}'s IAP read-back passes jq no quoted filter: {read}"));
+        assert!(
+            flags
+                .split_whitespace()
+                .any(|token| token == "-r" || token == "--raw-output"),
+            "{step}'s IAP read-back runs jq without -r, so a gated console reads back as \
+             `\"true\"` with its quotes and never matches the gate's `true)` arm: {read}"
+        );
+        let key = filter
+            .strip_prefix(".metadata.annotations[\"")
+            .and_then(|rest| rest.split_once("\"]"))
+            .map(|(key, _)| key)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{step}'s IAP read-back's jq filter `{filter}` does not read a key off \
+                     `.metadata.annotations[\"…\"]`, so it is not reading the annotation \
+                     `--iap` writes"
+                )
+            });
+        assert_eq!(
+            key, KEY,
+            "{step}'s IAP read-back reads the annotation `{key}`, and `--iap` writes `{KEY}` \
+             (IAP_ANNOTATION in gcloud's api_lib/run/service.py); a key the service does not \
+             carry reads '' unconditionally, which is exactly the reading `value(iapEnabled)` \
+             gave"
+        );
+        sites.push((step, commands, variable, at + 6));
+    }
+
+    // Every jq whose filter names the IAP state — `iap-enabled`, or the
+    // `iapEnabled` field nothing carries — is one of the three above. A
+    // read-back in a shape this test does not parse — the old single
+    // pipeline, in a fourth step — would otherwise be a read-back this
+    // test is silent about. Not every jq mentioning `iap`: the grant step
+    // reads `roles/iap.httpsResourceAccessor` bindings, which is who may
+    // pass the gate and not whether the gate is on.
+    let jq_reads: Vec<(&str, &str)> = folded
+        .iter()
+        .flat_map(|(step, commands)| {
+            commands
+                .iter()
+                .filter(|command| {
+                    command.split_once("| jq").is_some_and(|(_, filter)| {
+                        let filter = filter.to_ascii_lowercase();
+                        filter.contains("iap-enabled") || filter.contains("iapenabled")
+                    })
+                })
+                .map(|command| (*step, command.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        jq_reads.len(),
+        sites.len(),
+        "infra.yml pipes into a jq whose filter names the IAP state {} time(s) and this test \
+         parsed {} read-backs; a jq read outside the three sites is a read-back in a shape \
+         this test has not read: {jq_reads:?}",
+        jq_reads.len(),
+        sites.len()
+    );
+    for (step, command) in &jq_reads {
+        assert!(
+            sites
+                .iter()
+                .any(|(site, commands, _, after)| site == step && commands[after - 2] == *command),
+            "{step}'s jq read of the IAP annotation is not the jq of a read-back this test \
+             parsed: {command}"
+        );
+    }
+
+    // The gate's decision: the read-back is what `case` switches on, the
+    // arms are exactly `true)`, `unread)` and `*)`, and each refusing arm
+    // exits 1 before it can do anything else.
+    let (_, gate, enabled, after) = sites
+        .iter()
+        .find(|(step, ..)| *step == GATE)
+        .copied()
+        .unwrap_or_else(|| panic!("the premise above admitted no read-back in {GATE:?}"));
+    let open = gate[after..]
+        .iter()
+        .position(|line| {
+            refs(enabled)
+                .iter()
+                .any(|r| *line == format!("case \"{r}\" in"))
+        })
+        .map(|offset| after + offset)
+        .unwrap_or_else(|| {
+            panic!(
+                "the IAP gate has no `case \"${enabled}\" in` after its read-back, so the \
+                 read-back decides nothing"
+            )
+        });
+    let close = gate[open..]
+        .iter()
+        .position(|line| line == "esac")
+        .map(|offset| open + offset)
+        .unwrap_or_else(|| panic!("the IAP gate's `case \"${enabled}\" in` is never closed"));
+    // An arm is a pattern line: it ends with `)`, opens no `(` and holds no
+    // space. Every command line in this block that ends with `)` is an
+    // `echo "…(…)…"` and opens one.
+    let mut arms: Vec<(&str, Vec<&str>)> = Vec::new();
+    for line in &gate[open + 1..close] {
+        if let Some(pattern) = line
+            .strip_suffix(')')
+            .filter(|pattern| !pattern.contains('(') && !pattern.contains(' '))
+        {
+            arms.push((pattern, Vec::new()));
+        } else if let Some((_, body)) = arms.last_mut() {
+            body.push(line.as_str());
+        }
+    }
+    let patterns: Vec<&str> = arms.iter().map(|(pattern, _)| *pattern).collect();
+    assert_eq!(
+        patterns,
+        ["true", "unread", "*"],
+        "the IAP gate's case on the iap-enabled annotation has the arms {patterns:?}; the \
+         annotation `--iap` writes is the lowercase string `true`, a describe or jq that \
+         failed is `unread`, and everything else — the annotation absent — falls to `*)`"
+    );
+    for (pattern, body) in &arms[1..] {
+        let first_exit = body.iter().copied().find(|line| line.starts_with("exit"));
+        assert_eq!(
+            first_exit,
+            Some("exit 1"),
+            "the IAP gate's `{pattern})` arm's first exit is {first_exit:?}, not `exit 1`; a \
+             refusing arm that can succeed first lets the step report a protected console on \
+             {}: {body:?}",
+            if *pattern == "unread" {
+                "a reading it never got"
+            } else {
+                "an absent annotation, IAP not enabled"
+            }
+        );
+        assert!(
+            !body.iter().any(|line| line.starts_with("exit 0")),
+            "the IAP gate's `{pattern})` arm holds an `exit 0`, a road out of a refusal that \
+             succeeds: {body:?}"
+        );
+    }
+    assert!(
+        !arms[0].1.iter().any(|line| line.starts_with("exit")),
+        "the IAP gate's `true)` arm exits, so a gated console fails the step: {:?}",
+        arms[0].1
+    );
+
+    // diagnose and urls: three labels, each under its own condition, after
+    // the read-back. The third is the value read, verbatim: a reading the
+    // step did not choose a word for.
+    for (step, commands, variable, after) in sites.iter().filter(|(step, ..)| *step != GATE) {
+        let labels: Vec<(usize, &str)> = commands
+            .iter()
+            .enumerate()
+            .filter_map(|(at, command)| {
+                command
+                    .strip_prefix("echo \"")
+                    .map(str::trim_start)
+                    .and_then(|rest| rest.strip_prefix(LABEL))
+                    .map(|label| (at, label))
+            })
+            .collect();
+        let words: Vec<&str> = labels
+            .iter()
+            .map(|(_, label)| label.split([' ', '"']).next().unwrap_or_default())
+            .collect();
+        let value = refs(variable);
+        assert!(
+            words.len() == 3
+                && words[0] == "unread"
+                && words[1] == "absent"
+                && value.iter().any(|r| words[2] == r),
+            "{step} prints the iap-enabled annotation labels {words:?}; expected exactly \
+             [\"unread\", \"absent\", \"${variable}\"] — unread when the describe or jq \
+             failed, absent when the annotation is not there, and otherwise the reading itself \
+             — so that a service this step could not read is never printed as not enabled: \
+             {labels:?}"
+        );
+        assert!(
+            labels.iter().all(|(at, _)| *at > *after),
+            "{step} prints an iap-enabled annotation label before the read-back that assigns \
+             `{variable}`: {labels:?}"
+        );
+        let before = |at: usize| commands[at - 1].as_str();
+        assert!(
+            value
+                .iter()
+                .any(|r| before(labels[0].0) == format!("if [ \"{r}\" = unread ]; then")),
+            "{step}'s unread label is not printed under `if [ \"${variable}\" = unread ]`: \
+             {:?}",
+            before(labels[0].0)
+        );
+        assert!(
+            value
+                .iter()
+                .any(|r| before(labels[1].0) == format!("elif [ -z \"{r}\" ]; then")),
+            "{step}'s absent label is not printed under `elif [ -z \"${variable}\" ]`: {:?}",
+            before(labels[1].0)
+        );
+        assert_eq!(
+            before(labels[2].0),
+            "else",
+            "{step}'s value label is not the `else` of the unread and absent tests"
+        );
+    }
+}
+
 /// A `seed` dispatch never binds its credential inputs where the runner
 /// prints them, masks each as it is read, refuses a live key, and writes
 /// only into a slot that holds no version.
