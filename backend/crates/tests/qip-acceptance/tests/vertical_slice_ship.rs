@@ -50,7 +50,7 @@ use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
-use qip_kernel::desk_ledger::{DESK_CELL, DeskOutcome};
+use qip_kernel::desk_ledger::{DESK_CELL, DESK_OUTBOX_CAPACITY, DeskOutcome};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_ledgerd::consumer::Connect;
 use qip_ledgerd::{Running, start};
@@ -446,9 +446,19 @@ fn ship_until(
     shipper: &mut DeskShipper,
     queue: &mut dyn DeskQueue,
     what: &str,
+    stop: impl FnMut(&ShipReport) -> bool,
+) -> Vec<ShipReport> {
+    ship_until_within(shipper, queue, what, EVENTUALLY, stop)
+}
+
+fn ship_until_within(
+    shipper: &mut DeskShipper,
+    queue: &mut dyn DeskQueue,
+    what: &str,
+    within: StdDuration,
     mut stop: impl FnMut(&ShipReport) -> bool,
 ) -> Vec<ShipReport> {
-    let deadline = Instant::now() + EVENTUALLY;
+    let deadline = Instant::now() + within;
     let mut seen = Vec::new();
     loop {
         let report = shipper
@@ -461,7 +471,8 @@ fn ship_until(
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting until {what}: {seen:?}"
+            "timed out waiting until {what}; the last reports: {:?}",
+            &seen[seen.len().saturating_sub(3)..]
         );
         std::thread::sleep(StdDuration::from_millis(20));
     }
@@ -1297,4 +1308,195 @@ fn a_crash_after_the_watermark_was_logged_resends_nothing_the_ledger_has() {
     assert_eq!(counter(ledger.metrics(), names::LEDGER_DUPLICATES, None), 0);
     assert!(ledger.store().parked().unwrap().is_empty());
     ledger.stop();
+}
+
+// --- the queue bound, at the bound ---------------------------------------------------
+
+/// Buy then sell, so ten thousand fills keep the net position at zero or one
+/// lot. Ten thousand buys trip `max-position-weight` after about a thousand,
+/// which is the limit working and not something to loosen for a test.
+fn alternating(n: usize) -> Side {
+    if n.is_multiple_of(2) {
+        Side::Buy
+    } else {
+        Side::Sell
+    }
+}
+
+/// Submit orders until one fills, because the simulated venue refuses a seeded
+/// fraction of them (`rejection_probability`) and a refusal books nothing.
+/// Returns how many orders it took, so a test that needs exactly N fills is
+/// not at the mercy of the coin.
+fn fill_despite_rejections(platform: &mut Platform, side: Side, tag: &str) -> usize {
+    let mut last = String::new();
+    for attempt in 1..=50 {
+        let order = platform.order_from(
+            acme(),
+            side,
+            dec!("1"),
+            dec!("100"),
+            &format!("prop-{tag}-{attempt}"),
+            vec![format!("hyp-{tag}-{attempt}")],
+            later(),
+        );
+        match platform.submit_order(order, later()) {
+            Ok(_) => return attempt,
+            Err(error) => last = format!("{error:?}"),
+        }
+    }
+    panic!("fifty orders in a row were refused ({tag}); the last: {last}");
+}
+
+/// The fill past the queue's bound is booked and chained but not queued, which
+/// leaves a gap in the chain the queue holds; this pins that, and that a
+/// restart closes it. The venue holds the position either way, so the book
+/// takes the fill; the failure this guards is the gap being silent, or being
+/// read as safe.
+///
+/// 10,001 real fills go through the simulated broker and the OMS. With the
+/// bound's worth queued and nothing shipped, the next fill is counted
+/// unledgered and not queued, and one booked after it is chained at the next
+/// position, so the queue then ends at `bound - 1` and `bound + 1` with
+/// `bound` missing: shipped as it is, the ledger would park everything behind
+/// the gap, and the shipper (`prepare`) holds the later record back instead.
+/// Acknowledging the queued bound — what a drained shipper would have done —
+/// and restarting re-queues exactly the two the queue lacked, in order, from
+/// the event log.
+///
+/// The records are not pushed through the broker: at the catalogue's quota
+/// that is some five minutes of paced delivery and says nothing more about
+/// the gap. `a_queue_longer_than_one_quota_window_still_drains` covers the
+/// shipping.
+///
+/// Mutation: make `admit` queue past the bound (compare against twice the
+/// capacity) — the queue grows past the bound and "the fill past the bound was
+/// queued" fails, after the 10,001st fill.
+#[test]
+fn the_fill_past_the_queue_bound_leaves_a_gap_that_only_a_restart_closes() {
+    let bound = DESK_OUTBOX_CAPACITY;
+    let path = log_file("overflow");
+    let sequences = |platform: &Platform| -> Vec<u64> {
+        platform
+            .pending_desk_outcomes()
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect()
+    };
+    {
+        let mut platform = warm_platform_at(&path).unwrap();
+        let metrics = platform.telemetry().metrics.clone();
+        for n in 0..bound {
+            fill_despite_rejections(&mut platform, alternating(n), &format!("o{n}"));
+        }
+        assert_eq!(
+            platform.pending_desk_outcomes().len(),
+            bound,
+            "premise: full"
+        );
+        assert!(
+            platform.unledgered_fills().is_empty(),
+            "premise: nothing lost yet"
+        );
+
+        fill_despite_rejections(&mut platform, alternating(bound), "over");
+        assert_eq!(
+            platform.pending_desk_outcomes().len(),
+            bound,
+            "the fill past the bound was queued"
+        );
+        assert_eq!(
+            platform.unledgered_fills().len(),
+            1,
+            "the fill past the bound was not reported as unledgered"
+        );
+        assert_eq!(
+            counter(&metrics, names::DESK_FILLS_UNLEDGERED, None),
+            1,
+            "and was not counted"
+        );
+
+        // What a drained shipper does: the queued bound is delivered and
+        // acknowledged, which makes room.
+        let last_queued = (bound - 1) as u64;
+        assert_eq!(
+            platform.acknowledge_desk_outcomes(last_queued).unwrap(),
+            bound
+        );
+        assert!(platform.pending_desk_outcomes().is_empty(), "premise");
+        fill_despite_rejections(&mut platform, alternating(bound + 1), "after-gap");
+        assert_eq!(
+            sequences(&platform),
+            vec![(bound + 1) as u64],
+            "the record after the gap is chained past the missing position, and \
+             is all the live queue holds: the missing one is not recoverable live"
+        );
+    }
+
+    let resumed = warm_platform_at(&path).unwrap();
+    assert_eq!(
+        sequences(&resumed),
+        vec![bound as u64, (bound + 1) as u64],
+        "the restart did not re-queue the overflowed fill and the one behind it, in order"
+    );
+}
+
+/// A queue longer than one quota window's worth must still drain. The broker
+/// refuses a batch that alone exceeds a producer's per-second byte quota, for
+/// ever; a desk record is about a kilobyte, so a 256-record batch was over the
+/// catalogue's 262,144 and a queue of 300 delivered nothing, backing off
+/// without end. Found when 10,001 fills were queued and nothing moved.
+///
+/// Mutation: raise `BATCH_PAYLOAD_BYTES` past the quota (or drop the byte check
+/// in `prepare`) — `ship_all` times out with every report `Deferred`.
+#[test]
+fn a_queue_longer_than_one_quota_window_still_drains() {
+    let fabric = Fabric::start();
+    let ledger = fabric.start_ledger(&temp_dir("ledger-quota"));
+    let mut platform = warm_platform().unwrap();
+    for n in 0..300 {
+        fill_despite_rejections(&mut platform, alternating(n), &format!("q{n}"));
+    }
+    assert_eq!(platform.pending_desk_outcomes().len(), 300, "premise");
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut platform);
+    wait_until("the ledger booked all 300", || {
+        ledger.store().events().unwrap().len() == 300
+    });
+    ledger.stop();
+}
+
+/// The shipper's byte budget is below the quota the catalogue grants the
+/// desk's stream, read from the committed file so a lowered quota fails here
+/// and not in a queue that never drains.
+///
+/// Mutation: set `BATCH_PAYLOAD_BYTES` to 262_144 — the assertion fails.
+#[test]
+fn the_batch_byte_budget_is_below_the_catalogues_producer_quota() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../infrastructure/event-fabric/streams.local.json"),
+    )
+    .expect("the committed catalogue");
+    let catalogue: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let quota = find_quota(&catalogue, OUTCOMES).expect("the outcomes stream names a byte quota");
+    assert!(
+        (qip_fastbrain::ship::BATCH_PAYLOAD_BYTES as u64) < quota,
+        "a batch of {} bytes cannot be delivered under a quota of {quota}",
+        qip_fastbrain::ship::BATCH_PAYLOAD_BYTES
+    );
+}
+
+fn find_quota(value: &serde_json::Value, stream: &str) -> Option<u64> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("name").and_then(|n| n.as_str()) == Some(stream)
+                && let Some(q) = map.get("byte_quota_per_producer").and_then(|q| q.as_u64())
+            {
+                return Some(q);
+            }
+            map.values().find_map(|v| find_quota(v, stream))
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(|v| find_quota(v, stream)),
+        _ => None,
+    }
 }

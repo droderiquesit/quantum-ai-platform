@@ -107,10 +107,19 @@ pub const DESK_REGION: &str = "central";
 /// The worker thread's name.
 pub const WORKER_THREAD: &str = "qip-desk-ship";
 
-/// Records per batch. A fill is a few hundred bytes of canonical JSON, so a
-/// full batch is far under the codec's ceiling, and it bounds both what one
-/// failed delivery repeats and what the platform clones per call.
+/// Records per batch. It bounds both what one failed delivery repeats and what
+/// the platform clones per call.
 pub const BATCH_RECORDS: usize = 256;
+
+/// Payload bytes per batch. The broker charges each producer's payload bytes
+/// against a per-second quota (262,144 in `infrastructure/event-fabric/
+/// streams.local.json`), and refuses a batch that alone exceeds it for ever,
+/// not for a second: a desk record is about a kilobyte of canonical JSON, so
+/// 256 of them were over the quota, and a queue past a couple of hundred
+/// records never delivered a single one. Half the quota, so a batch fits with
+/// room for the one behind it; the acceptance suite refuses a value above the
+/// catalogue's quota.
+pub const BATCH_PAYLOAD_BYTES: usize = 131_072;
 
 /// The longest the producer waits on any one call that leaves the process.
 /// Explicit rather than the transport's default (2s connect, 15s read, 30s
@@ -816,6 +825,7 @@ impl Shipping {
             .map(|o| o.record.entry.sequence)
             .unwrap_or_default();
         let mut records = Vec::with_capacity(candidates.len());
+        let mut payload_bytes = 0usize;
         let mut previous: Option<u64> = None;
         for outcome in candidates {
             let sequence = outcome.record.entry.sequence;
@@ -840,7 +850,18 @@ impl Shipping {
                 break;
             }
             match fabric_record(outcome) {
-                Ok(record) => records.push(record),
+                Ok(record) => {
+                    // The first record always goes: a record over the byte
+                    // budget on its own is the broker's refusal to make, not
+                    // a reason to hold the whole chain behind it.
+                    if !records.is_empty()
+                        && payload_bytes + record.payload.len() > BATCH_PAYLOAD_BYTES
+                    {
+                        break;
+                    }
+                    payload_bytes += record.payload.len();
+                    records.push(record);
+                }
                 Err(error) => {
                     if records.is_empty() {
                         return Err((sequence, error.message().to_string()));
