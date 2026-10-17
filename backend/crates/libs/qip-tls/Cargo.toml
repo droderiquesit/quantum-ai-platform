@@ -36,7 +36,7 @@ qip-core.workspace = true
 # `cargo deny`'s workspace-duplicate check refuses a second pin, and two pins
 # agree only until one of them is edited.
 ring = { version = "=0.17.14", default-features = false }
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 # Already in the tree as `rustls`'s certificate verifier; named directly for
 # one call, `EndEntityCert::verify_is_valid_for_subject_name`, which is how a
 # mutual-TLS server checks a client certificate against the workload names
