@@ -1068,12 +1068,13 @@
   {
     "id": "R12-TICK-2047",
     "status": "PARTIAL",
-    "current": "OutcomeCapture and desk fills as P1 OutcomeRecords carry trace/chain ids; queue estimates and hedge legs are not captured and nothing writes to the tick lake beside market events.",
+    "current": "OutcomeCapture and desk fills as P1 OutcomeRecords carry trace/chain ids; the desk's records are shipped to the P1 stream by fastbrain's DeskShipper (loopback-tested only, nothing deployed). Queue estimates and hedge legs are not captured and nothing writes to the tick lake beside market events.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/desk_ledger.rs::DeskLedgerFeed",
-      "backend/crates/services/qip-twin/tests/twin.rs:753 every_captured_outcome_carries_a_trace_id_and_the_chain_reconstructs"
+      "backend/crates/services/qip-twin/tests/twin.rs:753 every_captured_outcome_carries_a_trace_id_and_the_chain_reconstructs",
+      "backend/crates/apps/qip-fastbrain/src/ship.rs::DeskShipper"
     ],
-    "gap": "Queue estimates, hedge legs, tick-lake write.",
+    "gap": "Queue estimates, hedge legs, tick-lake write; desk shipping not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,

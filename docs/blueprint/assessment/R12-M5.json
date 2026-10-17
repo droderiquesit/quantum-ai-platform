@@ -71,13 +71,15 @@
   {
     "id": "R12-LEDGER-5004",
     "status": "PARTIAL",
-    "current": "Fills are booked into qip-ledgerd from the stream and readable over its API with literal balances; the kernel desk and the cell keep their own positions and nothing reads the ledger as authority.",
+    "current": "Fills are booked into qip-ledgerd from the stream and readable over its API with literal balances. Desk fills are shipped by fastbrain's DeskShipper (acknowledged only after the fabric answers) and the real store's balances equal the platform's book in loopback tests; nothing is deployed and no desk grant exists. The kernel desk and the cell still keep their own positions and nothing reads the ledger as authority.",
     "evidence": [
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ledgerd.rs::desk_fills_are_booked_by_the_real_store_and_agree_with_the_platforms_book",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18707 take_desk_outcomes"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18707 take_desk_outcomes",
+      "backend/crates/apps/qip-fastbrain/src/ship.rs::DeskShipper",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::desk_fills_reach_the_ledger_balanced_attributed_and_acknowledged"
     ],
-    "gap": "Production reconciliation or read path making the ledger the authority over kernel/cell positions; desk fills are not shipped.",
+    "gap": "Production reconciliation or read path making the ledger the authority over kernel/cell positions; desk shipping not deployed (no broker, desk grant or token), only fastbrain ships.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -90,7 +92,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'The ledger, not a model or cache, is the authority' unmet: agreement with the platform book is shown only in a test; two books exist in production."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'The ledger, not a model or cache, is the authority' unmet: agreement with the platform book is shown only in a test; two books exist in production. The 'desk fills are not shipped' text is stale as of 84e4e33d. Authority clause still unmet: two books exist."
   },
   {
     "id": "R12-LEDGER-5005",
@@ -306,7 +308,7 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids repeat across restarts (desk session is always 0); the ledger dedupes on chain position but a lineage walk by chain id is ambiguous across restarts. Shipper adds no intent id or settlement record (checked against 84e4e33d)."
   },
   {
     "id": "R12-LEDGER-5015",
