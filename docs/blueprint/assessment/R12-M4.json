@@ -594,15 +594,16 @@
   },
   {
     "id": "R12-QUANT-4028",
-    "status": "PARTIAL",
-    "current": "RoutingPolicy::quantum_margin (default 0.01) gates selection; Foundry::register refuses a non-positive threshold.",
+    "status": "COMPLETE",
+    "current": "ComputeRouter::margin_for returns max(Foundry portfolio-allocation promotion_threshold, policy.quantum_margin) and adopts() compares with strict >. with_quantum builds Foundry::platform() and refuses an unregistered family. Platform::new calls with_quantum when quantum_enabled (platform.rs:4678; qip-deepbrain main sets it).",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:163,186 quantum_margin",
-      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:436 a_quantum_answer_that_ties_loses_to_the_classical_baseline",
-      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:610 better by less than the margin loses",
-      "backend/crates/libs/qip-quantum/src/foundry.rs:111-118 threshold refusal"
+      "backend/crates/services/qip-optimization-engine/src/router.rs::ComputeRouter::margin_for",
+      "backend/crates/services/qip-optimization-engine/src/router.rs::ComputeRouter::adopts",
+      "backend/crates/services/qip-optimization-engine/tests/foundry_threshold.rs::a_quantum_answer_is_adopted_only_when_it_beats_the_foundry_threshold_strictly",
+      "backend/crates/tests/qip-acceptance/tests/quant_4028_foundry_threshold.rs::the_kernels_router_reads_the_foundrys_registered_threshold_not_the_policy_zero",
+      "backend/crates/libs/qip-quantum/src/foundry.rs::Foundry::register"
     ],
-    "gap": "Positive per-workload threshold is enforced in Foundry::register but not wired into the router, whose margin may be zero.",
+    "gap": "RoutingPolicy::validate still accepts quantum_margin 0, but the Foundry threshold now floors it for the quantum solver. The quantum-inspired rung with no registered family uses only the policy margin.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -613,7 +614,7 @@
     "verification": "cargo test -p qip-optimization-engine --test optimization",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): RoutingPolicy::validate (router.rs:413) accepts quantum_margin == 0.0, so the positive threshold is enforced only on the unused Foundry declaration; ties still go classical via strict >."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): RoutingPolicy::validate (router.rs:413) accepts quantum_margin == 0.0, so the positive threshold is enforced only on the unused Foundry declaration; ties still go classical via strict >. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): Positive per-workload threshold is read at the adoption decision, with ties and below-margin losing, tests set the policy margin to zero so only the Foundry can hold the answer back, and the kernel seam test confirms the live router reads it. Only portfolio allocation is routed, and the foundry registers no other workload."
   },
   {
     "id": "R12-QUANT-4029",

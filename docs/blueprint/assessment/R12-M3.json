@@ -453,15 +453,18 @@
   {
     "id": "R12-RISK-3022",
     "status": "PARTIAL",
-    "current": "qip-cost-router Determinism::Required returns no model rung; pre-trade limits are deterministic code.",
+    "current": "Router::determine (Required fixed, returns DeterministicRouting) is called first in Platform::submit_order, reached from qip-api main.rs:1626 and the ACT stage (platform.rs:15645). Risk crates do not depend on qip-ai, and order_placement_paths proves every order-sending seam is risk-gated.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/context.rs:20-34 Determinism",
-      "backend/crates/services/qip-cost-router/tests/cost_router.rs:308 a_decision_that_must_be_deterministic_cannot_be_routed_to_any_model_tier"
+      "backend/crates/services/qip-cost-router/src/router.rs::Router::determine",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order",
+      "backend/crates/runtime/qip-kernel/tests/pretrade_determinism.rs::an_accepted_order_was_guarded_by_a_deterministic_routing_that_names_no_model",
+      "backend/crates/services/qip-cost-router/tests/determine.rs::a_determined_routing_is_deterministic_code_in_every_regime_and_horizon",
+      "backend/crates/tests/qip-acceptance/tests/order_placement_paths.rs"
     ],
-    "gap": "Determinism::Required is never used by production code; no test shows the Risk Brain output cannot bypass the deterministic limit gates.",
+    "gap": "Independently graded COMPLETE as the weakest case, and held at PARTIAL here: Router::determine is now constructed on every Platform::submit_order and fails the order closed, but the routing it returns is a witness no limit code reads, only order admission is routed, and the kill-switch, sign-off and monitor-side LimitSet::check paths are not. Making the limit decision a function of the DeterministicRouting, and covering those paths, would close it.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -469,7 +472,7 @@
     "verification": "cargo test -p qip-cost-router --test cost_router",
     "work_item": "",
     "size": "S",
-    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown."
+    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The Required arm is now constructed by a running path and the test fails if the call is removed (pretrade_routing stays None). The gate-bypass concern is covered by a2ca740d. Weakest COMPLETE: nothing fails if the limits were changed to call a model."
   },
   {
     "id": "R12-REASON-3023",
