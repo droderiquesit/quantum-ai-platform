@@ -1216,6 +1216,35 @@ fn an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before() {
     assert_eq!(ids.len(), 3, "two orders share a chain correlation id");
 }
 
+/// A restarted desk re-queues each record under the correlation id of the
+/// cycle that placed the order, not a fresh one. `FillBooked` used to be
+/// journalled under an id minted for the envelope, so after a restart (or a
+/// gap heal) the ledger posting could no longer be walked back to the
+/// decision: the id on the record was the log's, unrelated to anything else.
+///
+/// Mutation: journal the fill with `journal_record` again — the re-queued
+/// outcomes carry other ids and the equality fails.
+#[test]
+fn a_restart_requeues_each_record_under_the_cycle_that_placed_the_order() {
+    let path = log_file("restart-correlation");
+    let before = {
+        let mut first = warm_platform_at(&path).unwrap();
+        fills(&mut first, 3, "corr");
+        first.pending_desk_outcomes().to_vec()
+    };
+    assert_eq!(before.len(), 3, "premise");
+    assert!(
+        before.iter().all(|o| !o.correlation_id.is_empty()),
+        "premise: the live records carry a correlation id"
+    );
+    let resumed = warm_platform_at(&path).unwrap();
+    assert_eq!(
+        resumed.pending_desk_outcomes(),
+        before.as_slice(),
+        "a restart re-queued a record under another correlation id"
+    );
+}
+
 /// Crash window (b): the fabric acknowledged but the process died before the
 /// watermark was logged. The restart re-ships the batch and the ledger absorbs
 /// it as a duplicate.
@@ -1436,25 +1465,13 @@ fn the_fill_past_the_queue_bound_is_healed_from_the_log_when_room_opens() {
         platform.pending_desk_outcomes().to_vec()
     };
 
-    // The records are identical. The correlation id beside each is the log's
-    // for a record derived from it (the healed one, and every one a restart
-    // re-queues) and the cycle's for one admitted live: `journal_record` mints
-    // a fresh id for the `FillBooked` envelope, so a restart already
-    // loses the decision's id. Compared for the healed record, which both
-    // paths take from the log, and not for the live one.
+    // Identical in full, correlation ids included: the fill is journalled
+    // under the cycle that placed it, so the log, a heal and a restart agree.
     let resumed = warm_platform_at(&path).unwrap();
-    let records = |outcomes: &[DeskOutcome]| -> Vec<_> {
-        outcomes.iter().map(|o| o.record.clone()).collect()
-    };
     assert_eq!(
-        records(resumed.pending_desk_outcomes()),
-        records(&live),
-        "a restart re-queues other records than the live heal queued"
-    );
-    assert_eq!(
-        resumed.pending_desk_outcomes()[0],
-        live[0],
-        "the healed record differs from the one a restart re-queues"
+        resumed.pending_desk_outcomes(),
+        live.as_slice(),
+        "a restart re-queues something other than what the live heal queued"
     );
 }
 

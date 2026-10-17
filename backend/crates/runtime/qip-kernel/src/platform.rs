@@ -8953,6 +8953,21 @@ impl Platform {
             .context
             .ids()
             .generate::<qip_core::lineage::CorrelationKind>(now);
+        self.journal_record_under(body, origin, now, correlation_id)
+    }
+
+    /// [`Self::journal_record`] under a correlation id the caller already
+    /// holds. A fill's record is journalled under the cycle that caused it,
+    /// not a fresh id: the desk's ledger record takes its correlation from the
+    /// log on a restart or a gap heal, and a fresh id there severed the
+    /// ledger posting from the decision it came from.
+    pub(crate) fn journal_record_under<B: EventBody>(
+        &mut self,
+        body: B,
+        origin: &str,
+        now: Timestamp,
+        correlation_id: CorrelationId,
+    ) -> Result<()> {
         let facts = EventFacts::derived(
             SourceIdentity::new(
                 SourceId::new("qip-kernel"),
@@ -18107,7 +18122,9 @@ impl Platform {
             // already filled, and a book that left the fill out would read
             // every limit low by exactly it. What it costs is said out loud
             // instead — this is the one state a restart cannot rebuild.
-            if let Err(error) = self.journal_record(booked, BOOK_ORIGIN, now) {
+            if let Err(error) =
+                self.journal_record_under(booked, BOOK_ORIGIN, now, correlation.clone())
+            {
                 self.capture_problems.push(format!(
                     "fill {} on order {} was booked and could not be journalled ({}); the book \
                      now holds what the event log cannot rebuild and a restart would open \
