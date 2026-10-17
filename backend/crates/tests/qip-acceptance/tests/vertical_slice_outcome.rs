@@ -360,12 +360,15 @@ fn the_chain_is_a_fold_of_the_event_log_and_identical_across_two_runs() -> Resul
 }
 
 #[test]
-fn a_restart_continues_the_desk_chain_and_a_reused_order_id_is_not_read_as_a_replay() -> Result<()>
-{
+fn a_restart_continues_the_desk_chain_and_the_order_counter_so_no_id_is_reused() -> Result<()> {
     // The failure this prevents: a second process starting its chain again at
     // sequence 0 (the ledger would see a conflict at a position it holds), or
     // reading its first order, `ord-1`/`fill-1` like the first process's, as a
-    // replay of the old fill and leaving a real fill out of the book.
+    // replay of the old fill and leaving a real fill out of the book. The
+    // second is now prevented at the source: `resume_book` continues the order
+    // counter past the log's, so the first order after a restart is `ord-2`
+    // and the desk's chain correlation ids (a hash of the order id under a
+    // session that never changes) stay distinct.
     let path = std::env::temp_dir()
         .join(format!("qip-slice-desk-restart-{}", std::process::id()))
         .join("events.jsonl");
@@ -400,9 +403,9 @@ fn a_restart_continues_the_desk_chain_and_a_reused_order_id_is_not_read_as_a_rep
         "premise: a restart re-queues what was never acknowledged"
     );
     let order = buy(&mut second, dec!("10"), "after");
-    assert_eq!(
+    assert_ne!(
         order.order_id, first_order_id,
-        "premise: the order id counter restarted, the hazard under test"
+        "the order id counter restarted: two orders now share one lineage id"
     );
     second.submit_order(order, restarted_at.saturating_add(Duration::from_mins(3)))?;
     assert_eq!(

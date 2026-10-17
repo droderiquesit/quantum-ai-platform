@@ -308,7 +308,7 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids repeat across restarts (desk session is always 0); the ledger dedupes on chain position but a lineage walk by chain id is ambiguous across restarts. Shipper adds no intent id or settlement record (checked against 84e4e33d)."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d)."
   },
   {
     "id": "R12-LEDGER-5015",

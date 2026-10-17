@@ -1174,6 +1174,37 @@ fn a_crash_after_booking_before_any_ship_is_requeued_and_the_ledger_has_no_hole(
     ledger.stop();
 }
 
+/// A restarted desk must not hand a new order the id an old one had. The desk
+/// has one session for ever, and the ledger's chain correlation is a hash of
+/// cell, session and order id; the order counter used to start at one in every
+/// process, so the first order after a restart shared `ord-1`'s lineage id with
+/// the first order before it.
+///
+/// Mutation: delete the `resume_order_sequence` call in `resume_book` — the
+/// post-restart order is `ord-1` again, the distinct-count assertion fails.
+#[test]
+fn an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before() {
+    let path = log_file("restart-ids");
+    {
+        let mut first = warm_platform_at(&path).unwrap();
+        fills(&mut first, 2, "ids");
+    }
+    let mut second = warm_platform_at(&path).unwrap();
+    fill(&mut second, dec!("10"), "ids-after");
+    let records = records_of(&second);
+    assert_eq!(records.len(), 3, "premise: two resumed and one new");
+    let ids: std::collections::BTreeSet<String> = records
+        .iter()
+        .map(|r| {
+            r.correlation()
+                .expect("a desk record names its chain")
+                .as_str()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(ids.len(), 3, "two orders share a chain correlation id");
+}
+
 /// Crash window (b): the fabric acknowledged but the process died before the
 /// watermark was logged. The restart re-ships the batch and the ledger absorbs
 /// it as a duplicate.

@@ -1167,6 +1167,18 @@ impl OrderManager {
             .collect()
     }
 
+    /// Move the id counter to at least `seen`, so ids minted from here on
+    /// continue past ids a previous process already used. Never moves it
+    /// backwards: lowering the counter would re-issue an id this process has
+    /// already handed out.
+    ///
+    /// Without this every process counts from one, and `ord-1` names a
+    /// different order after each restart, so the ledger's chain correlation
+    /// (a hash of cell, session and order id) names two orders at once.
+    pub fn resume_order_sequence(&mut self, seen: u64) {
+        self.sequence = self.sequence.max(seen);
+    }
+
     /// A fresh order id, deterministic across a replay.
     pub fn next_order_id(&mut self, prefix: &str) -> OrderId {
         self.sequence += 1;

@@ -60,7 +60,9 @@ const GENESIS: &str = "genesis";
 /// One session, for ever. The chain's position is rebuilt from the event log
 /// on every start, so a restart continues the chain rather than beginning a
 /// second one, and a session counter that has to be remembered across
-/// restarts is a thing that can be forgotten.
+/// restarts is a thing that can be forgotten. What keeps chain correlation ids
+/// from repeating across restarts is therefore the order id, not the session:
+/// `resume_book` continues the order counter past the log's highest.
 pub const DESK_SESSION: u64 = 0;
 
 /// The unit the desk's prices are quoted in. The same currency the capital

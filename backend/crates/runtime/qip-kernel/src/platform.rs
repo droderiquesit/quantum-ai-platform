@@ -7464,6 +7464,19 @@ impl Platform {
                     // A log with no watermark (every log written before
                     // records were shipped) re-queues all of them, which is
                     // right: the ledger has been given none.
+                    // Order ids are minted from a counter that starts at one
+                    // in every process; the desk's chain correlation hashes
+                    // the order id under a session that never changes, so a
+                    // restart that reused `ord-1` would give two orders one
+                    // lineage id. Continue the counter past the log's.
+                    if let Some(used) = fill
+                        .order_id
+                        .rsplit('-')
+                        .next()
+                        .and_then(|tail| tail.parse::<u64>().ok())
+                    {
+                        self.orders.resume_order_sequence(used);
+                    }
                     let next = self.desk_ledger.next_sequence();
                     let covered = watermark.is_some_and(|through| next <= through);
                     let result = if covered {

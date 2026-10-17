@@ -383,7 +383,7 @@
     "verification": "acceptance test following one opportunity id through every stage",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids. Desk records now reach the ledger carrying chain_correlation, but the cycle id is not on the wire and the desk chain id repeats across restarts. Still not one trace (checked against 84e4e33d)."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids. Desk records now reach the ledger carrying chain_correlation, but the cycle id is not on the wire and the cycle id is still not joined to the cell's. Still not one trace (checked against 84e4e33d)."
   },
   {
     "id": "R12-TICK-7019",
