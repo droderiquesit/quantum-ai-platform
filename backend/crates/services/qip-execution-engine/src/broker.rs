@@ -16,6 +16,7 @@
 use crate::observation::{DeclaredVenueProfile, ObservedVenueFacts, VenueObservation};
 use crate::order::{Fill, Order, OrderType, Side};
 use qip_core::Decimal;
+use qip_core::decimal::SCALE_DIGITS;
 use qip_core::error::{Error, Result};
 use qip_core::ids::FillId;
 use qip_core::rng::{Rng, Xoshiro256};
@@ -388,6 +389,56 @@ impl SimulatedBroker {
         self.rejected
     }
 
+    /// The fewest fractional digits a fill price may keep, and so the most a
+    /// fill quantity may carry (`SCALE_DIGITS` less this).
+    const MIN_PRICE_DIGITS: u32 = 4;
+
+    /// Round a fill price so that `quantity x price` is exactly representable.
+    ///
+    /// The ledger the fill is booked into holds money at nine fractional
+    /// digits and refuses a notional that needs more, rather than rounding it.
+    /// This venue produced prices at nine digits for a quantity that already
+    /// carried one (60% of a whole-share order), so a notional of ten digits
+    /// came out of the default settings and the fill, which the venue had made,
+    /// could not be booked. A venue that emits what the books cannot hold is
+    /// the venue's defect, so the price is made to fit here: it keeps the
+    /// digits the notional can carry after the quantity's own.
+    ///
+    /// Rounded against the taker: up for a buy, down for a sell, so the
+    /// simulator never flatters the strategy by rounding. A quantity with so
+    /// many digits that the price would keep fewer than four is refused, not
+    /// clamped; a price rounded to the nearest dollar is not a price.
+    fn ledger_exact_price(order: &Order, quantity: Decimal, price: Decimal) -> Result<Decimal> {
+        let digits = (0..=SCALE_DIGITS)
+            .find(|d| quantity.raw() % 10i128.pow(SCALE_DIGITS - d) == 0)
+            .unwrap_or(SCALE_DIGITS);
+        let keep = SCALE_DIGITS - digits;
+        if keep < Self::MIN_PRICE_DIGITS {
+            return Err(Error::numeric(format!(
+                "a fill of {quantity} on order {} carries {digits} fractional digits, which \
+                 would leave the price fewer than {} to stay exact in the ledger; size the order \
+                 to a lot grid",
+                order.order_id.as_str(),
+                Self::MIN_PRICE_DIGITS
+            )));
+        }
+        let step = Decimal::from_raw(10i128.pow(SCALE_DIGITS - keep));
+        let nearest = price.round_dp(keep);
+        let rounded = match order.side {
+            Side::Buy if nearest < price => nearest.checked_add(step),
+            Side::Sell if nearest > price => nearest.checked_sub(step),
+            _ => Some(nearest),
+        };
+        match rounded {
+            Some(rounded) if rounded > Decimal::ZERO => Ok(rounded),
+            _ => Err(Error::numeric(format!(
+                "the fill price {price} on order {} cannot be held at {keep} fractional digits \
+                 without becoming non-positive",
+                order.order_id.as_str()
+            ))),
+        }
+    }
+
     /// The price this order would fill at.
     ///
     /// Uses the book where one is available — sweeping real depth is the
@@ -578,7 +629,7 @@ impl Broker for SimulatedBroker {
             return Ok(Vec::new());
         }
 
-        let price = self.fill_price(order, quantity)?;
+        let price = Self::ledger_exact_price(order, quantity, self.fill_price(order, quantity)?)?;
         // Commission used to be `Decimal::from_f64(...).unwrap_or(Decimal::ZERO)`,
         // so a computation that failed booked a free trade. Free is the most
         // favourable answer there is, and a simulator that fails favourably
@@ -795,5 +846,110 @@ impl Broker for LiveBroker {
             self.config.account,
             missing.join("; and ")
         )
+    }
+}
+
+#[cfg(test)]
+mod ledger_exact_tests {
+    use super::*;
+    use crate::order::OrderType;
+    use qip_core::ids::{ObjectId, OrderId};
+    use qip_core::{Timestamp, dec};
+
+    fn order(side: Side) -> Order {
+        Order::new(
+            OrderId::from_string("ord-exact"),
+            ObjectId::from_string("obj-EXACT"),
+            side,
+            dec!("1714"),
+            OrderType::Market,
+            dec!("87.538238117"),
+            "prop-exact",
+            vec!["hyp-exact".to_string()],
+            "exact",
+            Timestamp::from_secs(1_760_000_000),
+        )
+    }
+
+    /// The ledger's own rule: the product of two nine-digit decimals is exact
+    /// only when it needs no more than nine fractional digits.
+    fn notional_is_exact(quantity: Decimal, price: Decimal) -> bool {
+        (quantity.raw() * price.raw()) % qip_core::decimal::SCALE == 0
+    }
+
+    #[test]
+    fn a_buy_price_is_rounded_up_to_the_digits_the_notional_can_carry() {
+        // 1028.4 carries one fractional digit, so the price keeps eight. The
+        // ninth digit is 3, so the nearest eight-digit price is BELOW this one:
+        // only the adverse step makes the buyer pay at least the price.
+        let quantity = dec!("1028.4");
+        let price = dec!("87.538238113");
+        assert!(
+            !notional_is_exact(quantity, price),
+            "premise: the unrounded notional is the one the ledger refused"
+        );
+        let fitted = SimulatedBroker::ledger_exact_price(&order(Side::Buy), quantity, price)
+            .expect("a price with eight digits to keep fits");
+        assert!(notional_is_exact(quantity, fitted), "{fitted}");
+        assert!(fitted >= price, "a buy was rounded in its own favour");
+        assert!(fitted - price < dec!("0.00000001") + dec!("0.00000000001"));
+    }
+
+    #[test]
+    fn a_sell_price_is_rounded_down_so_the_simulator_never_flatters() {
+        let quantity = dec!("1028.4");
+        let price = dec!("87.538238117");
+        let fitted =
+            SimulatedBroker::ledger_exact_price(&order(Side::Sell), quantity, price).expect("fits");
+        assert!(notional_is_exact(quantity, fitted), "{fitted}");
+        assert!(fitted <= price, "a sell was rounded in its own favour");
+    }
+
+    #[test]
+    fn a_price_already_exact_is_left_alone() {
+        let fitted =
+            SimulatedBroker::ledger_exact_price(&order(Side::Buy), dec!("1000"), dec!("100.25"))
+                .expect("fits");
+        assert_eq!(fitted, dec!("100.25"));
+    }
+
+    #[test]
+    fn a_quantity_too_fine_to_leave_the_price_four_digits_is_refused_not_clamped() {
+        // Six fractional digits leave three for the price: below the floor.
+        let error = SimulatedBroker::ledger_exact_price(
+            &order(Side::Buy),
+            dec!("1.123456"),
+            dec!("87.538238117"),
+        )
+        .expect_err("a price of three digits is not a price");
+        assert!(
+            error.message().contains("fractional digits"),
+            "{}",
+            error.message()
+        );
+        // Five digits is the most a fill may carry and still leave four.
+        assert!(
+            SimulatedBroker::ledger_exact_price(
+                &order(Side::Buy),
+                dec!("1.12345"),
+                dec!("87.538238117")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_price_that_would_round_to_nothing_is_refused() {
+        let error = SimulatedBroker::ledger_exact_price(
+            &order(Side::Sell),
+            dec!("1.12345"),
+            dec!("0.00000001"),
+        )
+        .expect_err("a sell price rounded down to zero");
+        assert!(
+            error.message().contains("non-positive"),
+            "{}",
+            error.message()
+        );
     }
 }
