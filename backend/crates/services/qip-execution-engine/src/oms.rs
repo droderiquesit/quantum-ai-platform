@@ -602,6 +602,27 @@ impl OrderManager {
             reconciliation_breaks: Vec::new(),
         };
 
+        // 0. An order id this manager already holds is a replay, not a new
+        //    order. Without this the second submission passed every gate,
+        //    filled again at the venue, and `orders.insert` overwrote the
+        //    first order's record with the second's — a doubled position
+        //    whose ledger showed one order. Refused without `record_refusal`,
+        //    which would overwrite the original's state with `Rejected`.
+        if self.orders.contains_key(order.order_id.as_str()) {
+            let result = refuse(
+                &order,
+                RefusalReason::Malformed {
+                    detail: format!(
+                        "order {} was already submitted; a replayed order id has no second \
+                         financial effect — mint a new order for a new intent",
+                        order.order_id.as_str()
+                    ),
+                },
+            );
+            self.refusals.push(result.clone());
+            return result;
+        }
+
         // 1. Well formed, and traceable.
         if let Err(error) = order.validate() {
             let result = refuse(
