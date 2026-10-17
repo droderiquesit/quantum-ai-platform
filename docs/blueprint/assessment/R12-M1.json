@@ -364,7 +364,7 @@
   },
   {
     "id": "R12-GOV-1017",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "AutonomyLevel::deployable refuses live ceilings at start-up in all three central composition roots; Terraform refuses them at plan; acceptance tests scan every binary that reads the ceiling.",
     "evidence": [
       "backend/crates/services/qip-risk-engine/src/autonomy.rs:120 deployable refuses live levels",
@@ -375,7 +375,7 @@
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37 live ceiling stops deployment",
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:148 every ceiling read routes through the refusal"
     ],
-    "gap": "None for the boundary itself; nothing is deployed to observe it running.",
+    "gap": "Cite or add per-activity authority bounds (research budget, promotion rule, allocation envelope) with tests.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -386,7 +386,7 @@
     "verification": "cargo test -p qip-acceptance --test paper_boundary",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Evidence covers only the live-autonomy ceiling; no cited evidence that discovery, research, training, promotion, deployment and allocation each run inside a bounded authority."
   },
   {
     "id": "R12-MESH-1018",
@@ -1462,7 +1462,7 @@
   },
   {
     "id": "R12-AGENCY-1063",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). preflight refuses any step whose draft speaks under a name other than the tool's registered identity and the goal's acting identity, naming it a fabricated identity (guard.rs:290-302); check_identity refuses unauthorised senders (conduct_brain.rs:305-320); check_coordinated_voices refuses one message under several identities (conduct_brain.rs:419-445).",
     "evidence": [
       "backend/crates/apps/qip-cli/src/main.rs:73",
@@ -1478,7 +1478,7 @@
       "backend/crates/services/qip-agency/src/conduct_brain.rs:419-445",
       "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_same_message_under_two_identities_is_fake_consensus_and_under_one_is_not"
     ],
-    "gap": "",
+    "gap": "The coordinated-voices check is wired in guard.rs:311 with no test through guard/CLI; no coverage outside the agency path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1489,7 +1489,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Guard case 'fabricated identity' (agency.rs:1581-1585) asserts the reason and zero adapter calls. 'Order pattern' is not separately covered: orders on the edge carry no sender identity a strategy can choose, so nothing there is to refuse. qip-cli is not a deployed image (deploy.yml:375)."
+    "notes": "Round-2 independent audit, 2026-10-11: Guard case 'fabricated identity' (agency.rs:1581-1585) asserts the reason and zero adapter calls. 'Order pattern' is not separately covered: orders on the edge carry no sender identity a strategy can choose, so nothing there is to refuse. qip-cli is not a deployed image (deploy.yml:375). Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Check function tested; its wiring through the guard/CLI is untested and applies only to agency drafts."
   },
   {
     "id": "R12-AGENCY-1064",
@@ -4375,16 +4375,16 @@
   },
   {
     "id": "R12-EVID-1200",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Truth loop acceptance tests show the gate order and refusal; reached from the central cycle.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model"
     ],
-    "gap": "None in-process; not exercised on a deployment.",
+    "gap": "Truth-loop order is only proven by a test-local pipeline; no global-scout stage, and the kernel cycle does not call the quality/entitlement gate before the world model.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
@@ -4392,7 +4392,7 @@
     "verification": "cargo test -p qip-acceptance --test truth_loop",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model."
   },
   {
     "id": "R12-TICK-1201",

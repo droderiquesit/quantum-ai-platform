@@ -245,14 +245,14 @@
   },
   {
     "id": "R12-LEDGER-5012",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "SourceEvent (backend/crates/libs/qip-contracts/src/ledger.rs:133) with refuse_unnamed checks in LedgerEvent::new (backend/crates/libs/qip-contracts/src/ledger.rs:208-210).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:133 SourceEvent",
       "backend/crates/libs/qip-contracts/src/ledger.rs:208 refuse_unnamed source fields",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs"
     ],
-    "gap": "",
+    "gap": "Source-required refusal in LedgerEvent::new has no test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -263,7 +263,7 @@
     "verification": "cargo test -p qip-contracts --test ledger_event",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The refusal of an event with no named source is untested; deleting the refuse_unnamed calls fails no test."
   },
   {
     "id": "R12-LEDGER-5013",
@@ -1153,7 +1153,7 @@
   },
   {
     "id": "R12-MESH-5053",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Node is (object, venue, representation, settlement, region), and all five are part of its derived identity and ordering (backend/crates/edge/qip-arbitrage/src/graph.rs:139-148). ArbitrageGraph refuses a zero-cost edge between two nodes differing only in settlement stage or region (graph.rs:36-41, refusal near :810-822). The graph type is the one the edge node's desk builds (apps/qip-edge-node/src/arbitrage.rs:199-210), reached from main.rs:46-56/369.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/graph.rs:139",
@@ -1161,7 +1161,7 @@
       "backend/crates/apps/qip-edge-node/src/arbitrage.rs:199",
       "edge/qip-arbitrage/tests/edge_costs.rs::two_nodes_differing_only_in_settlement_stage_or_region_are_distinct_and_no_free_edge_joins_them"
     ],
-    "gap": "",
+    "gap": "qip-arbitrage Node has the five dimensions but the edge node's desk builds nodes with only asset and venue (defaults for the rest).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1172,7 +1172,7 @@
     "verification": "new qip-arbitrage graph test",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Every production builder uses Node::new (Native, Settled, region None): apps/qip-edge-node/src/arbitrage.rs:200-204, qip-arbitrage graph.rs:683-684, qip-kernel platform.rs:9725/28072. The identity can distinguish the dimensions, but no production graph populates them yet."
+    "notes": "Round-2 independent audit, 2026-10-11: Every production builder uses Node::new (Native, Settled, region None): apps/qip-edge-node/src/arbitrage.rs:200-204, qip-arbitrage graph.rs:683-684, qip-kernel platform.rs:9725/28072. The identity can distinguish the dimensions, but no production graph populates them yet. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Five-part node identity exists in the type; production graph never sets settlement stage, representation or region."
   },
   {
     "id": "R12-MESH-5054",

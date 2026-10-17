@@ -601,13 +601,13 @@
   },
   {
     "id": "R12-AGENCY-7029",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Acceptance test proves no order-path crate names an ambient type and an Advisory can only be unwrapped by promote with evidence, approver and held controls.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:138 no order-path crate names an ambient type; advisory only unwrapped by promote",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:222"
     ],
-    "gap": "",
+    "gap": "Add a reachability test that ambient types cannot reach qip-agency adapters except via promote and the guard.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -618,7 +618,7 @@
     "verification": "cargo test -p qip-acceptance --test ambient_attention",
     "work_item": "",
     "size": "S",
-    "notes": "Structural (compile-graph) guarantee; there is no external action adapter at all."
+    "notes": "Structural (compile-graph) guarantee; there is no external action adapter at all. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Evidence covers order-path crates, not external-action paths through agency; no test ties ambient output to agency/conduct gates."
   },
   {
     "id": "R12-AGENCY-7030",
@@ -1735,14 +1735,14 @@
   },
   {
     "id": "R12-CONTRACT-7080",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "GoalSpec carries all twelve declarations; a goal missing any is refused naming the field; reached from qip-cli agency shadow.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:80-91",
       "backend/crates/services/qip-agency/tests/agency.rs:50,107",
       "backend/crates/apps/qip-cli/src/agency.rs:48 qip_agency::engine::run in shadow (qip-cli main.rs:71) — only composition root reaching qip-agency"
     ],
-    "gap": "",
+    "gap": "GoalSpec no longer carries authority class (lives on ActionPolicy) and has stop_conditions but no rollback declaration.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1753,7 +1753,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Contract omits authority class (moved to ActionPolicy) and has no distinct rollback field."
   },
   {
     "id": "R12-CONTRACT-7081",
@@ -1929,13 +1929,13 @@
   },
   {
     "id": "R12-CONTRACT-7089",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "FabricEnvelope has every field; envelope tests refuse a missing/emptied field.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/fabric_envelope.rs:19-40 FabricEnvelope fields",
       "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:64,659 envelope round-trips every field; missing field refused"
     ],
-    "gap": "",
+    "gap": "Wire FabricEnvelope into a producer/consumer path or document it as unused; carry a schema hash.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1946,7 +1946,7 @@
     "verification": "cargo test -p qip-events --test event_fabric_policy",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Cited src/fabric_envelope.rs does not exist (real: qip-events/src/event_fabric/envelope.rs). Schema version is an integer, not a hash. No producer or consumer exchanges this envelope."
   },
   {
     "id": "R12-CONTRACT-7090",
@@ -2611,13 +2611,13 @@
   },
   {
     "id": "R12-CICD-7120",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "paper_boundary acceptance suite runs in CI test job before deploy; Terraform and composition roots refuse live ceilings.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37,148 live ceiling stops the deployment; every binary routes the ceiling through the refusal",
       ".github/workflows/ci.yml:27-481 jobs format, lint, test, dependency-policy, security-audit, trivy, sbom, infrastructure, secrets"
     ],
-    "gap": "",
+    "gap": "Paper gate is a manual Kargo stage never exercised; CI runs only the paper-boundary refusal tests.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2628,7 +2628,7 @@
     "verification": "cargo test -p qip-acceptance --test paper_boundary",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Kargo `paper` stage is a manual person-promoted gate with no automated verification (kargo/README says so) and gates/paper/freight.yaml is empty: no freight has ever passed it."
   },
   {
     "id": "R12-OBS-7121",
@@ -4090,15 +4090,15 @@
   },
   {
     "id": "R12-COVERAGE-7190",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Structural separation and promotion requirement tested.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:138 no order-path crate names an ambient type; advisory only unwrapped by promote"
     ],
-    "gap": "",
+    "gap": "Show an ambient opportunity flowing through qip-agency guard in a running binary, with a test.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4106,7 +4106,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Claim that agency gates sit between ambient detection and execution is unreached; only an order-path text grep backs it."
   },
   {
     "id": "R12-COVERAGE-7191",

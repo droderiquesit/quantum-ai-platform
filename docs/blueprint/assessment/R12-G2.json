@@ -1767,12 +1767,12 @@
   },
   {
     "id": "R12-GOV-9079",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "architecture_memory_index suite asserts ADRs are numbered and indexed, blueprint sources listed with hashes, the service catalogue enumerates deployable binaries, runbooks exist and agent instructions reference the index.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs:17,70,133,156,186,211"
     ],
-    "gap": "None.",
+    "gap": "Assert every docs/adr NNNN file has an index row and that contracts and SLO documents are indexed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1783,7 +1783,7 @@
     "verification": "cargo test -p qip-acceptance --test architecture_memory_index",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Tests are existence/contains checks: no ADR-index completeness, no contracts or SLO index, catalogue lists only 3 Cloud Run binaries."
   },
   {
     "id": "R12-GOV-9080",

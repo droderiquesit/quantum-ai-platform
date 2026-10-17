@@ -2521,14 +2521,14 @@
   },
   {
     "id": "R12-GCP-8114",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Venue credential is readable only by the execution node and only where the ceiling allows; Cloud Run services are internal and hold no venue path; order placement exists only in the edge cell.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:258 the_venue_credential_is_unreadable_where_live_trading_is_impossible",
       "infrastructure/terraform/modules/execution-node/main.tf:238 venue_credential IAM",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1103 only_the_edge_cell_itself_holds_an_order_manager"
     ],
-    "gap": "None.",
+    "gap": "Add an acceptance test that the cloudrun module refuses an execution plane and no Cloud Run service hosts qip-edge-node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2539,7 +2539,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure --test architecture",
     "work_item": "",
     "size": "S",
-    "notes": "Warm plane on Cloud Run is broader than 'burst endpoints' — ADR 0024 puts every warm binary there."
+    "notes": "Warm plane on Cloud Run is broader than 'burst endpoints' — ADR 0024 puts every warm binary there. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Never-venue-execution rule on Cloud Run is held only by an untested Terraform validation block; cited tests cover other properties."
   },
   {
     "id": "R12-GCP-8115",

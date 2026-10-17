@@ -47,7 +47,7 @@
   },
   {
     "id": "R12-MODEL-6003",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Platform::attribute marks each fill from its order's arrival price to the instrument's latest close. Slippage is split into the spread quoted at release and impact, and the per-fill sum is reconciled against the book (runtime/qip-kernel/src/platform.rs:16434-16520; attribution.rs:1-50). The result is joined to seven keys stamped at hypothesis formation and order acceptance: strategy, model/forecaster, belief/hypothesis, evidence source, capital policy, risk rule set and execution path (services/qip-learning-engine/src/keyed_attribution.rs). The joined result is journaled under kernel/attribution in LEARN, which every cycle-running binary drives.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:16434",
@@ -56,7 +56,7 @@
       "runtime/qip-kernel/tests/model_tournament.rs::a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys",
       "services/qip-learning-engine/src/keyed_attribution.rs::tests::every_dimension_groups_the_same_book_and_each_closes"
     ],
-    "gap": "",
+    "gap": "No test proves model and evidence-source attribution keys are populated from a formed hypothesis; the cited test asserts Model == UNATTRIBUTED.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -67,7 +67,7 @@
     "verification": "cargo test -p qip-kernel --test learning (new: attribution carries all seven keys)",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The old note 'realised_pnl/spread/impact are ZERO' is no longer true. The 'risk rule' key is the risk rule set in force, not the specific rule that bounded the order. A fill whose order lineage was evicted is attributed under 'unattributed' and counted."
+    "notes": "Round-2 independent audit, 2026-10-11: The old note 'realised_pnl/spread/impact are ZERO' is no longer true. The 'risk rule' key is the risk rule set in force, not the specific rule that bounded the order. A fill whose order lineage was evicted is attributed under 'unattributed' and counted. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Five of seven keys are proven populated; model and evidence-source keys are only proven to degrade to 'unattributed'."
   },
   {
     "id": "R12-MODEL-6004",
@@ -2502,7 +2502,7 @@
   },
   {
     "id": "R12-GOV-6116",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "backend/crates/libs/qip-compliance/src/eligibility.rs:43-58 defines all five SubjectKinds (venue, product, entity, jurisdiction, strategy). EligibilityRecord (:98) carries jurisdictions, grantor and lifetime. EligibilityRegister::check (:244-280) refuses a subject with no record (Refusal::NoRecord) and a missing jurisdiction record. The register is built in a shipped binary: qip-cli `agency shadow` loads it from the policy document (apps/qip-cli/src/agency.rs:228; dispatched from apps/qip-cli/src/main.rs:73). Every pass's touched subjects are put to it (services/qip-agency/src/engine.rs:700-725).",
     "evidence": [
       "backend/crates/libs/qip-compliance/src/eligibility.rs:43",
@@ -2512,7 +2512,7 @@
       "libs/qip-compliance/tests/eligibility.rs::a_record_admits_only_in_its_jurisdictions_between_grant_and_expiry_and_not_once_revoked",
       "services/qip-agency/tests/journal.rs::a_goal_touching_a_venue_not_eligible_in_its_jurisdiction_chooses_nothing"
     ],
-    "gap": "",
+    "gap": "EligibilityRegister is consumed only by the shadow agency CLI; trading-path venues, products and strategies carry no eligibility metadata.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2523,7 +2523,7 @@
     "verification": "cargo test -p qip-capital && cargo test -p qip-kernel",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Scope note: the register is populated only from the agency policy file. The trading paths (the cell's configured venues, the kernel's strategy registry) attach no record from it; that gap belongs to GOV-6118. The kernel has a separate product/user eligibility (platform.rs:269-276, ProductCatalogue/fund_user) that does not share this register."
+    "notes": "Round-2 independent audit, 2026-10-11: Scope note: the register is populated only from the agency policy file. The trading paths (the cell's configured venues, the kernel's strategy registry) attach no record from it; that gap belongs to GOV-6118. The kernel has a separate product/user eligibility (platform.rs:269-276, ProductCatalogue/fund_user) that does not share this register. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Register exists and gates agency planning only; the platform's venues/strategies do not carry eligibility metadata."
   },
   {
     "id": "R12-GOV-6117",

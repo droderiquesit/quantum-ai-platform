@@ -24,8 +24,10 @@ any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
 Recounted **2026-10-17** with `python3 -I` over `docs/blueprint/assessment/*.json`:
-COMPLETE 177, PARTIAL 1149, MISSING 159, BLOCKED 31, INCORRECT 1,
-NEEDS-VALIDATION 1 (= 1518). The 2026-10-11 table (124 / 1,125 / 207 / 52 / 9 / 1)
+COMPLETE 156, PARTIAL 1170, MISSING 159, BLOCKED 31, INCORRECT 1,
+NEEDS-VALIDATION 1 (= 1518). Of the 177 COMPLETE rows on that date, a W0.10
+independent re-audit confirmed 156 and re-graded 21 to PARTIAL (11.9%; reasons
+in each row's `notes`). The 2026-10-11 table (124 / 1,125 / 207 / 52 / 9 / 1)
 was superseded by the register's later rounds. BLOCKED means live capital, an
 external action, or a standing ADR refuses it; INCORRECT means the code
 contradicts the requirement.
@@ -140,8 +142,8 @@ Gate on `d49b3899`: `cargo fmt --all --check` exit 0; `cargo clippy
 Five independent auditors re-graded the 159 rows round 2 touched: the
 register stood at 177 COMPLETE, 1133 PARTIAL, 151 MISSING, 55 BLOCKED,
 1 INCORRECT after round 2 (these sum to 1517, not 1518; the 2026-10-17 recount
-above is COMPLETE 177, PARTIAL 1149, MISSING 159, BLOCKED 31, INCORRECT 1,
-NEEDS-VALIDATION 1 = 1518). Their defects and an independent security review's
+above is COMPLETE 156, PARTIAL 1170, MISSING 159, BLOCKED 31, INCORRECT 1,
+NEEDS-VALIDATION 1 = 1518, after the W0.10 re-audit of 2026-10-17). Their defects and an independent security review's
 seven findings are assigned to round-3 sessions (capital exposure, signed
 envelope bounds, trust infrastructure, agent controls, evidence and data,
 mesh, mutation verification). Round 4 runs ten sessions over the 469 rows

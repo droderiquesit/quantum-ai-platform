@@ -1075,14 +1075,14 @@
   },
   {
     "id": "R12-SEC-10050",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Per-workload Cloud Run identities and tests forbidding the default compute identity and unused accounts.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3268 every_deployable_has_its_own_cloud_run_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2354 no_workload_runs_as_the_projects_default_compute_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something"
     ],
-    "gap": "",
+    "gap": "Per-workload identity is enforced; grant minimality ('only the grants it uses') is not tested per workload.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1093,7 +1093,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Identity separation is tested (thinly); 'only the grants it uses' per workload has no assertion."
   },
   {
     "id": "R12-SEC-10051",
@@ -3150,14 +3150,14 @@
   },
   {
     "id": "R12-GCP-10144",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "dev tfvars declare venue_adapter_type=simulated and paper ceiling; tests prove the mock adapter and that dev secrets cannot be production secrets.",
     "evidence": [
       "infrastructure/environments/dev/terraform.tfvars venue_adapter_type = simulated",
       "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:252 dev_environment_declares_mock_venue_adapter_explicitly",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project"
     ],
-    "gap": "",
+    "gap": "dev 'reduced data' clause has no implementation or test; venue_adapter_type is validated but consumed by nothing.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3168,7 +3168,7 @@
     "verification": "cargo test -p qip-acceptance --test blueprint_arch --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Synthetic venue and no-prod-secrets clauses met; 'reduced data' clause has no evidence."
   },
   {
     "id": "R12-FABRIC-10145",

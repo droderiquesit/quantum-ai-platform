@@ -594,7 +594,7 @@
   },
   {
     "id": "R12-QUANT-4028",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "RoutingPolicy::quantum_margin (default 0.01) gates selection; Foundry::register refuses a non-positive threshold.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/router.rs:163,186 quantum_margin",
@@ -602,7 +602,7 @@
       "backend/crates/services/qip-optimization-engine/tests/optimization.rs:610 better by less than the margin loses",
       "backend/crates/libs/qip-quantum/src/foundry.rs:111-118 threshold refusal"
     ],
-    "gap": "Not deployed.",
+    "gap": "Positive per-workload threshold is enforced in Foundry::register but not wired into the router, whose margin may be zero.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -613,7 +613,7 @@
     "verification": "cargo test -p qip-optimization-engine --test optimization",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): RoutingPolicy::validate (router.rs:413) accepts quantum_margin == 0.0, so the positive threshold is enforced only on the unused Foundry declaration; ties still go classical via strict >."
   },
   {
     "id": "R12-QUANT-4029",

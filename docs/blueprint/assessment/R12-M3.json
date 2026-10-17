@@ -452,16 +452,16 @@
   },
   {
     "id": "R12-RISK-3022",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "qip-cost-router Determinism::Required returns no model rung; pre-trade limits are deterministic code.",
     "evidence": [
       "backend/crates/services/qip-cost-router/src/context.rs:20-34 Determinism",
       "backend/crates/services/qip-cost-router/tests/cost_router.rs:308 a_decision_that_must_be_deterministic_cannot_be_routed_to_any_model_tier"
     ],
-    "gap": "",
+    "gap": "Determinism::Required is never used by production code; no test shows the Risk Brain output cannot bypass the deterministic limit gates.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -469,7 +469,7 @@
     "verification": "cargo test -p qip-cost-router --test cost_router",
     "work_item": "",
     "size": "S",
-    "notes": "Limit-firing proofs belong to the RISK slice."
+    "notes": "Limit-firing proofs belong to the RISK slice. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The structural arm is real but unused by production; the Risk-Brain-recommends/gates-enforce split is asserted, not shown."
   },
   {
     "id": "R12-REASON-3023",
@@ -1186,7 +1186,7 @@
   },
   {
     "id": "R12-REASON-3056",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "CausalGraph::intervene runs on every hypothesis subject in REASON and its affected set and paths are journaled.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
@@ -1194,7 +1194,7 @@
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:567 causal.intervene"
     ],
-    "gap": "",
+    "gap": "Causal graph counterfactual explanations are not implemented in REASON; intervene results are not asserted by a test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1205,11 +1205,11 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. do-queries now wired into REASON."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. do-queries now wired into REASON. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Interventions and propagation are run; counterfactual explanations from the causal graph are absent, and confounders are only audited in a separate UNDERSTAND review."
   },
   {
     "id": "R12-REASON-3057",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "The kernel loads a versioned rule pack (eligibility plus paper-boundary and kill-switch invariants) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
@@ -1217,7 +1217,7 @@
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:264 rule_pack; :595 replay"
     ],
-    "gap": "",
+    "gap": "Only an eligibility plus paper/kill-switch rule pack is wired; accounting, market-structure and contract rules are not.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1228,11 +1228,11 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Rule pack now loaded by the kernel."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Rule pack now loaded by the kernel. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The only rule pack (symbolic_stage.rs:264 rule_pack) encodes hypothesis eligibility and paper/kill-switch invariants; no accounting-invariant, market-structure or contract rule pack."
   },
   {
     "id": "R12-REASON-3058",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Constraint solver (CSP/SAT/bounded linear integer, minimise, QUBO export) returns an assignment or a minimal unsatisfiable conflict; runs per hypothesis as the acting problem.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
@@ -1241,7 +1241,7 @@
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:488 acting() constraint problem",
       "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:598 a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable"
     ],
-    "gap": "",
+    "gap": "Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1252,7 +1252,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited."
   },
   {
     "id": "R12-REASON-3059",
