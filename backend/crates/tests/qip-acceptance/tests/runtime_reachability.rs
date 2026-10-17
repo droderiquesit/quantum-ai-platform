@@ -31,6 +31,8 @@
 //! production call site exists", which is necessary for reachability and not
 //! sufficient for it.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -427,10 +429,12 @@ fn strip_test_items(src: &str) -> (String, Vec<String>) {
                         end = k + 1;
                         let item: String = chars[item_start..k].iter().collect();
                         let words: Vec<&str> = item.split_whitespace().collect();
-                        if let Some(p) = words.iter().position(|w| *w == "mod") {
-                            if let Some(n) = words.get(p + 1) {
-                                test_mods.push((*n).to_string());
-                            }
+                        if let Some(n) = words
+                            .iter()
+                            .position(|w| *w == "mod")
+                            .and_then(|p| words.get(p + 1))
+                        {
+                            test_mods.push((*n).to_string());
                         }
                         break;
                     }
