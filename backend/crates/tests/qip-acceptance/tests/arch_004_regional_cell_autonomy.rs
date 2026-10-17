@@ -273,4 +273,14 @@ fn the_cell_routes_from_its_own_book_and_without_one_places_nothing() {
     let report = without.work(t(2), &mut gateway).unwrap();
     assert!(report.orders.is_empty(), "{:?}", report.orders);
     assert!(gateway.placed.is_empty());
+    // The refusal must come from venue selection, the gate that reads the
+    // cell's own book. Emptiness alone also holds when a later gate (`book`)
+    // catches a venue picked without one, so a regression in selection would
+    // pass unseen.
+    let gates: Vec<&str> = report.refusals.iter().map(|(g, _)| g.as_str()).collect();
+    assert!(
+        gates.contains(&"venue_selection"),
+        "the book-less cell was not refused at venue selection: {:?}",
+        report.refusals
+    );
 }

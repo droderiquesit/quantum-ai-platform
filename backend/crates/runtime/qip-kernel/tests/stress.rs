@@ -572,6 +572,15 @@ fn all_eight_named_scenarios_are_enumerated_and_paper_capital_invariants_hold() 
         .stress_report()
         .expect("paper book with position is stressed");
 
+    // Premise: the cycle priced the book against the library. A loop over an
+    // empty report asserts nothing, and would pass with stress deleted.
+    assert!(
+        stress_report.scenarios.len() >= scenarios.len(),
+        "premise: every library scenario reached the report; got {} of {}",
+        stress_report.scenarios.len(),
+        scenarios.len()
+    );
+
     // Each scenario: book equity must never go negative, loss must be bounded
     for result in &stress_report.scenarios {
         // The equity invariant: paper book capital cannot go negative

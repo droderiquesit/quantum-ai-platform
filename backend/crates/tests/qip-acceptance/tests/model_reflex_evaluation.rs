@@ -29,7 +29,7 @@ use qip_feature_dag::state::MarketState;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompilerLimits, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
-use qip_strategy::model::DistilledModel;
+use qip_strategy::model::{DistilledModel, TreeNode};
 use std::collections::BTreeMap;
 
 const ENVELOPE_KEY: &[u8] = b"a-cell-envelope-key-for-model-004";
@@ -167,10 +167,30 @@ fn a_reflex_cell_evaluates_a_promoted_model_in_its_pass_and_the_models_output_de
 fn a_model_whose_worst_case_cost_exceeds_the_reflex_budget_is_refused_at_compile() {
     let limits = CompilerLimits::default();
     let small = DistilledModel::linear("small", 0.0, vec![0.1; 4]).unwrap();
-    let large = DistilledModel::linear("large", 0.0, vec![0.1; 600]).unwrap();
-    // Premises: one fits, one does not, by the model's own declared cost.
+    // A chain tree over ONE input: its cost is its node count, while the
+    // plan around it carries a single input node. The previous fixture was a
+    // 600-coefficient linear model, whose 600 input nodes alone exceed the
+    // budget, so the refusal held with the model's own cost charged as `1`.
+    let nodes: Vec<TreeNode> = (0..600)
+        .map(|index| {
+            if index == 599 {
+                TreeNode::Leaf { value: 1.0 }
+            } else {
+                TreeNode::Branch {
+                    input: 0,
+                    threshold: 0.5,
+                    below: index + 1,
+                    at_or_above: index + 1,
+                }
+            }
+        })
+        .collect();
+    let large = DistilledModel::tree("large", 1, nodes).unwrap();
+    // Premises: one fits, one does not, by the model's own declared cost, and
+    // the large one is refused for that cost and not for its inputs.
     assert!(small.cost() < limits.max_nodes);
     assert!(large.cost() > limits.max_nodes);
+    assert_eq!(large.arity(), 1, "premise: the plan around it is tiny");
     assert!(
         StrategyCompiler::with_limits(FeatureCatalogue::new(), limits)
             .compile(&spec_with_arity(small))
