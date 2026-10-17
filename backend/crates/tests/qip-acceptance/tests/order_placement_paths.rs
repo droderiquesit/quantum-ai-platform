@@ -1003,6 +1003,18 @@ const SITES: &[(&str, &str, &str, usize, Class)] = &[
     ),
     // --- name collisions ------------------------------------------------------
     (
+        "services/qip-agency/src/ambient_intake.rs",
+        ".submit(",
+        "admit",
+        1,
+        Class::NotAnOrder {
+            why: "AmbientIntake::submit is the ambient door: it takes a Promoted \
+                  opportunity and, through the action guard, appends a draft to an \
+                  internal outbox (outbox.rs, the only Adapter). No venue, broker or \
+                  order is reachable from it (ADR 0114 D8)",
+        },
+    ),
+    (
         "libs/qip-financial/src/commerce.rs",
         ".place(",
         "purchase",
