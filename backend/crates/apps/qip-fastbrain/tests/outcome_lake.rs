@@ -13,6 +13,7 @@ use qip_core::{Clock, Duration, ManualClock, Timestamp};
 use qip_fastbrain::config::FastBrainConfig;
 use qip_fastbrain::feed::Feed;
 use qip_fastbrain::node;
+use qip_fastbrain::ship::DeskShipper;
 use qip_fastbrain::status::NodeStatus;
 use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
@@ -101,6 +102,7 @@ fn the_run_loop_seals_every_outcome_the_cycles_recorded_into_the_internal_lake_a
         &status,
         &stop,
         &clock,
+        &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
         |_| {},
     )
     .expect("the loop runs");

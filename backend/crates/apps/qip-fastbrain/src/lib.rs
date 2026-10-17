@@ -18,5 +18,6 @@ pub mod health;
 pub mod node;
 pub mod openobserve;
 pub mod roster;
+pub mod ship;
 pub mod status;
 pub mod trust;

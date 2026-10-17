@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::config::FastBrainConfig;
 use crate::feed::Feed;
+use crate::ship::DeskShipper;
 use crate::status::{CycleRecord, NodeStatus};
 
 /// Why the loop ended.
@@ -192,7 +193,20 @@ pub struct RunSummary {
     /// Event records handed to the chain archive between cycles, before the
     /// shutdown flush ran at all.
     pub archived_while_running: usize,
+    /// Desk ledger records the fabric acknowledged over the run, including
+    /// the final flush.
+    pub desk_outcomes_shipped: usize,
+    /// Desk ledger records still pending when the run ended: not delivered,
+    /// and not lost. With no fabric configured this is every desk fill.
+    pub desk_outcomes_pending: usize,
 }
+
+/// The longest the shutdown flush waits for the fabric to take the desk's
+/// last records. A quiesce is told to expect one cycle interval plus the
+/// flush; this is the flush's share for the ledger, and what it does not
+/// reach stays pending in the process that is about to end — which is why
+/// the report says how many.
+const SHIP_FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Run until something says to stop.
 ///
@@ -208,6 +222,7 @@ pub fn run(
     status: &Arc<Mutex<NodeStatus>>,
     stop: &Arc<AtomicBool>,
     clock: &Arc<dyn qip_core::Clock>,
+    shipper: &mut DeskShipper,
     mut on_cycle: impl FnMut(&StepOutcome),
 ) -> Result<RunSummary> {
     let started = clock.now();
@@ -218,6 +233,7 @@ pub fn run(
     let mut worst = Duration::ZERO;
     let mut archived = 0usize;
     let mut since_archive = 0u64;
+    let mut desk_shipped = 0usize;
 
     // The four golden signals, with the cycle as this service's unit of work
     // (OBS-018). Into the platform's own registry, so they are scraped and
@@ -299,6 +315,14 @@ pub fn run(
 
         on_cycle(&outcome);
 
+        // The desk's booked fills to the ledger. After the cycle, never inside
+        // it: a fill booked by this cycle is shipped from the next call, and
+        // the call itself only exchanges with a worker thread, so the
+        // fabric's latency is not this loop's. A delivery that failed is the
+        // report's business and leaves the records pending; only a broken
+        // acknowledgement is an error.
+        desk_shipped += shipper.ship(platform)?.acknowledged;
+
         // Archived in the gap between cycles rather than inside one. A store's
         // latency on the path of every event would be latency this node exists
         // not to have, and the sleep below is dead time that costs nothing to
@@ -326,6 +350,11 @@ pub fn run(
     sensing.shutdown(platform, clock.now())?;
     set_status(status, NodeStatus::stopping);
 
+    // One bounded last attempt at the desk's records: this process is the only
+    // place they are queued.
+    let last = shipper.flush(platform, SHIP_FLUSH_BUDGET)?;
+    desk_shipped += last.acknowledged;
+
     Ok(RunSummary {
         stopped_because: reason,
         cycles,
@@ -334,6 +363,8 @@ pub fn run(
         breaches,
         worst_cycle: worst,
         archived_while_running: archived,
+        desk_outcomes_shipped: desk_shipped,
+        desk_outcomes_pending: last.pending,
     })
 }
 
@@ -631,6 +662,7 @@ mod tests {
             &status,
             &stop,
             &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
             |_| {},
         )
         .expect("the loop runs");
@@ -660,6 +692,7 @@ mod tests {
             &status,
             &stop,
             &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
             move |_| requester.store(true, Ordering::Relaxed),
         )
         .expect("the loop runs");
@@ -698,6 +731,7 @@ mod tests {
             &status,
             &stop,
             &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
             |_| {},
         )
         .expect("the loop runs");
@@ -727,6 +761,7 @@ mod tests {
             &status,
             &stop,
             &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
             |_| {},
         )
         .expect("the loop runs");
@@ -762,6 +797,7 @@ mod tests {
             &status,
             &stop,
             &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
             |_| {},
         )
         .expect("the loop runs");
@@ -798,6 +834,7 @@ mod tests {
             &status,
             &stop,
             &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
             |_| {},
         )
         .expect("the loop runs");

@@ -1412,6 +1412,27 @@ const NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE: &str = "The node's spool drains to a 
      fabric broker is deployed beside the nodes, and its token is mounted as \
      a file like the envelope key.";
 
+const NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO: &str = "The fast brain ships \
+     the desk's booked fills to a `qip-fabricd` partition when one is named, and \
+     no environment runs a fabric broker a Cloud Run service can reach \
+     (`event_fabric_broker` is null everywhere; there is no fabricd in the \
+     catalogue and no token for one in Secret Manager). Absent, the process \
+     starts and says `desk outcomes: NOT SHIPPED (QIP_FABRIC_URL unset)` in \
+     its banner, `qip_desk_ship_configured` reads 0 and \
+     `qip_desk_outcomes_pending` climbs to the feed's 10,000-record bound, past \
+     which fills are counted `qip_desk_fills_unledgered_total{reason=\"capacity\"}`. \
+     The entry ends when a fabric broker is deployed and its token is mounted \
+     as a file.";
+
+const THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED: &str = "The \
+     fast brain reads the link's variables through `qip_transport::tls::link_source` \
+     only when `QIP_FABRIC_URL` names a fabric, and none does \
+     (NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO). Setting a link mode for a \
+     link that is never built would read as a fabric link that does not exist. \
+     The entries end together with that one: the catalogue then sets \
+     `QIP_TLS_MODE=cas` and the CA Service settings the way the execution \
+     node's template does.";
+
 /// ADR 0110's signing and trust-bundle variables, before the keys exist.
 const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
      work puts the Cloud KMS keys, the publish workflow and the committed trust \
@@ -1460,6 +1481,64 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-edge-node",
         "QIP_FABRIC_PARTITION",
         NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
+    // The fast brain's desk shipper (qip-fastbrain/src/ship.rs) carries the
+    // desk's booked fills to qip-ledgerd over the fabric, with the edge node's
+    // variables and the same link variables `link_source` reads for it.
+    (
+        "qip-fastbrain",
+        "QIP_FABRIC_URL",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_FABRIC_TOKEN",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_FABRIC_PARTITION",
+        NO_FABRIC_IS_DEPLOYED_FOR_THE_DESK_TO_SHIP_TO,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_TLS_MODE",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_TLS_CERTIFICATE_CHAIN_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_TLS_PRIVATE_KEY_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_TLS_TRUST_ROOTS_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_GOOGLE_TLS_ROOTS_PATH",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_CAS_CA_POOL",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_CAS_CERTIFICATE_TEMPLATE",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-fastbrain",
+        "QIP_CAS_LIFETIME_SECS",
+        THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
     ),
     (
         "qip-deepbrain",

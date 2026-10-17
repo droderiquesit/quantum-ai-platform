@@ -18702,10 +18702,33 @@ impl Platform {
 
     /// Hand over the ledger records of the desk's fills booked since the last
     /// call, oldest first, each with the correlation id of the cycle that
-    /// placed the order. The consumer ships them to `qip-ledgerd`, which is
-    /// idempotent on chain position, so a batch shipped twice posts once.
+    /// placed the order.
+    ///
+    /// **Destructive**: the records leave the queue whether or not anything
+    /// then delivers them, so a delivery that fails after this call has lost
+    /// them from here. It is for tests and for an operator emptying a queue
+    /// on purpose. Production delivery peeks with [`Self::pending_desk_outcomes`]
+    /// and calls [`Self::acknowledge_desk_outcomes`] only once the fabric holds
+    /// the records; `qip-ledgerd` is idempotent on chain position, so a batch
+    /// resent after a crash between those two steps posts once.
     pub fn take_desk_outcomes(&mut self) -> Vec<DeskOutcome> {
         self.desk_ledger.drain()
+    }
+
+    /// The delivery of every desk record through chain position
+    /// `through_sequence` is done: drop them from the queue. Returns how many
+    /// were dropped. Refused, with the queue untouched, for a position beyond
+    /// what was queued or one below an earlier acknowledgement; see
+    /// [`DeskLedgerFeed::acknowledge`].
+    pub fn acknowledge_desk_outcomes(&mut self, through_sequence: u64) -> Result<usize> {
+        self.desk_ledger.acknowledge(through_sequence)
+    }
+
+    /// Note a problem with shipping the desk's records, to be surfaced beside
+    /// every other capture problem in the next cycle's record. The shipper is
+    /// outside the kernel and cannot reach the capture list itself.
+    pub fn note_desk_ship_problem(&mut self, problem: impl Into<String>) {
+        self.capture_problems.push(problem.into());
     }
 
     /// The desk's ledger feed, so a test can fill it to its bound.

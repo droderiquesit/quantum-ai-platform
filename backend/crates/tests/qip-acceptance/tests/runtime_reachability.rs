@@ -300,6 +300,28 @@ const PROBES: &[Probe] = &[
         defined_in: "libs/qip-events/src/event_fabric/envelope.rs",
         needle: "FabricEnvelope::open_decoded(",
     },
+    // The desk's booked fills reach `qip-ledgerd` only through this chain, and
+    // before it existed `Platform::take_desk_outcomes` had no production
+    // caller at all: the feed filled to its bound and every later fill was
+    // counted unledgered. Three probes, because the run loop dropping the
+    // call, the shipper dropping the acknowledgement and the shipper
+    // building its records some other way are three different ways to put
+    // that back.
+    Probe {
+        symbol: "DeskShipper::ship",
+        defined_in: "apps/qip-fastbrain/src/ship.rs",
+        needle: "shipper.ship(",
+    },
+    Probe {
+        symbol: "Platform::acknowledge_desk_outcomes",
+        defined_in: "runtime/qip-kernel/src/platform.rs",
+        needle: ".acknowledge_desk_outcomes(",
+    },
+    Probe {
+        symbol: "desk_fabric::fabric_record",
+        defined_in: "runtime/qip-kernel/src/desk_fabric.rs",
+        needle: "fabric_record(",
+    },
     Probe {
         symbol: "absorb_evidence (kernel)",
         defined_in: "runtime/qip-kernel/src/evidence_intake.rs",

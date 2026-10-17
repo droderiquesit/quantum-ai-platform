@@ -10,6 +10,7 @@ use qip_core::error::Result;
 use qip_core::{Clock, Duration, SystemClock, Timestamp};
 use qip_fastbrain::config::FastBrainConfig;
 use qip_fastbrain::feed::Feed;
+use qip_fastbrain::ship::DeskShipper;
 use qip_fastbrain::status::NodeStatus;
 use qip_fastbrain::{health, node, roster};
 use qip_financial::universe::Universe;
@@ -121,6 +122,7 @@ fn the_node_runs_cycles_serves_its_own_status_and_stops_when_asked_over_loopback
         &status,
         &stop,
         &clock,
+        &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
         |_| {
             if !asked {
                 let answer = ask(port, "POST /quiesce").expect("the quiesce is answered");
@@ -301,6 +303,7 @@ fn the_loop_records_the_four_golden_signals_and_counts_a_cycle_over_its_budget_a
         &status,
         &stop,
         &clock,
+        &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
         |_| {},
     )
     .expect("the loop runs");
@@ -333,6 +336,7 @@ fn the_loop_records_the_four_golden_signals_and_counts_a_cycle_over_its_budget_a
         &status,
         &stop,
         &clock,
+        &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
         |_| {},
     )
     .expect("the loop runs");

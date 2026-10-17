@@ -156,6 +156,11 @@ pub struct DeskLedgerFeed {
     tail_digest: Option<String>,
     seen: BTreeSet<(String, String)>,
     outbox: Vec<DeskOutcome>,
+    /// The highest chain sequence a consumer has acknowledged as delivered.
+    /// Held so an acknowledgement that goes backwards is a refusal rather than
+    /// a silent no-op: a shipper whose bookkeeping has fallen behind the
+    /// feed's is a shipper that will resend, and that should be seen.
+    acknowledged_through: Option<u64>,
 }
 
 impl DeskLedgerFeed {
@@ -243,8 +248,57 @@ impl DeskLedgerFeed {
     }
 
     /// Hand over everything queued, oldest first, leaving the queue empty.
+    ///
+    /// Destructive: what is returned is no longer queued, so a caller that
+    /// then fails to deliver it has lost it from here. Production delivery
+    /// uses [`Self::pending`] and [`Self::acknowledge`], which drop a record
+    /// only after the fabric has it; this is for tests and operators.
     pub fn drain(&mut self) -> Vec<DeskOutcome> {
         std::mem::take(&mut self.outbox)
+    }
+
+    /// The highest chain sequence acknowledged so far.
+    pub fn acknowledged_through(&self) -> Option<u64> {
+        self.acknowledged_through
+    }
+
+    /// Drop every queued record at or below chain `through_sequence`, because
+    /// the consumer holds them. Returns how many were dropped.
+    ///
+    /// Refused, with nothing changed, when `through_sequence` is beyond the
+    /// newest record queued (an acknowledgement for something this feed never
+    /// held would silently discard the next record to arrive) or below an
+    /// earlier acknowledgement (the consumer is resending what it has already
+    /// been told is safe). Re-acknowledging the same sequence is a harmless
+    /// no-op.
+    pub fn acknowledge(&mut self, through_sequence: u64) -> Result<usize> {
+        if let Some(already) = self.acknowledged_through
+            && through_sequence < already
+        {
+            return Err(Error::invalid(format!(
+                "acknowledgement through chain position {through_sequence} goes backwards: \
+                 position {already} is already acknowledged"
+            )));
+        }
+        if self.acknowledged_through == Some(through_sequence) {
+            return Ok(0);
+        }
+        let newest = self.outbox.last().map(|o| o.record.entry.sequence);
+        match newest {
+            Some(newest) if through_sequence <= newest => {}
+            _ => {
+                return Err(Error::invalid(format!(
+                    "acknowledgement through chain position {through_sequence} is beyond what \
+                     the desk queued (newest queued: {newest:?}); acknowledging it would \
+                     discard a record that has not been delivered"
+                )));
+            }
+        }
+        let before = self.outbox.len();
+        self.outbox
+            .retain(|outcome| outcome.record.entry.sequence > through_sequence);
+        self.acknowledged_through = Some(through_sequence);
+        Ok(before - self.outbox.len())
     }
 }
 
@@ -328,6 +382,70 @@ mod tests {
         assert_eq!(feed.pending().len(), 1);
         assert_eq!(feed.next_sequence(), 1);
         assert_eq!(feed.pending()[0].correlation_id, "corr-1");
+    }
+
+    fn feed_of(count: usize) -> DeskLedgerFeed {
+        let mut feed = DeskLedgerFeed::new();
+        for n in 0..count {
+            let fill = booked(&format!("o{n}"), "f", dec!("1"), dec!("100"));
+            assert!(matches!(
+                feed.admit(&fill, "central-desk", "c").unwrap(),
+                Admission::Recorded { .. }
+            ));
+        }
+        feed
+    }
+
+    #[test]
+    fn an_acknowledgement_drops_exactly_the_records_through_it() {
+        // The failure this prevents: an ack that drops the whole queue, so a
+        // record queued after the shipper peeked is discarded undelivered.
+        let mut feed = feed_of(5);
+        assert_eq!(feed.acknowledge(2).unwrap(), 3);
+        let left: Vec<u64> = feed
+            .pending()
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect();
+        assert_eq!(left, vec![3, 4]);
+        assert_eq!(feed.acknowledged_through(), Some(2));
+        // Re-acknowledging the same position is a no-op, not an error.
+        assert_eq!(feed.acknowledge(2).unwrap(), 0);
+        assert_eq!(feed.pending().len(), 2);
+    }
+
+    #[test]
+    fn an_acknowledgement_beyond_what_was_queued_is_refused_and_drops_nothing() {
+        // The failure this prevents: acknowledging position 9 of a queue that
+        // ends at 4 and so discarding records 5..=9 when they arrive.
+        let mut feed = feed_of(5);
+        let error = feed.acknowledge(5).unwrap_err();
+        assert!(error.message().contains("beyond"), "{}", error.message());
+        assert_eq!(feed.pending().len(), 5, "a refusal moved the queue");
+        assert_eq!(feed.acknowledged_through(), None);
+        // And nothing at all queued: any position is beyond it.
+        let mut empty = DeskLedgerFeed::new();
+        assert!(empty.acknowledge(0).is_err());
+    }
+
+    #[test]
+    fn an_acknowledgement_that_goes_backwards_is_refused() {
+        let mut feed = feed_of(5);
+        feed.acknowledge(3).unwrap();
+        let error = feed.acknowledge(1).unwrap_err();
+        assert!(error.message().contains("backwards"), "{}", error.message());
+        assert_eq!(feed.pending().len(), 1);
+        assert_eq!(feed.acknowledged_through(), Some(3));
+    }
+
+    #[test]
+    fn a_peek_leaves_the_queue_and_only_an_acknowledgement_shrinks_it() {
+        let mut feed = feed_of(3);
+        assert_eq!(feed.pending().len(), 3);
+        assert_eq!(feed.pending().len(), 3, "peeking took something");
+        feed.acknowledge(2).unwrap();
+        assert!(feed.pending().is_empty());
+        assert!(!feed.is_full());
     }
 
     #[test]

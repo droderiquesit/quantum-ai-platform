@@ -18,6 +18,16 @@ use crate::topic::Topic;
 
 use super::policy::QosClass;
 
+/// The P1 outcomes stream every producer of `reflex.outcome_recorded` writes
+/// to (`infrastructure/event-fabric/streams.local.json`) and the ledger reads.
+///
+/// Defined once, here, because two producers now ship to it — the edge node
+/// for a cell's fills and the fast brain for the desk's — and a stream name
+/// typed twice is two names that can drift apart without either compiling
+/// differently: a producer pointed at a stream the ledger does not read is
+/// acknowledged by the broker and booked by nobody.
+pub const REFLEX_OUTCOMES_STREAM: &str = "reflex-outcomes.local";
+
 /// One reflex topic's fixed binding: the schema version this build writes,
 /// and the catalogue class the fabric carries it on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

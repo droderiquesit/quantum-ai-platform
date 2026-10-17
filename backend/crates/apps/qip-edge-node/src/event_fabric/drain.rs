@@ -72,7 +72,7 @@ use std::time::{Duration, Instant};
 pub const DRAIN_THREAD: &str = "qip-spool-drain";
 
 /// The P1 stream the reflex outcomes are produced to (streams.local.json).
-pub const OUTCOMES_STREAM: &str = "reflex-outcomes.local";
+pub const OUTCOMES_STREAM: &str = bindings::REFLEX_OUTCOMES_STREAM;
 
 /// The P2 stream the reflex journal, pass markers and tape events are
 /// produced to (streams.local.json).

@@ -45,6 +45,15 @@ qip-market-ingestion.workspace = true
 # before. What it may reach is bounded by the transport itself, which refuses
 # any scheme but plaintext http by name, and by the one operator-set URL.
 qip-transport.workspace = true
+# The desk shipper (src/ship.rs) opens every record as the `FabricEnvelope` the
+# ledger will open it as before a byte is sent, and names the batch codec. A
+# workspace crate the kernel and the edge node already depend on, not a third
+# external dependency.
+qip-events.workspace = true
+
+[dev-dependencies]
+# `Side`, for the unit tests that build a booked fill by hand.
+qip-execution-engine.workspace = true
 
 [lints]
 workspace = true

@@ -1071,6 +1071,20 @@ pub mod names {
     /// nor the ledger, so the two still agree; it is also a reconciliation
     /// break against the venue and wants a person.
     pub const DESK_FILLS_UNLEDGERED: &str = "qip_desk_fills_unledgered_total";
+    /// Delivery attempts of the desk's ledger records to the event fabric, by
+    /// `outcome`: `shipped`, `deferred` (the fabric did not take them; they
+    /// stay pending and are resent), `refused` (a record the ledger would
+    /// refuse, or a hole in the chain, held back so it cannot stall the
+    /// ledger's partition) and `fenced` (a newer desk owns the partition;
+    /// shipping stopped).
+    pub const DESK_SHIP: &str = "qip_desk_ship_total";
+    /// Desk ledger records booked and not yet acknowledged as delivered. Grows
+    /// without bound only until the feed's own cap, past which fills are
+    /// counted on `qip_desk_fills_unledgered_total` instead.
+    pub const DESK_OUTCOMES_PENDING: &str = "qip_desk_outcomes_pending";
+    /// `1` when the process has a fabric to ship the desk's records to, `0`
+    /// when it was started without one and the records only queue.
+    pub const DESK_SHIP_CONFIGURED: &str = "qip_desk_ship_configured";
     /// Feasibility refusals by `venue` and `constraint`, from both seams: the
     /// desk's order manager, where the venue is the broker's name, and the
     /// cells' reports, where it is the venue the intent named and the centre

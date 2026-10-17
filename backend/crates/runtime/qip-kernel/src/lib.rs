@@ -49,6 +49,7 @@ pub mod counterfactual_trial;
 pub mod cross_margin;
 pub mod cycle;
 pub mod decision_record;
+pub mod desk_fabric;
 pub mod desk_ledger;
 pub mod event_markets;
 pub mod evidence_intake;
