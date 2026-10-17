@@ -514,17 +514,19 @@
   },
   {
     "id": "R12-AMBIENT-7025",
-    "status": "PARTIAL",
-    "current": "AmbientSignal/AttentionRouter contracts and tests; no scheduled ambient service.",
+    "status": "COMPLETE",
+    "current": "node::run_with schedules the research sweep each cycle; it keeps a stateful NowEstimator, scores surprises, and routes AmbientSignals into AttentionEvents, journaled with causation lineage.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:294-401 RoutingPolicy budget_per_window/window/defer_capacity; AttentionRouter::route",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:148,203,213 a storm never exceeds the attention budget",
-      "AttentionRouter is referenced only inside backend/crates/libs/qip-contracts/src/ambient.rs and tests (no production caller)"
+      "AttentionRouter is referenced only inside backend/crates/libs/qip-contracts/src/ambient.rs and tests (no production caller)",
+      "backend/crates/apps/qip-deepbrain/src/node.rs::run_with",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientJournal::record"
     ],
-    "gap": "No running ambient model service; router unwired.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -532,7 +534,7 @@
     "verification": "integration test of a scheduled ambient loop",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-AMBIENT-7026",

@@ -789,12 +789,12 @@
   {
     "id": "R12-EXPAND-6037",
     "status": "PARTIAL",
-    "current": "ToolRegistry.propose and the curriculum's ToolBuild items exist (library); registry used in deep brain only for a model endpoint.",
+    "current": "The deployed sweep proposes a read-only ToolSpec and a ToolBuild curriculum item, with lineage, for a tool the node lacks (tick-replay, from feasibility-refusal clusters).",
     "evidence": [
       "backend/crates/libs/qip-agents/src/tools.rs:88 propose",
       "backend/crates/services/qip-expansion/tests/expansion.rs:450 missing parser becomes tool proposal + build item"
     ],
-    "gap": "Wiring proposals from a running path; CapabilityPack.",
+    "gap": "plan.rs::tool() can never propose Solver or VenueAdapter kinds; no CapabilityPack type; only the simulator case is tested.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -805,7 +805,7 @@
     "verification": "cargo test (crate producing ToolSpec / CapabilityPack)",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-EXPAND-6038",
@@ -957,16 +957,18 @@
   },
   {
     "id": "R12-EXPAND-6045",
-    "status": "PARTIAL",
-    "current": "AmbientSignal, AttentionEvent and AttentionRouter contracts exist; no path from an ambient signal to a curriculum item.",
+    "status": "COMPLETE",
+    "current": "Each raised gap becomes a validated AmbientSignal; the router's Activated AttentionEvent, not a person, creates the curriculum item, which carries its origin gap; journaled records carry causation lineage.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:66 AmbientSignal",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::emit",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::admit"
     ],
-    "gap": "Ambient-to-curriculum wiring.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -974,7 +976,7 @@
     "verification": "cargo test (crate producing AmbientSignal / AttentionEvent)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-EXPAND-6046",
@@ -1066,11 +1068,11 @@
   {
     "id": "R12-EXPAND-6050",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/promotion.rs:32 ResearchCampaign across historical, simulated, paper, shadow in order with provenance",
+    "current": "The deployed sweep runs fill-bias campaigns (executor::run_fill_bias_campaign) through Historical, Simulated, Paper and Shadow stages, with dataset digests, reproducibly; a campaign missing a stage is not promoted.",
     "evidence": [
       "backend/crates/services/qip-expansion/tests/loop.rs:475 a_campaign_refuses_a_stage_out_of_order_and_one_with_no_provenance"
     ],
-    "gap": "No production code runs a campaign; ResearchCampaign/desk.conclude have no caller.",
+    "gap": "No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1081,7 +1083,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-EXPAND-6051",
@@ -1298,12 +1300,12 @@
   {
     "id": "R12-EXPAND-6061",
     "status": "PARTIAL",
-    "current": "qip-agents ResearchRegistry screens a repeated hypothesis against its recorded null result (tested); only qip-expansion (library-only) uses it.",
+    "current": "ExpansionDesk holds a ResearchRegistry on the deep-brain sweep; a concluded null is recorded and a re-raised question is refused at admission.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/research.rs:33",
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs:64"
     ],
-    "gap": "Integration; open questions, benchmarks, contradictions.",
+    "gap": "The registry stores only hypothesis+verdict, with no experiments, open-question, benchmark-suite or contradiction fields; it refuses only an empty hypothesis or evidence.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1314,7 +1316,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-EXPAND-6062",

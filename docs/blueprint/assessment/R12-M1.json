@@ -94,13 +94,13 @@
   {
     "id": "R12-AMBIENT-1005",
     "status": "PARTIAL",
-    "current": "qip_contracts::ambient defines AmbientSignal, AttentionRouter and the promote() fence and is tested (including log round-trip in an acceptance suite), but nothing in qip-kernel or any app constructs or runs an ambient loop.",
+    "current": "node::run_with runs ResearchLoop every cycle without a request: it forecasts (NowEstimator), finds weak signals and contradictions, wakes specialists, and journals AmbientSignal/AttentionEvent records; a disabled loop journals nothing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:66 AmbientSignal",
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:1 log round-trip tests (topics borrowed, not registered)"
     ],
-    "gap": "Run an ambient loop from qip-deepbrain, register ambient topics in qip-events, and route attention to specialists.",
+    "gap": "The ambient mesh generates no scenarios.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -111,7 +111,7 @@
     "verification": "cargo test -p qip-acceptance --test ambient_attention plus a qip-deepbrain node test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-AGENCY-1006",
@@ -572,15 +572,17 @@
   },
   {
     "id": "R12-AMBIENT-1026",
-    "status": "PARTIAL",
-    "current": "AttentionRouter exists and is tested; nothing runs it.",
+    "status": "COMPLETE",
+    "current": "The deep-brain research loop forecasts (NowEstimator), simulates (fill-bias campaign bootstrap), raises assumption and weak-signal gaps, and routes them; an AttentionEvent wakes a named registered specialist and is journaled.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
+      "backend/crates/apps/qip-deepbrain/src/now.rs::surprise_signals"
     ],
-    "gap": "Run it from deepbrain and wire to specialist agents.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -590,7 +592,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-FABRIC-1027",
@@ -2564,16 +2566,18 @@
   },
   {
     "id": "R12-EXPAND-1113",
-    "status": "PARTIAL",
-    "current": "qip_expansion::gap::GapTrigger; only caller is uncalled deepbrain signal_mapper.",
+    "status": "COMPLETE",
+    "current": "The deployed research sweep runs anomaly_clusters/coverage/contradiction gap detectors, raises a novel cluster as a gap at full novelty, queues it with lineage and counts it on qip_research_gaps.",
     "evidence": [
       "backend/crates/services/qip-expansion/src/gap.rs:17",
-      "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs:24"
+      "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs:24",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::price_jumps_the_platform_recorded_are_detected_as_one_novel_cluster_and_recorded_as_a_gap"
     ],
-    "gap": "Integrate novelty/gap detection in deepbrain with a named test.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2581,19 +2585,21 @@
     "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-EXPAND-1114",
-    "status": "PARTIAL",
-    "current": "qip_expansion::curriculum TaskKind/Criteria, no caller.",
+    "status": "COMPLETE",
+    "current": "With no prompt, the deployed sweep turns its own gaps into validated CurriculumItems in the ExpansionDesk queue, scored on measured criteria, ranked, and carrying their derivation.",
     "evidence": [
-      "backend/crates/services/qip-expansion/src/curriculum.rs:23"
+      "backend/crates/services/qip-expansion/src/curriculum.rs:23",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::admit",
+      "backend/crates/services/qip-expansion/src/desk.rs::ExpansionDesk::offer"
     ],
-    "gap": "Integrate self-generated curriculum in deepbrain with a named test.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2601,7 +2607,7 @@
     "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-EXPAND-1115",
@@ -2706,15 +2712,17 @@
   },
   {
     "id": "R12-EXPAND-1120",
-    "status": "PARTIAL",
-    "current": "Model/strategy promotion gated on calibrated baseline; capability (non-model) promotion absent.",
+    "status": "COMPLETE",
+    "current": "The deployed sweep promotes a campaign's capability only when its recorded benchmark beats the incumbent uncorrected twin; a worse candidate is refused, its null recorded, and no CapabilityEntry or package created.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/tests/models.rs:386"
+      "backend/crates/runtime/qip-kernel/tests/models.rs:386",
+      "backend/crates/services/qip-expansion/src/promotion.rs::promote",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::capabilities"
     ],
-    "gap": "Integrate benchmark-gated capability promotion in deepbrain with a named test.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2722,7 +2730,7 @@
     "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-TICK-1121",
@@ -2974,11 +2982,11 @@
   {
     "id": "R12-REASON-1133",
     "status": "PARTIAL",
-    "current": "temporal Event/Order, no kernel caller.",
+    "current": "REASON runs symbolic_stage::derive for each hypothesis; the temporal timeline orders anomaly before hypothesis and is journaled as a SymbolicDerivation.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/temporal.rs:29"
     ],
-    "gap": "Integrate temporal/event logic into the REASON stage.",
+    "gap": "No neural model is coupled; replay re-verifies only the rule-pack verdict, not the temporal result.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2989,7 +2997,7 @@
     "verification": "cargo test -p qip-reasoning-engine",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-REASON-1134",
@@ -3034,11 +3042,11 @@
   {
     "id": "R12-REASON-1136",
     "status": "PARTIAL",
-    "current": "constraint Variable/Form, no kernel caller; no SAT/SMT/MILP.",
+    "current": "REASON solves an acting constraint problem per hypothesis (Satisfied or Unsatisfiable naming the blocking rule), consistent with rule-pack eligibility, and journals it.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs:38"
     ],
-    "gap": "Integrate constraint solvers into the REASON stage.",
+    "gap": "No neural model is coupled; replay does not re-solve the constraint; no SAT/SMT/MILP.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3049,7 +3057,7 @@
     "verification": "cargo test -p qip-reasoning-engine",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-REASON-1137",
@@ -3111,16 +3119,21 @@
   },
   {
     "id": "R12-AMBIENT-1140",
-    "status": "PARTIAL",
-    "current": "qip_contracts::ambient types (AmbientSignal/Detection/AttentionRouter) cover this as contracts only; nothing runs them.",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain main.rs builds ResearchLoop and AmbientJournal; node::run_with sweeps every cycle (default 1) and journals each routed signal. NOW surprises become severity-scored surprise signals on the hash-chained ambient journal; QIP_DEEPBRAIN_RESEARCH_EVERY=0 journals nothing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:94 Detection",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/main.rs::main",
+      "backend/crates/apps/qip-deepbrain/src/node.rs::run_with",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientJournal::record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist"
     ],
-    "gap": "An ambient loop in deepbrain.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -3130,17 +3143,17 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-AMBIENT-1141",
     "status": "PARTIAL",
-    "current": "qip_contracts::ambient types (AmbientSignal/Detection/AttentionRouter) cover this as contracts only; nothing runs them.",
+    "current": "The scheduled deep-brain research sweep runs DetectorRegistry anomaly scans and opportunity detectors (repeated_vetoes, PersistenceTracker -> MissedOpportunity -> SignalClass::Opportunity); anomaly signals and router decisions are journaled and tested.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:94 Detection",
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
     ],
-    "gap": "An ambient loop in deepbrain.",
+    "gap": "No test asserts an Opportunity-class signal from the opportunity scans is journaled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3153,7 +3166,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-AMBIENT-1142",
@@ -3197,16 +3210,19 @@
   },
   {
     "id": "R12-AMBIENT-1144",
-    "status": "PARTIAL",
-    "current": "qip_contracts::ambient types (AmbientSignal/Detection/AttentionRouter) cover this as contracts only; nothing runs them.",
+    "status": "COMPLETE",
+    "current": "The scheduled research sweep routes NOW surprises through AttentionRouter; an Activated event wakes a registered BrainSpec specialist (adversarial/forecast/risk/sensing), and the ambient journal records which specialist each event woke.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:94 Detection",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs::AmbientRecord",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none"
     ],
-    "gap": "An ambient loop in deepbrain.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -3216,7 +3232,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-QUANT-1145",
@@ -4139,12 +4155,12 @@
   {
     "id": "R12-REFLEX-1189",
     "status": "PARTIAL",
-    "current": "qip-edge (the cell) has no qip-storage dependency and qip-edge-node source never references Lake; no test pins either fact (qip-edge-node does depend on qip-storage for its journal).",
+    "current": "An acceptance scan proves qip-edge's closure excludes qip-storage and that no qip-edge-node module calls read_canonical/materialize; only drain.rs and main.rs name the lake module.",
     "evidence": [
       "backend/crates/edge/qip-edge/Cargo.toml dependencies exclude qip-storage",
       "backend/crates/apps/qip-edge-node/Cargo.toml:24 qip-storage (journal)"
     ],
-    "gap": "An acceptance scan refusing Lake use from the edge closure.",
+    "gap": "LAKE_READS omits Lake::read_market_history, list_market_history, pin_market_history and verify; such a read in main.rs or drain.rs passes the scan.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -4155,7 +4171,7 @@
     "verification": "new acceptance test scanning the qip-edge-node closure for qip_storage::lake",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-MESH-1190",

@@ -26,13 +26,13 @@
   {
     "id": "R12-MODEL-4002",
     "status": "PARTIAL",
-    "current": "qip-deepbrain/src/language.rs is the only composition root that builds the hosted language adapter; qip-fastbrain does not depend on qip-ai directly and qip-edge does not at all; qip-cost-router's Determinism::Required arm cannot name a model rung.",
+    "current": "An acceptance suite proves every LanguageModel adapter under providers/ is constructed only in qip-deepbrain/src, that fastbrain/edge sources never name it, and that edge manifests do not link qip-reasoning-engine or qip-kernel.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/language.rs:1-10 only root building the hosted adapter",
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes"
     ],
-    "gap": "No test asserts that the hosted adapter is constructed only in qip-deepbrain; qip-fastbrain links qip-kernel which links qip-ai, so the restriction for the fast brain is by convention. Add an acceptance test over construction sites of the hosted adapter.",
+    "gap": "qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -43,7 +43,7 @@
     "verification": "new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-MODEL-4003",
@@ -181,11 +181,11 @@
   {
     "id": "R12-MODEL-4009",
     "status": "PARTIAL",
-    "current": "qip-world-model federation.rs implements a population of declared, scored, expiring world models with arbitration that records disagreement; nothing in runtime or apps calls it.",
+    "current": "UNDERSTAND runs FederationStage over regional, horizon and scenario members, each Brier-scored against later closes; each arbitration carries its Disagreement, opposite views give no merged probability, and a review is journaled every cycle (qip-kernel symbolic_federation, 4 passed).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:1-12 Federation/Arbitration/Disagreement"
     ],
-    "gap": "Not integrated into the kernel's UNDERSTAND/REASON stages; no calibration of members.",
+    "gap": "No domain-model members: the statement names domain/regional/horizon/scenario and only the last three exist; members are declared statistics, not fitted models.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -196,7 +196,7 @@
     "verification": "kernel integration test reading an arbitrated federation view",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-MODEL-4010",

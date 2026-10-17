@@ -77,17 +77,19 @@
   },
   {
     "id": "R12-WORLD-9004",
-    "status": "PARTIAL",
-    "current": "qip_world_model::federation::Federation registers declared models with scope/expiry, scores assessments, branches/merges lineages, and records Disagreement and ResearchTask; it is exercised only by its own tests and named in the CLI blueprint table — the cycle does not run it.",
+    "status": "COMPLETE",
+    "current": "The cycle maintains competing world models, scores them against later closes, keeps every view in the Disagreement, and turns material spread into a ResearchTask citing its decision in the journaled review.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:362 Federation, :246 Disagreement, :266 Arbitration, :288 ResearchTask",
       "backend/crates/services/qip-world-model/tests/federation.rs",
-      "backend/crates/apps/qip-cli/src/blueprint.rs:69 (descriptive table only)"
+      "backend/crates/apps/qip-cli/src/blueprint.rs:69 (descriptive table only)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::replay",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::understand_federation"
     ],
-    "gap": "Compose the Federation into the kernel cycle (UNDERSTAND/DISCOVER), persist it, and publish research tasks.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -95,7 +97,7 @@
     "verification": "cargo test -p qip-world-model --test federation; a qip-kernel test proving the cycle produces an Arbitration",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-graded 2026-10-17 by an independent grader that wrote none of the code (read code and tests, ran nothing); the orchestrator then ran the named tests (qip-deepbrain ambient_journal 6, research 12, expansion_rows 8; qip-kernel symbolic_federation 4; all passed) and mutated two production calls (AmbientJournal::record in node::run_with; ResearchLoop::admit), each failing the cited tests, restored by byte compare."
   },
   {
     "id": "R12-REASON-9005",
@@ -1768,11 +1770,11 @@
   {
     "id": "R12-GOV-9079",
     "status": "PARTIAL",
-    "current": "architecture_memory_index suite asserts ADRs are numbered and indexed, blueprint sources listed with hashes, the service catalogue enumerates deployable binaries, runbooks exist and agent instructions reference the index.",
+    "current": "Blueprint sources are held to the README's SHA-256 both ways; the other checks are existence-only: an ADR README, ADRs 0001-0003, 3 binary names in catalogue.tf, any .md file in docs/ops.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs:17,70,133,156,186,211"
     ],
-    "gap": "Assert every docs/adr NNNN file has an index row and that contracts and SLO documents are indexed.",
+    "gap": "No check that every ADR has an index row; 5 of 8 binaries unchecked; runbooks not enumerated; contracts and SLOs not indexed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1783,7 +1785,7 @@
     "verification": "cargo test -p qip-acceptance --test architecture_memory_index",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Tests are existence/contains checks: no ADR-index completeness, no contracts or SLO index, catalogue lists only 3 Cloud Run binaries."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Tests are existence/contains checks: no ADR-index completeness, no contracts or SLO index, catalogue lists only 3 Cloud Run binaries. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-GOV-9080",

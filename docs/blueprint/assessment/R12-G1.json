@@ -1626,12 +1626,12 @@
   {
     "id": "R12-FABRIC-8074",
     "status": "PARTIAL",
-    "current": "Fixed per-request ceiling (8 MiB + 4 KiB) and server connection limits; catalogue read bounded. No pooled allocator and no test of the request ceiling found in this slice.",
+    "current": "The broker's data plane sets max_body to MAXIMUM_REQUEST_BYTES; a declaration one byte over (or 16 MiB) is refused 413, and ServerLimits caps concurrent connections at 64 with a 503.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/lib.rs:70-75 MAXIMUM_REQUEST_BYTES",
       "backend/crates/libs/qip-transport/src/server.rs ServerLimits"
     ],
-    "gap": "Test that an oversize request is refused and memory stays bounded under load.",
+    "gap": "No test of the max_concurrent 503 refusal at the broker; no pooled buffer allocator.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1642,7 +1642,7 @@
     "verification": "cargo test -p qip-fabricd",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-FABRIC-8075",

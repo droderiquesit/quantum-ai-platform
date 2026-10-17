@@ -563,12 +563,12 @@
   {
     "id": "R12-AMBIENT-3027",
     "status": "PARTIAL",
-    "current": "AttentionRouter with budgeted routing exists; only an acceptance test constructs it.",
+    "current": "AttentionRouter (the Ambient Attention Brain) is built by ResearchLoop::new and runs every deep-brain sweep, combining surprise/opportunity/risk/assumption signals and waking specialists.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (only consumer outside crate is an acceptance test)",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:148 a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed"
     ],
-    "gap": "No production producer of AmbientSignal and no router in the cycle.",
+    "gap": "Not constructed in the production Organisation (qip-investment-agents roster); no test shows removing it drops its scope from coverage.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -579,7 +579,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-AGENCY-3028",
@@ -1391,14 +1391,14 @@
   {
     "id": "R12-AMBIENT-3065",
     "status": "PARTIAL",
-    "current": "AttentionRouter implemented and tested; constructed only in tests.",
+    "current": "The production sweep routes every gap through AttentionRouter (materiality 1000 bp, 256 activations/hour); a 300-signal storm activates 256 and journals 44 as Deferred/Shed; below-materiality signals wake nothing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (only consumer outside crate is an acceptance test)",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:112",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:148 a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:41"
     ],
-    "gap": "Wire router into the kernel with real pathways.",
+    "gap": "Pathway::CapitalPreparation is unreachable (no class routes to it); RiskReview and ReflexModelUpdate are labels, since admit treats every pathway the same.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1409,7 +1409,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
   },
   {
     "id": "R12-AMBIENT-3066",
