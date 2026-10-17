@@ -3998,6 +3998,34 @@ pub struct LotAdjusted {
 /// is shared with the cells' deltas and the retirement dispositions.
 const BOOK_ORIGIN: &str = "kernel/book";
 
+/// The journalled watermark of the desk's ledger records: the fabric has
+/// acknowledged every record through this chain position, so `qip-ledgerd`
+/// holds them.
+///
+/// Written by [`Platform::acknowledge_desk_outcomes`] only when the watermark
+/// advances, in the same hash-chained log the [`FillBooked`] records it
+/// refers to live in, so it is replayable and cannot be edited without
+/// breaking the chain. A restart reads the highest one and re-queues every
+/// booked fill after it ([`Platform::resume_book`]): the record is the
+/// difference between "the ledger has everything the log holds", which was
+/// assumed and false after any crash with records unshipped, and "the ledger
+/// has this much".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeskLedgerAcknowledged {
+    pub through_sequence: u64,
+}
+
+/// The producer of [`DeskLedgerAcknowledged`]. Distinct from [`BOOK_ORIGIN`]
+/// so the book's fold never meets it: the topic is `PositionUpdated`, shared
+/// with the cells' deltas and the lot adjustments, and the producer is what
+/// tells them apart.
+const DESK_LEDGER_ORIGIN: &str = "kernel/desk-ledger";
+
+impl EventBody for DeskLedgerAcknowledged {
+    const TOPIC: Topic = Topic::PositionUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for FillBooked {
     /// The platform's own fill, in the class the log never evicts. The topic
     /// had a retention class and a stream and, until this record, no writer.
@@ -7375,7 +7403,20 @@ impl Platform {
         // book and the aggregate are written, and the aggregate is reached
         // through `&mut self`. Bounded by the log's own retained records.
         let mut entries = Vec::new();
+        // The highest chain position the log says the ledger has been given.
+        let mut watermark: Option<u64> = None;
         for record in self.event_log.records() {
+            if record.event.lineage.producer == DESK_LEDGER_ORIGIN
+                && record.event.topic == DeskLedgerAcknowledged::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                let through = frame
+                    .decode::<DeskLedgerAcknowledged>()?
+                    .body
+                    .through_sequence;
+                watermark = Some(watermark.map_or(through, |held| held.max(through)));
+                continue;
+            }
             if record.event.lineage.producer != BOOK_ORIGIN {
                 continue;
             }
@@ -7387,9 +7428,13 @@ impl Platform {
             } else {
                 continue;
             };
-            entries.push((record.sequence, entry));
+            entries.push((
+                record.sequence,
+                entry,
+                record.event.lineage.correlation_id.clone(),
+            ));
         }
-        let first_fill = entries.iter().find_map(|(_, entry)| match entry {
+        let first_fill = entries.iter().find_map(|(_, entry, _)| match entry {
             Entry::Fill(fill) => Some(fill.at),
             Entry::Adjustment(_) => None,
         });
@@ -7397,7 +7442,10 @@ impl Platform {
             self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
         }
         let resumed = entries.len();
-        for (sequence, entry) in entries {
+        if let Some(through) = watermark {
+            self.desk_ledger.resume_acknowledged(through);
+        }
+        for (sequence, entry, logged_as) in entries {
             match entry {
                 Entry::Fill(fill) => {
                     // The ledger chain is a fold of the same records, so a
@@ -7405,13 +7453,40 @@ impl Platform {
                     // the ledger would refuse can only be one written before
                     // the live path checked; the book keeps it (the log is
                     // what the book is the fold of) and the chain does not.
-                    if let Err(error) = self.desk_ledger.fold_booked(&fill, DESK_STRATEGY) {
-                        self.capture_problems.push(format!(
-                            "fill {} on order {} is in the event log and has no ledger record: {}",
-                            fill.fill_id,
-                            fill.order_id,
-                            error.message()
-                        ));
+                    //
+                    // What the ledger was given is the log's watermark, not
+                    // "everything": a fill at or below it is folded (the ledger
+                    // holds it); every fill after it is re-queued in chain
+                    // order with the sequence and digest it had, because a
+                    // crash between booking and the fabric's acknowledgement
+                    // otherwise left it in the book and out of the ledger for
+                    // good, and the next record a hole the ledger parks on.
+                    // A log with no watermark (every log written before
+                    // records were shipped) re-queues all of them, which is
+                    // right: the ledger has been given none.
+                    let next = self.desk_ledger.next_sequence();
+                    let covered = watermark.is_some_and(|through| next <= through);
+                    let result = if covered {
+                        self.desk_ledger
+                            .fold_booked(&fill, DESK_STRATEGY)
+                            .map(|_| Admission::Duplicate)
+                    } else {
+                        self.desk_ledger
+                            .requeue_booked(&fill, DESK_STRATEGY, logged_as.as_str())
+                    };
+                    match result {
+                        Ok(Admission::Overflowed { sequence }) => {
+                            self.note_unqueued_fill(&fill, sequence);
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            self.capture_problems.push(format!(
+                                "fill {} on order {} is in the event log and has no ledger record: {}",
+                                fill.fill_id,
+                                fill.order_id,
+                                error.message()
+                            ));
+                        }
                     }
                     let moved = self.capital.apply_fill(
                         &fill.object_id,
@@ -7452,6 +7527,18 @@ impl Platform {
                         ))
                     })?,
             }
+        }
+        if let Some(through) = watermark
+            && through >= self.desk_ledger.next_sequence()
+        {
+            return Err(Error::invalid(format!(
+                "the event log says the ledger holds the desk's records through chain position \
+                 {through} and the log's booked fills reach only position {}; the log is \
+                 truncated or the watermark is wrong, and trusting it would leave every fill \
+                 after the real tail out of the ledger. Restore the log or archive it and start \
+                 a new one",
+                self.desk_ledger.next_sequence().saturating_sub(1)
+            )));
         }
         self.capital.open_day(now);
         Ok(resumed)
@@ -18710,7 +18797,10 @@ impl Platform {
     /// on purpose. Production delivery peeks with [`Self::pending_desk_outcomes`]
     /// and calls [`Self::acknowledge_desk_outcomes`] only once the fabric holds
     /// the records; `qip-ledgerd` is idempotent on chain position, so a batch
-    /// resent after a crash between those two steps posts once.
+    /// resent after a crash between those two steps posts once. The
+    /// acknowledgement is journalled as a watermark ([`DeskLedgerAcknowledged`]),
+    /// so a restart re-queues exactly the fills after it; a record taken here
+    /// is not acknowledged, and a restart will queue it again.
     pub fn take_desk_outcomes(&mut self) -> Vec<DeskOutcome> {
         self.desk_ledger.drain()
     }
@@ -18721,6 +18811,19 @@ impl Platform {
     /// what was queued or one below an earlier acknowledgement; see
     /// [`DeskLedgerFeed::acknowledge`].
     pub fn acknowledge_desk_outcomes(&mut self, through_sequence: u64) -> Result<usize> {
+        // Checked, then journalled, then applied, in the order every resume
+        // seam here keeps: the log never holds a watermark the feed would
+        // have refused, and the queue never drops a record the log does not
+        // say the ledger has. A watermark that does not advance is not
+        // written, so the log does not grow per cycle without progress.
+        if self.desk_ledger.check_acknowledge(through_sequence)? {
+            let now = self.context.now();
+            self.journal_record(
+                DeskLedgerAcknowledged { through_sequence },
+                DESK_LEDGER_ORIGIN,
+                now,
+            )?;
+        }
         self.desk_ledger.acknowledge(through_sequence)
     }
 

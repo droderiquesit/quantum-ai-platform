@@ -21,6 +21,17 @@
 //!   refuses a replayed order id and an order refuses a repeated fill id; this
 //!   is the third lock, for a fill batch offered twice by a caller that is
 //!   neither. A duplicate adds no record and, in the platform, books nothing.
+//! * **What the ledger holds is a journalled watermark.** A record leaves the
+//!   queue only when the fabric has acknowledged it
+//!   ([`DeskLedgerFeed::acknowledge`], through
+//!   `Platform::acknowledge_desk_outcomes`), and that acknowledgement is
+//!   written to the same hash-chained event log the fills are in. A restart
+//!   folds the fills at or below the highest watermark
+//!   ([`DeskLedgerFeed::fold_booked`]) and re-queues every fill after it
+//!   ([`DeskLedgerFeed::requeue_booked`]) with the sequence and digest it had
+//!   before the crash. A crash before the acknowledgement was logged resends
+//!   a batch the ledger already holds, which it absorbs as a duplicate; a
+//!   crash before shipping resends everything; neither leaves a hole.
 //! * **A record exists only if the ledger would take it.** [`outcome_for`]
 //!   runs [`PaperFill::try_from`] and [`post`] — the very functions
 //!   `LedgerStore::apply` runs — before it returns a record, so a fill the
@@ -225,10 +236,10 @@ impl DeskLedgerFeed {
         Ok(Admission::Recorded { sequence })
     }
 
-    /// Advance the chain over a fill the event log already holds, without
-    /// queueing it and without remembering its ids. The restart path: the
-    /// ledger has been told of everything it was told of, and what it was not
-    /// is re-derivable with [`outcomes_from`].
+    /// Advance the chain over a fill the event log already holds and the
+    /// ledger already has (it is at or below the journalled watermark),
+    /// without queueing it and without remembering its ids. The restart path;
+    /// the fills after the watermark go through [`Self::requeue_booked`].
     ///
     /// The ids are deliberately not remembered. `OrderManager::next_order_id`
     /// and the simulated broker's fill ids count from one in every process, so
@@ -245,6 +256,71 @@ impl DeskLedgerFeed {
         self.next_sequence = next;
         self.tail_digest = Some(record.journal_digest);
         Ok(next - 1)
+    }
+
+    /// Queue the record for a fill the event log holds but the ledger has
+    /// not been told of: the restart path for everything after the
+    /// acknowledged watermark. The chain advances exactly as [`Self::admit`]
+    /// advances it, so the record has the sequence and digest it had before
+    /// the crash; the ids are **not** remembered, for the reason
+    /// [`Self::fold_booked`] gives, and a fill that finds no room advances
+    /// the chain and is reported as [`Admission::Overflowed`].
+    pub fn requeue_booked(
+        &mut self,
+        booked: &FillBooked,
+        strategy: &str,
+        correlation: &str,
+    ) -> Result<Admission> {
+        let record = outcome_for(booked, strategy, self.next_sequence, self.previous())?;
+        let next = self.next_sequence.checked_add(1).ok_or_else(|| {
+            Error::numeric("the desk's ledger chain has no sequence left to give".to_string())
+        })?;
+        let sequence = self.next_sequence;
+        self.next_sequence = next;
+        self.tail_digest = Some(record.journal_digest.clone());
+        if self.outbox.len() >= DESK_OUTBOX_CAPACITY {
+            return Ok(Admission::Overflowed { sequence });
+        }
+        self.outbox.push(DeskOutcome {
+            record,
+            correlation_id: correlation.to_string(),
+        });
+        Ok(Admission::Recorded { sequence })
+    }
+
+    /// Note that the ledger holds every record through `through_sequence`,
+    /// on the strength of the event log's watermark. Only a restart calls
+    /// this, before it re-queues what follows.
+    pub fn resume_acknowledged(&mut self, through_sequence: u64) {
+        self.acknowledged_through = Some(through_sequence);
+    }
+
+    /// Whether [`Self::acknowledge`] through `through_sequence` would move the
+    /// watermark (`Ok(true)`), would be a no-op repeat (`Ok(false)`), or is
+    /// refused, without doing it. The platform journals the watermark between
+    /// this check and the change, so the log never holds an acknowledgement
+    /// the feed would have refused.
+    pub fn check_acknowledge(&self, through_sequence: u64) -> Result<bool> {
+        if let Some(already) = self.acknowledged_through {
+            if through_sequence < already {
+                return Err(Error::invalid(format!(
+                    "acknowledgement through chain position {through_sequence} goes backwards: \
+                     position {already} is already acknowledged"
+                )));
+            }
+            if already == through_sequence {
+                return Ok(false);
+            }
+        }
+        let newest = self.outbox.last().map(|o| o.record.entry.sequence);
+        match newest {
+            Some(newest) if through_sequence <= newest => Ok(true),
+            _ => Err(Error::invalid(format!(
+                "acknowledgement through chain position {through_sequence} is beyond what \
+                 the desk queued (newest queued: {newest:?}); acknowledging it would \
+                 discard a record that has not been delivered"
+            ))),
+        }
     }
 
     /// Hand over everything queued, oldest first, leaving the queue empty.
@@ -272,27 +348,8 @@ impl DeskLedgerFeed {
     /// been told is safe). Re-acknowledging the same sequence is a harmless
     /// no-op.
     pub fn acknowledge(&mut self, through_sequence: u64) -> Result<usize> {
-        if let Some(already) = self.acknowledged_through
-            && through_sequence < already
-        {
-            return Err(Error::invalid(format!(
-                "acknowledgement through chain position {through_sequence} goes backwards: \
-                 position {already} is already acknowledged"
-            )));
-        }
-        if self.acknowledged_through == Some(through_sequence) {
+        if !self.check_acknowledge(through_sequence)? {
             return Ok(0);
-        }
-        let newest = self.outbox.last().map(|o| o.record.entry.sequence);
-        match newest {
-            Some(newest) if through_sequence <= newest => {}
-            _ => {
-                return Err(Error::invalid(format!(
-                    "acknowledgement through chain position {through_sequence} is beyond what \
-                     the desk queued (newest queued: {newest:?}); acknowledging it would \
-                     discard a record that has not been delivered"
-                )));
-            }
         }
         let before = self.outbox.len();
         self.outbox
@@ -382,6 +439,200 @@ mod tests {
         assert_eq!(feed.pending().len(), 1);
         assert_eq!(feed.next_sequence(), 1);
         assert_eq!(feed.pending()[0].correlation_id, "corr-1");
+    }
+
+    #[test]
+    fn a_requeued_fill_has_the_identity_it_had_and_its_ids_are_not_remembered() {
+        // The failure this prevents: a restart re-queueing under a different
+        // digest (the ledger would see a second fact), or remembering the
+        // ids so the new process's own (ord-1, fill-1) reads as a replay.
+        let fills: Vec<FillBooked> = (0..3)
+            .map(|n| booked(&format!("o{n}"), "f1", dec!("1"), dec!("100")))
+            .collect();
+        let mut live = DeskLedgerFeed::new();
+        for fill in &fills {
+            live.admit(fill, "central-desk", "c").unwrap();
+        }
+        let mut resumed = DeskLedgerFeed::new();
+        resumed.fold_booked(&fills[0], "central-desk").unwrap();
+        resumed.resume_acknowledged(0);
+        for fill in &fills[1..] {
+            assert!(matches!(
+                resumed
+                    .requeue_booked(fill, "central-desk", "logged")
+                    .unwrap(),
+                Admission::Recorded { .. }
+            ));
+        }
+        let records = |feed: &DeskLedgerFeed| -> Vec<_> {
+            feed.pending().iter().map(|o| o.record.clone()).collect()
+        };
+        assert_eq!(records(&resumed), records(&live)[1..].to_vec());
+        assert_eq!(resumed.next_sequence(), live.next_sequence());
+        // The same ids are a new fill to this process.
+        assert!(matches!(
+            resumed.admit(&fills[1], "central-desk", "c").unwrap(),
+            Admission::Recorded { .. }
+        ));
+    }
+
+    #[test]
+    fn requeueing_past_the_bound_advances_the_chain_and_reports_the_overflow() {
+        let mut feed = DeskLedgerFeed::new();
+        for n in 0..DESK_OUTBOX_CAPACITY {
+            let fill = booked(&format!("o{n}"), "f", dec!("1"), dec!("100"));
+            assert!(matches!(
+                feed.requeue_booked(&fill, "central-desk", "c").unwrap(),
+                Admission::Recorded { .. }
+            ));
+        }
+        let extra = booked("extra", "f", dec!("1"), dec!("100"));
+        assert_eq!(
+            feed.requeue_booked(&extra, "central-desk", "c").unwrap(),
+            Admission::Overflowed {
+                sequence: DESK_OUTBOX_CAPACITY as u64
+            }
+        );
+        assert_eq!(feed.pending().len(), DESK_OUTBOX_CAPACITY);
+        assert_eq!(feed.next_sequence(), DESK_OUTBOX_CAPACITY as u64 + 1);
+    }
+
+    // --- the watermark through a restart of the real platform -------------------
+
+    fn log_path(label: &str) -> std::path::PathBuf {
+        // Under the workspace's ignored `target/`: a kernel source file may not
+        // read the process environment, and a log needs a directory.
+        let dir = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../target/desk-watermark"
+        ))
+        .join(format!("{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("events.jsonl")
+    }
+
+    fn platform_over(path: &std::path::Path) -> Result<Platform> {
+        let start = Timestamp::from_secs(1_760_000_000);
+        let id = ObjectId::from_string("obj-ACME");
+        let mut universe = Universe::new();
+        universe.insert(
+            FinancialObject::builder(
+                id.clone(),
+                "ACME",
+                InstrumentType::CommonStock,
+                qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(dec!("100"))
+            .provenance(Provenance::synthetic("desk-ledger", start))
+            .build(start)?,
+        )?;
+        let config = PlatformConfig::default().with_event_log_file(path);
+        let seed = config.seed;
+        let context = Context::new(Arc::new(ManualClock::new(start)), seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::new("desk-ledger"),
+        )
+    }
+
+    fn sequences(platform: &Platform) -> Vec<u64> {
+        platform
+            .pending_desk_outcomes()
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect()
+    }
+
+    #[test]
+    fn a_restart_requeues_what_was_booked_and_never_acknowledged_with_its_old_identity() {
+        // The failure this prevents: fills in the book and the log, never
+        // shipped, never re-queued, and the next record a hole the ledger
+        // parks on. Crash windows (a) and (b): before any ship, and after the
+        // fabric acked but before the watermark was logged — both are a log
+        // with no watermark.
+        let path = log_path("requeue");
+        let before = {
+            let mut first = platform_over(&path).unwrap();
+            submit_one(&mut first).unwrap();
+            submit_one(&mut first).unwrap();
+            let before: Vec<_> = first.pending_desk_outcomes().to_vec();
+            assert_eq!(before.len(), 2, "premise: two fills queued");
+            before
+        };
+        let second = platform_over(&path).unwrap();
+        let after: Vec<_> = second
+            .pending_desk_outcomes()
+            .iter()
+            .map(|o| o.record.clone())
+            .collect();
+        assert_eq!(
+            after,
+            before.iter().map(|o| o.record.clone()).collect::<Vec<_>>(),
+            "the re-queued records are not the ones the crash lost"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_restart_does_not_requeue_what_the_logged_watermark_says_the_ledger_has() {
+        // Crash window (c), and the watermark's idempotence: the fabric acked
+        // and the watermark was logged; only the fill after it comes back.
+        let path = log_path("covered");
+        {
+            let mut first = platform_over(&path).unwrap();
+            for _ in 0..3 {
+                submit_one(&mut first).unwrap();
+            }
+            assert_eq!(first.acknowledge_desk_outcomes(1).unwrap(), 2);
+            // Re-acknowledging writes nothing: the log does not grow without progress.
+            let records = first.event_log().records().len();
+            assert_eq!(first.acknowledge_desk_outcomes(1).unwrap(), 0);
+            assert_eq!(first.event_log().records().len(), records);
+        }
+        let mut second = platform_over(&path).unwrap();
+        assert_eq!(sequences(&second), vec![2]);
+        // The refusal of a backwards ack survives the restart.
+        assert!(second.acknowledge_desk_outcomes(0).is_err());
+        // (e) Ids are not remembered: this process mints its own order ids from
+        // one again, and the fill books as new at the next chain position.
+        submit_one(&mut second).unwrap();
+        assert_eq!(sequences(&second), vec![2, 3]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_watermark_beyond_the_fills_in_the_log_is_refused_at_resume() {
+        // Crash window (d): a truncated or corrupt log must not be trusted
+        // into dropping fills the ledger never saw.
+        let path = log_path("beyond");
+        {
+            let mut first = platform_over(&path).unwrap();
+            submit_one(&mut first).unwrap();
+            let now = first.context().now();
+            first
+                .journal_record(
+                    crate::platform::DeskLedgerAcknowledged {
+                        through_sequence: 5,
+                    },
+                    "kernel/desk-ledger",
+                    now,
+                )
+                .unwrap();
+        }
+        let error = platform_over(&path).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("truncated or the watermark is wrong"),
+            "{}",
+            error.message()
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     fn feed_of(count: usize) -> DeskLedgerFeed {

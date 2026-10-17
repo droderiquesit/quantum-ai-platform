@@ -362,7 +362,16 @@ fn bar(at: Timestamp) -> Bar {
 }
 
 fn warm_platform() -> Result<Platform> {
-    let config = PlatformConfig::default();
+    warm_platform_with(PlatformConfig::default())
+}
+
+/// A warm desk over the event log at `path`: a second call over the same
+/// path is the restarted process, resuming its book from what the first wrote.
+fn warm_platform_at(path: &Path) -> Result<Platform> {
+    warm_platform_with(PlatformConfig::default().with_event_log_file(path))
+}
+
+fn warm_platform_with(config: PlatformConfig) -> Result<Platform> {
     let clock = Arc::new(ManualClock::new(start_time()));
     let context = Context::new(clock, config.seed);
     let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
@@ -756,6 +765,105 @@ impl DeskQueue for Poisoned<'_> {
     }
 }
 
+/// A platform whose first acknowledgements fail to be recorded, as a full or
+/// failing event log would: everything else is the real platform.
+struct UnloggableAck<'a> {
+    platform: &'a mut Platform,
+    failures_left: u32,
+}
+
+impl DeskQueue for UnloggableAck<'_> {
+    fn pending_len(&self) -> usize {
+        self.platform.pending_desk_outcomes().len()
+    }
+    fn peek(&self, limit: usize) -> Vec<DeskOutcome> {
+        self.platform
+            .pending_desk_outcomes()
+            .iter()
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+    fn acknowledge(&mut self, through: u64) -> Result<usize> {
+        if self.failures_left > 0 {
+            self.failures_left -= 1;
+            return Err(qip_core::error::Error::io(
+                "the event log refused the acknowledgement record (full)".to_string(),
+            ));
+        }
+        self.platform.acknowledge_desk_outcomes(through)
+    }
+    fn note_problem(&mut self, problem: String) {
+        self.platform.note_desk_ship_problem(problem);
+    }
+    fn metrics(&self) -> Arc<Metrics> {
+        self.platform.telemetry().metrics.clone()
+    }
+}
+
+/// The fabric has the batch but the platform cannot journal that it does: the
+/// shipper must not return an error (which ends the run loop and so the desk),
+/// the records stay pending, the failure is counted and surfaced, and the
+/// retry resends them and the ledger absorbs the duplicate.
+///
+/// Mutation: return the error from `settle` (`platform.acknowledge(through)?`):
+/// `ship` returns Err and the first assertion fails. Mutation: acknowledge in
+/// memory despite the failed journal: pending is empty and the next assertion
+/// fails.
+#[test]
+fn an_acknowledgement_the_platform_cannot_record_defers_the_batch_and_does_not_end_the_desk() {
+    let fabric = Fabric::start();
+    let mut platform = warm_platform().unwrap();
+    fills(&mut platform, 2, "unlogged");
+    let mut shipper = fabric.shipper();
+
+    let mut view = UnloggableAck {
+        platform: &mut platform,
+        failures_left: 1,
+    };
+    let seen = ship_until(&mut shipper, &mut view, "the failed ack is deferred", |r| {
+        r.outcome == ShipOutcome::Deferred
+    });
+    assert!(
+        seen.iter().all(|r| r.acknowledged == 0),
+        "a record was dropped although the acknowledgement was not recorded: {seen:?}"
+    );
+    assert_eq!(
+        view.platform.pending_desk_outcomes().len(),
+        2,
+        "the records left the queue before their acknowledgement was recorded"
+    );
+    assert_eq!(
+        counter(
+            &view.platform.telemetry().metrics,
+            names::DESK_SHIP,
+            Some("unlogged")
+        ),
+        1
+    );
+    wait_until("the fabric holds the batch", || fabric.desk_records() == 2);
+
+    // The retry: the same records go again, the acknowledgement now records,
+    // and the ledger books each once.
+    let ledger_dir = temp_dir("ledger-unlogged");
+    let ledger = fabric.start_ledger(&ledger_dir);
+    ship_until(&mut shipper, &mut view, "the resend is acknowledged", |r| {
+        r.pending == 0 && !r.in_flight
+    });
+    assert!(view.platform.pending_desk_outcomes().is_empty());
+    wait_until("the ledger booked both records", || {
+        ledger.store().events().unwrap().len() == 2
+    });
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(
+        ledger.store().events().unwrap().len(),
+        2,
+        "the resend posted a record twice"
+    );
+    assert!(ledger.store().parked().unwrap().is_empty());
+    ledger.stop();
+}
+
 /// A record the ledger would refuse is not sent: the records before it are
 /// delivered and booked, it and the ones behind it stay pending, the refusal is
 /// counted once however often the shipper looks at it, and the ledger's
@@ -1004,4 +1112,158 @@ fn the_shutdown_flush_delivers_what_is_pending_within_its_budget() {
         "the flush outran any bound: {:?}",
         began.elapsed()
     );
+}
+
+// --- the restart: the watermark in the event log ----------------------------------
+
+fn log_file(label: &str) -> PathBuf {
+    temp_dir(label).join("events.jsonl")
+}
+
+fn records_of(platform: &Platform) -> Vec<qip_contracts::reflex::OutcomeRecord> {
+    platform
+        .pending_desk_outcomes()
+        .iter()
+        .map(|o| o.record.clone())
+        .collect()
+}
+
+/// Crash window (a): fills booked, the process dies before anything is
+/// shipped. The restarted desk re-queues every one with the identity it had,
+/// the ledger ends with the whole chain and no hole, and a fill booked after
+/// the restart continues the chain.
+///
+/// Mutation: in `resume_book` fold every fill instead of re-queuing it (ignore
+/// the log's lack of a watermark as if it said "everything") — the restarted
+/// queue is empty and the first assertion fails.
+#[test]
+fn a_crash_after_booking_before_any_ship_is_requeued_and_the_ledger_has_no_hole() {
+    let fabric = Fabric::start();
+    let path = log_file("restart-a");
+    let before = {
+        let mut first = warm_platform_at(&path).unwrap();
+        fills(&mut first, 3, "a");
+        records_of(&first)
+    };
+    assert_eq!(before.len(), 3, "premise");
+
+    let mut second = warm_platform_at(&path).unwrap();
+    assert_eq!(records_of(&second), before, "the crash lost queued records");
+    fill(&mut second, dec!("10"), "a-after-restart");
+    assert_eq!(second.pending_desk_outcomes().len(), 4);
+
+    let ledger = fabric.start_ledger(&temp_dir("ledger-restart-a"));
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut second);
+    wait_until("the ledger booked all four", || {
+        ledger.store().events().unwrap().len() == 4
+    });
+    assert_eq!(
+        ledger
+            .store()
+            .tail(DESK_CELL)
+            .unwrap()
+            .expect("a tail")
+            .sequence,
+        3
+    );
+    assert!(
+        ledger.store().parked().unwrap().is_empty(),
+        "the chain has a hole"
+    );
+    ledger.stop();
+}
+
+/// Crash window (b): the fabric acknowledged but the process died before the
+/// watermark was logged. The restart re-ships the batch and the ledger absorbs
+/// it as a duplicate.
+///
+/// Mutation: write the watermark before the fabric answers (journal in
+/// `hand_over`) — the restart re-queues nothing and the `pending == 2`
+/// assertion fails.
+#[test]
+fn a_crash_after_the_fabric_acked_before_the_watermark_was_logged_resends_and_posts_once() {
+    let fabric = Fabric::start();
+    let path = log_file("restart-b");
+    {
+        let mut first = warm_platform_at(&path).unwrap();
+        fills(&mut first, 2, "b");
+        let mut shipper = fabric.shipper();
+        shipper.ship(&mut first).unwrap();
+        wait_until("the broker holds both", || fabric.desk_records() == 2);
+        // Dies here: the worker's answer is never read, so no watermark.
+    }
+    let ledger = fabric.start_ledger(&temp_dir("ledger-restart-b"));
+    wait_until("the ledger booked the first send", || {
+        ledger.store().events().unwrap().len() == 2
+    });
+    let balances = ledger.store().balances().unwrap();
+
+    let mut second = warm_platform_at(&path).unwrap();
+    assert_eq!(
+        second.pending_desk_outcomes().len(),
+        2,
+        "the batch was not re-queued"
+    );
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut second);
+    wait_until("the broker holds the resend", || fabric.desk_records() == 4);
+    wait_until("the ledger absorbed the resend", || {
+        counter(ledger.metrics(), names::LEDGER_DUPLICATES, None) >= 2
+    });
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(
+        ledger.store().events().unwrap().len(),
+        2,
+        "a resend posted again"
+    );
+    assert_eq!(ledger.store().balances().unwrap(), balances);
+    ledger.stop();
+}
+
+/// Crash window (c): the watermark was logged. The restart sends only what is
+/// after it; the ledger sees no duplicate.
+///
+/// Mutation: ignore the watermark on resume (re-queue every fill) — three
+/// records are resent, the broker holds 6 and the ledger counts duplicates.
+#[test]
+fn a_crash_after_the_watermark_was_logged_resends_nothing_the_ledger_has() {
+    let fabric = Fabric::start();
+    let path = log_file("restart-c");
+    {
+        let mut first = warm_platform_at(&path).unwrap();
+        fills(&mut first, 3, "c");
+        let mut shipper = fabric.shipper();
+        ship_all(&mut shipper, &mut first);
+        assert_eq!(
+            fabric.desk_records(),
+            3,
+            "premise: three delivered and acknowledged"
+        );
+        fill(&mut first, dec!("10"), "c-unshipped");
+    }
+    let ledger = fabric.start_ledger(&temp_dir("ledger-restart-c"));
+    let mut second = warm_platform_at(&path).unwrap();
+    assert_eq!(
+        second
+            .pending_desk_outcomes()
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect::<Vec<_>>(),
+        vec![3],
+        "the restart re-queued what the watermark says the ledger holds"
+    );
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut second);
+    wait_until("the ledger booked all four", || {
+        ledger.store().events().unwrap().len() == 4
+    });
+    assert_eq!(
+        fabric.desk_records(),
+        4,
+        "something already acknowledged was sent again"
+    );
+    assert_eq!(counter(ledger.metrics(), names::LEDGER_DUPLICATES, None), 0);
+    assert!(ledger.store().parked().unwrap().is_empty());
+    ledger.stop();
 }

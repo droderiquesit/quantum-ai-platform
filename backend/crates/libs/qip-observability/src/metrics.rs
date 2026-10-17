@@ -1075,8 +1075,10 @@ pub mod names {
     /// `outcome`: `shipped`, `deferred` (the fabric did not take them; they
     /// stay pending and are resent), `refused` (a record the ledger would
     /// refuse, or a hole in the chain, held back so it cannot stall the
-    /// ledger's partition) and `fenced` (a newer desk owns the partition;
-    /// shipping stopped).
+    /// ledger's partition), `unlogged` (the fabric took them but the platform
+    /// could not record the acknowledgement, so they stay pending and are
+    /// resent) and `fenced` (a newer desk owns the partition; shipping
+    /// stopped).
     pub const DESK_SHIP: &str = "qip_desk_ship_total";
     /// Desk ledger records booked and not yet acknowledged as delivered. Grows
     /// without bound only until the feed's own cap, past which fills are

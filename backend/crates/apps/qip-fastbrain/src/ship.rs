@@ -636,13 +636,42 @@ impl Shipping {
                     )));
                 }
                 // The only place a desk record leaves the queue: the fabric
-                // has it.
-                *acknowledged += platform.acknowledge(through)?;
-                self.next_expected = through.checked_add(1);
-                self.failures = 0;
-                self.not_before = None;
-                *shipped = true;
-                metrics.count(names::DESK_SHIP, labels([("outcome", "shipped")]));
+                // has it. Recording that, and dropping the records, can fail
+                // (the platform journals the acknowledgement before it applies
+                // it, and a full or failing log refuses the write). The fabric
+                // already holds the batch, so nothing is lost either way: the
+                // records stay pending and are resent, which the producer's
+                // idempotence and the ledger's chain-position dedupe absorb. It
+                // must not end the desk, which is trading, so it is counted,
+                // surfaced and retried under the usual back-off instead of
+                // returned.
+                match platform.acknowledge(through) {
+                    Ok(dropped) => {
+                        *acknowledged += dropped;
+                        self.next_expected = through.checked_add(1);
+                        self.failures = 0;
+                        self.not_before = None;
+                        *shipped = true;
+                        metrics.count(names::DESK_SHIP, labels([("outcome", "shipped")]));
+                    }
+                    Err(error) => {
+                        self.failures = self.failures.saturating_add(1);
+                        self.not_before = Some(Instant::now() + backoff(self.failures));
+                        metrics.count(names::DESK_SHIP, labels([("outcome", "unlogged")]));
+                        let why = format!(
+                            "the fabric holds the desk's ledger records through chain position \
+                             {through}, but the platform could not record the acknowledgement: {}",
+                            error.message()
+                        );
+                        if self.failures == 1 {
+                            platform.note_problem(format!(
+                                "{why}; they stay pending and are resent, and the ledger \
+                                 absorbs the duplicate"
+                            ));
+                        }
+                        *failed = Some((ShipOutcome::Deferred, why));
+                    }
+                }
             }
             Done::Deferred(why) => {
                 self.failures = self.failures.saturating_add(1);

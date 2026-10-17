@@ -387,9 +387,17 @@ fn a_restart_continues_the_desk_chain_and_a_reused_order_id_is_not_read_as_a_rep
 
     let restarted_at = start().saturating_add(Duration::from_hours(1));
     let mut second = boot(restarted_at)?;
-    assert!(
-        second.pending_desk_outcomes().is_empty(),
-        "premise: a restart re-queues nothing"
+    // `take_desk_outcomes` is destructive and never acknowledged, so the log
+    // holds no watermark and the restart re-queues the fill it took: the
+    // ledger has been told of nothing the fabric did not acknowledge.
+    assert_eq!(
+        second
+            .pending_desk_outcomes()
+            .iter()
+            .map(|o| o.record.clone())
+            .collect::<Vec<_>>(),
+        before.iter().map(|o| o.record.clone()).collect::<Vec<_>>(),
+        "premise: a restart re-queues what was never acknowledged"
     );
     let order = buy(&mut second, dec!("10"), "after");
     assert_eq!(
@@ -405,16 +413,16 @@ fn a_restart_continues_the_desk_chain_and_a_reused_order_id_is_not_read_as_a_rep
     let after = second.take_desk_outcomes();
     assert_eq!(
         after.len(),
-        1,
-        "the new fill was recorded, not dropped as a replay"
+        2,
+        "the new fill was recorded beside the re-queued one, not dropped as a replay"
     );
-    assert_eq!(after[0].record.entry.sequence, 1, "the chain continued");
+    assert_eq!(after[1].record.entry.sequence, 1, "the chain continued");
     assert_eq!(
-        after[0]
+        after[1]
             .record
             .entry
             .expected_digest(&before[0].record.journal_digest)?,
-        after[0].record.entry.digest,
+        after[1].record.entry.digest,
         "and it chains onto the first process's tail"
     );
     Ok(())
