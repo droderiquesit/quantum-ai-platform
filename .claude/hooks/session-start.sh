@@ -31,6 +31,16 @@
 #   graphifyy   0.9.92 from PyPI, with its whole 30-package closure held to
 #               graphify-constraints.txt beside this file and to packages
 #               uploaded before GRAPHIFY_EXCLUDE_NEWER
+#   google/skills (Google's official Agent Skills, the "google-plugins"
+#               marketplace) at commit e86adb9e2b80220a593c2be9a68627171fd17afb,
+#               from which the google-cloud-developer plugin 1.1.10 is
+#               installed — requested by the owner on 2026-10-17. That
+#               repository publishes no tags, and the CLI refuses a bare
+#               commit as a GitHub ref, so the hook clones it itself at the
+#               commit under $HOME/.claude/google-skills-src and adds that
+#               directory as the marketplace; the CLI records the clone's
+#               HEAD as the plugin's gitCommitSha, so the same commit check
+#               applies.
 #
 # "claude plugin marketplace add" documents no ref option, but its <source>
 # argument takes one: owner/repo#ref clones that tag or branch (a bare commit
@@ -100,6 +110,25 @@
 #   9. a telemetry decision for claude-mem
 #        -> $HOME/.claude-mem/telemetry.json with "enabled": false, written
 #           only when no decision is recorded there yet. See below.
+#  10. git fetch of google/skills at the pinned commit, then
+#      claude plugin marketplace add $HOME/.claude/google-skills-src
+#        -> the clone itself (github.com, about 15 MB) and
+#           $HOME/.claude/settings.json (extraKnownMarketplaces.google-plugins,
+#           a directory source). A clone at any other commit, or with a
+#           dirty worktree, is reset to the pin; a directory of that name
+#           that is not this clone stops the script.
+#  11. claude plugin install google-cloud-developer@google-plugins
+#        -> $HOME/.claude/settings.json (enabledPlugins) and
+#           $HOME/.claude/plugins/cache/google-plugins/google-cloud-developer/<version>:
+#           five skills (finding-google-skills, gcloud, google-cloud-recipe-auth,
+#           google-cloud-recipe-onboarding, retrieving-developer-knowledge),
+#           one rules file, no hooks, and one MCP server, "developer-knowledge"
+#           at https://developerknowledge.googleapis.com/mcp, which sends
+#           X-Goog-Api-Key from $DEVELOPERKNOWLEDGE_API_KEY. That variable is
+#           not set anywhere in this repository and must never be committed;
+#           without it the MCP server is unreachable and the skills still
+#           work. The owner adds it as an environment secret if the server
+#           is wanted.
 #
 # Plugins installed during a SessionStart hook are not active in the session
 # that installed them: the CLI says "Plugins changed. Run /reload-plugins to
@@ -190,6 +219,12 @@ readonly GRAPHIFY_PIN="0.9.92"
 # uploaded after this instant is a candidate for any package in the closure.
 readonly GRAPHIFY_EXCLUDE_NEWER="2026-10-17T00:00:00Z"
 
+readonly GOOGLE_SKILLS_REPO="https://github.com/google/skills.git"
+readonly GOOGLE_SKILLS_COMMIT="e86adb9e2b80220a593c2be9a68627171fd17afb"
+readonly GOOGLE_MARKETPLACE="google-plugins"
+readonly GOOGLE_PLUGIN="google-cloud-developer@google-plugins"
+readonly GOOGLE_PLUGIN_VERSION="1.1.10"
+
 # uv, graphify and the claude-mem launcher all live in $HOME/.local/bin, and
 # a fresh container's PATH is not guaranteed to carry it yet.
 case ":${PATH}:" in
@@ -212,6 +247,7 @@ readonly user_settings="${config_dir}/settings.json"
 readonly user_claude_md="${config_dir}/CLAUDE.md"
 readonly graphify_skill="${config_dir}/skills/graphify/SKILL.md"
 readonly installed_plugins="${config_dir}/plugins/installed_plugins.json"
+readonly google_skills_src="${config_dir}/google-skills-src"
 readonly launcher="${HOME}/.local/bin/claude-mem"
 readonly claude_mem_data="${CLAUDE_MEM_DATA_DIR:-${HOME}/.claude-mem}"
 readonly log="${config_dir}/session-start.log"
@@ -253,7 +289,7 @@ fingerprint() { # $1 = file; "absent" when there is none
   fi
 }
 
-for tool in claude jq node bun sha256sum cmp; do
+for tool in claude jq node bun git sha256sum cmp; do
   command -v "$tool" >/dev/null 2>&1 || fail "'${tool}' is not on PATH"
 done
 
@@ -280,6 +316,11 @@ marketplace_present() { # $1 = marketplace name as `claude plugin marketplace li
 marketplace_ref() { # $1 = marketplace name; prints the ref the CLI lists for it, or nothing
   claude plugin marketplace list --json </dev/null 2>>"$log" \
     | jq -r --arg name "$1" '.[] | select(.name == $name) | .ref // empty'
+}
+
+marketplace_path() { # $1 = marketplace name; prints the directory the CLI lists for a directory source, or nothing
+  claude plugin marketplace list --json </dev/null 2>>"$log" \
+    | jq -r --arg name "$1" '.[] | select(.name == $name and .source == "directory") | .path // empty'
 }
 
 # The CLI keeps two records of a marketplace — the declaration in the user
@@ -371,6 +412,58 @@ ensure_marketplace() { # $1 = name, $2 = owner/repo, $3 = ref, $4 = plugin id se
   have="$(marketplace_ref "$1")"
   [ "$have" = "$3" ] || fail "marketplace '$1' records ref '${have:-none}' after add, expected $3"
   say "done, added marketplace '$1' from $2#$3"
+}
+
+# A git clone held at one commit, for a marketplace whose upstream publishes
+# no tags. The directory is this script's own: it is created here and moved
+# between pinned commits here, and nothing is ever deleted from it. A
+# directory of that name that is not a clean clone of the expected
+# repository stops the script and names itself, so a person decides.
+ensure_pinned_clone() { # $1 = directory, $2 = repository URL, $3 = commit
+  local head remote
+  if [ -e "$1" ]; then
+    [ -d "$1/.git" ] || fail "$1 exists and is not a git clone; a person has to look at it"
+    remote="$(git -C "$1" remote get-url origin 2>>"$log" || true)"
+    [ "$remote" = "$2" ] || fail "$1 is a clone of '${remote:-nothing}', not of $2; a person has to look at it"
+    [ -z "$(git -C "$1" status --porcelain 2>>"$log")" ] || fail "$1 has local changes; a person has to look at them"
+    head="$(git -C "$1" rev-parse HEAD 2>>"$log" || true)"
+    if [ "$head" = "$3" ]; then
+      say "skipped, $1 already at commit ${3:0:12} and clean"
+      return 0
+    fi
+    say "$1 is at commit '${head:-unknown}'; moving it to ${3:0:12}"
+  else
+    mkdir -p "$1"
+    run git -C "$1" init -q
+    run git -C "$1" remote add origin "$2"
+  fi
+  run git -C "$1" fetch -q --depth 1 origin "$3"
+  run git -C "$1" checkout -q --detach FETCH_HEAD
+  head="$(git -C "$1" rev-parse HEAD 2>>"$log" || true)"
+  [ "$head" = "$3" ] || fail "$1 is at commit '${head:-unknown}' after fetching $3"
+  [ -z "$(git -C "$1" status --porcelain 2>>"$log")" ] || fail "$1 is not clean after checkout"
+  say "done, $1 at commit ${3:0:12}"
+}
+
+ensure_directory_marketplace() { # $1 = name, $2 = directory, $3 = plugin id served from it
+  local have
+  if marketplace_present "$1"; then
+    have="$(marketplace_path "$1")"
+    if [ "$have" = "$2" ]; then
+      say "skipped, marketplace '$1' already served from $2"
+      return 0
+    fi
+    say "migrating marketplace '$1' from '${have:-a non-directory source}' to $2"
+    retire_marketplace "$1" "$3"
+  elif marketplace_declared "$1"; then
+    say "marketplace '$1' is declared in ${user_settings} but the CLI does not list it (its two records disagree); retiring the declaration before adding it from $2"
+    retire_marketplace "$1" "$3"
+  fi
+  run claude plugin marketplace add "$2" --json
+  marketplace_present "$1" || fail "marketplace '$1' still absent after add"
+  have="$(marketplace_path "$1")"
+  [ "$have" = "$2" ] || fail "marketplace '$1' records path '${have:-none}' after add, expected $2"
+  say "done, added marketplace '$1' from $2"
 }
 
 ensure_plugin() { # $1 = plugin id, $2 = approved version string, $3 = approved commit
@@ -519,6 +612,13 @@ else
   jq -e '.enabled == false' "$telemetry_file" >/dev/null || fail "${telemetry_file} does not record enabled=false after writing it"
   say "done, recorded enabled=false in ${telemetry_file} (no one opted into usage telemetry)"
 fi
+
+step="step 10 (google/skills clone and the ${GOOGLE_MARKETPLACE} marketplace)"
+ensure_pinned_clone "$google_skills_src" "$GOOGLE_SKILLS_REPO" "$GOOGLE_SKILLS_COMMIT"
+ensure_directory_marketplace "$GOOGLE_MARKETPLACE" "$google_skills_src" "$GOOGLE_PLUGIN"
+
+step="step 11 (plugin ${GOOGLE_PLUGIN})"
+ensure_plugin "$GOOGLE_PLUGIN" "$GOOGLE_PLUGIN_VERSION" "$GOOGLE_SKILLS_COMMIT"
 
 step="final check (repository files untouched)"
 settings_after="$(fingerprint "$repo_settings")"
