@@ -120,8 +120,8 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
 use qip_cost_router::{
     ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism,
-    Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router, Routing, TierCharge,
-    VolatilityRegime,
+    DeterministicRouting, Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router,
+    Routing, TierCharge, VolatilityRegime,
 };
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
@@ -702,6 +702,12 @@ pub struct Platform {
     /// has to say so in a diff. A ceiling that could be widened at runtime is
     /// a ceiling that gets widened on the cycle it binds.
     cost_router: Router,
+    /// How the most recent order's pre-trade check was routed. Always the
+    /// deterministic arm: `submit_order` obtains it through
+    /// [`Router::determine`], which cannot return a model rung, and refuses the
+    /// order if it cannot. Kept so a test and an operator can see the routing
+    /// that guarded the last order rather than trust that one happened.
+    pretrade_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -4853,6 +4859,7 @@ impl Platform {
             cycle_pre_positioning: None,
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
+            pretrade_routing: None,
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             commitments,
@@ -12031,6 +12038,25 @@ impl Platform {
         ))
     }
 
+    /// The conditions a pre-trade check is recorded under.
+    fn pretrade_conditions(&self, subject: &str) -> Conditions {
+        Conditions::new(
+            self.asset_classes
+                .get(subject)
+                .copied()
+                .unwrap_or(AssetClass::Equity),
+            CostRegion::new(HOME_REGION),
+            self.market_regime(subject),
+            self.volatility_regime(subject),
+            Horizon::Microsecond,
+        )
+    }
+
+    /// How the last submitted order's pre-trade check was routed.
+    pub fn pretrade_routing(&self) -> Option<&DeterministicRouting> {
+        self.pretrade_routing.as_ref()
+    }
+
     /// Describe the market this decision is being made in.
     ///
     /// Every field is read off something the platform already tracks. Nothing
@@ -17329,6 +17355,17 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        // R12-RISK-3022: the pre-trade check is routed through the cost router
+        // as a decision that must be deterministic, and the order does not go
+        // further without that routing. `Router::determine` returns a type that
+        // cannot name a model rung, so the limits below are structurally a
+        // function of their inputs.
+        let subject = order.object_id.as_str().to_string();
+        let conditions = self.pretrade_conditions(&subject);
+        self.pretrade_routing = Some(
+            self.cost_router
+                .determine(format!("pre-trade limits for {subject}"), conditions)?,
+        );
         let risk_state = self.risk_state();
         let object_id = order.object_id.clone();
         let side = order.side;

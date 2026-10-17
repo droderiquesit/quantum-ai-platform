@@ -447,6 +447,44 @@ impl Router {
         }
     }
 
+    /// Route a decision that must never be estimated, and nothing else.
+    ///
+    /// [`Router::select`] takes a [`DecisionContext`] whose `determinism` is a
+    /// public field, so a caller guarding a pre-trade check still had to
+    /// remember to write `Required`, and a one-word slip routed the check up
+    /// the ladder with nothing failing. This entry point builds the context
+    /// itself, with `Required` fixed, and returns [`DeterministicRouting`]
+    /// directly: the caller has no `NotRequired` to pass and no [`Routing`]
+    /// to match, so a model rung is unnameable on this path.
+    ///
+    /// The value, latency and confidence are placeholders the `Required` arm
+    /// never reads — it consults no ladder — chosen only to satisfy
+    /// [`DecisionContext::validate`]. A refusal is returned if the subject is
+    /// blank, because an unrecorded routing decision is not auditable.
+    pub fn determine(
+        &self,
+        subject: impl Into<String>,
+        conditions: Conditions,
+    ) -> Result<DeterministicRouting> {
+        let context = DecisionContext::new(
+            subject,
+            Decimal::ONE,
+            Duration::from_secs(1),
+            1.0,
+            Determinism::Required,
+            conditions,
+        );
+        // Through `select`, so the one place the determinism rule lives stays
+        // the only place; a `Judged` arm here would mean `Required` stopped
+        // meaning what it says, and is refused rather than unwrapped.
+        match self.select(&context)? {
+            Routing::Deterministic(routing) => Ok(routing),
+            Routing::Judged(_) => Err(Error::denied(
+                "a decision that must be deterministic was routed to a rung that can be wrong; refusing it rather than letting a model answer a pre-trade check",
+            )),
+        }
+    }
+
     /// The routing for a decision that may not be estimated.
     ///
     /// Takes no verdict and consults no ladder. The rung is not chosen — it is
