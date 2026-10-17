@@ -1615,17 +1615,15 @@
   {
     "id": "R12-FABRIC-10076",
     "status": "PARTIAL",
-    "current": "qip-edge-node has an event_fabric writer/spool/drain with tests proving ship does not wait on a stalled writer, but main.rs never constructs it: the deployed binary flushes its journal to a local StoreMirror only. Transport is plaintext TCP with an in-tree identity table.",
+    "current": "Writer is wired in main (stale gap text), non-blocking ship tested, mTLS selectable via link_source; transport is HTTP over TLS not QUIC and control acknowledgments are not journaled.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped",
-      "backend/crates/apps/qip-edge-node/src/main.rs:519 StoreMirror::open (the only journal sink wired)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:919 cell.flush(mirror, now)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1050-1090 LinkSecurity",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped"
     ],
-    "gap": "Wire the Fabric writer and pressure gauge into main; mTLS.",
+    "gap": "Control acknowledgments as fabric records; plaintext still allowed locally; QUIC.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -1635,7 +1633,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; a main-level wiring test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement lists control acks, which are missing."
   },
   {
     "id": "R12-FABRIC-10077",
@@ -1751,17 +1749,18 @@
   },
   {
     "id": "R12-LEDGER-10082",
-    "status": "PARTIAL",
-    "current": "LedgerStore applies each delivery as one fsynced batch with chain-continuity dedup; a property test proves balances under duplication/redelivery/crash. The store is local (not Spanner) and qip-ledgerd's fabric consumer is a placeholder, so nothing feeds it.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd runs one PartitionWorker per P1 partition from main; LedgerStore::apply is one fsynced batch with chain-continuity dedup, proven by a crash/duplicate/redelivery property test and a composed restart test.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:1-45",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 consumer placeholder"
+      "backend/crates/apps/qip-ledgerd/src/lib.rs:348 PartitionWorker::new",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::a_record_that_repeats_a_committed_sequence_with_the_same_digest_moves_nothing"
     ],
-    "gap": "Real consumer loop; Spanner as the store.",
+    "gap": "None for the writer clause. Store is local WAL or Spanner backend (tested against a fake); real Spanner unproven, tracked in LEDGER-8007/10041.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -1772,7 +1771,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Old 'consumer is a placeholder' text is stale (main.rs and lib.rs start it). Property test compares balances to a clean refold under cuts/duplicates; dropping dedup double-books and fails it."
   },
   {
     "id": "R12-MODEL-10083",
@@ -2197,15 +2196,15 @@
   {
     "id": "R12-FABRIC-10102",
     "status": "PARTIAL",
-    "current": "The outbox test proves every entry reaches P2 and every outcome reaches P1 with the journal digest, but the outbox is not constructed by main.rs.",
+    "current": "qip-edge-node main constructs SpoolWriter, Drain and relay; every journal entry reaches P2 and every outcome P1 (outbox test). Evidence text 'outbox not constructed by main.rs' is stale. Ticks are count-only (Ingested) or in the tape/lake; no feature snapshot record.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:330 every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest",
-      "backend/crates/apps/qip-edge-node/src/main.rs:919 flush to StoreMirror only"
+      "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open; :1095 Drain::open",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:330 every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
     ],
-    "gap": "Wire outbox into the node.",
+    "gap": "Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2215,7 +2214,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records."
   },
   {
     "id": "R12-TICK-10103",
@@ -2479,15 +2478,16 @@
   {
     "id": "R12-LEDGER-10114",
     "status": "PARTIAL",
-    "current": "Cell journals every decision in a hash chain shipped to a local store; the centre ingests cell reports and reconciles; Fabric/ledgerd path not wired.",
+    "current": "Cell journal reaches P2 and fills reach P1 through the wired spool/drain, and ledgerd books Filled; Hedged outcomes are shipped but not posted and no cycle-level or missed/failed-cycle replay exists.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/reflex.rs:679 JournalEntry",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt/settle"
+      "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open",
+      "backend/crates/apps/qip-ledgerd/src/store.rs:730 Decision::Filled only",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once"
     ],
-    "gap": "Fabric + ledger writer wiring.",
+    "gap": "Ledger posting for hedges; multi-region cycle events; replay of missed/failed cycles; node -> broker -> ledgerd in one test.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2498,7 +2498,7 @@
     "verification": "integration test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Only fills are ledgered; the requirement lists intents, hedges and outcomes of multi-region cycles and replay evaluation."
   },
   {
     "id": "R12-CICD-10115",
@@ -2802,15 +2802,16 @@
   {
     "id": "R12-RES-10128",
     "status": "PARTIAL",
-    "current": "LedgerSink retries forever and moves the checkpoint only after the write; ledgerd's store is idempotent under redelivery; not wired end to end.",
+    "current": "Ledger restart replays accumulated P1 records idempotently (checkpoint held, balances equal clean refold); the worker retries a refusing store forever in apply_until_committed.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs:1-12",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337"
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs::PartitionWorker::apply_until_committed",
+      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 (LedgerSink, not used by ledgerd)"
     ],
-    "gap": "End-to-end wiring and RF3 retention.",
+    "gap": "No test makes the store/Spanner refuse writes under a running worker; the retry-forever test targets qip-streaming's LedgerSink, which qip-ledgerd does not use.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2821,7 +2822,7 @@
     "verification": "cargo test -p qip-streaming; cargo test -p qip-ledgerd",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement is about the store being lost; only process-down/restart is tested through the real consumer."
   },
   {
     "id": "R12-RES-10129",
@@ -3216,13 +3217,12 @@
   {
     "id": "R12-EXEC-10147",
     "status": "PARTIAL",
-    "current": "Every environment is paper; the ledger store parks a fill not marked simulated (tested); the node's feed under run_pass is the simulated feed only, so no live market data path exists.",
+    "current": "Ledger parks non-simulated fills (tested); the node feed is simulated only, so no live market data path.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:765 a_fill_not_marked_simulated_parks_that_cell_counts_it_and_posts_nothing",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4206 no_environment_can_be_applied_at_a_ceiling_that_reaches_a_real_venue",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:765",
       "backend/crates/apps/qip-edge-node/src/main.rs:473-485"
     ],
-    "gap": "Live market data feed with simulated execution.",
+    "gap": "Live data with simulated execution.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3233,7 +3233,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
   },
   {
     "id": "R12-RES-10148",
@@ -3377,13 +3377,12 @@
   {
     "id": "R12-RES-10154",
     "status": "PARTIAL",
-    "current": "scripts/game-day/scenarios/ledgerd-loss.json kills qip-ledgerd under a running cell; the committed result is verdict 'inconclusive' with rpo_records null because the outcomes stream was empty — the simulated cell deployed no strategy (docs/ops/game-days/results/2026-10-11-ledgerd-loss.json; README 'Results so far'). Ledger dedup across restart is unit-tested (apps/qip-ledgerd/tests/fabric.rs:407).",
+    "current": "Game-day record is inconclusive (empty outcomes stream); ledger restart dedup is unit-tested.",
     "evidence": [
       "docs/ops/game-days/results/2026-10-11-ledgerd-loss.json",
-      "scripts/game-day/scenarios/ledgerd-loss.json",
-      "apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Run the drill with a strategy plan so outcomes exist, denying ledger writes, and record no lost/doubled outcomes and capital-freshness degradation.",
+    "gap": "Drill with a strategy plan producing outcomes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3396,7 +3395,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: A drill record exists but does not show what the row asks: it is inconclusive by its own verdict."
+    "notes": "Round-2 independent audit, 2026-10-11: A drill record exists but does not show what the row asks: it is inconclusive by its own verdict. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Drill row; record does not show the property."
   },
   {
     "id": "R12-RES-10155",
@@ -3968,15 +3967,17 @@
   {
     "id": "R12-LEDGER-10179",
     "status": "PARTIAL",
-    "current": "Proven for the local ledgerd store by chain-continuity dedup (property test); not Spanner; not wired to a live consumer, so 'eventually committed' is not demonstrated.",
+    "current": "Cell outcomes reach ledgerd and commit once in effect; desk (Platform) fills become OutcomeRecords via DeskLedgerFeed in Platform::capture_submission but nothing in production ships take_desk_outcomes() to the broker.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:430"
+      "backend/crates/runtime/qip-kernel/src/desk_ledger.rs::DeskLedgerFeed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18707 take_desk_outcomes (no non-test caller)",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ledgerd.rs::the_same_record_applied_twice_posts_once",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337"
     ],
-    "gap": "Spanner and wiring.",
+    "gap": "A shipper from the desk feed to the P1 stream (stamping DeskOutcome::chain_correlation) does not exist; no test drives node -> fabricd -> ledgerd as one run.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -3987,7 +3988,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger."
+    "notes": "Dedup is by (cell, session, seq, digest) chain continuity, not a bare event id; equivalent or stronger. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'Every financial outcome ... eventually committed' is unmet for the desk path: that leg runs only in tests, so 'eventually' is not demonstrated for it."
   },
   {
     "id": "R12-MODEL-10180",

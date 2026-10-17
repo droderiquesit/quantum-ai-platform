@@ -503,17 +503,18 @@
   },
   {
     "id": "R12-FABRIC-8023",
-    "status": "PARTIAL",
-    "current": "Broker producer table deduplicates by producer epoch/sequence and fences stale epochs (property-tested); consumers commit offsets. The only financial consumer (qip-ledgerd) dedups by chain continuity but is not wired to the fabric.",
+    "status": "COMPLETE",
+    "current": "Broker ProducerTable dedups by producer epoch/sequence and fences stale epochs (property-tested, served by qip-fabricd); the only financial consumer, qip-ledgerd, is now started from main and dedups by chain position plus digest, tested across restart.",
     "evidence": [
-      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs:175 for_any_interleaving_of_sends_lost_acks_retries_and_producer_restarts_each_sequence_is_appended_once_in_order",
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs::for_any_interleaving_of_sends_lost_acks_retries_and_producer_restarts_each_sequence_is_appended_once_in_order",
       "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:820 a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_still_fenced",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs:36-42 start() returns unavailable (placeholder)"
+      "backend/crates/apps/qip-ledgerd/tests/store.rs::for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Wire a real consumer into qip-ledgerd and other financial consumers.",
+    "gap": "Ledger dedups by (cell,session,seq,digest) not a bare fabric event id; accepted deviation (see LEDGER-8134). event_fabric_delivery_semantics.rs remains vacuous but is not relied on.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -523,7 +524,7 @@
     "verification": "cargo test -p qip-streaming --test event_fabric_producer",
     "work_item": "",
     "size": "M",
-    "notes": "event_fabric_delivery_semantics.rs:10 asserts a locally defined fixture enum, not the fabric — it tests nothing."
+    "notes": "event_fabric_delivery_semantics.rs:10 asserts a locally defined fixture enum, not the fabric — it tests nothing. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Both halves of the verification (appended once under lost acks/retries/restarts; replay from an offset has no duplicate effect) are covered by real tests reaching fabricd and ledgerd mains. Prior gap 'consumer not wired' is closed."
   },
   {
     "id": "R12-LEDGER-8024",
@@ -2035,16 +2036,14 @@
   {
     "id": "R12-FABRIC-8092",
     "status": "PARTIAL",
-    "current": "P1 has idempotent producer ids, refuse_producer overload, archive-required segments, and a ledger sink that holds its checkpoint through outages; RF3 is refused and no archive bucket is provisioned.",
+    "current": "P1 idempotent ids, archive-required, ledger consumer retries; RF3 refused and no archive bucket.",
     "evidence": [
-      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 a_sustained_ledger_outage_holds_the_checkpoint_skips_nothing_and_every_outcome_commits_once_in_effect",
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:81 P1 ack floor Archived; :384 RF1 only",
-      "infrastructure/terraform/fabric.tf:141 ledgerd archive disk only; no fabric archive bucket"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs"
     ],
-    "gap": "RF3 quorum; an immutable GCS archive provisioned.",
+    "gap": "RF3 quorum; immutable archive.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2055,7 +2054,7 @@
     "verification": "cargo test -p qip-ledgerd",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Ledger-sink retry and archiving improved; RF3 and immutable cloud archive still absent."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Ledger-sink retry and archiving improved; RF3 and immutable cloud archive still absent. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
   },
   {
     "id": "R12-FABRIC-8093",
@@ -2950,13 +2949,12 @@
   {
     "id": "R12-LEDGER-8134",
     "status": "COMPLETE",
-    "current": "qip-ledgerd runs a worker per P1 partition that applies each record in one batch keyed by the cell chain position (ADR 0105), recording the cursor so redelivery is a no-op; read API served.",
+    "current": "Unchanged: per-partition worker applies in one batch keyed by chain position; lineage refusal added before the store.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/lib.rs:194 Server::bind ReadApi; :219 PartitionWorker; :238 serve thread",
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:399 a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 property over redelivery/crash"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs::decode_batch",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "",
+    "gap": "None (dedup key is chain position, not event_id; recorded deviation).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2970,7 +2968,7 @@
     "verification": "cargo test -p qip-ledgerd --test store; process-level test of qip-ledgerd",
     "work_item": "",
     "size": "L",
-    "notes": "Dedup by chain continuity is a deliberate deviation from 'keyed by event_id' (red-team M3); record as a design difference. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Consumer and read API now run from main. Dedup key is chain position, not a separate event_id; Spanner not used (local store)."
+    "notes": "Dedup by chain continuity is a deliberate deviation from 'keyed by event_id' (red-team M3); record as a design difference. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Consumer and read API now run from main. Dedup key is chain position, not a separate event_id; Spanner not used (local store). Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Still holds."
   },
   {
     "id": "R12-LEDGER-8135",

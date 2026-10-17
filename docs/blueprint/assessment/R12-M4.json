@@ -2004,20 +2004,16 @@
   {
     "id": "R12-RISK-4093",
     "status": "PARTIAL",
-    "current": "The desk path (OrderManager::submit runs PreTradeChecker before broker.submit, backend/crates/services/qip-execution-engine/src/oms.rs:721-760, :828), the reflex net path (Cell::send -> risk_admit, cell.rs:5312) and the requote replacement (Cell::admit_replacement, called at apps/qip-edge-node/src/reprice.rs:770 before venue.place at :785) are gated, and qip-edge-node cannot assemble a cell without CellRiskGate (apps/qip-edge-node/src/lib.rs:175-238). The route suite drives each route. But the Market Factory rests quote ladders on the desk's simulated venue through ListingVenue::list_book (backend/crates/services/qip-execution-engine/src/market_creation.rs:475-495), reachable from qip-deepbrain via QIP_DEEPBRAIN_BREADTH_PLAN (apps/qip-deepbrain/src/breadth.rs:27; runtime/qip-kernel/src/breadth.rs:182-190), with no PreTradeChecker; the route enumeration only matches .submit(&order / place( / try_place( text (tests/qip-acceptance/tests/order_route_risk_gate.rs:617-640), so it cannot see this route.",
+    "current": "Desk path gains an instrument-membership refusal (OrderManager::with_known_instruments, installed by Platform::new) before pre-trade; Market Factory quote ladders still bypass PreTradeChecker.",
     "evidence": [
-      "tests/qip-acceptance/tests/order_route_risk_gate.rs::every_cell_the_edge_node_assembles_carries_the_deterministic_risk_gate",
-      "tests/qip-acceptance/tests/order_route_risk_gate.rs::a_strategy_order_that_breaches_the_cells_limit_never_reaches_the_venue",
-      "tests/qip-acceptance/tests/order_route_risk_gate.rs::a_requote_whose_replacement_breaches_the_cells_limit_withdraws_and_sends_nothing_new",
-      "tests/qip-acceptance/tests/order_route_risk_gate.rs::a_desk_order_that_breaches_a_limit_never_reaches_the_broker",
-      "tests/qip-acceptance/tests/order_route_risk_gate.rs:617-640",
-      "backend/crates/services/qip-execution-engine/src/market_creation.rs:475-495",
-      "backend/crates/runtime/qip-kernel/src/breadth.rs:182-190"
+      "backend/crates/services/qip-execution-engine/src/oms.rs:668",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4972",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice.rs::an_order_outside_the_universe_is_refused_and_leaves_no_trace"
     ],
-    "gap": "Gate the Market Factory's seed/list (resting quotes are executable) through the deterministic checker, and make the route enumeration cover list_book (or any venue-mutating trait method), not a text pattern.",
+    "gap": "Gate Market Factory list_book; enumerate by trait method.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2025,7 +2021,7 @@
     "verification": "acceptance test enumerating Broker::submit/Placer call sites",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap (gate not installed in qip-edge-node; reprice::replace ungated) is closed. New defect: Market Factory quotes bypass every pre-trade limit, and the 'fails on a new unguarded one' enumeration is still a text search that misses it. Capital findings on the gates themselves: the cell's Risk Gate counts every working order at its remaining size and its own (requoted) limit price (cell.rs:5420-5447; record_replacement updates the price, cell.rs:9938-9948) and checks the order at the price it is sent at — good; held positions are priced at the last price the gate saw an order sent at (risk_gate.rs:76-79, :193-197), not a current mark, so gross can be understated after a move. Region hold (edge): reserved at the strategy's mid, quantity*price where price is the mid (edge/qip-edge/src/cell.rs:4749-4757, :4932), but the order is sent at the touch for Marketable (cell.rs:5660) or at a later requote price (apps/qip-edge-node/src/reprice.rs:770-793); the hold is committed whole at the mid notional (cell.rs:5172) and never re-taken at the sent price, so the region allocation under-counts a marketable buy by the half-spread and a requote that chases the touch by however far it moves. It does keep working orders: the committed hold stays on Working::region_committed until fill/expiry. At the desk, the projection prices the order at arrival_price, not the fill price including impact (oms.rs:731), and RiskState carries no working orders (platform.rs:16572); latent today because stage_act sends Market orders that the simulator fills whole (platform.rs:15361)."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap (gate not installed in qip-edge-node; reprice::replace ungated) is closed. New defect: Market Factory quotes bypass every pre-trade limit, and the 'fails on a new unguarded one' enumeration is still a text search that misses it. Capital findings on the gates themselves: the cell's Risk Gate counts every working order at its remaining size and its own (requoted) limit price (cell.rs:5420-5447; record_replacement updates the price, cell.rs:9938-9948) and checks the order at the price it is sent at — good; held positions are priced at the last price the gate saw an order sent at (risk_gate.rs:76-79, :193-197), not a current mark, so gross can be understated after a move. Region hold (edge): reserved at the strategy's mid, quantity*price where price is the mid (edge/qip-edge/src/cell.rs:4749-4757, :4932), but the order is sent at the touch for Marketable (cell.rs:5660) or at a later requote price (apps/qip-edge-node/src/reprice.rs:770-793); the hold is committed whole at the mid notional (cell.rs:5172) and never re-taken at the sent price, so the region allocation under-counts a marketable buy by the half-spread and a requote that chases the touch by however far it moves. It does keep working orders: the committed hold stays on Working::region_committed until fill/expiry. At the desk, the projection prices the order at arrival_price, not the fill price including impact (oms.rs:731), and RiskState carries no working orders (platform.rs:16572); latent today because stage_act sends Market orders that the simulator fills whole (platform.rs:15361). Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Membership check does not touch the named bypass."
   },
   {
     "id": "R12-RISK-4094",

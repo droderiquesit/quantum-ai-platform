@@ -1068,13 +1068,12 @@
   {
     "id": "R12-TICK-2047",
     "status": "PARTIAL",
-    "current": "Platform's OutcomeCapture records orders, fills, cancels, rejections, missed opportunities and risk rulings with trace ids; fills carry slippage_bps; the edge cell counts refusals, cancels and fills.",
+    "current": "OutcomeCapture and desk fills as P1 OutcomeRecords carry trace/chain ids; queue estimates and hedge legs are not captured and nothing writes to the tick lake beside market events.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:205,644 OutcomeCapture",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16373 slippage_bps on fills",
+      "backend/crates/runtime/qip-kernel/src/desk_ledger.rs::DeskLedgerFeed",
       "backend/crates/services/qip-twin/tests/twin.rs:753 every_captured_outcome_carries_a_trace_id_and_the_chain_reconstructs"
     ],
-    "gap": "Queue-position estimates and hedge legs are not captured; internal telemetry is not written to the tick lake beside market events.",
+    "gap": "Queue estimates, hedge legs, tick-lake write.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1085,7 +1084,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Named elements missing."
   },
   {
     "id": "R12-TICK-2048",

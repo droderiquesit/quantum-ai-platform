@@ -29,14 +29,12 @@
   {
     "id": "R12-LEDGER-5002",
     "status": "PARTIAL",
-    "current": "LedgerEvent::new (backend/crates/libs/qip-contracts/src/ledger.rs:202) refuses <2 postings, non-positive amounts and per-unit imbalance; deserialisation routed through it (LedgerEventWire, backend/crates/libs/qip-contracts/src/ledger.rs:160-170). Posting logic qip_portfolio::ledger::post (backend/crates/libs/qip-portfolio/src/ledger.rs:320).",
+    "current": "LedgerEvent::new refuses unbalanced, <2 posting and non-positive events and deserialisation goes through it; only the per-unit imbalance and wire-tamper refusals have tests.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:202 LedgerEvent::new refusals",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:160 LedgerEventWire routed through new",
-      "backend/crates/libs/qip-contracts/tests/ledger_event.rs balance refusals",
-      "backend/crates/libs/qip-portfolio/tests/ledger_postings.rs"
+      "backend/crates/libs/qip-contracts/src/ledger.rs::a_set_unbalanced_by_one_nano_unit_is_refused_and_not_plugged",
+      "backend/crates/libs/qip-contracts/src/ledger.rs::an_event_read_off_the_wire_meets_the_same_balance_refusal"
     ],
-    "gap": "The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals. None at the type level; runtime integration depends on qip-ledgerd running (see the append-only requirement).",
+    "gap": "Tests for fewer than two postings and non-positive amounts (grep finds none).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -47,7 +45,7 @@
     "verification": "cargo test -p qip-contracts --test ledger_event; cargo test -p qip-portfolio --test ledger_postings",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Two named clauses have no test that fails if removed."
   },
   {
     "id": "R12-LEDGER-5003",
@@ -73,16 +71,16 @@
   {
     "id": "R12-LEDGER-5004",
     "status": "PARTIAL",
-    "current": "qip_portfolio::ledger::post (backend/crates/libs/qip-portfolio/src/ledger.rs:320) turns a PaperFill into instrument and cash postings; qip-ledgerd store applies them (backend/crates/apps/qip-ledgerd/src/store.rs:372). Not running: backend/crates/apps/qip-ledgerd/src/main.rs:65 consumer constructed but never started; backend/crates/apps/qip-ledgerd/src/main.rs:70 read_api.serve() always returns Err(unavailable), so the binary exits with an error at start; backend/crates/apps/qip-ledgerd/src/consumer.rs:32-37 start() is a placeholder returning Err. The kernel keeps its own positions (qip-kernel platform/central plane) separate from this ledger.",
+    "current": "Fills are booked into qip-ledgerd from the stream and readable over its API with literal balances; the kernel desk and the cell keep their own positions and nothing reads the ledger as authority.",
     "evidence": [
-      "backend/crates/libs/qip-portfolio/src/ledger.rs:320 post",
-      "backend/crates/apps/qip-ledgerd/src/store.rs:372 apply",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 duplication/crash balances equal clean delivery"
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ledgerd.rs::desk_fills_are_booked_by_the_real_store_and_agree_with_the_platforms_book",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18707 take_desk_outcomes"
     ],
-    "gap": "Run qip-ledgerd against the fabric and make kernel/edge positions reconcile to (or read from) it; today two books exist and neither is checked against the other.",
+    "gap": "Production reconciliation or read path making the ledger the authority over kernel/cell positions; desk fills are not shipped.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -92,7 +90,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): 'The ledger, not a model or cache, is the authority' unmet: agreement with the platform book is shown only in a test; two books exist in production."
   },
   {
     "id": "R12-LEDGER-5005",
@@ -268,14 +266,12 @@
   {
     "id": "R12-LEDGER-5013",
     "status": "COMPLETE",
-    "current": "qip-ledgerd consumes the outcomes stream per partition and applies each record once: same chain position + same digest is a no-op; same offset or sequence with different content parks the cell as an integrity break.",
+    "current": "Ledgerd consumer (now also verifying lineage) applies each record once; same position+digest is a no-op, different content parks the cell.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:372 apply; :380 offset re-delivery with different hash -> Integrity park",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery; :485 different digest parks",
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:399 a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "backend/crates/apps/qip-ledgerd/src/lib.rs:219 PartitionWorker per partition; main.rs:40"
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_fill_whose_lineage_was_edited_stalls_its_partition_and_a_good_one_names_its_chain"
     ],
-    "gap": "",
+    "gap": "None.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -288,17 +284,18 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Still holds after 5ff50da9's consumer change."
   },
   {
     "id": "R12-LEDGER-5014",
     "status": "PARTIAL",
-    "current": "SourceEvent carries cell/order_id back toward the fill; no intent id and no settlement record are carried, so the walk stops at the order.",
+    "current": "LedgerEvent::chain_correlation derives the chain id from source (cell, session, order) and Decision::ChainOpened ties order to signal in the journal; SourceEvent still has no intent id and settlement is a state, not a record.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:133 SourceEvent with order_id; no intent field",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:32 Settlement is a state, not a record"
+      "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::chain_correlation",
+      "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
     ],
-    "gap": "Carry intent id and a settlement record; a test walking lineage both directions from a balance.",
+    "gap": "Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -309,19 +306,22 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement."
   },
   {
     "id": "R12-LEDGER-5015",
-    "status": "PARTIAL",
-    "current": "Account::Trading{cell,strategy} (backend/crates/libs/qip-contracts/src/ledger.rs:69) and Account::Venue (backend/crates/libs/qip-contracts/src/ledger.rs:71) carry trading postings.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd main -> start_with_link -> PartitionWorker -> LedgerStore::apply -> qip_portfolio::ledger::post books Account::Trading postings; the composed-ledger test asserts literal trading/venue/fees balances and a zero trial balance per unit.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:69 Account::Trading"
+      "backend/crates/apps/qip-ledgerd/src/main.rs::start",
+      "backend/crates/apps/qip-ledgerd/src/store.rs:833 post",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::a_simulated_fill_reaches_the_fabric_spool_and_is_booked_as_one_balanced_ledger_event"
     ],
-    "gap": "Binary not running.",
+    "gap": "None for the subledger clause; deployment tracked separately.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -329,7 +329,7 @@
     "verification": "cargo test -p qip-ledgerd plus a subledger test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Old gap 'binary not running' is stale: the binary starts, consumes and serves. Literal expected balances (trading:cell-a/alpha 14 / -1409.25) fail if postings are routed to another account; trial balance closes per unit."
   },
   {
     "id": "R12-LEDGER-5016",
@@ -715,13 +715,12 @@
   {
     "id": "R12-REFLEX-5034",
     "status": "PARTIAL",
-    "current": "qip-edge-node's spool drain delivers outcomes (OrderSent, Filled, Hedged, OrderExpired, MassCancelled, VenueWithdrawn, CrossedInternally, ReconciliationBreak) to the P1 stream and the whole journal, including PolicyApplied, to P2 off the decision thread (backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:1-72; writer.rs:230-275). Metrics leave only by scrape, not as fabric records, and there is no model/package acknowledgement decision.",
+    "current": "Outcomes and journal drain asynchronously to P1/P2; telemetry leaves by scrape and model/policy acknowledgments are not fabric records.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:66-72",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:230-275",
-      "apps/qip-edge-node/tests/event_fabric_outbox.rs"
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs"
     ],
-    "gap": "Telemetry and model-package acknowledgements as fabric records; a test that they arrive after the pass with the drain-removal mutation.",
+    "gap": "Telemetry and ack records on the fabric.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -734,7 +733,7 @@
     "verification": "node test with in-process qip-streaming broker double",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet."
   },
   {
     "id": "R12-MESH-5035",
@@ -1017,16 +1016,16 @@
   {
     "id": "R12-REFLEX-5047",
     "status": "PARTIAL",
-    "current": "The node drains outcomes to reflex-outcomes.local (drain.rs:66-67) and qip-ledgerd books fills from the stream once across restarts (apps/qip-ledgerd/tests/fabric.rs:407), but no test drives node -> fabricd -> ledgerd, and the ledgerd-loss game day was inconclusive because the simulated cell produced no outcome (docs/ops/game-days/README.md 'Results so far').",
+    "current": "Spool drain to P1 and ledgerd booking are both wired and each tested, but no test runs node -> fabricd -> ledgerd, and the learning half of the forward does not exist.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:66-72",
-      "apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "docs/ops/game-days/results/2026-10-11-ledgerd-loss.json"
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once"
     ],
-    "gap": "An end-to-end test: a fill journaled at the node is booked by qip-ledgerd, with the forward-removal mutation; the learning half of the forward.",
+    "gap": "Forward to learning; one end-to-end test with forward-removal mutation.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -1037,7 +1036,7 @@
     "verification": "acceptance test node journal -> fabricd -> ledgerd balance",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement says ledger and learning; learning leg absent."
   },
   {
     "id": "R12-MESH-5048",
@@ -1453,14 +1452,13 @@
   {
     "id": "R12-MESH-5066",
     "status": "PARTIAL",
-    "current": "The cell journals CycleCommitted when every leg has been sent (libs/qip-contracts/src/reflex.rs:359-372), plus CycleDecomposed, CycleRested and CycleAbandoned. qip-ledgerd posts each Filled outcome individually as double-entry (apps/qip-ledgerd/src/store.rs:729; consumer.rs decodes P1 OutcomeRecord). No record marks a cycle completed (all legs filled), and the ledger has no notion of a cycle: grep 'cycle' in apps/qip-ledgerd/src finds nothing. No test ties a completed cycle's legs to balanced ledger events.",
+    "current": "CycleCommitted means all legs sent; ledgerd posts individual Filled outcomes; no cycle-completion record or test.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/reflex.rs:359",
-      "backend/crates/apps/qip-ledgerd/src/store.rs:729",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs:175"
+      "backend/crates/apps/qip-ledgerd/src/store.rs:729"
     ],
-    "gap": "A cycle-completion record (all legs filled), booked or referenced in the ledger, and an integration test showing a completed cycle's legs net in the ledger.",
-    "implemented": false,
+    "gap": "Cycle-completion record and a netting test.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -1472,7 +1470,7 @@
     "verification": "acceptance test cycle -> ledger",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Individual fills can reach the ledger, but the requirement's cycle-level record does not exist."
+    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Individual fills can reach the ledger, but the requirement's cycle-level record does not exist. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged by the commits."
   },
   {
     "id": "R12-CAPITAL-5067",

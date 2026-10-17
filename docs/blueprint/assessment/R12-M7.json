@@ -365,16 +365,17 @@
   {
     "id": "R12-OBS-7018",
     "status": "PARTIAL",
-    "current": "Lineage and trace id fields exist (qip-core lineage, FabricEnvelope.trace_id); kernel quote loop and edge cell carry trace context.",
+    "current": "Three unjoined id spaces: platform record lineage (observe_with_lineage in fastbrain), cell chain_correlation, desk-fill chain; no single trace id spans brain -> node -> venue -> ledger -> learning.",
     "evidence": [
-      "backend/crates/libs/qip-core/src/lineage.rs",
-      "backend/crates/libs/qip-contracts/src/fabric_envelope.rs:19-40 FabricEnvelope fields",
-      "backend/crates/runtime/qip-kernel/src/quote_loop.rs"
+      "backend/crates/apps/qip-fastbrain/src/node.rs::SensePath",
+      "backend/crates/runtime/qip-kernel/src/bus_bridge.rs::PlatformBridge",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_lineage.rs::the_fast_brain_path_carries_a_correlation_id_per_record_into_the_log_and_the_journal",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
     ],
-    "gap": "No test asserting one trace id spans brain→model→risk→node→venue→ledger→learning.",
+    "gap": "One trace id from the brain's decision to the cell order and ledger; learning records not joined.",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -382,7 +383,7 @@
     "verification": "acceptance test following one opportunity id through every stage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement is one trace across brain, model, risk, node, venue, ledger and learning; the cell chain id is derived from cell/session/order and is never linked to the brain's record ids."
   },
   {
     "id": "R12-TICK-7019",
@@ -1934,16 +1935,12 @@
   {
     "id": "R12-CONTRACT-7089",
     "status": "PARTIAL",
-    "current": "FabricEnvelope::open/open_all/open_decoded (qip-events envelope.rs) assemble and check the envelope with a SHA-256 schema_hash. The edge-node drain opens every record before send (drain.rs:448) and ledgerd decode_batch opens ledger-topic records (consumer.rs:220).",
+    "current": "Envelope assembled at both ends; ledger stamps region and auth_context locally, not carried on the wire.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/envelope.rs::FabricEnvelope::open_decoded",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:448",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs:220",
-      "backend/crates/libs/qip-events/tests/fabric_envelope_delivery.rs::a_wire_envelope_whose_version_or_schema_hash_was_edited_is_refused",
-      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_with_a_record_the_consumer_would_refuse_is_never_sent_and_leaves_no_trace",
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_record_the_envelope_refuses_stalls_its_partition_and_books_nothing_from_its_batch"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:220"
     ],
-    "gap": "Region and auth_context are not carried on the wire: each side stamps them from local context (ledger stamps READ_REGION 'central', auth_context is a producer id or consumer-group string, not an authenticated principal). The envelope is an assembled view, not what is exchanged.",
+    "gap": "Region and authenticated principal on the wire.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1954,7 +1951,7 @@
     "verification": "cargo test -p qip-events --test event_fabric_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Cited src/fabric_envelope.rs does not exist (real: qip-events/src/event_fabric/envelope.rs). Schema version is an integer, not a hash. No producer or consumer exchanges this envelope. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The contract, schema hash and both ends are real and tested. The consumer-side envelope carries a fabricated region and a non-authenticated auth context, which is the provenance loss the requirement names. The implementing commit admits both."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Cited src/fabric_envelope.rs does not exist (real: qip-events/src/event_fabric/envelope.rs). Schema version is an integer, not a hash. No producer or consumer exchanges this envelope. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The contract, schema hash and both ends are real and tested. The consumer-side envelope carries a fabricated region and a non-authenticated auth context, which is the provenance loss the requirement names. The implementing commit admits both. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
   },
   {
     "id": "R12-CONTRACT-7090",
@@ -2983,13 +2980,13 @@
   {
     "id": "R12-REFLEX-7137",
     "status": "PARTIAL",
-    "current": "Edge node runs passes on simulated feed with paper boundary, risk gates and replay; not deployed.",
+    "current": "Edge node runs passes on the simulated feed with risk gate and paper boundary and its spool reaches ledgerd; src/replay.rs is not called from main.rs (only tests).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/pass.rs",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37,148 live ceiling stops the deployment; every binary routes the ceiling through the refusal",
-      "backend/crates/apps/qip-edge-node/src/replay.rs"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move",
+      "backend/crates/apps/qip-edge-node/src/replay.rs (no binary caller)",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs"
     ],
-    "gap": "Deployed node.",
+    "gap": "Replay reachable from a binary or operator command; deployed node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3000,7 +2997,7 @@
     "verification": "cargo test -p qip-edge-node",
     "work_item": "",
     "size": "M",
-    "notes": "nothing deployed: execution_nodes = {} in every environment"
+    "notes": "nothing deployed: execution_nodes = {} in every environment Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Replay clause has no binary entry point; not promoted."
   },
   {
     "id": "R12-TICK-7138",
@@ -3566,15 +3563,14 @@
   {
     "id": "R12-COVERAGE-7164",
     "status": "PARTIAL",
-    "current": "LedgerEvent enforces balanced postings.",
+    "current": "Cash/positions double-entry now run in ledgerd; obligations, collateral and inventory accounts absent.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:103-175",
-      "backend/crates/libs/qip-contracts/tests/ledger_event.rs"
+      "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::new"
     ],
-    "gap": "Obligations, collateral, physical inventory accounts; authority.",
+    "gap": "Obligations, collateral, physical inventory.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -3582,7 +3578,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Constituents unmet."
   },
   {
     "id": "R12-COVERAGE-7165",
@@ -4539,12 +4535,12 @@
   {
     "id": "R12-MODEL-7210",
     "status": "PARTIAL",
-    "current": "stage_learn calls calibrate_resolved, score_declined and score_filled.",
+    "current": "LEARN scores fills/declines/counterfactuals; desk fills now also become P1 records but nothing consumes them for learning.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585,17244,17410 stage_learn, score_declined, score_filled",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn",
       "backend/crates/runtime/qip-kernel/tests/learning.rs"
     ],
-    "gap": "Rejected-by-risk outcomes and edge refusals not shown in learning.",
+    "gap": "Rejected-by-risk and edge-refusal outcomes in learning.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4555,7 +4551,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
   },
   {
     "id": "R12-FABRIC-7211",

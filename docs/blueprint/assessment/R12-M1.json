@@ -4309,13 +4309,12 @@
   {
     "id": "R12-LEDGER-1197",
     "status": "PARTIAL",
-    "current": "Centre settles reported fills (CentralPlane::settle, attributed fills) and qip-ledgerd posts double-entry for fills; treasury/inventory linkage not shown; ledgerd not deployed.",
+    "current": "Cell fills reach ledgerd and post balanced double-entry; treasury, settlement and inventory consumers do not exist.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5772 ingest_cell_report",
-      "backend/crates/libs/qip-contracts/src/ledger.rs:193 balanced postings",
-      "backend/crates/apps/qip-ledgerd/tests"
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs settle"
     ],
-    "gap": "Wire treasury and inventory to fills; deploy ledgerd.",
+    "gap": "Treasury, settlement and inventory linkage.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4326,7 +4325,7 @@
     "verification": "cargo test -p qip-ledgerd; cargo test -p qip-kernel --test central",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Three of four named destinations are absent."
   },
   {
     "id": "R12-MODEL-1198",

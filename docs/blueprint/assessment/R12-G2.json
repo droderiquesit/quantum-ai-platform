@@ -3386,16 +3386,16 @@
   {
     "id": "R12-OBS-9154",
     "status": "PARTIAL",
-    "current": "W3C trace-context spans in qip-observability and correlation ids on event envelopes; spans drain as OTLP to OpenObserve (not Cloud Trace).",
+    "current": "API uses Platform::observe_fresh (root lineage per record) and the cell derives its own chain id; no API-set id appears in cell metadata; spans export OTLP to OpenObserve, not Cloud Trace.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/trace.rs:1-4",
+      "backend/crates/apps/qip-api/src/routes.rs observe_fresh",
       "backend/crates/libs/qip-core/src/lineage.rs",
-      "backend/crates/libs/qip-observability/tests/telemetry.rs"
+      "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation"
     ],
-    "gap": "End-to-end correlation test API→cell.",
+    "gap": "Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -3403,7 +3403,7 @@
     "verification": "new acceptance test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent."
   },
   {
     "id": "R12-OBS-9155",
