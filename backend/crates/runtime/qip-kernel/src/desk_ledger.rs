@@ -174,6 +174,12 @@ pub struct DeskLedgerFeed {
     /// a silent no-op: a shipper whose bookkeeping has fallen behind the
     /// feed's is a shipper that will resend, and that should be seen.
     acknowledged_through: Option<u64>,
+    /// Whether the chain has advanced over a record that was never queued: a
+    /// fill that found no room. Set by the two seams that report
+    /// [`Admission::Overflowed`], cleared by [`Self::fill_gap`] once every
+    /// position between the acknowledged watermark and the chain's tail is
+    /// queued. The platform heals it when an acknowledgement makes room.
+    gap: bool,
 }
 
 impl DeskLedgerFeed {
@@ -229,6 +235,7 @@ impl DeskLedgerFeed {
             self.seen.insert(key);
         }
         if !(room_to_remember && room_to_queue) {
+            self.gap = true;
             return Ok(Admission::Overflowed { sequence });
         }
         self.outbox.push(DeskOutcome {
@@ -281,6 +288,7 @@ impl DeskLedgerFeed {
         self.next_sequence = next;
         self.tail_digest = Some(record.journal_digest.clone());
         if self.outbox.len() >= DESK_OUTBOX_CAPACITY {
+            self.gap = true;
             return Ok(Admission::Overflowed { sequence });
         }
         self.outbox.push(DeskOutcome {
@@ -325,6 +333,108 @@ impl DeskLedgerFeed {
         }
     }
 
+    /// Whether the chain has a position that was never queued and has not
+    /// been healed.
+    pub fn has_gap(&self) -> bool {
+        self.gap
+    }
+
+    /// Whether room has opened for the queue to take a missing record.
+    pub fn has_room(&self) -> bool {
+        self.outbox.len() < DESK_OUTBOX_CAPACITY
+    }
+
+    /// Queue the records the chain advanced over without queueing, from
+    /// `derived`: the whole chain re-derived from the event log, in order, so
+    /// `derived[n]` is the record at position `n`. Fills each position above
+    /// the acknowledged watermark that is neither queued nor beyond the
+    /// chain's tail, while there is room, keeping the queue in chain order.
+    /// Returns how many were queued.
+    ///
+    /// Refused, with nothing queued, when `derived` does not agree with the
+    /// chain: shorter than the chain, or a record that does not hash onto the
+    /// one before it or into the record already queued after it. A healed
+    /// record that differs from the one a restart would re-queue is a chain
+    /// the ledger would park, and the restart is then the only safe repair.
+    pub fn fill_gap(&mut self, derived: &[DeskOutcome]) -> Result<usize> {
+        if !self.gap {
+            return Ok(0);
+        }
+        if (derived.len() as u64) < self.next_sequence {
+            return Err(Error::invalid(format!(
+                "the event log re-derives {} desk records and the chain has advanced to \
+                 position {}; the log does not hold the whole chain, so the gap cannot be \
+                 healed live — restart from a complete log",
+                derived.len(),
+                self.next_sequence
+            )));
+        }
+        let first = self.acknowledged_through.map_or(0, |through| through + 1);
+        let queued: BTreeSet<u64> = self
+            .outbox
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect();
+        let mut added = 0usize;
+        let mut still_missing = false;
+        for sequence in first..self.next_sequence {
+            if queued.contains(&sequence) {
+                continue;
+            }
+            if self.outbox.len() >= DESK_OUTBOX_CAPACITY {
+                still_missing = true;
+                continue;
+            }
+            let outcome = derived.get(sequence as usize).ok_or_else(|| {
+                Error::invalid(format!("no re-derived record at chain position {sequence}"))
+            })?;
+            if outcome.record.entry.sequence != sequence {
+                return Err(Error::invalid(format!(
+                    "the re-derived record at index {sequence} names chain position {}",
+                    outcome.record.entry.sequence
+                )));
+            }
+            // It must sit between its neighbours on the chain, not merely
+            // carry the right number.
+            if sequence > 0 {
+                let before = &derived[sequence as usize - 1];
+                if outcome
+                    .record
+                    .entry
+                    .expected_digest(&before.record.journal_digest)?
+                    != outcome.record.entry.digest
+                {
+                    return Err(Error::invalid(format!(
+                        "the re-derived record at chain position {sequence} does not chain \
+                         onto the one before it"
+                    )));
+                }
+            }
+            if let Some(next) = self
+                .outbox
+                .iter()
+                .find(|o| o.record.entry.sequence == sequence + 1)
+                && next
+                    .record
+                    .entry
+                    .expected_digest(&outcome.record.journal_digest)?
+                    != next.record.entry.digest
+            {
+                return Err(Error::invalid(format!(
+                    "the re-derived record at chain position {sequence} is not the one the \
+                     queued record after it was chained onto"
+                )));
+            }
+            let at = self
+                .outbox
+                .partition_point(|o| o.record.entry.sequence < sequence);
+            self.outbox.insert(at, outcome.clone());
+            added += 1;
+        }
+        self.gap = still_missing;
+        Ok(added)
+    }
+
     /// Hand over everything queued, oldest first, leaving the queue empty.
     ///
     /// Destructive: what is returned is no longer queued, so a caller that
@@ -359,6 +469,29 @@ impl DeskLedgerFeed {
         self.acknowledged_through = Some(through_sequence);
         Ok(before - self.outbox.len())
     }
+}
+
+/// The chain re-derived with each record's cycle correlation: `booked` is
+/// `(fill, correlation)` in log order. The same fold [`outcomes_from`] runs,
+/// keeping the correlation the live path attached.
+pub fn outcomes_with_correlation<'a>(
+    booked: impl IntoIterator<Item = (&'a FillBooked, &'a str)>,
+    strategy: &str,
+) -> Vec<DeskOutcome> {
+    let mut outcomes: Vec<DeskOutcome> = Vec::new();
+    for (fill, correlation) in booked {
+        let previous = outcomes
+            .last()
+            .map_or(GENESIS, |last| last.record.journal_digest.as_str());
+        let sequence = outcomes.len() as u64;
+        if let Ok(record) = outcome_for(fill, strategy, sequence, previous) {
+            outcomes.push(DeskOutcome {
+                record,
+                correlation_id: correlation.to_string(),
+            });
+        }
+    }
+    outcomes
 }
 
 /// The records for `booked` fills, in the order given, positioned from zero.
@@ -747,6 +880,95 @@ mod tests {
         assert_eq!(paper.quantity(), dec!("10"));
         assert_eq!(paper.price(), dec!("100"));
         assert_eq!(paper.source().order_id, "o1");
+    }
+
+    /// A feed with the bound's worth queued, one fill that overflowed, and the
+    /// fills in log order.
+    fn overflowed_feed() -> (DeskLedgerFeed, Vec<FillBooked>) {
+        let mut feed = DeskLedgerFeed::new();
+        let mut all = Vec::new();
+        for n in 0..=DESK_OUTBOX_CAPACITY {
+            let fill = booked(&format!("h{n}"), "f", dec!("1"), dec!("100"));
+            feed.admit(&fill, "central-desk", "c").unwrap();
+            all.push(fill);
+        }
+        assert!(feed.has_gap(), "premise: the last fill found no room");
+        assert_eq!(feed.pending().len(), DESK_OUTBOX_CAPACITY, "premise");
+        (feed, all)
+    }
+
+    fn derive(all: &[FillBooked]) -> Vec<DeskOutcome> {
+        outcomes_with_correlation(all.iter().map(|f| (f, "c")), "central-desk")
+    }
+
+    /// The failure this prevents: the position the full queue skipped staying
+    /// missing until a restart, with the shipper refusing every record behind
+    /// it. Acknowledging the queue makes room; the missing record is then
+    /// queued at its own position and the gap is closed.
+    ///
+    /// Mutation: have `fill_gap` return before inserting — nothing is queued
+    /// and the first assertion fails.
+    #[test]
+    fn an_acknowledgement_makes_room_and_the_skipped_record_is_queued_at_its_position() {
+        let (mut feed, all) = overflowed_feed();
+        assert_eq!(
+            feed.fill_gap(&derive(&all)).unwrap(),
+            0,
+            "no room yet: nothing may be queued past the bound"
+        );
+        assert!(feed.has_gap(), "a heal with no room cleared the gap");
+        feed.acknowledge(DESK_OUTBOX_CAPACITY as u64 - 1).unwrap();
+        assert!(feed.pending().is_empty(), "premise: the queue drained");
+
+        assert_eq!(feed.fill_gap(&derive(&all)).unwrap(), 1);
+        assert!(!feed.has_gap());
+        let sequences: Vec<u64> = feed
+            .pending()
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect();
+        assert_eq!(sequences, vec![DESK_OUTBOX_CAPACITY as u64]);
+        // It is the record a restart would have queued.
+        assert_eq!(feed.pending()[0], derive(&all)[DESK_OUTBOX_CAPACITY]);
+    }
+
+    /// The healed record is queued in chain order when records behind it are
+    /// already queued, and a log that does not agree with the chain heals
+    /// nothing.
+    ///
+    /// Mutation: skip the chaining check against the queued successor — the
+    /// forged-log assertion fails.
+    #[test]
+    fn a_log_that_disagrees_with_the_chain_heals_nothing() {
+        let (mut feed, all) = overflowed_feed();
+        feed.acknowledge(DESK_OUTBOX_CAPACITY as u64 - 1).unwrap();
+        let after = booked("after-gap", "f", dec!("1"), dec!("100"));
+        feed.admit(&after, "central-desk", "c").unwrap();
+        assert_eq!(
+            feed.pending().len(),
+            1,
+            "premise: one record behind the gap"
+        );
+
+        let mut forged = all.clone();
+        forged[DESK_OUTBOX_CAPACITY] = booked("forged", "f", dec!("2"), dec!("100"));
+        forged.push(after.clone());
+        assert!(feed.fill_gap(&derive(&forged)).is_err());
+        assert_eq!(feed.pending().len(), 1, "a refused heal queued something");
+        assert!(feed.has_gap());
+
+        let mut honest = all;
+        honest.push(after);
+        assert_eq!(feed.fill_gap(&derive(&honest)).unwrap(), 1);
+        let sequences: Vec<u64> = feed
+            .pending()
+            .iter()
+            .map(|o| o.record.entry.sequence)
+            .collect();
+        assert_eq!(
+            sequences,
+            vec![DESK_OUTBOX_CAPACITY as u64, DESK_OUTBOX_CAPACITY as u64 + 1]
+        );
     }
 
     #[test]

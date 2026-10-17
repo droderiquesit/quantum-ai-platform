@@ -1348,31 +1348,30 @@ fn fill_despite_rejections(platform: &mut Platform, side: Side, tag: &str) -> us
 }
 
 /// The fill past the queue's bound is booked and chained but not queued, which
-/// leaves a gap in the chain the queue holds; this pins that, and that a
-/// restart closes it. The venue holds the position either way, so the book
-/// takes the fill; the failure this guards is the gap being silent, or being
-/// read as safe.
+/// leaves a gap in the chain the queue holds; the acknowledgement that makes
+/// room heals it from the event log, and the record it queues is the one a
+/// restart would have. The venue holds the position either way, so the book
+/// takes the fill; the failure this guards is the gap staying until a restart
+/// while the shipper holds every later record back.
 ///
 /// 10,001 real fills go through the simulated broker and the OMS. With the
 /// bound's worth queued and nothing shipped, the next fill is counted
-/// unledgered and not queued, and one booked after it is chained at the next
-/// position, so the queue then ends at `bound - 1` and `bound + 1` with
-/// `bound` missing: shipped as it is, the ledger would park everything behind
-/// the gap, and the shipper (`prepare`) holds the later record back instead.
-/// Acknowledging the queued bound — what a drained shipper would have done —
-/// and restarting re-queues exactly the two the queue lacked, in order, from
-/// the event log.
+/// unledgered and not queued. Acknowledging the queued bound — what a drained
+/// shipper does — queues the missing record at its own position, and a fill
+/// booked after it follows in order. A restart from the same log re-queues the
+/// same two records.
 ///
 /// The records are not pushed through the broker: at the catalogue's quota
 /// that is some five minutes of paced delivery and says nothing more about
 /// the gap. `a_queue_longer_than_one_quota_window_still_drains` covers the
 /// shipping.
 ///
-/// Mutation: make `admit` queue past the bound (compare against twice the
-/// capacity) — the queue grows past the bound and "the fill past the bound was
-/// queued" fails, after the 10,001st fill.
+/// Mutations: make `admit` queue past the bound (compare against twice the
+/// capacity) — "the fill past the bound was queued" fails; drop the
+/// `heal_desk_gap` call from `acknowledge_desk_outcomes` — the queue after the
+/// acknowledgement is empty and "the acknowledgement did not heal" fails.
 #[test]
-fn the_fill_past_the_queue_bound_leaves_a_gap_that_only_a_restart_closes() {
+fn the_fill_past_the_queue_bound_is_healed_from_the_log_when_room_opens() {
     let bound = DESK_OUTBOX_CAPACITY;
     let path = log_file("overflow");
     let sequences = |platform: &Platform| -> Vec<u64> {
@@ -1382,7 +1381,7 @@ fn the_fill_past_the_queue_bound_leaves_a_gap_that_only_a_restart_closes() {
             .map(|o| o.record.entry.sequence)
             .collect()
     };
-    {
+    let live = {
         let mut platform = warm_platform_at(&path).unwrap();
         let metrics = platform.telemetry().metrics.clone();
         for n in 0..bound {
@@ -1416,27 +1415,46 @@ fn the_fill_past_the_queue_bound_leaves_a_gap_that_only_a_restart_closes() {
         );
 
         // What a drained shipper does: the queued bound is delivered and
-        // acknowledged, which makes room.
-        let last_queued = (bound - 1) as u64;
+        // acknowledged, which makes room, and the missing record is queued.
         assert_eq!(
-            platform.acknowledge_desk_outcomes(last_queued).unwrap(),
+            platform
+                .acknowledge_desk_outcomes((bound - 1) as u64)
+                .unwrap(),
             bound
         );
-        assert!(platform.pending_desk_outcomes().is_empty(), "premise");
+        assert_eq!(
+            sequences(&platform),
+            vec![bound as u64],
+            "the acknowledgement did not heal the gap from the log"
+        );
         fill_despite_rejections(&mut platform, alternating(bound + 1), "after-gap");
         assert_eq!(
             sequences(&platform),
-            vec![(bound + 1) as u64],
-            "the record after the gap is chained past the missing position, and \
-             is all the live queue holds: the missing one is not recoverable live"
+            vec![bound as u64, (bound + 1) as u64],
+            "the record after the healed one is not in chain order"
         );
-    }
+        platform.pending_desk_outcomes().to_vec()
+    };
 
+    // The records are identical. The correlation id beside each is the log's
+    // for a record derived from it (the healed one, and every one a restart
+    // re-queues) and the cycle's for one admitted live: `journal_record` mints
+    // a fresh id for the `FillBooked` envelope, so a restart already
+    // loses the decision's id. Compared for the healed record, which both
+    // paths take from the log, and not for the live one.
     let resumed = warm_platform_at(&path).unwrap();
+    let records = |outcomes: &[DeskOutcome]| -> Vec<_> {
+        outcomes.iter().map(|o| o.record.clone()).collect()
+    };
     assert_eq!(
-        sequences(&resumed),
-        vec![bound as u64, (bound + 1) as u64],
-        "the restart did not re-queue the overflowed fill and the one behind it, in order"
+        records(resumed.pending_desk_outcomes()),
+        records(&live),
+        "a restart re-queues other records than the live heal queued"
+    );
+    assert_eq!(
+        resumed.pending_desk_outcomes()[0],
+        live[0],
+        "the healed record differs from the one a restart re-queues"
     );
 }
 

@@ -18837,7 +18837,64 @@ impl Platform {
                 now,
             )?;
         }
-        self.desk_ledger.acknowledge(through_sequence)
+        let dropped = self.desk_ledger.acknowledge(through_sequence)?;
+        self.heal_desk_gap();
+        Ok(dropped)
+    }
+
+    /// Queue the desk records a full queue made the chain advance over, now
+    /// that an acknowledgement has made room, by re-deriving the chain from
+    /// the event log: the log is what the chain is a fold of, and the same
+    /// fold is what a restart runs, so the healed records are the ones a
+    /// restart would have re-queued. Without this the gap stayed until the
+    /// process restarted, and the shipper held every later record back.
+    ///
+    /// Never fails the acknowledgement it follows: the fabric already holds
+    /// what was acknowledged. A heal that cannot complete is surfaced as a
+    /// capture problem and leaves the gap, which the shipper still reports.
+    fn heal_desk_gap(&mut self) {
+        if !self.desk_ledger.has_gap() || !self.desk_ledger.has_room() {
+            return;
+        }
+        let result = (|| -> Result<usize> {
+            let mut fills: Vec<(FillBooked, String)> = Vec::new();
+            for record in self.event_log.records() {
+                if record.event.lineage.producer != BOOK_ORIGIN
+                    || record.event.topic != FillBooked::TOPIC
+                {
+                    continue;
+                }
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                fills.push((
+                    frame.decode::<FillBooked>()?.body,
+                    record.event.lineage.correlation_id.as_str().to_string(),
+                ));
+            }
+            let derived = crate::desk_ledger::outcomes_with_correlation(
+                fills
+                    .iter()
+                    .map(|(fill, correlation)| (fill, correlation.as_str())),
+                DESK_STRATEGY,
+            );
+            self.desk_ledger.fill_gap(&derived)
+        })();
+        match result {
+            Ok(0) => {}
+            Ok(healed) => {
+                self.telemetry
+                    .metrics
+                    .count(names::DESK_FILLS_UNLEDGERED, labels([("reason", "healed")]));
+                self.capture_problems.push(format!(
+                    "{healed} desk ledger record(s) the full queue had skipped were re-derived \
+                     from the event log and queued"
+                ));
+            }
+            Err(error) => self.capture_problems.push(format!(
+                "the desk's chain has a gap that could not be healed from the event log: {}; \
+                 a restart re-queues it",
+                error.message()
+            )),
+        }
     }
 
     /// Note a problem with shipping the desk's records, to be surfaced beside
