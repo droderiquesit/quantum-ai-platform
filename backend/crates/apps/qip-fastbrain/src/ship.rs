@@ -136,6 +136,9 @@ const CALL_TIMEOUTS: Timeouts = Timeouts::new(
 const BACKOFF_FLOOR: Duration = Duration::from_millis(500);
 /// The longest wait between attempts.
 const BACKOFF_CEILING: Duration = Duration::from_secs(30);
+/// Added to the wait a broker names for its quota window, so the retry lands
+/// after the window has turned and not on its last millisecond.
+const THROTTLE_MARGIN: Duration = Duration::from_millis(25);
 
 /// Read the fabric settings through `lookup`. `None` when no endpoint is set.
 /// A partition without an endpoint, or an endpoint that is not a bare
@@ -325,7 +328,17 @@ pub struct ShipReport {
 /// What the worker found when it tried a batch.
 #[derive(Debug)]
 enum Done {
-    Delivered { through: u64 },
+    Delivered {
+        through: u64,
+    },
+    /// The broker refused for quota and said how long to wait. Not a failure:
+    /// the batch is sound and the broker is up, so the wait is the broker's
+    /// own and the failure count (which climbs the back-off ladder) is left
+    /// alone.
+    Throttled {
+        why: String,
+        wait: Duration,
+    },
     Deferred(String),
     Fenced(String),
 }
@@ -682,6 +695,15 @@ impl Shipping {
                     }
                 }
             }
+            Done::Throttled { why, wait } => {
+                // The broker's wait, plus a little for the clock it measures
+                // the window on to have moved, and never longer than the
+                // ceiling a failure waits.
+                self.not_before =
+                    Some(Instant::now() + (wait + THROTTLE_MARGIN).min(BACKOFF_CEILING));
+                metrics.count(names::DESK_SHIP, labels([("outcome", "deferred")]));
+                *failed = Some((ShipOutcome::Deferred, why));
+            }
             Done::Deferred(why) => {
                 self.failures = self.failures.saturating_add(1);
                 self.not_before = Some(Instant::now() + backoff(self.failures));
@@ -932,9 +954,13 @@ fn deliver(producer: &mut Producer, job: Job) -> Done {
         Ok(_) => Done::Delivered {
             through: job.through,
         },
-        Err(error) => {
-            fenced(producer, &error).unwrap_or_else(|| Done::Deferred(error.message().to_string()))
-        }
+        Err(error) => fenced(producer, &error).unwrap_or_else(|| match producer.quota_wait() {
+            Some(wait) => Done::Throttled {
+                why: error.message().to_string(),
+                wait,
+            },
+            None => Done::Deferred(error.message().to_string()),
+        }),
     }
 }
 
@@ -1190,5 +1216,126 @@ mod tests {
         assert_eq!(backoff(1), BACKOFF_FLOOR);
         assert_eq!(backoff(2), BACKOFF_FLOOR * 2);
         assert_eq!(backoff(40), BACKOFF_CEILING);
+    }
+
+    /// A transport that answers a produce with the broker's quota refusal and
+    /// everything else with what a producer needs to start.
+    struct QuotaTransport {
+        retry_after_ms: u64,
+    }
+
+    impl qip_transport::event_fabric::transport::FabricTransport for QuotaTransport {
+        fn call(
+            &mut self,
+            request: qip_transport::event_fabric::protocol::Request,
+            _timeouts: Timeouts,
+        ) -> Result<qip_transport::event_fabric::protocol::Response> {
+            use qip_transport::event_fabric::protocol::{
+                ProducerInitResponse, Refusal, Request, Response,
+            };
+            Ok(match request {
+                Request::ProducerInit(_) => Response::ProducerInit(ProducerInitResponse {
+                    producer_epoch: 1,
+                    next_sequence: 0,
+                }),
+                _ => Response::Refused(Refusal::Quota {
+                    retry_after_ms: self.retry_after_ms,
+                }),
+            })
+        }
+    }
+
+    /// The failure this prevents: the broker names how long its quota window
+    /// has left and the shipper discards the number, climbing its own ladder
+    /// instead. The worker maps a quota refusal to `Throttled` with the
+    /// broker's wait; any other refusal stays `Deferred`.
+    ///
+    /// Mutation: have `deliver` return `Deferred` whatever `quota_wait` says —
+    /// the match fails.
+    #[test]
+    fn a_quota_refusal_becomes_a_throttle_carrying_the_brokers_wait() {
+        let class = QosClass::P1Outcomes;
+        let mut producer = Producer::new(ProducerConfig {
+            transport: Box::new(QuotaTransport {
+                retry_after_ms: 700,
+            }),
+            stream: bindings::REFLEX_OUTCOMES_STREAM.to_string(),
+            partition: 0,
+            producer_id: PRODUCER_ID.to_string(),
+            qos_class: class,
+            ack_profile: class.ack_floor(),
+            retry_policy: RetryPolicy::default(),
+            breaker_policy: BreakerPolicy::default(),
+            clock: Arc::new(qip_core::ManualClock::new(Timestamp::from_secs(
+                1_760_000_000,
+            ))),
+            sleeper: Arc::new(ThreadSleeper),
+            retry_seed: 1,
+            breaker_seed: 2,
+            timeouts: CALL_TIMEOUTS,
+        })
+        .expect("a producer");
+        let outcomes = queued(1);
+        let mut shipper = idle_shipper();
+        let (batch, through) = shipping_of(&mut shipper)
+            .prepare(&outcomes)
+            .expect("a sendable batch");
+        match deliver(&mut producer, Job { batch, through }) {
+            Done::Throttled { wait, .. } => assert_eq!(wait, Duration::from_millis(700)),
+            other => panic!("a quota refusal was not a throttle: {other:?}"),
+        }
+    }
+
+    /// A throttle waits the broker's number plus the margin and does not
+    /// count against the ladder.
+    ///
+    /// Mutation: count the failure in the `Throttled` arm — `failures` is 1.
+    #[test]
+    fn a_throttle_waits_the_brokers_hint_and_does_not_climb_the_ladder() {
+        struct Quiet(Arc<Metrics>);
+        impl DeskQueue for Quiet {
+            fn pending_len(&self) -> usize {
+                0
+            }
+            fn peek(&self, _limit: usize) -> Vec<DeskOutcome> {
+                Vec::new()
+            }
+            fn acknowledge(&mut self, _through: u64) -> Result<usize> {
+                Ok(0)
+            }
+            fn note_problem(&mut self, _problem: String) {}
+            fn metrics(&self) -> Arc<Metrics> {
+                self.0.clone()
+            }
+        }
+        let mut shipper = idle_shipper();
+        let mut queue = Quiet(Arc::new(Metrics::new("test")));
+        let (mut acknowledged, mut shipped, mut failed) = (0usize, false, None);
+        let before = Instant::now();
+        shipping_of(&mut shipper)
+            .settle(
+                &mut queue,
+                Done::Throttled {
+                    why: "quota".to_string(),
+                    wait: Duration::from_millis(700),
+                },
+                &mut acknowledged,
+                &mut shipped,
+                &mut failed,
+            )
+            .expect("settles");
+        let shipping = shipping_of(&mut shipper);
+        assert_eq!(shipping.failures, 0, "a throttle climbed the ladder");
+        let until = shipping.not_before.expect("a wait was set");
+        assert!(
+            until >= before + Duration::from_millis(700) + THROTTLE_MARGIN
+                && until
+                    < before
+                        + Duration::from_millis(700)
+                        + THROTTLE_MARGIN
+                        + Duration::from_secs(2),
+            "the wait is not the broker's number"
+        );
+        assert!(matches!(failed, Some((ShipOutcome::Deferred, _))));
     }
 }

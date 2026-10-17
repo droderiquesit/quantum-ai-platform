@@ -77,6 +77,7 @@ use qip_core::rng::Xoshiro256;
 use qip_core::time::Clock;
 use qip_events::event_fabric::codec::{Batch, stamp_drain};
 use qip_events::event_fabric::policy::{AckProfile, QosClass};
+use std::time::Duration;
 
 use crate::breaker::{
     BreakerPolicy, BreakerState, CircuitBreaker, Decision, Outcome, Refusal as BreakerRefusal,
@@ -166,6 +167,12 @@ pub struct Producer {
     fenced_epoch: Option<u64>,
     next_sequence: u64,
     archived_through: Option<u64>,
+    /// How long the broker said to wait when it last refused a send for want
+    /// of quota; cleared by the next acknowledged send. The refusal reaches
+    /// the caller as an `Err` that only carries text, so a caller that wants
+    /// to wait exactly as long as the broker asked reads it here instead of
+    /// parsing a message.
+    quota_wait: Option<Duration>,
 }
 
 impl fmt::Debug for Producer {
@@ -234,6 +241,7 @@ impl Producer {
             fenced_epoch: None,
             next_sequence: 0,
             archived_through: None,
+            quota_wait: None,
         })
     }
 
@@ -247,6 +255,12 @@ impl Producer {
 
     pub fn producer_id(&self) -> &str {
         &self.producer_id
+    }
+
+    /// The wait the broker named when the last send was refused for quota, or
+    /// `None` if the last send was not (or was acknowledged since).
+    pub fn quota_wait(&self) -> Option<Duration> {
+        self.quota_wait
     }
 
     pub fn ack_profile(&self) -> AckProfile {
@@ -347,6 +361,7 @@ impl Producer {
         let response = self.call(request)?;
         match response {
             Response::Produce(ack) => {
+                self.quota_wait = None;
                 self.next_sequence = sequence.checked_add(records).ok_or_else(|| {
                     Error::invalid(format!(
                         "the producer sequence for {}:{} would overflow past {sequence}; this \
@@ -372,6 +387,13 @@ impl Producer {
                 Err(describe_refusal(
                     Route::Produce,
                     Refusal::OutOfOrderSequence { expected },
+                ))
+            }
+            Response::Refused(Refusal::Quota { retry_after_ms }) => {
+                self.quota_wait = Some(Duration::from_millis(retry_after_ms));
+                Err(describe_refusal(
+                    Route::Produce,
+                    Refusal::Quota { retry_after_ms },
                 ))
             }
             Response::Refused(refusal) => Err(describe_refusal(Route::Produce, refusal)),
@@ -751,6 +773,48 @@ mod tests {
             101,
             "the acknowledged ack must carry the archived_through that covers the batch at \
              offset 100, not the stale produce-time value and not the poll one short of it"
+        );
+    }
+
+    /// The broker's quota refusal reaches the caller as text; the wait it
+    /// named is read from `quota_wait`, and an acknowledged send clears it.
+    /// A caller waiting the exponential ladder instead of the broker's own
+    /// number drained a queue several times slower than the quota allowed.
+    ///
+    /// Mutation: stop recording the wait in the `Refusal::Quota` arm — the
+    /// first assertion fails; stop clearing it on `Response::Produce` — the
+    /// last fails.
+    #[test]
+    fn a_quota_refusal_leaves_the_named_wait_until_a_send_is_acknowledged() {
+        let init_epoch = 2;
+        let ack = ProduceAck::new("orders", 0, 0, 1, 1).expect("a coherent produce ack");
+        let mut producer = producer(vec![
+            Response::ProducerInit(super::super::protocol::ProducerInitResponse {
+                producer_epoch: init_epoch,
+                next_sequence: 0,
+            }),
+            Response::Refused(Refusal::Quota {
+                retry_after_ms: 700,
+            }),
+            Response::Produce(ack),
+        ]);
+        producer.init().expect("init succeeds");
+        assert_eq!(producer.quota_wait(), None, "premise: nothing refused yet");
+
+        assert!(producer.send(one_record_batch()).is_err());
+        assert_eq!(
+            producer.quota_wait(),
+            Some(Duration::from_millis(700)),
+            "the wait the broker named was not kept"
+        );
+
+        producer
+            .send(one_record_batch())
+            .expect("the retry is acknowledged");
+        assert_eq!(
+            producer.quota_wait(),
+            None,
+            "an acknowledged send left a stale wait behind"
         );
     }
 }
