@@ -18,11 +18,11 @@
 //! P1 records shaped as the writer shapes them, so the chain is covered in two
 //! overlapping pieces and the overlap is the `OutcomeRecord`.
 //!
-//! Correlation: the cell's journal carries `order_id` and the chain digest, not
-//! a correlation id. The writer stamps ONE correlation id per writer session on
-//! every record it spools. The join key across this half is therefore the
-//! order id plus the journal digest, and the test asserts exactly that, rather
-//! than a trace id the production types do not carry.
+//! Correlation: a record that names an order is stamped with the chain id
+//! derived from the cell, session and order id (`chain_correlation`); every
+//! other record keeps the writer's session id. The join key across this half is
+//! the order id plus the journal digest, and the id above them is asserted in
+//! `vertical_slice_correlation.rs`, which also covers the signal origin.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
@@ -56,6 +56,8 @@ use qip_edge_node::{NodeAssembly, assemble};
 use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
+use qip_ledgerd::store::{Delivery, Disposition, LedgerStore, P1Record};
+use qip_ledgerd::telemetry::LedgerTelemetry;
 use qip_observability::metrics::Metrics;
 use qip_portfolio::ledger::{PaperFill, post};
 use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
@@ -394,14 +396,27 @@ fn a_simulated_fill_reaches_the_fabric_spool_and_is_booked_as_one_balanced_ledge
     assert_eq!(journaled.digest, outcome.journal_digest);
     assert_eq!(journaled, &outcome.entry);
 
-    // One correlation id per writer session, shared by every record. It is a
-    // session id, not a trace of this fill (finding C2 in the report).
+    // Two ids now, not one per session (finding C2 closed): the fill's records
+    // carry its chain, derived from the cell, session and order id, and the
+    // records that name no order keep the session id. This cell was never told
+    // its session, so it opens no ChainOpened link; the full chain join is in
+    // `vertical_slice_correlation.rs`.
     let correlations: BTreeSet<String> = fabric
         .records()
         .iter()
         .map(|record| record.event.lineage.correlation_id.as_str().to_string())
         .collect();
-    assert_eq!(correlations.len(), 1, "{correlations:?}");
+    assert_eq!(correlations.len(), 2, "{correlations:?}");
+    let (spooled, _) = fabric
+        .outcomes()
+        .into_iter()
+        .find(|(_, candidate)| candidate.journal_sequence == outcome.journal_sequence)
+        .expect("the fill's own P1 record");
+    assert_eq!(
+        outcome.correlation(),
+        Some(spooled.event.lineage.correlation_id.clone()),
+        "the outcome's lineage is not the chain its body derives"
+    );
 
     // HOP: the paper fence, then the double-entry posting.
     let fill = PaperFill::try_from(outcome)?;
@@ -667,5 +682,99 @@ fn a_replayed_journal_batch_cannot_become_a_second_outcome_and_a_replayed_postin
     let second = post(&PaperFill::try_from(outcome)?)?;
     assert_eq!(first, second);
     assert_eq!(first.source(), second.source());
+    Ok(())
+}
+
+// --- the last hop: the real ledger store -----------------------------------------
+
+/// FINDING G5, cell half: the spool's own P1 records, in spool order, applied
+/// to the production `LedgerStore`. Until `qip-ledgerd` was a dev-dependency
+/// this stopped at `post`; here the chain check, the paper fence, the atomic
+/// batch and the idempotent re-apply are the store's own.
+#[test]
+fn the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once() -> Result<()> {
+    let (mut node, mut gateway, mut feed) = funded_node()?;
+    let mut fabric = fabric("store");
+    let report = one_pass(&mut node, &mut gateway, &mut feed, t(10))?;
+    assert_eq!(report.orders.len(), 1, "premise: the cell sent an order");
+    node.cell.flush(&mut fabric.mirror, t(11))?;
+    fabric.drain();
+
+    let p1_topics = [
+        RecordKind::OutcomeRecorded.binding().topic,
+        RecordKind::ChainSpan.binding().topic,
+    ];
+    let records: Vec<P1Record> = fabric
+        .records()
+        .into_iter()
+        .filter(|record| p1_topics.contains(&record.event.topic))
+        .map(|record| {
+            if record.event.topic == RecordKind::OutcomeRecorded.binding().topic {
+                P1Record::Outcome(Box::new(
+                    serde_json::from_value(record.event.payload.clone()).expect("an outcome"),
+                ))
+            } else {
+                P1Record::Span(writer::chain_span(&record.event).expect("a span"))
+            }
+        })
+        .collect();
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, P1Record::Outcome(o) if matches!(o.entry.decision, Recorded::Filled { .. }))),
+        "premise: the fill is on P1"
+    );
+
+    let dir = scratch("store-ledger");
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(t(0)));
+    let store = LedgerStore::open(
+        &dir,
+        qip_storage::EngineConfig::new(clock),
+        LedgerTelemetry::new(Arc::new(Metrics::new("qip-ledgerd"))),
+    )?;
+    let deliveries: Vec<Delivery> = records
+        .iter()
+        .enumerate()
+        .map(|(offset, record)| Delivery {
+            partition: "p0".to_string(),
+            offset: offset as u64,
+            record_hash: qip_core::sha256_hex(&serde_json::to_vec(record).expect("serialises")),
+            record: record.clone(),
+        })
+        .collect();
+    let mut posted = 0;
+    for delivery in &deliveries {
+        if matches!(store.apply(delivery)?, Disposition::Posted { .. }) {
+            posted += 1;
+        }
+    }
+    assert_eq!(posted, 1, "exactly the fill posted");
+
+    let trading = Account::Trading {
+        cell: CELL.to_string(),
+        strategy: STRATEGY.to_string(),
+    };
+    let order = &report.orders[0];
+    let fill = &report.fills[0];
+    assert_eq!(
+        store.balance(&trading, object().as_str())?,
+        node.cell.position(&venue(), &object()),
+        "the ledger holds the cell's position"
+    );
+    assert_eq!(
+        store.balance(&trading, "USD")?,
+        -(fill.quantity * fill.price),
+        "cash is minus quantity times the venue's price"
+    );
+    assert_eq!(order.order_id, fill.order_id);
+    assert!(store.trial_balance()?.values().all(|t| t.is_zero()));
+
+    // The whole partition again: nothing moves.
+    let balances = store.balances()?;
+    for delivery in &deliveries {
+        assert_eq!(store.apply(delivery)?, Disposition::Duplicate);
+    }
+    assert_eq!(store.balances()?, balances);
+    assert_eq!(store.refold()?, balances);
     Ok(())
 }

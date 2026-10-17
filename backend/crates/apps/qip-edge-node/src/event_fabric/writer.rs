@@ -62,7 +62,9 @@
 use crate::event_fabric::pressure::SpoolPublisher;
 use crate::event_fabric::telemetry::OutboxTelemetry;
 use qip_contracts::market_event::MarketEvent;
-use qip_contracts::reflex::{ChainSpan, Decision, Gap, JournalEntry, OutcomeRecord};
+use qip_contracts::reflex::{
+    ChainSpan, Decision, Gap, JournalEntry, OutcomeRecord, chain_correlation,
+};
 use qip_contracts::replay::PassMarker;
 use qip_core::canonical::canonical_json;
 use qip_core::error::{Error, Result};
@@ -264,6 +266,11 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::DispositionIntent { .. }
         | Decision::KnowledgeReconciled { .. }
         | Decision::DegradationChanged { .. } => false,
+        // The join to the signals, not an outcome: it is the link a reader
+        // walks from an outcome back to its origin, and P1's row does not
+        // name it. On P2 alone, so a shed window loses the join but never
+        // the id, which every outcome carries on its own lineage.
+        Decision::ChainOpened { .. } => false,
         // A requote's two halves act on the venue, and by that argument they
         // are outcomes. They are on P2 alone because ADR 0100 §5's P1 row
         // names six kinds and these are not among them: widening that row is
@@ -335,6 +342,14 @@ impl RecordKind {
 /// one second are two sessions, and a crash loop cannot reissue an id.
 pub fn event_id(cell: &str, session: u64, position: &str, kind: RecordKind) -> String {
     sha256_hex(format!("{cell}|{session}|{position}|{}", kind.as_str()).as_bytes())
+}
+
+/// The id stamped on a record that belongs to no order: one per cell and
+/// session. A record that does belong to one carries
+/// [`chain_correlation`] instead, so this is the fallback and never the
+/// chain.
+pub fn session_correlation(cell: &str, session: u64) -> CorrelationId {
+    CorrelationId::from_string(sha256_hex(format!("{cell}|{session}").as_bytes()))
 }
 
 /// Which stream a spool batch is bound for, from the schema id the writer
@@ -585,8 +600,7 @@ impl<S: Spool> SpoolWriter<S> {
             started_ns: config.started.as_nanos(),
         };
         spool.manifest_put(SESSION_KEY, &serde_json::to_vec(&record)?)?;
-        let correlation =
-            CorrelationId::from_string(sha256_hex(format!("{}|{session}", config.cell).as_bytes()));
+        let correlation = session_correlation(&config.cell, session);
         Ok(Self {
             spool,
             receiver,
@@ -740,7 +754,15 @@ impl<S: Spool> SpoolWriter<S> {
         let mut run: Option<(u64, u64, Timestamp, String)> = None;
         for entry in &batch.entries {
             let position = entry.sequence.to_string();
-            p2.push(self.record(RecordKind::JournalRecorded, &position, entry.at, entry)?);
+            let chain = self.chain_of(entry)?;
+            p2.push(self.record_under(
+                RecordKind::JournalRecorded,
+                &position,
+                entry.at,
+                entry.at,
+                entry,
+                chain.clone(),
+            )?);
             if is_outcome(&entry.decision) {
                 if let Some(span) = run.take() {
                     p1.push(self.span(span)?);
@@ -752,7 +774,14 @@ impl<S: Spool> SpoolWriter<S> {
                     journal_digest: entry.digest.clone(),
                     entry: entry.clone(),
                 };
-                p1.push(self.record(RecordKind::OutcomeRecorded, &position, entry.at, &outcome)?);
+                p1.push(self.record_under(
+                    RecordKind::OutcomeRecorded,
+                    &position,
+                    entry.at,
+                    entry.at,
+                    &outcome,
+                    chain,
+                )?);
             } else {
                 run = Some(match run {
                     Some((first, _, _, _)) => {
@@ -775,6 +804,30 @@ impl<S: Spool> SpoolWriter<S> {
         }
         self.journal_tail = batch.tail_digest();
         Ok(())
+    }
+
+    /// The id every record of `entry` is stamped with: its order's chain, or
+    /// the session's when it names no order.
+    ///
+    /// A `ChainOpened` entry also states the id the cell derived. The two
+    /// disagree only when the cell was told a different session than the one
+    /// this writer committed, and stamping either would split one chain under
+    /// two ids, so the batch is refused as a batch from another cell is.
+    fn chain_of(&self, entry: &JournalEntry) -> Result<CorrelationId> {
+        let Some(order_id) = entry.decision.order_id() else {
+            return Ok(self.correlation.clone());
+        };
+        let derived = chain_correlation(&self.config.cell, self.session, order_id);
+        if let Decision::ChainOpened { correlation, .. } = &entry.decision
+            && correlation != derived.as_str()
+        {
+            return Err(Error::invalid(format!(
+                "the cell opened chain {correlation} for order {order_id} but session {} derives                  {}; the cell was given a different chain epoch than the session this writer                  committed, so its chains would not join the spool's records — call                  Cell::set_chain_epoch with SpoolWriter::session",
+                self.session,
+                derived.as_str()
+            )));
+        }
+        Ok(derived)
     }
 
     fn span(&self, (first, last, at, tail): (u64, u64, Timestamp, String)) -> Result<Record> {
@@ -856,6 +909,25 @@ impl<S: Spool> SpoolWriter<S> {
         recorded_at: Timestamp,
         body: &B,
     ) -> Result<Record> {
+        self.record_under(
+            kind,
+            position,
+            occurred_at,
+            recorded_at,
+            body,
+            self.correlation.clone(),
+        )
+    }
+
+    fn record_under<B: Serialize>(
+        &self,
+        kind: RecordKind,
+        position: &str,
+        occurred_at: Timestamp,
+        recorded_at: Timestamp,
+        body: &B,
+        correlation: CorrelationId,
+    ) -> Result<Record> {
         let binding = kind.binding();
         let payload = serde_json::to_value(body).map_err(|error| {
             Error::schema(format!(
@@ -873,7 +945,7 @@ impl<S: Spool> SpoolWriter<S> {
             recorded_at,
             sequence: 0,
             lineage: Lineage {
-                correlation_id: self.correlation.clone(),
+                correlation_id: correlation,
                 causation_id: None,
                 trace_id: None,
                 producer: PRODUCER.to_string(),
@@ -965,8 +1037,29 @@ pub fn journal_entry(event: &AnyEvent) -> Result<JournalEntry> {
 }
 
 /// The outcome a P1 `ReflexOutcomeRecorded` record carries.
+///
+/// Refuses a record whose lineage carries any id other than the one its body
+/// derives: its order's chain, or the session's when it names no order. The
+/// lineage sits beside the payload rather than inside the payload hash, so a
+/// record whose correlation was rewritten to graft it onto another chain —
+/// or stripped to the session id to lose its chain — would otherwise decode
+/// cleanly and join the wrong decision.
 pub fn outcome(event: &AnyEvent) -> Result<OutcomeRecord> {
-    decode_as(event, REFLEX_OUTCOME_RECORDED)
+    let record: OutcomeRecord = decode_as(event, REFLEX_OUTCOME_RECORDED)?;
+    let expected = record
+        .correlation()
+        .unwrap_or_else(|| session_correlation(&record.cell, record.session));
+    if event.lineage.correlation_id != expected {
+        return Err(Error::schema(format!(
+            "an outcome record for {} carries correlation {} but its body derives {}; the \
+             lineage was edited or stripped, and joining on it would attach this outcome to a \
+             decision it did not come from",
+            record.cell,
+            event.lineage.correlation_id.as_str(),
+            expected.as_str()
+        )));
+    }
+    Ok(record)
 }
 
 /// The span a P1 `ReflexChainSpan` record carries.

@@ -24,6 +24,7 @@
 
 use qip_core::error::Result;
 use qip_core::{Duration, Timestamp};
+use qip_kernel::bus_bridge::SensePath;
 use qip_kernel::{CycleReport, Platform};
 use qip_observability::golden::{GoldenSignals, Outcome};
 use qip_storage::ChainArchive;
@@ -103,6 +104,29 @@ pub fn step(
     now: Timestamp,
     budget: Duration,
 ) -> Result<StepOutcome> {
+    // A one-shot path: the bus's de-duplication window and the bridge's counts
+    // start empty. [`run`] holds one path for the session, which is the shape
+    // a node has; this entry point exists for a caller that drives single
+    // steps and wants no state between them.
+    let mut sensing = SensePath::new(platform)?;
+    step_with(&mut sensing, platform, feed, now, budget)
+}
+
+/// [`step`] over a [`SensePath`] the caller keeps between steps.
+///
+/// The records the feed validated go through ingestion's gate, the event bus
+/// and the platform bridge into `Platform::observe_with_lineage`, rather than
+/// straight into `Platform::observe`. That is what carries the correlation id
+/// ingestion mints for each record into the platform's event log and the
+/// cycle's journal entry, and what puts the bridge's bounded queue and the
+/// bus's de-duplication between the feed and the book.
+pub fn step_with(
+    sensing: &mut SensePath,
+    platform: &mut Platform,
+    feed: &mut Feed,
+    now: Timestamp,
+    budget: Duration,
+) -> Result<StepOutcome> {
     let began = std::time::Instant::now();
     // The platform's admission of a connector source is derived from the
     // feed's here, at the one seam every step passes through, for the reason
@@ -135,7 +159,7 @@ pub fn step(
     // `qip_evidence_absorbed_total`. Until 2026-10-11 nothing drained it and
     // the feed dropped the oldest at its bound.
     platform.absorb_evidence(feed.drain_evidence(), now);
-    let observed = platform.observe(batch.accepted);
+    let observed = sensing.feed(platform, &feed.descriptor().name, batch.accepted, now)?;
     let report = platform.run_cycle(now);
     let elapsed = monotonic(began);
 
@@ -200,6 +224,8 @@ pub fn run(
     // drained beside every series the cycle itself records.
     let golden = GoldenSignals::new(platform.telemetry().metrics.clone());
 
+    let mut sensing = SensePath::new(platform)?;
+
     let reason = loop {
         if stop.load(Ordering::Relaxed) {
             break Stop::Requested;
@@ -226,7 +252,7 @@ pub fn run(
         };
         set_status(status, |status| status.cycle_started(now));
 
-        let outcome = step(platform, feed, now, config.cycle_budget)?;
+        let outcome = step_with(&mut sensing, platform, feed, now, config.cycle_budget)?;
 
         // A failed cycle is this node's own notion of one: over the fast-path
         // budget, or a stage that did not run. Stage problems are not folded
@@ -295,6 +321,9 @@ pub fn run(
         }
     };
 
+    // Every step pumps its own records, so nothing should be waiting; the call
+    // is the lifecycle's end, and it refuses any later event by count.
+    sensing.shutdown(platform, clock.now())?;
     set_status(status, NodeStatus::stopping);
 
     Ok(RunSummary {
@@ -497,6 +526,43 @@ mod tests {
             "a cycle that skipped a stage is not a cycle"
         );
         assert_eq!(outcome.report.cycle, 1);
+    }
+
+    #[test]
+    fn a_step_hands_the_platform_each_record_under_its_own_ingestion_correlation_id() {
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock);
+        let mut feed = Feed::synthetic(15, Duration::from_secs(60), start());
+        let logged_before = platform.event_log().len();
+
+        let now = start().saturating_add(Duration::from_mins(30));
+        let outcome = step(&mut platform, &mut feed, now, crate::roster::MAXIMUM_BUDGET)
+            .expect("a step runs");
+        assert!(outcome.observed > 0, "premise: the step observed records");
+
+        // Each observed record is in the platform's log with its own
+        // correlation id from the bus path; `Platform::observe` wrote none.
+        let sensed: Vec<_> = platform
+            .event_log()
+            .records()
+            .iter()
+            .skip(logged_before)
+            .filter(|record| record.event.lineage.producer == "platform-bridge")
+            .map(|record| record.event.lineage.correlation_id.as_str().to_string())
+            .collect();
+        assert_eq!(
+            sensed.len(),
+            outcome.observed,
+            "a record the platform took in carries no ingestion lineage in its log"
+        );
+        let distinct: std::collections::BTreeSet<_> = sensed.iter().collect();
+        assert_eq!(distinct.len(), sensed.len(), "one chain per record");
+
+        let journal = platform
+            .journal_entries()
+            .expect("the cycle was journalled");
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0].sensed.len(), outcome.observed);
     }
 
     #[test]

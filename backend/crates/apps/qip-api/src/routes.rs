@@ -2243,7 +2243,16 @@ impl Api {
                             }
                         };
                         let released = sensed.records.len();
-                        let observed = platform.observe(std::mem::take(&mut sensed.records));
+                        // `qip-api` owns no bus, so each record's lineage is
+                        // minted here at the seam where the platform learns
+                        // it. The event log and the cycle's journal entry
+                        // then carry a correlation id per record, where
+                        // `observe` left the cycle unable to name its inputs.
+                        let observed = platform.observe_fresh(
+                            std::mem::take(&mut sensed.records),
+                            "qip-api/sense",
+                            now,
+                        );
                         (
                             sensed.at,
                             Some(SenseSummary {

@@ -34,6 +34,7 @@
 //!   [`qip_contracts::edge::DeductionKind::ComputeCost`] has always had a slot
 //!   for and nothing was filling.
 
+use crate::bus_bridge::SensedInput;
 use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::central::{
     AbsorbedFill, BeliefIssue, CausalIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
@@ -43,6 +44,7 @@ use crate::central::{
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
 use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::desk_ledger::{Admission, DeskLedgerFeed, DeskOutcome};
 use crate::family_review::{
     FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
     FamilyStanding, Misallocation, MisallocationFinding,
@@ -859,6 +861,22 @@ pub struct Platform {
     /// swallowed. A record that can lose an entry silently is not a record,
     /// and neither is one that can fail to write silently.
     capture_problems: Vec<String>,
+    /// Records absorbed under an ingestion lineage since the last journalled
+    /// cycle, taken by `journal_cycle` into the entry that joins them to the
+    /// cycle's correlation id. Bounded by [`MAX_SENSED_REFS_PER_CYCLE`].
+    sensed_pending: Vec<SensedRef>,
+    /// Records absorbed under a lineage beyond that bound this cycle: logged
+    /// under their own correlation id, but not listed in the journal entry.
+    sensed_unlisted: u64,
+    /// The desk's fills as the P1 records `qip-ledgerd` books, chained and
+    /// de-duplicated; see [`crate::desk_ledger`]. A fill enters the book
+    /// only through this, so the book and the ledger cannot disagree about
+    /// which fills exist.
+    desk_ledger: DeskLedgerFeed,
+    /// Fills declined for want of a ledger record, bounded like the declined
+    /// queue and cleared by nobody: the list is the evidence a person works
+    /// from.
+    unledgered_fills: Vec<String>,
 
     /// The world model — the one [`Platform::observe`] feeds, held as the
     /// writing end of the slot the agents' desk reads through its
@@ -2645,6 +2663,44 @@ pub struct CycleJournalEntry {
     /// zero, so "no experience" and "nothing was asked" never render alike.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub experience: Option<ExperienceReport>,
+    /// The records this cycle reasoned over that arrived under an ingestion
+    /// lineage, each with the correlation id ingestion minted for it. This is
+    /// the join: the cycle's `correlation_id` is the one every decision,
+    /// order and outcome row carries, and this list is the only place that
+    /// names which ingestion correlation ids fed it, so a fill traces back to
+    /// a tick by id rather than by time and instrument. Empty — and absent
+    /// from the wire — for records handed to [`Platform::observe`], which
+    /// carries no lineage. Bounded by [`MAX_SENSED_REFS_PER_CYCLE`].
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub sensed: Vec<SensedRef>,
+    /// Records absorbed under a lineage beyond the bound on `sensed`: each is
+    /// in the event log under its own correlation id, but this entry cannot
+    /// name it. A non-zero count means the join above is incomplete.
+    #[serde(skip_serializing_if = "is_zero", default)]
+    pub sensed_unlisted: u64,
+}
+
+/// The most records one journal entry names as having fed its cycle.
+///
+/// A replayed tape can hand the platform tens of thousands of records in one
+/// poll, and a journal entry that listed them all would be the unbounded
+/// buffer the data rules prohibit. Past the bound a record is still logged
+/// under its own correlation id and is counted in `sensed_unlisted`.
+pub const MAX_SENSED_REFS_PER_CYCLE: usize = 4096;
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// One record the platform absorbed under an ingestion lineage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensedRef {
+    /// The correlation id ingestion minted when it published the record.
+    pub correlation_id: String,
+    /// The event the platform logged on receipt, under that correlation id.
+    pub event_id: String,
+    /// The topic the record arrived on.
+    pub topic: String,
 }
 
 /// One entity the book depends on and does not hold, as the journal keeps it.
@@ -4886,6 +4942,10 @@ impl Platform {
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
             capture_problems: Vec::new(),
+            sensed_pending: Vec::new(),
+            sensed_unlisted: 0,
+            desk_ledger: DeskLedgerFeed::new(),
+            unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
@@ -5177,7 +5237,8 @@ impl Platform {
         );
         metrics.describe(
             names::EVENTS_PUBLISHED,
-            "cycle records sealed onto the durable transport",
+            "records published: cycle records sealed onto the durable transport (topic=cycle), \
+             and records ingestion published to the bus (topic and source)",
         );
         metrics.describe(
             names::PROPOSALS_SIGNED,
@@ -5361,6 +5422,11 @@ impl Platform {
         metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
             "declined and filled paths that will never be priced, by reason",
+        );
+        metrics.describe(
+            names::DESK_FILLS_UNLEDGERED,
+            "venue fills the desk declined to book because no ledger record could be made for \
+             them, by reason; in neither the book nor the ledger, and a break against the venue",
         );
         metrics.describe(
             names::FEASIBILITY_REFUSALS,
@@ -7334,6 +7400,19 @@ impl Platform {
         for (sequence, entry) in entries {
             match entry {
                 Entry::Fill(fill) => {
+                    // The ledger chain is a fold of the same records, so a
+                    // restart continues it at the position it had. A record
+                    // the ledger would refuse can only be one written before
+                    // the live path checked; the book keeps it (the log is
+                    // what the book is the fold of) and the chain does not.
+                    if let Err(error) = self.desk_ledger.fold_booked(&fill, DESK_STRATEGY) {
+                        self.capture_problems.push(format!(
+                            "fill {} on order {} is in the event log and has no ledger record: {}",
+                            fill.fill_id,
+                            fill.order_id,
+                            error.message()
+                        ));
+                    }
                     let moved = self.capital.apply_fill(
                         &fill.object_id,
                         fill.side,
@@ -9586,6 +9665,93 @@ impl Platform {
         self.config.permits_live_trading() && self.autonomy.ceiling().is_live()
     }
 
+    /// [`Self::observe`] for records that arrive with the lineage ingestion
+    /// minted for them, recording that lineage where the platform can be
+    /// asked about it.
+    ///
+    /// Each record is appended to the event log on receipt, under the
+    /// correlation id it arrived with, and listed (to a bound) in the next
+    /// journalled cycle's entry. `event_log().by_correlation(&id)` therefore
+    /// finds the tick, and the journal entry joins that id to the cycle
+    /// correlation every decision, order and outcome row carries. Before this
+    /// the ingestion correlation id stopped at the bus: reconstructing "this
+    /// fill came from that tick" needed a join on time and instrument.
+    ///
+    /// `now` is when the platform received the records — the log's
+    /// `recorded_at`, passed in because `observe` reads no clock and a replay
+    /// must reproduce what the live run wrote. The event is logged on
+    /// receipt, before the world model's own refusal of a record (a news item
+    /// it will not store), so a refused record is still findable and its
+    /// refusal is the capture problem it always was. A log that cannot be
+    /// appended to is reported as a capture problem and the record is still
+    /// absorbed: dropping market data because the audit trail is unwell
+    /// would trade the one failure for a worse one.
+    ///
+    /// Returns the number of records taken in, as `observe` does.
+    pub fn observe_with_lineage(&mut self, inputs: Vec<SensedInput>, now: Timestamp) -> usize {
+        let mut records = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            self.log_sensed(&input, now);
+            records.push(input.record);
+        }
+        self.observe(records)
+    }
+
+    /// [`Self::observe`] for a caller with no bus: each record starts its own
+    /// lineage chain under `producer`, minted here.
+    ///
+    /// For a composition root that still hands records straight from its feed
+    /// (`qip-api`'s sense route). The ids are the platform's own, from the same
+    /// generator the cycle draws from, so they cannot collide with it.
+    pub fn observe_fresh(
+        &mut self,
+        records: Vec<SensedRecord>,
+        producer: &str,
+        now: Timestamp,
+    ) -> usize {
+        let inputs = records
+            .into_iter()
+            .map(|record| SensedInput {
+                lineage: Lineage::root(
+                    self.context
+                        .ids()
+                        .generate::<qip_core::lineage::CorrelationKind>(now),
+                    producer,
+                ),
+                record,
+            })
+            .collect();
+        self.observe_with_lineage(inputs, now)
+    }
+
+    /// Append one received record to the event log and queue its reference
+    /// for the next cycle's journal entry.
+    fn log_sensed(&mut self, input: &SensedInput, now: Timestamp) {
+        let event_id = self.context.ids().generate::<EventKind>(now);
+        let logged = input
+            .record
+            .to_event(event_id.clone(), now, input.lineage.clone())
+            .and_then(|event| self.event_log.append(&event));
+        if let Err(error) = logged {
+            self.capture_problems.push(format!(
+                "a {} record could not be logged under correlation {}: {}",
+                input.record.topic().name(),
+                input.lineage.correlation_id.as_str(),
+                error.message()
+            ));
+            return;
+        }
+        if self.sensed_pending.len() >= MAX_SENSED_REFS_PER_CYCLE {
+            self.sensed_unlisted = self.sensed_unlisted.saturating_add(1);
+            return;
+        }
+        self.sensed_pending.push(SensedRef {
+            correlation_id: input.lineage.correlation_id.as_str().to_string(),
+            event_id: event_id.as_str().to_string(),
+            topic: input.record.topic().name().to_string(),
+        });
+    }
+
     /// Feed observations in. The SENSE stage's input.
     ///
     /// Every record kind lands somewhere it is genuinely consumed — the `_ =>`
@@ -10486,6 +10652,11 @@ impl Platform {
             // Taken for the same reason: LEARN assigns this on every path
             // through the stage.
             experience: self.cycle_experience.take(),
+            // Taken so the next cycle names only what it itself reasoned
+            // over; a list that carried over would credit a tick to a cycle
+            // that never saw it.
+            sensed: std::mem::take(&mut self.sensed_pending),
+            sensed_unlisted: std::mem::take(&mut self.sensed_unlisted),
         };
 
         let facts = EventFacts::derived(
@@ -17731,6 +17902,65 @@ impl Platform {
         );
 
         for fill in &result.fills {
+            // The ledger record first, and the book only if the record exists.
+            //
+            // The venue has already filled by now, so the order of the two
+            // writes is the only control left. A fill booked into
+            // `self.capital` and then refused by the ledger would leave cash
+            // and position saying one thing and the double-entry ledger
+            // another, with nothing to show which was right. So the record is
+            // made (and checked by the ledger's own posting rules) before any
+            // state moves, and a fill with no record moves nothing: it is
+            // counted, put on the capture problems, and is a break against the
+            // venue for a person — absent from the book and the ledger alike,
+            // which is the one disagreement that is at least the same on both
+            // sides. A fill already on the chain is a replay and is a no-op
+            // here too, so a batch offered twice cannot book twice.
+            let booked = FillBooked {
+                order_id: fill.order_id.to_string(),
+                fill_id: fill.fill_id.to_string(),
+                object_id: object_id.to_string(),
+                venue: venue.to_string(),
+                side,
+                quantity: fill.quantity,
+                price: fill.price,
+                costs: fill.costs,
+                at: fill.at,
+                simulated: fill.simulated,
+            };
+            if fill.order_id != result.order_id || fill.venue != venue.as_str() {
+                self.refuse_unledgered_fill(
+                    "mismatch",
+                    &booked,
+                    format!(
+                        "it names order {} at venue {} but arrived in the submission of order \
+                         {} at {}",
+                        fill.order_id, fill.venue, result.order_id, venue
+                    ),
+                );
+                continue;
+            }
+            match self
+                .desk_ledger
+                .admit(&booked, DESK_STRATEGY, correlation.as_str())
+            {
+                Ok(Admission::Recorded { .. }) => {}
+                Ok(Admission::Duplicate) => continue,
+                // Valid, but nothing has drained the feed and it has no room.
+                // Capacity says nothing about the fill: the venue holds the
+                // position, so the book books it, and the gap is counted and
+                // surfaced. The chain advanced over it, so the record is
+                // re-derivable from the log and nothing is lost; declining the
+                // fill here would make a long-running desk stop booking what the
+                // venue filled.
+                Ok(Admission::Overflowed { sequence }) => {
+                    self.note_unqueued_fill(&booked, sequence);
+                }
+                Err(error) => {
+                    self.refuse_unledgered_fill("refused", &booked, error.message().to_string());
+                    continue;
+                }
+            }
             // P&L is not realised by opening a position, so the only money that
             // has moved is what the fill cost. Reporting an opening trade's
             // gross as profit is the direction that flatters.
@@ -17777,22 +18007,7 @@ impl Platform {
             // already filled, and a book that left the fill out would read
             // every limit low by exactly it. What it costs is said out loud
             // instead — this is the one state a restart cannot rebuild.
-            if let Err(error) = self.journal_record(
-                FillBooked {
-                    order_id: result.order_id.to_string(),
-                    fill_id: fill.fill_id.to_string(),
-                    object_id: object_id.to_string(),
-                    venue: venue.to_string(),
-                    side,
-                    quantity: fill.quantity,
-                    price: fill.price,
-                    costs: fill.costs,
-                    at: fill.at,
-                    simulated: fill.simulated,
-                },
-                BOOK_ORIGIN,
-                now,
-            ) {
+            if let Err(error) = self.journal_record(booked, BOOK_ORIGIN, now) {
                 self.capture_problems.push(format!(
                     "fill {} on order {} was booked and could not be journalled ({}); the book \
                      now holds what the event log cannot rebuild and a restart would open \
@@ -18483,6 +18698,66 @@ impl Platform {
     /// the gates are calibrated or merely shut.
     pub fn outcomes(&self) -> &OutcomeCapture {
         &self.outcomes
+    }
+
+    /// Hand over the ledger records of the desk's fills booked since the last
+    /// call, oldest first, each with the correlation id of the cycle that
+    /// placed the order. The consumer ships them to `qip-ledgerd`, which is
+    /// idempotent on chain position, so a batch shipped twice posts once.
+    pub fn take_desk_outcomes(&mut self) -> Vec<DeskOutcome> {
+        self.desk_ledger.drain()
+    }
+
+    /// The desk's ledger feed, so a test can fill it to its bound.
+    #[cfg(test)]
+    pub(crate) fn desk_ledger_mut(&mut self) -> &mut DeskLedgerFeed {
+        &mut self.desk_ledger
+    }
+
+    /// Desk fill records waiting to be taken, without taking them.
+    pub fn pending_desk_outcomes(&self) -> &[DeskOutcome] {
+        self.desk_ledger.pending()
+    }
+
+    /// Desk fills the venue reported and the book declined; see
+    /// [`Self::refuse_unledgered_fill`].
+    pub fn unledgered_fills(&self) -> &[String] {
+        &self.unledgered_fills
+    }
+
+    /// Note a fill that was booked and chained but not queued for the ledger
+    /// because the desk's feed was full. The book has it; the ledger will have
+    /// it when the record is re-derived from the event log.
+    fn note_unqueued_fill(&mut self, booked: &FillBooked, sequence: u64) {
+        self.telemetry.metrics.count(
+            names::DESK_FILLS_UNLEDGERED,
+            labels([("reason", "capacity")]),
+        );
+        let line = format!(
+            "fill {} on order {} at {} was booked at chain position {sequence} but not queued \
+             for the ledger: the desk's feed is full and nothing has drained it; the record is \
+             re-derivable from the event log, and the book is not affected",
+            booked.fill_id, booked.order_id, booked.venue
+        );
+        self.capture_problems.push(line.clone());
+        if self.unledgered_fills.len() < DECLINED_HISTORY {
+            self.unledgered_fills.push(line);
+        }
+    }
+
+    /// Decline to book a fill that has no ledger record.
+    fn refuse_unledgered_fill(&mut self, reason: &'static str, booked: &FillBooked, why: String) {
+        self.telemetry
+            .metrics
+            .count(names::DESK_FILLS_UNLEDGERED, labels([("reason", reason)]));
+        let line = format!(
+            "fill {} on order {} was reported by {} and not booked: {why}; the book and the              ledger both lack it and the venue holds it, so reconcile it by hand",
+            booked.fill_id, booked.order_id, booked.venue
+        );
+        self.capture_problems.push(line.clone());
+        if self.unledgered_fills.len() < DECLINED_HISTORY {
+            self.unledgered_fills.push(line);
+        }
     }
 
     /// The engine that prices the alternatives to a decision.

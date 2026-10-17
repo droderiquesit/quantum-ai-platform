@@ -244,6 +244,15 @@ const PROBES: &[Probe] = &[
         defined_in: "libs/qip-quantum/src/provider.rs",
         needle: "HostedProvider::connected(",
     },
+    // The ingestion correlation id reaches the platform only through this
+    // path: the fast brain's run loop holds one SensePath, whose bridge feeds
+    // Platform::observe_with_lineage. If the node stops constructing it, the
+    // fast brain is back to observe() with no lineage.
+    Probe {
+        symbol: "PlatformBridge (via SensePath)",
+        defined_in: "runtime/qip-kernel/src/bus_bridge.rs",
+        needle: "SensePath::new(",
+    },
     Probe {
         symbol: "ConductGate::from_policy",
         defined_in: "services/qip-agency/src/conduct_brain.rs",

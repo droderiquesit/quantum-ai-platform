@@ -226,6 +226,21 @@ impl Journal {
     }
 
     fn record<B: serde::Serialize>(&self, topic: Topic, position: u64, body: &B) -> Record {
+        self.record_under(
+            topic,
+            position,
+            body,
+            CorrelationId::from_string("COR00000000000000000000009"),
+        )
+    }
+
+    fn record_under<B: serde::Serialize>(
+        &self,
+        topic: Topic,
+        position: u64,
+        body: &B,
+        correlation: CorrelationId,
+    ) -> Record {
         let payload = serde_json::to_value(body).unwrap();
         let id = format!("{}-{position}-{topic}", self.cell);
         let at = Timestamp::from_secs(1_790_000_000 + position as i64);
@@ -236,10 +251,7 @@ impl Journal {
             occurred_at: at,
             recorded_at: at,
             sequence: 0,
-            lineage: Lineage::root(
-                CorrelationId::from_string("COR00000000000000000000009"),
-                "qip-edge-node.outbox",
-            ),
+            lineage: Lineage::root(correlation, "qip-edge-node.outbox"),
             idempotency_key: Some(id),
             payload_hash: sha256_hex(canonical_json(&payload).as_bytes()),
             payload,
@@ -282,7 +294,14 @@ impl Journal {
             journal_digest: entry.digest.clone(),
             entry: entry.clone(),
         };
-        self.record(Topic::ReflexOutcomeRecorded, entry.sequence, &outcome)
+        // The lineage names the order's chain, as the writer stamps it.
+        let correlation = outcome.correlation().expect("a fill names its order");
+        self.record_under(
+            Topic::ReflexOutcomeRecorded,
+            entry.sequence,
+            &outcome,
+            correlation,
+        )
     }
 
     /// `count` non-outcome entries, as the `ChainSpan` that covers them.
@@ -612,6 +631,61 @@ fn a_record_the_envelope_refuses_stalls_its_partition_and_books_nothing_from_its
     let reason = ledger.statuses()[&0].last_error.clone().unwrap();
     assert!(reason.contains("payload hash"), "{reason}");
     assert!(ledger.store().events().unwrap().is_empty());
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A fill whose lineage names another order's chain (or none of the
+/// derivable ones) is refused at the consumer: the partition stalls, the
+/// reason names the lineage, and nothing from the batch is booked — not the
+/// good fill ahead of it. A well-formed fill books, and the posted event
+/// names the chain its lineage carried.
+///
+/// Mutation: in `consumer::decode_batch`, drop the `outcome.correlation()`
+/// comparison — the edited fill books and the stall never reports.
+#[test]
+fn a_fill_whose_lineage_was_edited_stalls_its_partition_and_a_good_one_names_its_chain() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let good = cell.fill("o-good", 3, "100", true);
+    let forged = rewritten(&cell.fill("o-forged", 1, "100", true), |e| {
+        e.lineage = Lineage::root(
+            CorrelationId::from_string("COR00000000000000000000009"),
+            "qip-edge-node.outbox",
+        );
+    });
+    fabric.produce(0, vec![good, forged]);
+    let dir = temp_dir("lineage");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("partition 0 reports the lineage", || {
+        ledger
+            .statuses()
+            .get(&0)
+            .and_then(|s| s.last_error.clone())
+            .is_some()
+    });
+    let reason = ledger.statuses()[&0].last_error.clone().unwrap();
+    assert!(reason.contains("lineage correlation"), "{reason}");
+    assert!(
+        ledger.store().events().unwrap().is_empty(),
+        "nothing from the refused batch was booked"
+    );
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    fabric.produce(0, vec![cell.fill("o-ok", 3, "100", true)]);
+    let dir = temp_dir("lineage-ok");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("the fill is booked", || {
+        ledger.store().events().unwrap().len() == 1
+    });
+    let event = ledger.store().events().unwrap().remove(0);
+    assert_eq!(
+        event.chain_correlation(),
+        qip_contracts::reflex::chain_correlation("cell-a", 0, "o-ok")
+    );
     ledger.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

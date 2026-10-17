@@ -125,6 +125,7 @@ dependencies = [
  "qip-investment-agents",
  "qip-kernel",
  "qip-learning-engine",
+ "qip-ledgerd",
  "qip-lifecycle",
  "qip-market",
  "qip-market-ingestion",

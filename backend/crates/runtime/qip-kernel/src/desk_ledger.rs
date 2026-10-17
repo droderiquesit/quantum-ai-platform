@@ -1,0 +1,683 @@
+//! The desk's fills, put on the one ledger there is.
+//!
+//! Until this existed a desk [`Fill`](qip_execution_engine::order::Fill)
+//! reached `Platform::capital` and the outcome capture and nothing else:
+//! `qip-ledgerd` consumes exactly one shape, the P1 [`OutcomeRecord`] a cell
+//! spools, so the double-entry ledger booked every edge-cell fill and none of
+//! the desk's. The desk does not get a ledger of its own — a second one would
+//! be a second source of truth for what the first already holds — it emits
+//! the same `OutcomeRecord`, on a chain of its own (`cell = "desk"`), and
+//! `qip-ledgerd` stays the sole writer.
+//!
+//! # What makes a record trustworthy
+//!
+//! * **Identity is a function of the fill.** A record's chain position is its
+//!   ordinal among the desk's booked fills and its digest chains onto the
+//!   previous one under v2, exactly as `qip-edge` seals a cell's journal. The
+//!   chain is therefore a pure fold of the `FillBooked` records already in
+//!   the event log, so a restart rebuilds the same positions and a replay
+//!   yields the same identity ([`DeskLedgerFeed::fold_booked`]).
+//! * **Recording is idempotent on `(order_id, fill_id)`.** The OMS already
+//!   refuses a replayed order id and an order refuses a repeated fill id; this
+//!   is the third lock, for a fill batch offered twice by a caller that is
+//!   neither. A duplicate adds no record and, in the platform, books nothing.
+//! * **A record exists only if the ledger would take it.** [`outcome_for`]
+//!   runs [`PaperFill::try_from`] and [`post`] — the very functions
+//!   `LedgerStore::apply` runs — before it returns a record, so a fill the
+//!   ledger would park its whole cell for (a live fill, a notional off the
+//!   nine-digit grid, a negative fee) is refused here, where the desk can say
+//!   no, instead of in the ledger's partition where it stops every later
+//!   record behind it.
+
+use crate::platform::FillBooked;
+use qip_contracts::message::BookSide;
+use qip_contracts::reflex::{ChainVersion, Decision, JournalEntry, OutcomeRecord, seal_v2};
+use qip_core::error::{Error, Result};
+use qip_execution_engine::order::Side;
+use qip_portfolio::ledger::{PaperFill, post};
+use std::collections::BTreeSet;
+
+/// The chain the desk's fills sit on. A cell is named for where it runs; the
+/// desk is the centre's own book, and no cell carries this name.
+pub const DESK_CELL: &str = "desk";
+
+/// The digest a chain's first entry chains onto: the same text as
+/// `qip_edge::Journal::GENESIS` and `qip_ledgerd::store::GENESIS`, restated
+/// because neither crate may be depended on from here.
+const GENESIS: &str = "genesis";
+
+/// One session, for ever. The chain's position is rebuilt from the event log
+/// on every start, so a restart continues the chain rather than beginning a
+/// second one, and a session counter that has to be remembered across
+/// restarts is a thing that can be forgotten.
+pub const DESK_SESSION: u64 = 0;
+
+/// The unit the desk's prices are quoted in. The same currency the capital
+/// fabric's demand observation is filed under.
+pub const DESK_QUOTE_UNIT: &str = "USD";
+
+/// Fills the feed will remember for duplicate detection. Past this the desk
+/// refuses to book a new fill, loudly, rather than forgetting old ones and
+/// letting a replay through: archive the event log and restart.
+pub const DESK_FEED_CAPACITY: usize = 100_000;
+
+/// Records waiting to be taken by the ledger's consumer. Past this a fill is
+/// refused, for the reason above — dropping the oldest would be the desk
+/// choosing which fill the ledger never hears about.
+pub const DESK_OUTBOX_CAPACITY: usize = 10_000;
+
+/// A record and the cycle it came out of.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeskOutcome {
+    pub record: OutcomeRecord,
+    /// The correlation id the order's decisions were captured under, so the
+    /// ledger posting can be walked back to the cycle that caused it. The
+    /// record itself has no such field — a cell's journal carries none —
+    /// and the broker envelope that ships it takes this as its lineage.
+    pub correlation_id: String,
+}
+
+impl DeskOutcome {
+    /// The correlation id the spool envelope must carry for `qip-ledgerd`'s
+    /// consumer to accept this record: the chain id its body derives. The
+    /// cycle's own id is [`Self::correlation_id`], kept for joining the
+    /// posting back to the decision that placed the order.
+    pub fn chain_correlation(&self) -> Option<qip_core::CorrelationId> {
+        self.record.correlation()
+    }
+}
+
+/// What [`DeskLedgerFeed::admit`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// A new record, at this chain position.
+    Recorded { sequence: u64 },
+    /// This `(order_id, fill_id)` is already on the chain; nothing was added.
+    Duplicate,
+    /// The fill is valid and the chain advanced over it, but there was no room
+    /// to queue or remember its record, so it is not in [`DeskLedgerFeed::pending`].
+    ///
+    /// Room is a delivery limit, not a verdict on the fill: the venue holds the
+    /// position whether or not anything has drained this queue, so the caller
+    /// books it and surfaces the gap. Nothing is lost, because the chain is a
+    /// fold of the `FillBooked` log and [`outcomes_from`] re-derives this
+    /// record, with the same sequence and digest, from that log.
+    Overflowed { sequence: u64 },
+}
+
+/// Build the record for one booked fill at `sequence`, chained onto
+/// `previous`, or refuse it with the reason the ledger would.
+pub fn outcome_for(
+    booked: &FillBooked,
+    strategy: &str,
+    sequence: u64,
+    previous: &str,
+) -> Result<OutcomeRecord> {
+    let decision = Decision::Filled {
+        order_id: booked.order_id.clone(),
+        venue: booked.venue.clone(),
+        object: booked.object_id.clone(),
+        quantity: booked.quantity.to_string(),
+        price: booked.price.to_string(),
+        simulated: booked.simulated,
+        shares: vec![(strategy.to_string(), booked.quantity.to_string())],
+        side: Some(match booked.side {
+            Side::Buy => BookSide::Ask,
+            Side::Sell => BookSide::Bid,
+        }),
+        quote_unit: Some(DESK_QUOTE_UNIT.to_string()),
+        fee: Some(booked.costs.to_string()),
+    };
+    let (decision, digest) = seal_v2(previous, sequence, booked.at, decision);
+    let record = OutcomeRecord {
+        cell: DESK_CELL.to_string(),
+        session: DESK_SESSION,
+        journal_sequence: sequence,
+        journal_digest: digest.clone(),
+        entry: JournalEntry {
+            sequence,
+            at: booked.at,
+            decision,
+            digest,
+            version: ChainVersion::V2,
+        },
+    };
+    // The ledger's own two steps, run now. `post` is pure, so a record that
+    // passes here posts identically there.
+    let fill = PaperFill::try_from(&record)?;
+    post(&fill)?;
+    Ok(record)
+}
+
+/// The desk's chain tail, its duplicate index and the records not yet taken.
+#[derive(Debug, Default)]
+pub struct DeskLedgerFeed {
+    next_sequence: u64,
+    tail_digest: Option<String>,
+    seen: BTreeSet<(String, String)>,
+    outbox: Vec<DeskOutcome>,
+}
+
+impl DeskLedgerFeed {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The sequence the next record will carry; equal to the number recorded.
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    pub fn pending(&self) -> &[DeskOutcome] {
+        &self.outbox
+    }
+
+    /// Whether the next fill would be refused for want of room.
+    pub fn is_full(&self) -> bool {
+        self.seen.len() >= DESK_FEED_CAPACITY || self.outbox.len() >= DESK_OUTBOX_CAPACITY
+    }
+
+    fn previous(&self) -> &str {
+        self.tail_digest.as_deref().unwrap_or(GENESIS)
+    }
+
+    /// Record one booked fill, or refuse it. Nothing changes on a refusal and
+    /// nothing changes on a duplicate. A fill that is valid but finds no room
+    /// advances the chain and is reported as [`Admission::Overflowed`].
+    pub fn admit(
+        &mut self,
+        booked: &FillBooked,
+        strategy: &str,
+        correlation: &str,
+    ) -> Result<Admission> {
+        let key = (booked.order_id.clone(), booked.fill_id.clone());
+        if self.seen.contains(&key) {
+            return Ok(Admission::Duplicate);
+        }
+        let record = outcome_for(booked, strategy, self.next_sequence, self.previous())?;
+        let next = self.next_sequence.checked_add(1).ok_or_else(|| {
+            Error::numeric("the desk's ledger chain has no sequence left to give".to_string())
+        })?;
+        // Past every fallible step: the writes below cannot half-happen. The
+        // chain advances whether or not there is room to queue the record,
+        // because it must stay equal to the fold of the event log; only the
+        // queue and the duplicate index are bounded.
+        let sequence = self.next_sequence;
+        self.next_sequence = next;
+        self.tail_digest = Some(record.journal_digest.clone());
+        let room_to_remember = self.seen.len() < DESK_FEED_CAPACITY;
+        let room_to_queue = self.outbox.len() < DESK_OUTBOX_CAPACITY;
+        if room_to_remember {
+            self.seen.insert(key);
+        }
+        if !(room_to_remember && room_to_queue) {
+            return Ok(Admission::Overflowed { sequence });
+        }
+        self.outbox.push(DeskOutcome {
+            record,
+            correlation_id: correlation.to_string(),
+        });
+        Ok(Admission::Recorded { sequence })
+    }
+
+    /// Advance the chain over a fill the event log already holds, without
+    /// queueing it and without remembering its ids. The restart path: the
+    /// ledger has been told of everything it was told of, and what it was not
+    /// is re-derivable with [`outcomes_from`].
+    ///
+    /// The ids are deliberately not remembered. `OrderManager::next_order_id`
+    /// and the simulated broker's fill ids count from one in every process, so
+    /// `(ord-1, fill-1)` in the log is a different fill from `(ord-1, fill-1)`
+    /// this process mints. Seeding the duplicate index from the log would
+    /// read the new fill as a replay of the old and leave it out of the book.
+    /// Within a process the OMS keeps ids unique, which is the scope the
+    /// duplicate index is sound over.
+    pub fn fold_booked(&mut self, booked: &FillBooked, strategy: &str) -> Result<u64> {
+        let record = outcome_for(booked, strategy, self.next_sequence, self.previous())?;
+        let next = self.next_sequence.checked_add(1).ok_or_else(|| {
+            Error::numeric("the desk's ledger chain has no sequence left to give".to_string())
+        })?;
+        self.next_sequence = next;
+        self.tail_digest = Some(record.journal_digest);
+        Ok(next - 1)
+    }
+
+    /// Hand over everything queued, oldest first, leaving the queue empty.
+    pub fn drain(&mut self) -> Vec<DeskOutcome> {
+        std::mem::take(&mut self.outbox)
+    }
+}
+
+/// The records for `booked` fills, in the order given, positioned from zero.
+///
+/// A pure fold: the same fills yield the same records on every call, which
+/// is what lets a consumer that lost its place ask for the chain again. A
+/// fill the ledger would refuse is skipped exactly as the live path skipped
+/// it — it never held a position — so the positions agree.
+pub fn outcomes_from<'a>(
+    booked: impl IntoIterator<Item = &'a FillBooked>,
+    strategy: &str,
+) -> Vec<OutcomeRecord> {
+    let mut records: Vec<OutcomeRecord> = Vec::new();
+    for fill in booked {
+        let previous = records
+            .last()
+            .map_or(GENESIS, |last| last.journal_digest.as_str());
+        let sequence = records.len() as u64;
+        if let Ok(record) = outcome_for(fill, strategy, sequence, previous) {
+            records.push(record);
+        }
+    }
+    records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qip_core::{Decimal, Timestamp, dec};
+    use qip_portfolio::ledger::PaperFill;
+
+    fn booked(order: &str, fill: &str, quantity: Decimal, price: Decimal) -> FillBooked {
+        FillBooked {
+            order_id: order.to_string(),
+            fill_id: fill.to_string(),
+            object_id: "obj-ACME".to_string(),
+            venue: "paper-xnys".to_string(),
+            side: Side::Buy,
+            quantity,
+            price,
+            costs: dec!("1.5"),
+            at: Timestamp::from_secs(1_760_000_100),
+            simulated: true,
+        }
+    }
+
+    #[test]
+    fn the_same_fills_yield_the_same_chain_however_often_it_is_rebuilt() {
+        // The failure this prevents: a record identity that depends on when or
+        // how many times it was built, so a replay posts a different event.
+        let fills = vec![
+            booked("o1", "f1", dec!("10"), dec!("100")),
+            booked("o2", "f2", dec!("5"), dec!("101")),
+        ];
+        let first = outcomes_from(&fills, "central-desk");
+        let second = outcomes_from(&fills, "central-desk");
+        assert_eq!(first.len(), 2, "premise: both fills are recordable");
+        assert_eq!(first, second);
+        assert_eq!(first[1].entry.sequence, 1);
+        let expected = first[1]
+            .entry
+            .expected_digest(&first[0].journal_digest)
+            .expect("v2 digests verify");
+        assert_eq!(expected, first[1].entry.digest, "the chain links");
+    }
+
+    #[test]
+    fn a_fill_offered_twice_is_recorded_once() {
+        // The failure this prevents: a replayed fill batch booking twice.
+        let mut feed = DeskLedgerFeed::new();
+        let fill = booked("o1", "f1", dec!("10"), dec!("100"));
+        assert_eq!(
+            feed.admit(&fill, "central-desk", "corr-1").unwrap(),
+            Admission::Recorded { sequence: 0 }
+        );
+        assert_eq!(
+            feed.admit(&fill, "central-desk", "corr-1").unwrap(),
+            Admission::Duplicate
+        );
+        assert_eq!(feed.pending().len(), 1);
+        assert_eq!(feed.next_sequence(), 1);
+        assert_eq!(feed.pending()[0].correlation_id, "corr-1");
+    }
+
+    #[test]
+    fn a_non_simulated_fill_is_refused_and_leaves_the_feed_untouched() {
+        // The failure this prevents: a live fill reaching the ledger's
+        // partition and parking the desk's whole chain behind it.
+        let mut feed = DeskLedgerFeed::new();
+        let mut live = booked("o1", "f1", dec!("10"), dec!("100"));
+        live.simulated = false;
+        let error = feed.admit(&live, "central-desk", "c").unwrap_err();
+        assert!(
+            error.message().contains("not marked simulated"),
+            "{}",
+            error.message()
+        );
+        assert_eq!(feed.next_sequence(), 0);
+        assert!(feed.pending().is_empty());
+        // And the refusal did not burn the id: the same fill, corrected, records.
+        live.simulated = true;
+        assert!(matches!(
+            feed.admit(&live, "central-desk", "c").unwrap(),
+            Admission::Recorded { sequence: 0 }
+        ));
+    }
+
+    #[test]
+    fn a_notional_off_the_grid_is_refused_before_it_can_park_the_ledger() {
+        // 0.000000001 x 0.5 needs a tenth fractional digit.
+        let mut feed = DeskLedgerFeed::new();
+        let fill = booked("o1", "f1", dec!("0.000000001"), dec!("0.5"));
+        let error = feed.admit(&fill, "central-desk", "c").unwrap_err();
+        assert!(
+            error.message().contains("fractional digits"),
+            "{}",
+            error.message()
+        );
+        assert!(feed.pending().is_empty());
+    }
+
+    #[test]
+    fn a_record_built_for_a_fill_is_the_one_the_ledger_books() {
+        let fill = booked("o1", "f1", dec!("10"), dec!("100"));
+        let record = outcome_for(&fill, "central-desk", 0, GENESIS).unwrap();
+        assert_eq!(record.cell, DESK_CELL);
+        let paper = PaperFill::try_from(&record).unwrap();
+        assert_eq!(paper.quantity(), dec!("10"));
+        assert_eq!(paper.price(), dec!("100"));
+        assert_eq!(paper.source().order_id, "o1");
+    }
+
+    #[test]
+    fn a_full_outbox_overflows_without_dropping_the_oldest_or_forking_the_chain() {
+        let mut feed = DeskLedgerFeed::new();
+        let mut all: Vec<FillBooked> = Vec::new();
+        for n in 0..DESK_OUTBOX_CAPACITY {
+            let fill = booked(&format!("o{n}"), "f", dec!("1"), dec!("100"));
+            let admission = feed.admit(&fill, "central-desk", "c").unwrap();
+            assert!(matches!(admission, Admission::Recorded { .. }), "premise");
+            all.push(fill);
+        }
+        assert!(feed.is_full(), "premise: the outbox is at capacity");
+
+        let extra = booked("extra", "f", dec!("1"), dec!("100"));
+        let admission = feed.admit(&extra, "central-desk", "c").unwrap();
+        assert_eq!(
+            admission,
+            Admission::Overflowed {
+                sequence: DESK_OUTBOX_CAPACITY as u64
+            },
+            "a valid fill with no room must not be refused: the venue holds it"
+        );
+        all.push(extra);
+        assert_eq!(
+            feed.pending().len(),
+            DESK_OUTBOX_CAPACITY,
+            "the overflowed record was queued past the bound"
+        );
+        assert_eq!(
+            feed.next_sequence(),
+            DESK_OUTBOX_CAPACITY as u64 + 1,
+            "the chain did not advance over the overflowed fill"
+        );
+
+        // Nothing is lost: the chain re-derived from the log has the overflowed
+        // record at the position the live chain gave it, and the live tail is
+        // the re-derived tail, so a restart cannot fork from what was running.
+        let rederived = outcomes_from(all.iter(), "central-desk");
+        assert_eq!(rederived.len(), DESK_OUTBOX_CAPACITY + 1);
+        assert_eq!(
+            rederived.last().map(|r| r.entry.sequence),
+            Some(DESK_OUTBOX_CAPACITY as u64)
+        );
+        let next = booked("next", "f", dec!("1"), dec!("100"));
+        let live = {
+            let mut resumed = DeskLedgerFeed::new();
+            for fill in &all {
+                resumed.fold_booked(fill, "central-desk").unwrap();
+            }
+            resumed
+        };
+        assert_eq!(live.next_sequence(), feed.next_sequence());
+
+        let first = feed.drain();
+        assert_eq!(first[0].record.entry.sequence, 0, "the oldest survived");
+        assert!(!feed.is_full());
+        // After a drain the next fill is queued again, chained onto the
+        // overflowed one, not onto the last record that was queued.
+        match feed.admit(&next, "central-desk", "c").unwrap() {
+            Admission::Recorded { sequence } => {
+                assert_eq!(sequence, DESK_OUTBOX_CAPACITY as u64 + 1)
+            }
+            other => panic!("expected the fill to be queued after a drain, got {other:?}"),
+        }
+        let queued = feed.pending()[0].record.clone();
+        assert_eq!(
+            queued.journal_digest,
+            outcomes_from(all.iter().chain(std::iter::once(&next)), "central-desk")
+                .last()
+                .unwrap()
+                .journal_digest,
+            "the record after the overflow chained onto a tail the log does not hold"
+        );
+    }
+
+    // --- through the platform, with a venue that misbehaves -----------------
+
+    use crate::PlatformConfig;
+    use crate::platform::Platform;
+    use qip_core::time::Duration;
+    use qip_core::{Context, ManualClock, ObjectId};
+    use qip_execution_engine::broker::{
+        Broker, SimulatedBroker, SimulationSettings, VenueCapabilities,
+    };
+    use qip_execution_engine::order::{Fill, Order};
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+    use std::sync::Arc;
+
+    /// How a venue misreports a fill.
+    #[derive(Clone, Copy, Debug)]
+    enum Lie {
+        /// The venue reports exactly what it did.
+        Honest,
+        NegativeFee,
+        OtherOrder,
+    }
+
+    #[derive(Debug)]
+    struct LyingBroker {
+        inner: SimulatedBroker,
+        lie: Lie,
+    }
+
+    impl Broker for LyingBroker {
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+        fn is_simulated(&self) -> bool {
+            self.inner.is_simulated()
+        }
+        fn is_available(&self) -> bool {
+            self.inner.is_available()
+        }
+        fn capabilities(&self) -> VenueCapabilities {
+            self.inner.capabilities()
+        }
+        fn submit(&mut self, order: &Order, at: Timestamp) -> Result<Vec<Fill>> {
+            let mut fills = self.inner.submit(order, at)?;
+            for fill in &mut fills {
+                match self.lie {
+                    Lie::Honest => {}
+                    Lie::NegativeFee => fill.costs = Decimal::ZERO - dec!("1"),
+                    Lie::OtherOrder => {
+                        fill.order_id = qip_core::OrderId::from_string("someone-elses-order");
+                    }
+                }
+            }
+            Ok(fills)
+        }
+        fn cancel(&mut self, order: &Order, at: Timestamp) -> Result<()> {
+            self.inner.cancel(order, at)
+        }
+    }
+
+    fn platform_with(lie: Lie) -> Platform {
+        let start = Timestamp::from_secs(1_760_000_000);
+        let id = ObjectId::from_string("obj-ACME");
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    id.clone(),
+                    "ACME",
+                    InstrumentType::CommonStock,
+                    qip_financial::costs::LiquidityProfile::listed(
+                        Decimal::from_int(5_000_000),
+                        3.0,
+                    ),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(Provenance::synthetic("desk-ledger", start))
+                .build(start)
+                .expect("valid instrument"),
+            )
+            .expect("insertable");
+        let config = PlatformConfig::default();
+        let seed = config.seed;
+        let context = Context::new(Arc::new(ManualClock::new(start)), seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::new("desk-ledger"),
+        )
+        .expect("a platform");
+        platform.broker = Box::new(LyingBroker {
+            inner: SimulatedBroker::new(SimulationSettings::default(), seed),
+            lie,
+        });
+        platform
+    }
+
+    fn submit_one(platform: &mut Platform) -> Result<()> {
+        let start = Timestamp::from_secs(1_760_000_000);
+        let now = start.saturating_add(Duration::from_mins(3));
+        let order = platform.order_from(
+            ObjectId::from_string("obj-ACME"),
+            Side::Buy,
+            dec!("100"),
+            dec!("100"),
+            "prop-lie",
+            vec!["hyp-lie".to_string()],
+            now,
+        );
+        platform.submit_order(order, now)
+    }
+
+    #[test]
+    fn a_fill_the_ledger_would_refuse_is_declined_and_moves_neither_the_book_nor_the_ledger() {
+        // The failure this prevents: the book taking a fill the ledger parks its
+        // chain for, so cash and the double-entry ledger disagree for good.
+        let mut platform = platform_with(Lie::NegativeFee);
+        let cash = platform.cash();
+        let result = submit_one(&mut platform);
+        assert!(
+            result.is_ok(),
+            "premise: the venue accepted the order: {result:?}"
+        );
+        assert!(
+            !platform.orders().fills().is_empty(),
+            "premise: the venue reported a fill"
+        );
+        assert!(platform.pending_desk_outcomes().is_empty());
+        assert_eq!(platform.cash(), cash);
+        assert!(platform.positions_at_cost().is_empty());
+        assert_eq!(platform.unledgered_fills().len(), 1);
+        assert!(
+            platform.unledgered_fills()[0].contains("negative fee"),
+            "{:?}",
+            platform.unledgered_fills()
+        );
+        assert_eq!(
+            platform
+                .telemetry()
+                .metrics
+                .snapshot()
+                .counter_total(qip_observability::metrics::names::DESK_FILLS_UNLEDGERED),
+            1
+        );
+    }
+
+    #[test]
+    fn a_full_feed_does_not_stop_the_book_following_the_venue() {
+        // The failure this prevents: nothing in production drains the feed, so
+        // after DESK_OUTBOX_CAPACITY fills a desk that DECLINED on capacity
+        // would stop booking what the venue filled, and cash and positions
+        // would drift from the venue with nothing wrong with any fill.
+        let mut platform = platform_with(Lie::Honest);
+        for n in 0..DESK_OUTBOX_CAPACITY {
+            let fill = booked(&format!("pre{n}"), "f", dec!("1"), dec!("100"));
+            platform
+                .desk_ledger_mut()
+                .admit(&fill, "central-desk", "c")
+                .unwrap();
+        }
+        assert!(platform.desk_ledger_mut().is_full(), "premise: no room");
+        let cash = platform.cash();
+        let result = submit_one(&mut platform);
+        assert!(result.is_ok(), "premise: the venue accepted: {result:?}");
+        assert!(
+            !platform.orders().fills().is_empty(),
+            "premise: the venue reported a fill"
+        );
+
+        // The book followed the venue.
+        assert!(
+            platform.positions_at_cost().contains_key("obj-ACME"),
+            "the fill was not booked because the feed was full"
+        );
+        assert!(
+            platform.cash() < cash,
+            "cash did not move for a booked fill"
+        );
+        // The gap is surfaced and counted, and the bound held.
+        assert_eq!(platform.pending_desk_outcomes().len(), DESK_OUTBOX_CAPACITY);
+        assert!(
+            platform
+                .unledgered_fills()
+                .iter()
+                .any(|line| line.contains("not queued")),
+            "{:?}",
+            platform.unledgered_fills()
+        );
+        assert_eq!(
+            platform
+                .telemetry()
+                .metrics
+                .snapshot()
+                .counter_total(qip_observability::metrics::names::DESK_FILLS_UNLEDGERED),
+            1
+        );
+        // And the chain advanced over it, so a restart folding the log lands on
+        // the same position.
+        assert_eq!(
+            platform.desk_ledger_mut().next_sequence(),
+            DESK_OUTBOX_CAPACITY as u64 + 1
+        );
+    }
+
+    #[test]
+    fn a_fill_that_names_another_order_is_declined_as_a_mismatch() {
+        let mut platform = platform_with(Lie::OtherOrder);
+        let cash = platform.cash();
+        let _ = submit_one(&mut platform);
+        assert!(platform.pending_desk_outcomes().is_empty());
+        assert_eq!(platform.cash(), cash);
+        assert!(
+            platform
+                .unledgered_fills()
+                .iter()
+                .any(|l| l.contains("arrived in the submission")),
+            "{:?}",
+            platform.unledgered_fills()
+        );
+    }
+}

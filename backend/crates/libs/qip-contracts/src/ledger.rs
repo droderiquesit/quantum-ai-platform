@@ -386,6 +386,18 @@ fn refuse_unnamed(what: &str, name: &str) -> Result<()> {
 }
 
 impl LedgerEvent {
+    /// The id of the decision chain this posting belongs to, derived from its
+    /// source exactly as the cell and the spool writer derive it
+    /// ([`crate::reflex::chain_correlation`]). Not stored, so an event read
+    /// back from a store names the same chain it did when it was written.
+    pub fn chain_correlation(&self) -> qip_core::CorrelationId {
+        crate::reflex::chain_correlation(
+            &self.source.cell,
+            self.source.session,
+            &self.source.order_id,
+        )
+    }
+
     /// Build an event, refusing anything the ledger must not hold.
     ///
     /// Refused, never adjusted:

@@ -232,10 +232,25 @@ pub fn decode_batch(
             event
         };
         let p1 = if event.topic == REFLEX_OUTCOME_RECORDED.topic {
-            P1Record::Outcome(Box::new(decode_as::<OutcomeRecord>(
-                &event,
-                REFLEX_OUTCOME_RECORDED,
-            )?))
+            let outcome = decode_as::<OutcomeRecord>(&event, REFLEX_OUTCOME_RECORDED)?;
+            // The envelope's lineage must name the decision chain its body
+            // names. The id is derived from the cell, the session and the
+            // order, none of which the lineage can change, so a record whose
+            // lineage was edited or stripped joins the posting to another
+            // order's decisions; it is refused here, before the store sees it,
+            // and the caller stalls on it with nothing booked.
+            if let Some(expected) = outcome.correlation()
+                && event.lineage.correlation_id != expected
+            {
+                return Err(Error::invalid(format!(
+                    "{partition} batch {} record {index} carries lineage correlation {} but its \
+                     body derives {}; the ledger refuses a record whose chain was edited",
+                    batch.base_offset,
+                    event.lineage.correlation_id.as_str(),
+                    expected.as_str()
+                )));
+            }
+            P1Record::Outcome(Box::new(outcome))
         } else if event.topic == REFLEX_CHAIN_SPAN.topic {
             P1Record::Span(decode_as::<ChainSpan>(&event, REFLEX_CHAIN_SPAN)?)
         } else if event.topic == EVENT_FABRIC_GAP.topic {

@@ -49,6 +49,15 @@ qip-cli.workspace = true
 # above are, and nothing ships depending on it.
 qip-edge-node = { path = "../../apps/qip-edge-node" }
 
+# The ledger daemon's library, so `vertical_slice_ledgerd.rs` drives a P1
+# outcome record into the store's real apply path (idempotent re-apply,
+# refold, the paper fence's park) — the last hop of the vertical slice,
+# which `vertical_slice_cell_ledger.rs` could not reach. A path dependency
+# like `qip-edge-node` above; a dev-dependency on an app, so nothing ships
+# depending on it and `runtime_reachability`, which counts `[dependencies]`
+# only, is unmoved.
+qip-ledgerd = { path = "../../apps/qip-ledgerd" }
+
 # The stress, chaos and performance suites reach the edge stack directly: the
 # cell and its journal, the books it prices from, the sequencer that decides a
 # feed is corrupt, the compiler and runtime a strategy is evaluated by, the

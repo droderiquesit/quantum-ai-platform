@@ -7,12 +7,14 @@
 //!      -> capital tracking -> OutcomeCapture (hash chain) -> LEARN (attribution, twin score)
 //! ```
 //!
-//! Every component is the production type. The one hop that is NOT production
-//! wiring is `bus -> Platform::observe`: no production code subscribes
-//! `Platform` to an `EventBus` (`grep -rn 'bus.on::<\|on_all(' runtime apps
-//! services` outside tests is empty on 2026-10-17), so this file's subscriber
-//! is the glue a composition root would own, and it is named as such where it
-//! stands. The seam is a finding, not something this file papers over.
+//! Every component is the production type. The hop `bus -> Platform::observe`
+//! used to have no production subscriber, so this file carried its own glue.
+//! The fast brain now holds one (`qip_kernel::bus_bridge::SensePath`, built in
+//! `qip_fastbrain::node::run`), and `vertical_slice_lineage.rs` drives the
+//! production bridge. The subscriber below is kept because this file's tests
+//! predate it and assert behaviour that does not depend on which subscriber
+//! delivered the record; it is no longer the only way a record reaches the
+//! platform.
 //!
 //! The second half of the slice (cell fill -> spool -> double-entry ledger) is
 //! `vertical_slice_cell_ledger.rs`. The two halves do not join in process:
@@ -955,34 +957,57 @@ fn submitting_the_same_order_twice_has_one_financial_effect() -> Result<()> {
 
 // --- an honest seam, asserted so that closing it is noticed -------------------
 
-/// FINDING G1. `Platform::observe` takes `Vec<SensedRecord>` and no lineage, so
-/// the correlation id the ingestion service minted for a tick stops at the bus:
-/// the platform's cycle mints its own, and nothing it records — event log,
-/// journal, outcome chain — carries the tick's. Reconstructing "this fill came
-/// from that tick" therefore needs a join on time and instrument, not on an id.
+/// FINDING G1, closed. `Platform::observe` takes no lineage, so the correlation
+/// id the ingestion service minted for a tick used to stop at the bus: the
+/// platform's cycle minted its own, and nothing it recorded — event log,
+/// journal, outcome chain — carried the tick's. This test asserted that gap so
+/// that closing it would be noticed; it now asserts the closure.
 ///
-/// This test asserts the gap as it is today. When `observe` grows a lineage
-/// parameter it fails, and the failure is the signal to turn it into the
-/// positive assertion (every outcome row's correlation chain reaches the tick).
+/// The records reach the platform through `PlatformBridge` and
+/// `Platform::observe_with_lineage` — the production hop, not this file's
+/// test-owned subscriber, which has no lineage to carry. The positive
+/// assertion: the tick's correlation id is findable in the platform's event
+/// log, and the cycle that reasoned over it names it in its journal entry, which
+/// is how an outcome row (carrying the cycle's id) joins back to the tick by id.
+/// `vertical_slice_lineage.rs` holds the rest of the lineage behaviour.
 #[test]
-fn finding_g1_the_ingestion_correlation_id_does_not_reach_the_platform() -> Result<()> {
+fn finding_g1_closed_the_ingestion_correlation_id_reaches_the_platform() -> Result<()> {
+    let (context, clock) = Context::deterministic(start(), 7);
+    let until = start().saturating_add(Duration::from_secs(31));
+    clock.set(until);
+    let log = Rc::new(RefCell::new(EventLog::in_memory()));
+    let mut bus = EventBus::new().with_log(Rc::clone(&log));
+    let telemetry = Telemetry::silent();
+    let bridge = qip_kernel::bus_bridge::PlatformBridge::attach(
+        &mut bus,
+        64,
+        Arc::clone(&telemetry.metrics),
+    )?;
     let printed = start().saturating_add(Duration::from_secs(30));
     let captured = printed.saturating_add(Duration::from_millis(40));
-    let delivered = through_ingestion_and_bus(
-        vec![SensedRecord::Tick(tick(dec!("100"), printed, captured))],
-        start().saturating_add(Duration::from_secs(31)),
-    )?;
+    let mut service = IngestionService::new(Telemetry::silent());
+    service.register(Box::new(
+        ReplayAdapter::from_records(
+            "simulated-tape",
+            vec![SensedRecord::Tick(tick(dec!("100"), printed, captured))],
+        )
+        .with_licensing(LicensingClass::Synthetic),
+    ));
+    service.start(start())?;
+    assert_eq!(service.poll_and_publish(&context, &mut bus, until)?, 1);
+    let mut platform = platform()?;
+    let report = bridge.flow(&mut bus, &context, &mut platform, until)?;
+    assert_eq!(report.absorbed, 1, "premise: the bridge delivered the tick");
+
     let tick_correlation = {
-        let log = delivered.log.borrow();
+        let log = log.borrow();
         let events = log.by_topic(Topic::MarketTick);
         assert_eq!(events.len(), 1, "premise: the tick is on the bus log");
         events[0].lineage.correlation_id.clone()
     };
 
-    let mut platform = platform()?;
-    platform.observe(delivered.records);
     let now = start().saturating_add(Duration::from_mins(2));
-    let report = platform.run_cycle(now);
+    let cycle = platform.run_cycle(now);
     let fine = order(&mut platform, dec!("100"), vec!["hyp-g1".to_string()]);
     platform.submit_order(fine, later())?;
     assert!(
@@ -990,21 +1015,37 @@ fn finding_g1_the_ingestion_correlation_id_does_not_reach_the_platform() -> Resu
         "premise: a fill exists"
     );
 
+    assert_eq!(
+        platform.event_log().by_correlation(&tick_correlation).len(),
+        1,
+        "the platform's event log does not carry the ingestion correlation id: G1 is open"
+    );
+    let journal = platform.journal_entries()?;
+    let entry = journal
+        .iter()
+        .find(|entry| {
+            entry
+                .sensed
+                .iter()
+                .any(|sensed| sensed.correlation_id == tick_correlation.as_str())
+        })
+        .expect("no cycle's journal entry names the ingestion correlation id: G1 is open");
+    assert_eq!(entry.correlation_id, cycle.correlation_id.as_str());
     assert!(
-        platform
-            .event_log()
-            .by_correlation(&tick_correlation)
-            .is_empty(),
-        "the platform's event log now carries the ingestion correlation id: G1 is closed"
+        !platform.outcomes().entries().is_empty(),
+        "premise: the outcome chain has rows to join"
     );
     assert!(
         platform
             .outcomes()
             .entries()
             .iter()
-            .all(|row| row.decision.correlation != tick_correlation),
-        "an outcome row now carries the ingestion correlation id: G1 is closed"
+            .all(|row| row.decision.correlation.as_str() == entry.correlation_id),
+        "an outcome row is not joined to the tick's cycle"
     );
-    assert_ne!(report.correlation_id, tick_correlation);
+    assert_ne!(
+        cycle.correlation_id, tick_correlation,
+        "the cycle keeps its own id; the join is through the journal, not an identity"
+    );
     Ok(())
 }

@@ -1299,6 +1299,12 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // for this until this test refused it, which is the test working.
         "issue_region_shares",
         "observe",
+        // `observe_fresh` is `observe` with a root lineage minted for each
+        // record: the sense route's one intake of sensed records, now logged
+        // under an id so a later decision can be joined back to the record by
+        // id. It places no order, moves no limit and reads nothing the route
+        // could not already read.
+        "observe_fresh",
         "observe_statement",
         "approve_promotion",
         // `approve_recalibration` — the operator signature on a recalibration
