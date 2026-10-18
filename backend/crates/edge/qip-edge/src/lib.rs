@@ -35,6 +35,9 @@
 
 pub mod arbitrage;
 pub mod cell;
+/// The cell's own order conduct: a place-and-cancel pattern refused before
+/// the next order of its shape exists.
+pub mod conduct;
 /// §32.1's size decomposition: what a cycle does after a leg fills short.
 pub mod decomposition;
 pub mod dispersion;

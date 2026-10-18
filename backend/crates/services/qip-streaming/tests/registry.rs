@@ -108,34 +108,46 @@ fn the_advertised_guarantees_match_what_the_transport_reports() -> Result<()> {
 // --- refusing, rather than substituting -------------------------------------
 
 #[test]
-fn selecting_an_unavailable_transport_fails_and_never_falls_back() {
-    // The failure this exists to prevent: a service configured for a bus it
-    // cannot reach, quietly served by one it can, passing every smoke test and
-    // publishing to nothing.
-    let config = TransportConfig::new(TransportKind::PubSub, "pubsub-under-test");
-    let error = registry::publisher(&config).expect_err("an unusable transport was constructed");
-
-    assert_eq!(error.code(), "unavailable", "{}", error.message());
-    let message = error.message();
-    assert!(
-        message.contains("gRPC") && message.contains("TLS"),
-        "the refusal does not name what is missing: {message}"
+fn a_managed_pub_sub_transport_cannot_be_configured_by_name_or_by_document() {
+    // §19.1 puts no managed broker on an internal path. The registry used to
+    // carry a `PubSub` kind that only ever failed, which still let a
+    // deployment *state* that path; it is now not a kind at all. Premise
+    // first: the three real kinds parse, so the refusal below is about the
+    // name and not a parser that refuses everything.
+    for known in ["local", "durable", "mesh"] {
+        assert_eq!(
+            TransportKind::parse(known).map(TransportKind::as_str).ok(),
+            Some(known)
+        );
+    }
+    assert_eq!(
+        TransportKind::ALL.len(),
+        3,
+        "a fourth transport kind exists again"
     );
-    assert!(
-        message.contains("smoke test"),
-        "the refusal does not say why substitution would be worse: {message}"
-    );
 
-    // And the subscriber half refuses identically. A transport that could be
-    // read from but not written to would be a stranger failure than either.
-    assert!(registry::subscriber(&config).is_err());
+    let error = TransportKind::parse("pubsub").expect_err("the name `pubsub` was accepted");
+    assert_eq!(error.code(), "invalid", "{}", error.message());
+
+    // The same refusal through configuration as a document, which is how a
+    // deployment actually states the choice.
+    let document = r#"{"kind":"pubsub","name":"sense","binding":{"topic":"t","subscription":"s"}}"#;
+    assert!(
+        serde_json::from_str::<TransportConfig>(document).is_err(),
+        "a transport configuration naming pubsub deserialised"
+    );
+    let mesh = r#"{"kind":"mesh","name":"sense","peer":"127.0.0.1:1"}"#;
+    assert!(
+        serde_json::from_str::<TransportConfig>(mesh).is_ok(),
+        "the document parser refuses a real kind too, so the refusal above proves nothing"
+    );
 }
 
 #[test]
 fn an_unknown_transport_name_lists_the_ones_that_exist() {
     let error = TransportKind::parse("kafka").expect_err("an unknown name was accepted");
     let message = error.message();
-    for known in ["local", "durable", "mesh", "pubsub"] {
+    for known in ["local", "durable", "mesh"] {
         assert!(
             message.contains(known),
             "the error does not offer {known}: {message}"
@@ -205,10 +217,10 @@ fn what_a_transport_promises_is_readable_without_building_one() {
     for kind in TransportKind::ALL {
         let guarantees = kind.guarantees();
         assert_eq!(guarantees.name, kind.as_str());
-        assert_eq!(
+        assert!(
             guarantees.available,
-            kind != TransportKind::PubSub,
-            "{} reports the wrong availability",
+            "{} is a kind that cannot be built; a kind that only fails is a path a deployment \
+             can state and never take",
             kind.as_str()
         );
         assert_eq!(

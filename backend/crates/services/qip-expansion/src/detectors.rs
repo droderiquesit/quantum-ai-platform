@@ -44,6 +44,10 @@ pub enum Origin {
     AnomalyCluster,
     /// A discrepancy that persisted for several consecutive sweeps.
     PersistentDiscrepancy,
+    /// A production model whose inputs drifted past its own threshold.
+    ModelDrift,
+    /// A hosted model refusing or garbling its replies past a stated rate.
+    ModelErrorRate,
 }
 
 impl Origin {
@@ -58,6 +62,8 @@ impl Origin {
             Self::Coverage => "detector:coverage",
             Self::AnomalyCluster => "detector:anomaly_cluster",
             Self::PersistentDiscrepancy => "detector:persistent_discrepancy",
+            Self::ModelDrift => "detector:model_drift",
+            Self::ModelErrorRate => "detector:model_error_rate",
         }
     }
 }
@@ -204,6 +210,113 @@ pub fn repeated_vetoes(declines: &[Decline], min_regrets: usize) -> Result<Vec<O
             )
         })
         .collect())
+}
+
+/// One gap per model reference that drifted past its threshold. Without
+/// it the learning round retired a drifted model and the curriculum never
+/// heard that the slot it filled now needs a successor fitted. A reference
+/// listed twice is one model, so it raises one gap, not two.
+pub fn model_drift(drifted: &[String]) -> Vec<Observation> {
+    let distinct: BTreeSet<&str> = drifted.iter().map(String::as_str).collect();
+    distinct
+        .into_iter()
+        .map(|reference| {
+            observe(
+                Origin::ModelDrift,
+                GapTrigger::ModelDrift,
+                Wanting::Model,
+                format!("model `{reference}` drifted past its threshold"),
+                "models",
+                vec![format!("model:{reference}")],
+                1.0,
+            )
+        })
+        .collect()
+}
+
+/// A hosted model whose refused or malformed replies exceed `max_rate` of at
+/// least `min_replies`, as one surprise wanting a specialist: a model that
+/// hallucinates is a question for whoever owns that seat, not a reason to
+/// trust its next answer. Below `min_replies` nothing is raised, because a
+/// rate over three calls is noise.
+pub fn model_error_rate(
+    model: &str,
+    replies: u64,
+    failed: u64,
+    min_replies: u64,
+    max_rate: f64,
+) -> Result<Option<Observation>> {
+    let max_rate = fraction("max_rate", max_rate)?;
+    if min_replies == 0 || failed > replies {
+        return Err(Error::invalid(format!(
+            "an error rate needs at least one reply and no more failures than replies, not \
+             {failed} of {replies} with a minimum of {min_replies}"
+        )));
+    }
+    if replies < min_replies {
+        return Ok(None);
+    }
+    let rate = failed as f64 / replies as f64;
+    if rate <= max_rate {
+        return Ok(None);
+    }
+    Ok(Some(observe(
+        Origin::ModelErrorRate,
+        GapTrigger::Surprise,
+        Wanting::Specialist,
+        format!("model `{model}` refused or garbled {failed} of {replies} replies"),
+        "models",
+        vec![format!("model:{model}")],
+        rate,
+    )))
+}
+
+/// As [`repeated_vetoes`], with each decline's counterfactual earnings beside
+/// it, so the raised gap carries the money its gate forwent rather than a
+/// stated zero (R12-EXPAND-6048).
+///
+/// The failure it prevents: every detector here stated `economic_value`
+/// zero, so a gate that vetoed a hundred profitable orders ranked exactly
+/// level with one that vetoed a hundred worthless ones, and the curriculum's
+/// value-per-cost term could not tell them apart. The value is the sum of the
+/// positive earnings of the gate's *regretted* declines — what the gate
+/// forwent. A regretted decline that would still have lost forwent no gain
+/// and adds nothing; an unregretted decline adds nothing because the gate was
+/// right. The earnings are counterfactual (the twin's `Simulated` figure);
+/// the caller crosses them into `Decimal` for ranking only, and nothing here
+/// books or moves money.
+pub fn repeated_vetoes_priced(
+    declines: &[(Decline, Decimal)],
+    min_regrets: usize,
+) -> Result<Vec<Observation>> {
+    let plain: Vec<Decline> = declines.iter().map(|(d, _)| d.clone()).collect();
+    let mut forgone: BTreeMap<&str, Decimal> = BTreeMap::new();
+    for (decline, earned) in declines {
+        if decline.regret && earned.is_positive() {
+            let slot = forgone
+                .entry(decline.gate.as_str())
+                .or_insert(Decimal::ZERO);
+            *slot = slot.checked_add(*earned).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the earnings gate `{}` forwent overflow a decimal; the declines read are not plausible",
+                    decline.gate
+                ))
+            })?;
+        }
+    }
+    // Matched by the evidence id `repeated_vetoes` writes, not by position,
+    // so a change to which gates it raises cannot shift a value onto another.
+    let mut out = repeated_vetoes(&plain, min_regrets)?;
+    for observation in &mut out {
+        let gate = observation
+            .evidence
+            .iter()
+            .find_map(|e| e.strip_prefix("declined_scores:gate:"));
+        if let Some(value) = gate.and_then(|g| forgone.get(g)) {
+            observation.economic_value = *value;
+        }
+    }
+    Ok(out)
 }
 
 /// One feasibility or reconciliation refusal, by venue and constraint.
@@ -361,11 +474,97 @@ pub fn contradictions(readings: &[Reading]) -> Vec<Observation> {
         .collect()
 }
 
-/// Asset classes whose instruments have weak history coverage (EXPAND-065,
-/// and §22's "unsupported asset classes"). `universe` maps an asset class to
-/// its instruments; `covered` is the instruments with history. A class whose
-/// covered share is below `floor` raises one observation; a class with none
-/// covered says so in its text. Severity is the uncovered share.
+/// A dimension of the universe the coverage detector measures (EXPAND-065).
+///
+/// Asset classes alone hid a venue the platform has no history at, and a
+/// geography it has never priced, behind a class that looked covered on
+/// average. Languages and causal drivers are absent on purpose: nothing
+/// measures either yet, and a dimension with no measured source would raise
+/// a gap on a number nobody computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CoverageDimension {
+    AssetClass,
+    Venue,
+    Geography,
+}
+
+impl CoverageDimension {
+    pub const ALL: [Self; 3] = [Self::AssetClass, Self::Venue, Self::Geography];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AssetClass => "asset_class",
+            Self::Venue => "venue",
+            Self::Geography => "geography",
+        }
+    }
+
+    const fn noun(self) -> &'static str {
+        match self {
+            Self::AssetClass => "asset class",
+            Self::Venue => "venue",
+            Self::Geography => "geography",
+        }
+    }
+
+    /// The key [`coverage`] reads a value of this dimension under.
+    pub fn key(self, value: &str) -> String {
+        format!("{}:{value}", self.as_str())
+    }
+
+    /// Split a coverage key into its dimension and value. A key with no
+    /// colon is an asset class, the shape this detector's map had before it
+    /// had dimensions; a key naming a dimension this enum does not hold is
+    /// refused rather than read as an asset class called `language:en`.
+    fn parse(key: &str) -> Result<(Self, &str)> {
+        let Some((dimension, value)) = key.split_once(':') else {
+            return Ok((Self::AssetClass, key));
+        };
+        Self::ALL
+            .into_iter()
+            .find(|d| d.as_str() == dimension)
+            .map(|d| (d, value))
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "coverage key `{key}` names no dimension the detector measures; use one of asset_class, venue, geography"
+                ))
+            })
+    }
+}
+
+/// Every instrument of `universe` under each [`CoverageDimension`] it has a
+/// value in: its asset class, its primary venue and its geography. The map
+/// [`coverage`] reads. A blank venue or geography is left out rather than
+/// raised as a value called nothing.
+pub fn coverage_universe(
+    universe: &qip_financial::universe::Universe,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for object in universe.iter() {
+        let id = object.object_id.to_string();
+        let class = format!("{:?}", object.asset_class);
+        for (dimension, value) in [
+            (CoverageDimension::AssetClass, class.as_str()),
+            (CoverageDimension::Venue, object.venue.trim()),
+            (CoverageDimension::Geography, object.geography.trim()),
+        ] {
+            if !value.is_empty() {
+                map.entry(dimension.key(value))
+                    .or_default()
+                    .insert(id.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Dimension values whose instruments have weak history coverage
+/// (EXPAND-065, and §22's "unsupported asset classes"). `universe` maps a
+/// coverage key — a [`CoverageDimension::key`], or a bare asset class — to
+/// its instruments; `covered` is the instruments with history. A value whose
+/// covered share is below `floor` raises one observation naming its
+/// dimension; one with none covered says so in its text. Severity is the
+/// uncovered share.
 pub fn coverage(
     universe: &BTreeMap<String, BTreeSet<String>>,
     covered: &BTreeSet<String>,
@@ -373,21 +572,23 @@ pub fn coverage(
 ) -> Result<Vec<Observation>> {
     let floor = fraction("the coverage floor", floor)?;
     let mut out = Vec::new();
-    for (class, instruments) in universe {
+    for (key, instruments) in universe {
+        let (dimension, value) = CoverageDimension::parse(key)?;
         if instruments.is_empty() {
             continue;
         }
+        let noun = dimension.noun();
         let have = instruments.iter().filter(|i| covered.contains(*i)).count();
         let share = have as f64 / instruments.len() as f64;
         if share < floor {
             let text = if have == 0 {
                 format!(
-                    "asset class `{class}` is unsupported: none of its {} instrument(s) has history",
+                    "{noun} `{value}` is unsupported: none of its {} instrument(s) has history",
                     instruments.len()
                 )
             } else {
                 format!(
-                    "asset class `{class}` has history for {have} of {} instrument(s), below the {floor:.2} floor",
+                    "{noun} `{value}` has history for {have} of {} instrument(s), below the {floor:.2} floor",
                     instruments.len()
                 )
             };
@@ -397,7 +598,7 @@ pub fn coverage(
                 Wanting::Source,
                 text,
                 "coverage",
-                vec![format!("universe:asset_class:{class}")],
+                vec![format!("universe:{}:{value}", dimension.as_str())],
                 1.0 - share,
             ));
         }

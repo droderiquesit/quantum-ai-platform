@@ -733,6 +733,36 @@ fn a_cycle_charges_what_it_consumed_and_the_total_only_grows() -> Result<()> {
     Ok(())
 }
 
+/// R12-FINOPS-10136 on the running path: the cycle's own bill carries its
+/// cost keys, attributed to the platform's region and to no strategy or
+/// source — a cycle's compute serves every strategy it looked at — and the
+/// per-region report reads back exactly the cycle's cost.
+#[test]
+fn a_cycles_bill_is_attributed_to_its_region_and_reported_per_region() -> Result<()> {
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.run_cycle(start());
+    let ledger = platform.cycle_ledger().expect("a cycle has run");
+    let entries = ledger.entries();
+    // Premise: the cycle charged something, so the keys below are on real
+    // entries and not vacuously true of none.
+    assert!(!entries.is_empty(), "{}", ledger.basis());
+    for entry in &entries {
+        assert_eq!(entry.region, "home", "{entry:?}");
+        assert_eq!(entry.strategy, qip_cost_router::UNATTRIBUTED, "{entry:?}");
+        assert_eq!(
+            entry.data_source,
+            qip_cost_router::UNATTRIBUTED,
+            "{entry:?}"
+        );
+    }
+    let by_region = qip_cost_router::report_by([ledger], qip_cost_router::CostDimension::Region);
+    assert_eq!(
+        by_region.into_iter().collect::<Vec<_>>(),
+        vec![("home".to_string(), platform.last_cycle_cost())]
+    );
+    Ok(())
+}
+
 #[test]
 fn a_busier_cycle_costs_more_than_a_quiet_one() -> Result<()> {
     let quiet = {

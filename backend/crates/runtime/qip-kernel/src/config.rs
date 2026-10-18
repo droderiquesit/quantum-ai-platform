@@ -489,14 +489,18 @@ pub struct PlatformConfig {
 
 /// The owner recorded against anything this deployment registers.
 ///
-/// This is the process's own name, and `Platform::assess_sources` refuses to
-/// catalogue under it: a deployment that has not configured an accountable
-/// person or desk registers its sources and catalogues none of them, each
-/// recorded as a catalogue problem naming the fix (R12-DATA-2020). The
-/// default is kept so a configuration file that omits `owner` still parses;
-/// it is not kept so that it is ever written to the mesh.
+/// The research desk: the role `infrastructure/foundation/terraform.tfvars`
+/// already declares as the `owner` label on every project, and the desk
+/// CLAUDE.md names as the platform's users. It must be a name
+/// `Platform::assess_sources` accepts as a `NamedOperator`. Until 2026-10-18
+/// this was `qip-platform`, the process's own name, and once the seam began
+/// refusing process names (R12-DATA-2020, `46ef4c11`) every default
+/// composition refused its own registrations — the end-to-end walk failed on
+/// it and blocked the dev deploy. A default the platform refuses is a trap
+/// rather than a guard: the refusal stays, for a deployment that configures a
+/// placeholder, and the default names somebody who can be asked.
 fn default_owner() -> String {
-    "qip-platform".to_string()
+    "research-desk".to_string()
 }
 
 /// The user agent the finder presents. Names the platform and the crate
