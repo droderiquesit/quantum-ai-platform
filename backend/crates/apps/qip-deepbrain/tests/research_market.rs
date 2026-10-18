@@ -420,3 +420,54 @@ fn a_second_unit_that_realises_nothing_records_zero_marginal_value() {
         "a window that narrowed nothing added nothing"
     );
 }
+
+/// Each research agent is bounded by its stated compute budget on the
+/// deployed market (R12-AMBIENT-9034): the fill-bias item a sweep grants
+/// with no agent budget is declined `over_agent_budget` once its agent —
+/// the reputation cell the bid is weighted by — is stated a budget of zero,
+/// and nothing starts. The budget is read from the variable `main.rs`
+/// passes, so the parse is on the path too. Mutation: call `allocate` in
+/// `run_market` — the zero-budget agent is granted and the test fails.
+#[test]
+fn a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing() {
+    let platform = platform();
+    let mut probe = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+    let granted = probe
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    let question = granted
+        .desk
+        .started
+        .iter()
+        .find(|q| q.contains(VENUE))
+        .cloned()
+        .unwrap_or_else(|| panic!("premise: unbounded, the item is granted: {granted:?}"));
+    let domain = probe
+        .desk()
+        .queue()
+        .entry(&question)
+        .and_then(|e| e.origin())
+        .and_then(|gap| gap.signal.affected_domains.first().cloned())
+        .unwrap();
+    let regime = platform.regime_context(&domain);
+    let raw = format!("{domain}/hour/{regime}=0");
+    let config = ResearchConfig::from_lookup(&|name: &str| {
+        (name == qip_deepbrain::research::AGENT_BUDGETS_VARIABLE).then(|| raw.clone())
+    })
+    .unwrap();
+    assert_eq!(config.agent_budgets.len(), 1, "premise: the budget parsed");
+    let mut bounded = ResearchLoop::new(config, BTreeMap::new()).unwrap();
+    let round = bounded
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    assert_eq!(
+        round.declined.get("over_agent_budget"),
+        Some(&1),
+        "{round:?}"
+    );
+    assert!(round.desk.started.is_empty(), "{round:?}");
+    assert!(
+        qip_deepbrain::research::parse_agent_budgets("market/hour=1").is_err(),
+        "a key without a regime is refused"
+    );
+}

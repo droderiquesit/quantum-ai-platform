@@ -158,3 +158,122 @@ fn no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped
     assert!(!ambient.contains("impl<T> std::ops::Deref"));
     assert_eq!(ambient.matches("    output: T,").count(), 2);
 }
+
+/// The container block of the manifest's first container named `name`: the
+/// lines from its `- name:` up to the next container or the end of the list.
+fn container_block<'a>(manifest: &'a str, name: &str) -> Vec<&'a str> {
+    let opener = format!("    - name: {name}");
+    let mut lines = manifest.lines().skip_while(|line| *line != opener);
+    let Some(first) = lines.next() else {
+        return Vec::new();
+    };
+    std::iter::once(first)
+        .chain(lines.take_while(|line| !line.starts_with("    - ") && line.starts_with("     ")))
+        .collect()
+}
+
+/// The `cpu` and `memory` limits a container block declares, read as the
+/// whole `key: value` line under `resources: limits:`, never by substring.
+fn limits(block: &[&str]) -> (Option<String>, Option<String>) {
+    let mut lines = block
+        .iter()
+        .skip_while(|line| line.trim() != "resources:")
+        .skip(1);
+    if lines.next().map(|line| line.trim()) != Some("limits:") {
+        return (None, None);
+    }
+    let (mut cpu, mut memory) = (None, None);
+    for line in lines.take(2) {
+        match line.trim().split_once(": ") {
+            Some(("cpu", value)) => cpu = Some(value.trim_matches('\'').to_string()),
+            Some(("memory", value)) => memory = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    (cpu, memory)
+}
+
+/// AMBIENT-7026: ambient cognition runs under a budget of its own, so it
+/// cannot starve the trading path. The attention router is constructed in
+/// exactly one binary, `qip-deepbrain`, and in every environment that binary
+/// is a Cloud Run service of its own: one instance, one request at a time,
+/// and a CPU and memory limit on its container. The fast brain, the other
+/// central binary, is a different service with its own limits, and the
+/// regional cell runs on its own Compute Engine node, so nothing the router
+/// wakes can spend a CPU second those paths were given.
+///
+/// Before this test the per-workload parity check in `gitops.rs` held every
+/// manifest to the catalogue's figures, but nothing said which workload the
+/// ambient router runs in: a second binary constructing it, or the deep
+/// brain's limits being dropped from the catalogue and the manifest together,
+/// read as fine.
+///
+/// Mutations: delete the `limits:` block from `envs/dev/deepbrain.yaml` (the
+/// limit assertion fires); construct `AttentionRouter::new` above `fn main`
+/// in `qip-fastbrain`'s `main.rs` (the single-host assertion fires).
+#[test]
+fn ambient_cognition_runs_in_one_binary_whose_service_has_its_own_cpu_and_memory_limits() {
+    let mut hosts = std::collections::BTreeSet::new();
+    let apps = files_with_extension("backend/crates/apps", "rs");
+    assert!(!apps.is_empty(), "premise: the apps have sources to scan");
+    for file in apps {
+        let text = std::fs::read_to_string(&file).expect("readable source");
+        if qip_acceptance::production_text(&text).contains("AttentionRouter::new(") {
+            let app = file
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .skip_while(|c| c != "apps")
+                .nth(1)
+                .expect("a file under backend/crates/apps names its app");
+            hosts.insert(app);
+        }
+    }
+    assert_eq!(
+        hosts,
+        std::collections::BTreeSet::from(["qip-deepbrain".to_string()]),
+        "the attention router is constructed outside the deep brain, whose service is the \
+         budget ambient cognition runs under"
+    );
+
+    for environment in ["dev", "test", "stage", "prod"] {
+        let deepbrain = read(&format!(
+            "infrastructure/gitops/envs/{environment}/deepbrain.yaml"
+        ));
+        let block = container_block(&deepbrain, "deepbrain");
+        assert!(
+            block
+                .iter()
+                .any(|line| line.trim() == "image: qip-deepbrain"),
+            "premise: {environment}'s deepbrain manifest runs the qip-deepbrain image: {block:#?}"
+        );
+        let (cpu, memory) = limits(&block);
+        assert!(
+            cpu.as_deref().is_some_and(|v| !v.is_empty())
+                && memory.as_deref().is_some_and(|v| !v.is_empty()),
+            "{environment}'s deep brain declares no CPU and memory limit, so ambient cognition \
+             has no budget of its own: {block:#?}"
+        );
+        for bound in ["maxInstanceCount: 1", "maxInstanceRequestConcurrency: 1"] {
+            assert!(
+                deepbrain.lines().any(|line| line.trim() == bound),
+                "{environment}'s deep brain is not bounded by `{bound}`"
+            );
+        }
+
+        let fastbrain = read(&format!(
+            "infrastructure/gitops/envs/{environment}/fastbrain.yaml"
+        ));
+        let fast = container_block(&fastbrain, "fastbrain");
+        assert!(
+            !fast
+                .iter()
+                .any(|line| line.trim() == "image: qip-deepbrain"),
+            "{environment}'s fast brain runs the deep brain's image"
+        );
+        let (fast_cpu, fast_memory) = limits(&fast);
+        assert!(
+            fast_cpu.is_some() && fast_memory.is_some(),
+            "{environment}'s fast brain declares no limits of its own: {fast:#?}"
+        );
+    }
+}

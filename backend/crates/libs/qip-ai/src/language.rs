@@ -580,3 +580,245 @@ impl LanguageModel for FallbackChain {
         ))
     }
 }
+
+/// How a hosted model's replies went since the research sweep last read them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReplyCounts {
+    /// Replies that answered, and answered in the shape asked for.
+    pub served: u64,
+    /// Calls the provider refused or failed: an error, a timeout, a denial.
+    pub refused: u64,
+    /// Replies that came back and did not hold: no structured output where a
+    /// schema was asked for, output the schema rejects, or a number the
+    /// guard forbids — the measurable face of a hallucination.
+    pub malformed: u64,
+}
+
+impl ReplyCounts {
+    pub const fn total(&self) -> u64 {
+        self.served
+            .saturating_add(self.refused)
+            .saturating_add(self.malformed)
+    }
+
+    pub const fn failed(&self) -> u64 {
+        self.refused.saturating_add(self.malformed)
+    }
+}
+
+/// A shared tally of one model's replies. The chain falls through a failed
+/// hosted call to the templates, which is the right thing for the reasoning
+/// and the wrong thing for the record: without a count, a provider refusing
+/// every second request reads exactly like one that never fails.
+#[derive(Clone, Debug, Default)]
+pub struct ReplyTally {
+    counts: std::sync::Arc<std::sync::Mutex<ReplyCounts>>,
+}
+
+impl ReplyTally {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `model`, counted into this tally on every call.
+    pub fn wrap(
+        &self,
+        model: std::sync::Arc<dyn LanguageModel>,
+    ) -> std::sync::Arc<dyn LanguageModel> {
+        std::sync::Arc::new(CountedModel {
+            model,
+            tally: self.clone(),
+        })
+    }
+
+    /// The counts so far, and a fresh window, once at least `min` replies
+    /// have been counted; `None` and nothing reset below that, so a quiet
+    /// model accumulates a sample instead of being judged on two calls.
+    pub fn take_at_least(&self, min: u64) -> Option<ReplyCounts> {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (counts.total() >= min).then(|| std::mem::take(&mut *counts))
+    }
+
+    fn record(&self, outcome: fn(&mut ReplyCounts)) {
+        outcome(
+            &mut self
+                .counts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
+#[derive(Debug)]
+struct CountedModel {
+    model: std::sync::Arc<dyn LanguageModel>,
+    tally: ReplyTally,
+}
+
+impl LanguageModel for CountedModel {
+    fn name(&self) -> &str {
+        self.model.name()
+    }
+
+    fn is_available(&self) -> bool {
+        self.model.is_available()
+    }
+
+    /// The reply passes through unchanged; only the count is added, so the
+    /// chain's fall-through and every caller's own validation behave as
+    /// they did before the tally existed.
+    fn complete(&self, request: &ModelRequest, now: Timestamp) -> Result<Completion> {
+        let reply = self.model.complete(request, now);
+        match &reply {
+            Ok(completion) if holds_its_shape(request, completion) => {
+                self.tally.record(|c| c.served = c.served.saturating_add(1));
+            }
+            Ok(_) => self
+                .tally
+                .record(|c| c.malformed = c.malformed.saturating_add(1)),
+            Err(error) if matches!(error.code(), "schema" | "guard") => {
+                self.tally
+                    .record(|c| c.malformed = c.malformed.saturating_add(1));
+            }
+            Err(_) => self
+                .tally
+                .record(|c| c.refused = c.refused.saturating_add(1)),
+        }
+        reply
+    }
+}
+
+/// Whether a reply is what the request asked for: anything, when no schema
+/// was asked for; otherwise structured output the schema and the numeric
+/// guard both accept, the same checks `complete_structured` applies.
+fn holds_its_shape(request: &ModelRequest, completion: &Completion) -> bool {
+    let Some(schema) = &request.schema else {
+        return true;
+    };
+    completion.structured.as_ref().is_some_and(|structured| {
+        schema.validate(structured).is_ok() && NumericGuard::enforce(structured).is_ok()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Answers by the prompt it is given, so one model can be made to serve,
+    /// refuse, and return each kind of malformed reply on demand.
+    #[derive(Debug)]
+    struct Scripted;
+
+    impl LanguageModel for Scripted {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+
+        fn is_available(&self) -> bool {
+            true
+        }
+
+        fn complete(&self, request: &ModelRequest, now: Timestamp) -> Result<Completion> {
+            let structured = match request.prompt.as_str() {
+                "refuse" => return Err(Error::unavailable("the provider refused")),
+                "reject" => return Err(Error::schema("the provider's own schema check failed")),
+                "guarded" => return Err(Error::guard("the provider's numeric guard refused")),
+                "bare" => None,
+                // A hallucination's usual shape: every required field present
+                // and a number volunteered beside them, which the schema
+                // admits and only the guard refuses.
+                "number" => Some(serde_json::json!({
+                    "summary": "spreads widened",
+                    "expected_return": 0.08,
+                })),
+                _ => Some(serde_json::json!({ "summary": "spreads widened" })),
+            };
+            Ok(Completion {
+                text: "a reply".to_string(),
+                structured,
+                model: self.name().to_string(),
+                input_tokens: 1,
+                output_tokens: 1,
+                finish_reason: FinishReason::Complete,
+                produced_at: now,
+            })
+        }
+    }
+
+    /// R12-EXPAND-6040's classification, in the file that now owns it. The
+    /// deep brain's sweep test drives only refusals through the tally, so
+    /// nothing else proves a reply that came back in the wrong shape — the
+    /// hallucination the rate exists to surface — is counted as a failure
+    /// rather than as served. And the wrapper must not change a single
+    /// reply, or the chain's fall-through stops being the same chain.
+    ///
+    /// Mutations: `holds_its_shape` returning `true` unconditionally — the
+    /// bare and numeric replies count as served and the malformed count
+    /// reads two, not four; and `"guard"` struck from the error arm — the
+    /// guard's refusal counts as a refusal and malformed reads three. The
+    /// second was a gap until 2026-10-18: neither this test nor the deep
+    /// brain's covered a guard error, so the arm could lose its code
+    /// unnoticed.
+    #[test]
+    fn a_counted_model_tells_served_refused_and_malformed_replies_apart_and_changes_none() {
+        let now = Timestamp::from_civil(2026, 10, 18);
+        let schema = OutputSchema::new("brief", vec![FieldSpec::text("summary", "what changed")]);
+        let asked = |prompt: &str| ModelRequest::new("narrate", prompt).with_schema(schema.clone());
+        let requests = [
+            asked("good"),
+            ModelRequest::new("narrate", "bare"),
+            asked("refuse"),
+            asked("bare"),
+            asked("number"),
+            asked("reject"),
+            asked("guarded"),
+        ];
+
+        // Premise: the script produces every outcome the tally must tell
+        // apart — two well-formed, one refusal, four that did not hold.
+        let direct: Vec<_> = requests.iter().map(|r| Scripted.complete(r, now)).collect();
+        let structured_ok = |r: &ModelRequest| Scripted.complete_structured(r, now).is_ok();
+        assert_eq!(
+            requests.iter().filter(|&r| structured_ok(r)).count(),
+            2,
+            "premise: exactly two replies survive complete_structured"
+        );
+
+        let tally = ReplyTally::new();
+        let counted = tally.wrap(Arc::new(Scripted));
+        for (request, expected) in requests.iter().zip(&direct) {
+            let reply = counted.complete(request, now);
+            match (&reply, expected) {
+                (Ok(got), Ok(want)) => assert_eq!(got, want, "a reply was changed in passing"),
+                (Err(got), Err(want)) => assert_eq!(
+                    (got.code(), got.to_string()),
+                    (want.code(), want.to_string()),
+                    "an error was changed in passing"
+                ),
+                _ => panic!("the wrapper turned {expected:?} into {reply:?}"),
+            }
+        }
+
+        let want = ReplyCounts {
+            served: 2,
+            refused: 1,
+            malformed: 4,
+        };
+        assert_eq!(
+            tally.take_at_least(want.total() + 1),
+            None,
+            "below the sample nothing is judged"
+        );
+        assert_eq!(tally.take_at_least(want.total()), Some(want));
+        assert_eq!(want.failed(), 5);
+        assert_eq!(
+            tally.take_at_least(1),
+            None,
+            "the window was taken, so the same replies are not reported twice"
+        );
+    }
+}

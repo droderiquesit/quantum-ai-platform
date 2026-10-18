@@ -815,3 +815,71 @@ fn a_cycle_that_absorbs_no_new_fundamental_does_not_tighten_the_now_belief_about
         }
     }
 }
+
+/// R12-CONTRACT-7076: a cycle whose estimators disagree about a variable
+/// beyond the configured bound journals that dispute as a `ModelDisagreement`
+/// in the cycle's `NowReview`, open for arbitration. The contract had
+/// round-trip tests and the estimator produced it, but nothing asserted it
+/// survived into the record a second brain reads off the log, so a stage that
+/// dropped it between `NowBrain::step` and the journal read the same as one
+/// that kept it.
+///
+/// The 30% break in AAA sits far from the calm regional and global beliefs
+/// the graph estimator is pulled toward, while the Kalman filter follows the
+/// reading, so their spread on AAA's return passes half the variable's scale.
+///
+/// Mutation: in `NowStage::run`, journal `disagreements: Vec::new()` instead
+/// of `step.disagreements` — the dispute assertion fires.
+#[test]
+fn estimators_that_disagree_past_their_bound_are_journaled_as_an_open_model_disagreement() {
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    platform.observe(vec![bar("AAA", day(1), 130.0), bar("BBB", day(1), 100.1)]);
+    platform.run_cycle(day(1));
+
+    let review: NowReview = last(&platform, "now:");
+    assert!(
+        review.ensemble.len() > 1,
+        "premise: more than one estimator ran, {:?}",
+        review.ensemble
+    );
+    let disputed = format!(
+        "the latent value of {}",
+        VariableKey::new(
+            Scope::new(ScopeKind::Instrument, "obj-AAA").unwrap(),
+            "return"
+        )
+        .unwrap()
+    );
+    let dispute = review
+        .disagreements
+        .iter()
+        .find(|d| d.disputed_propositions.contains(&disputed))
+        .unwrap_or_else(|| {
+            panic!(
+                "no journaled disagreement on {disputed:?}; journaled: {:?}",
+                review
+                    .disagreements
+                    .iter()
+                    .map(|d| &d.disputed_propositions)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        dispute.status,
+        qip_contracts::world_model::ArbitrationStatus::Open
+    );
+    assert!(
+        dispute.views.len() >= 2,
+        "a dispute names fewer than two views: {:?}",
+        dispute.views
+    );
+    for view in &dispute.views {
+        assert!(
+            review.ensemble.contains(&view.id),
+            "a view {:?} names no estimator that ran",
+            view.id
+        );
+    }
+}

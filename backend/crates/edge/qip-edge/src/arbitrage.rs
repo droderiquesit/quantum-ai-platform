@@ -56,7 +56,10 @@
 //! This sentence said "can place and cannot cancel" until 2026-09-19, which
 //! stopped being true when `Cell::withdraw_expired` and the resting leg of
 //! §32.1's passive-first arrived. What the cell does instead is stated at
-//! `Cell::place_cycle`.
+//! `Cell::place_cycle`. Since 2026-10-18 that includes offsetting what a
+//! broken cycle's legs filled (`Cell::unwind_cycle`, planned by
+//! `qip_arbitrage::legs::unwind_plan`) before the halt, so "cannot be
+//! unwound from here" is no longer true of a leg that has filled.
 
 use crate::envelope::VerifiedEnvelope;
 use qip_arbitrage::graph::EdgeKind;

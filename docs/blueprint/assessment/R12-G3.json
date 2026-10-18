@@ -956,13 +956,13 @@
   },
   {
     "id": "R12-MODEL-10044",
-    "status": "PARTIAL",
-    "current": "qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. Vertex Model Registry is not used; the pause-on-unavailable behaviour is not tested.",
+    "status": "COMPLETE",
+    "current": "qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. The registry is in-process (Vertex Model Registry is not used), so 'unavailable' is concretely a registry that does not hold the candidate's card, which is the state the deep brain's registry is in after a restart. Platform::promote_model refuses that with NotFound before journaling, applying or changing the manifest; the package already promoted keeps being issued by model_manifest, and the same promotion succeeds once the registry holds the card again, so promotion pauses rather than wedges.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:552 promote",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:595 promote_model; :619 promote_model_from"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::promote_model_from (card lookup before journal_record and apply_promotion)",
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_promotion_against_a_registry_without_its_card_pauses_while_the_promoted_package_is_still_issued"
     ],
-    "gap": "No test that registry loss pauses promotion without affecting serving.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -970,10 +970,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel model_serving",
+    "verification": "cargo test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: PARTIAL->COMPLETE. Mutation: clear the promoted set ahead of the card lookup -> the promoted-set assertion fails (left {}); restored and passing. A hosted registry's network outage is not modelled because no hosted registry exists."
   },
   {
     "id": "R12-CICD-10045",
@@ -1380,12 +1380,14 @@
   {
     "id": "R12-MODEL-10064",
     "status": "PARTIAL",
-    "current": "qip-training builds Vertex job specs and has a cadence; no Spot/preemptible scheduling found.",
+    "current": "Every TrainingSpec carries JobScheduling (queue, Capacity OnDemand|Spot, JobPriority Critical|Standard), validated by TrainingSpec::validate, which refuses a critical job on Spot. VertexAiProvider writes jobSpec.scheduling.strategy SPOT for an interruptible custom-container job and STANDARD otherwise, refuses Spot for an AutoML workload, and with_quotas(QueueQuotas) refuses a submit into a full or undeclared queue before any request is sent. No deployment submits to Vertex: enable_vertex_ai is false in every environment and the deep brain fits in process with LocalTrainer.",
     "evidence": [
-      "backend/crates/services/qip-training/src/vertex.rs",
-      "backend/crates/services/qip-training/src/cadence.rs"
+      "backend/crates/services/qip-training/src/job.rs JobScheduling::validate, QueueQuotas::admit",
+      "backend/crates/services/qip-training/src/vertex.rs request_body scheduling.strategy; submit quota and AutoML-Spot refusals",
+      "backend/crates/services/qip-training/tests/vertex.rs an_interruptible_job_asks_vertex_for_spot_and_a_critical_one_is_never_placed_there",
+      "backend/crates/services/qip-training/tests/vertex.rs a_submit_beyond_its_queue_quota_is_refused_before_any_request"
     ],
-    "gap": "Spot scheduling and quota awareness.",
+    "gap": "No deployed provider submits a job: enable_vertex_ai=false everywhere and the deep brain's learning desk fits with LocalTrainer, so Spot placement and quota refusal are proven against a local Vertex stand-in only, not in a committed deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1395,10 +1397,10 @@
       "R12-MODEL-10043"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cargo test -p qip-training --test vertex --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations: Spot mapped to STANDARD fails the strategy assertion; `active > limit` in QueueQuotas::admit admits a second job into a queue of one. Closing needs a deployment that enables Vertex (enable_vertex_ai, a protected tfvars change) and a production caller of VertexAiProvider."
   },
   {
     "id": "R12-MODEL-10065",
@@ -2339,7 +2341,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-10107",
@@ -2362,7 +2364,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-AMBIENT-10108",
@@ -2935,13 +2937,16 @@
   },
   {
     "id": "R12-RES-10132",
-    "status": "PARTIAL",
-    "current": "GATE_SILENT_FEED refuses orders once max_staleness is crossed while heard venues continue (tested); no hedge/exit playbook on feed loss.",
+    "status": "COMPLETE",
+    "current": "GATE_SILENT_FEED refuses orders once max_staleness is crossed while heard venues continue, and resting orders at the silent venue are withdrawn; CellConfig::feed_loss_playbook (default FeedLossPlaybook::Hedge) then acts once per silence on each position held there: Hedge offsets it at a venue still heard that lists the instrument, through Cell::send at the touch, journaled as Decision::Hedged, or refuses under GATE_FEED_LOSS_PLAYBOOK naming why; Withdraw holds the position until the feed returns.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:241 FeedLossPlaybook and GATE_FEED_LOSS_PLAYBOOK; :3928 apply_feed_loss_playbook; :3964 hedge_blind_position; :4568 called from Cell::work after the halt check",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1435 a_position_at_a_venue_whose_feed_goes_silent_is_offset_once_at_a_venue_still_heard_and_journaled",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1486 a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_offset",
       "backend/crates/edge/qip-edge/src/cell.rs:360 GATE_SILENT_FEED",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:288"
     ],
-    "gap": "Hedge/exit playbook.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2952,7 +2957,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The playbook is a CellConfig default, so qip-edge-node's simulated passes run the Hedge arm; choosing Withdraw needs a composition-root setting the node does not yet read (lane L09's crate). No order reaches the silent venue. Mutations: not calling the playbook fails the hedge test at the journaled-hedge assertion; dropping the once-per-silence set fails it with the same silence hedged twice; ignoring Withdraw fails the withdraw test."
   },
   {
     "id": "R12-RES-10133",
@@ -4361,13 +4366,19 @@
   },
   {
     "id": "R12-RISK-10192",
-    "status": "PARTIAL",
-    "current": "Risk limits veto in the kernel (expected-shortfall limit proven to fire) and cells refuse beyond envelopes; no separate hedge/confidence services.",
+    "status": "COMPLETE",
+    "current": "The confidence governor (qip-kernel confidence.rs, ConfidenceSignals::decide, read by the survival governor DECIDE sizes through) and the hedge capacity the survival waterfall withholds for the Hedge Brain (survival.rs:849, hedge.rs) reduce a construction, and the shipped LimitSet vetoes on expected shortfall, none of them reading a forecast or alpha figure: ThesisView carries a hypothesis, an instrument and a regime only, and RiskState is the book's measurements. stress.rs::a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk proves all three on a thesis its panel approved unanimously. The previous text (no separate hedge/confidence services) predated hedge.rs and confidence.rs.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19703",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:294",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:337",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:849",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs",
+      "backend/crates/libs/qip-risk/src/limits.rs:1598",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:11680",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::tests::the_expected_shortfall_limit_can_actually_fire"
     ],
-    "gap": "Hedge and confidence governors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4375,10 +4386,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel the_expected_shortfall_limit_can_actually_fire",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L06. A cycle measures a real distribution shift on AAA; a five-panellist unanimous approval is recorded for theses on AAA and the calm BBB; decide narrows AAA (no Disagreement contraction) and leaves BBB whole; a 10% hedge capacity reduces the unanimous BBB construction; LimitSet::conservative_default breaches expected-shortfall on a RiskState::with_tail_risk book with a sixteen percent left tail and not on a calm one. Three mutations each failed it, restored byte for byte: the OOD arm of decide unreachable (confidence.rs:337), the hedge capacity forced to zero (survival.rs:849), the ES lookup in LimitSet::check removed (qip-risk limits.rs:1598). The Hedge Brain itself vetoes nothing by design (hedge.rs module doc): its reduction is the capacity withheld, and a hedge order meets the Risk Gate like any other."
   },
   {
     "id": "R12-ARCH-10193",

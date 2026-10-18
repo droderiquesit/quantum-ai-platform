@@ -157,6 +157,16 @@ pub struct ModelPromotion {
     /// taken from the caller, so a desk cannot assert evidence it lacks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// Where the promoted card's training-data licence lets it run
+    /// (`ModelCard::permitted_locations`), read off the registry at the
+    /// promotion and never taken from the caller; `None` when the card
+    /// carries no data entitlement and so may run anywhere. A distillate of a
+    /// restricted card is named only in a manifest issued for a permitted
+    /// location (R12-TICK-2091). Absent from records written before the field
+    /// existed, which replay as unrestricted because the log does not say
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permitted_locations: Option<BTreeSet<String>>,
     pub at: Timestamp,
 }
 
@@ -192,6 +202,9 @@ pub struct ModelManifestIssue {
     /// counted so the line says how many and why.
     /// Always zero while no release packs are admitted.
     unreleased: usize,
+    /// Promoted distillates left out because their card's data licence does
+    /// not permit the location the manifest was issued for (R12-TICK-2091).
+    unlicensed: usize,
 }
 
 impl ModelManifestIssue {
@@ -213,6 +226,12 @@ impl ModelManifestIssue {
         self.unreleased
     }
 
+    /// Promoted distillates withheld because their licence does not permit
+    /// the manifest's location.
+    pub const fn unlicensed(&self) -> usize {
+        self.unlicensed
+    }
+
     pub fn describe(&self) -> String {
         let line = format!(
             "trained models: shipped {} distillate(s) by digest, newest promoted {}; {} \
@@ -226,13 +245,22 @@ impl ModelManifestIssue {
                 ModelPack::describe
             )
         );
-        if self.unreleased == 0 {
+        let line = if self.unreleased == 0 {
             line
         } else {
             format!(
                 "{line}; {} promoted distillate(s) withheld because no verified release pack \
                  names their artifact (ADR 0110)",
                 self.unreleased
+            )
+        };
+        if self.unlicensed == 0 {
+            line
+        } else {
+            format!(
+                "{line}; {} promoted distillate(s) withheld because their training-data licence \
+                 does not permit this location",
+                self.unlicensed
             )
         }
     }
@@ -761,6 +789,18 @@ impl Platform {
         // Done after the retirements and from the pre-retirement deploy
         // times, which retire does not touch.
         scratch.record_rollback_parent(&artifact.reference, displaced)?;
+        // R12-TICK-2091: the licence travels with the record, read off the
+        // card here, because the manifest is issued long after the registry
+        // the desk handed in has gone and a cell must never be named a model
+        // its training data may not run beside.
+        let card = scratch.get(&artifact.reference).ok_or_else(|| {
+            Error::not_found(format!(
+                "{} has no card in the registry it was promoted in; its licence cannot be read",
+                artifact.reference
+            ))
+        })?;
+        let permitted_locations =
+            (!card.data_entitlements.is_empty()).then(|| card.permitted_locations.clone());
         let record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
@@ -775,6 +815,7 @@ impl Platform {
             producer,
             moved_by: Some(desk),
             evidence: Some(evidence),
+            permitted_locations,
             at: now,
         };
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
@@ -890,16 +931,33 @@ impl Platform {
     /// and "this process has not resumed a promotion" is the shipper's, and
     /// the line says which.
     pub fn model_manifest(&self) -> Result<ModelManifestIssue> {
+        self.model_manifest_for(None)
+    }
+
+    /// The `trained_models` slot as issued for `location`: a distillate whose
+    /// card's training-data licence names permitted locations is named only
+    /// where `location` is one of them, with the same rule as
+    /// `ModelCard::authorise_location` (R12-TICK-2091). `None` — a cell whose
+    /// location the centre has not been told — withholds every restricted
+    /// distillate: a licence that cannot be checked is not a licence granted.
+    pub fn model_manifest_for(&self, location: Option<&str>) -> Result<ModelManifestIssue> {
         let mut models = BTreeMap::new();
         let mut packs = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
         let mut advisory_only = 0usize;
         let mut unreleased = 0usize;
+        let mut unlicensed = 0usize;
         for promotion in self.model_promotions.values() {
             let Some(entry) = &promotion.distilled else {
                 advisory_only += 1;
                 continue;
             };
+            if let Some(permitted) = &promotion.permitted_locations
+                && !location.is_some_and(|location| permitted.contains(location))
+            {
+                unlicensed += 1;
+                continue;
+            }
             // ADR 0110: with release packs admitted, a distillate is named to
             // a cell only when a verified pack names its artifact *and* the
             // inline model the cell will compute — name and digest — and
@@ -933,7 +991,16 @@ impl Platform {
                 advisory_only,
                 pack: self.model_pack.clone(),
                 unreleased,
+                unlicensed,
             }),
+            None if unlicensed > 0 && unreleased == 0 => Err(Error::denied(format!(
+                "{unlicensed} promoted distillate(s) held and the training-data licence of each \
+                 refuses {}; the trained_models slot ships unproduced for it",
+                location.map_or_else(
+                    || "a cell whose location is not declared".to_string(),
+                    |location| format!("location {location}")
+                )
+            ))),
             None if unreleased > 0 => Err(Error::not_found(format!(
                 "{unreleased} promoted distillate(s) held and no verified release pack names any \
                  of their artifacts at the inline model the cells compute (ADR 0110); the trained_models slot ships unproduced and \
