@@ -532,6 +532,11 @@ impl EvolutionEngine {
         self.discovery.as_ref()
     }
 
+    /// The discovery desk, to hand it the research loop's scout jobs.
+    pub fn discovery_desk_mut(&mut self) -> Option<&mut crate::discovery::DiscoveryDesk> {
+        self.discovery.as_mut()
+    }
+
     /// Build the crank over the synthetic exchange, with the exchange's own
     /// instruments as the reference universe.
     ///
