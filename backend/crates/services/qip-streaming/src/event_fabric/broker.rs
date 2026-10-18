@@ -1235,6 +1235,49 @@ impl Broker {
         Ok(report)
     }
 
+    /// One pass of a draining instance: follow every managed partition's
+    /// committed log into this instance's own, without asking the database
+    /// for a lease.
+    ///
+    /// [`Self::tend_leases`] is the only periodic caller of `catch_up` for a
+    /// partition this instance does not lead, so a lease thread that
+    /// answered a drain by calling only [`Self::relinquish_leases`] left the
+    /// drained instance's disk frozen at the offset it drained at: a fetch
+    /// reported a high watermark that stopped advancing while the new leader
+    /// committed, and a restart-free rollback to this instance would have
+    /// had a whole gap to catch up. Taking a lease is what a drain must not
+    /// do, so this never calls `acquire`.
+    ///
+    /// Every partition is reported as `following`, under a holder string
+    /// that says it was not read: learning the holder is what `acquire`
+    /// does, and `acquire` would take an expired lease.
+    pub fn follow_leases(&self) -> Result<LeaseReport> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("follow_leases was called on a broker with no managed log")
+        })?;
+        let mut report = LeaseReport::default();
+        for (stream, partition) in self.managed_partitions() {
+            let key = (stream.clone(), partition);
+            let outcome = self.partition_state(&stream, partition).and_then(|state| {
+                let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
+                // Not leading: a later promotion must catch up afresh.
+                cursor.caught_up_epoch = None;
+                self.catch_up(seat, &stream, partition, &state, &mut cursor)
+            });
+            match outcome {
+                Ok(_) => {
+                    report
+                        .following
+                        .insert(key, "(not read while draining)".to_string());
+                }
+                Err(error) => {
+                    report.failed.insert(key, error.to_string());
+                }
+            }
+        }
+        Ok(report)
+    }
+
     /// Stop leading every managed partition and hand each lease back, so a
     /// drained instance's follower takes over at once instead of after the
     /// TTL (RES-8103). The instance stops acknowledging a partition the
@@ -1646,7 +1689,9 @@ impl Broker {
                     continue;
                 }
                 let mut offset = 0u64;
-                while let Some(batch) = reader.read_indexed(&stream, partition, offset)? {
+                while let Some((batch, segment_last)) =
+                    reader.read_indexed_with_extent(&stream, partition, offset)?
+                {
                     if batch.base_offset != offset {
                         return Err(Error::invalid(format!(
                             "{stream}:{partition}: the archive answered offset {offset} with a \
@@ -1660,6 +1705,16 @@ impl Broker {
                             "{stream}:{partition}: replaying archived offset {offset} was \
                              assigned offset {assigned}; the rebuilt log has diverged"
                         )));
+                    }
+                    // Seal where the archive's segment ended. The log rolls on
+                    // size alone, and segments the original broker cut by age
+                    // end elsewhere: re-archived under different index keys
+                    // they would leave the old keys beside the new, and the
+                    // reader's largest-start-at-or-below rule would answer an
+                    // offset the archive holds from a stale, shorter manifest
+                    // as absent.
+                    if offset == segment_last {
+                        state.log.seal_active()?;
                     }
                     offset += 1;
                 }

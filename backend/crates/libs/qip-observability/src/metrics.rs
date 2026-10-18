@@ -871,6 +871,12 @@ pub mod names {
     pub const SERVICE_LATENCY_MS: &str = "qip_service_latency_milliseconds";
     /// A ratio, deliberately not clamped at one: over one is over capacity.
     pub const SERVICE_SATURATION: &str = "qip_service_saturation_ratio";
+    /// Saturation readings judged against
+    /// [`crate::critical_paths::SERVICE_SATURATION_CEILING`], by `outcome`
+    /// (`within` or `over`), counted where [`SERVICE_SATURATION`] is written
+    /// because a gauge carries no good/total split. The series the
+    /// `service-saturation` objective is read from.
+    pub const SERVICE_SATURATION_CHECKS: &str = "qip_service_saturation_checks_total";
     /// Entries in the platform's own hash-chained event log. A gauge rather
     /// than a counter: it is the length of a log, not a rate of appends, and
     /// an operator asking whether the chain is growing wants the length.
@@ -990,6 +996,12 @@ pub mod names {
     /// The uplink circuit to the centre, by `state`: `1` on the state it is
     /// in and `0` on the others.
     pub const EDGE_MESH_CIRCUIT: &str = "qip_edge_mesh_circuit";
+    /// Uplink circuit readings, by `outcome`: `closed` when the circuit to the
+    /// central plane could carry a delta and `open` when it was open or only
+    /// probing. Counted beside [`EDGE_MESH_CIRCUIT`], whose one-hot gauge
+    /// carries no good/total split; the `mesh-circuit-closed` objective is
+    /// read from it.
+    pub const EDGE_MESH_CIRCUIT_CHECKS: &str = "qip_edge_mesh_circuit_checks_total";
     /// The shortest fresh peer clock round trip, in milliseconds, across
     /// the cell's peer links (MESH-007): the measured latency to the nearest
     /// peer. Absent, not zero, while no peer has a fresh sample.

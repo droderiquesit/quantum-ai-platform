@@ -1460,39 +1460,19 @@ const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
      outside a local deployment by the binary itself. The entry ends when the \
      key ring's class keys and the bundle are applied and mounted.";
 
-/// The managed-provider variables `qip-storage` resolves for the deep brain's
-/// warehouse sink and storage target (`ManagedSettings::from_env`), before any
-/// managed data service is applied.
-const NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN: &str = "the \
-     deep brain reads the `qip-storage` managed-provider variables for its \
-     research-warehouse sink (`warehouse::OutcomeSink`, \
-     R12-DATA-9054) and for a managed storage target, and no \
-     managed data service is applied for it: `enable_bigquery`, \
-     `enable_cloud_storage` and `enable_memorystore` are false in every \
-     committed environment, so there is no dataset, bucket or Memorystore \
-     instance whose name or address could be set. An operator who could set \
-     one anyway would name a service that does not exist, and the sink \
-     would stop the process on a half-named target rather than stay off, \
-     which is the opposite of the absent value's meaning: with nothing set \
-     the warehouse is off and the banner says so. Setting \
-     `QIP_STORAGE_TARGET=cloud_storage` or `big_query` through the \
-     catalogue's root variable is likewise not offered a companion bucket \
-     or dataset yet. The entry ends when a data service is enabled and the \
-     catalogue sets its name from a root variable, so that an absent value \
-     still means the fallback.";
-
-/// The credentials among them.
-const NO_MANAGED_DATA_SERVICE_AND_THE_CREDENTIAL_IS_FILE_ONLY: &str = "no \
-     managed data service is applied for the deep brain (see \
-     NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN), so there is no \
-     credential to present. This one is a credential and is never argued \
-     into a plain environment value: `qip_storage::managed` reads it only \
-     through `qip_core::secret::resolve_from`, so the `_FILE` indirection \
-     is the form a deployment sets (a Secret Manager volume), setting both \
-     the variable and its file is refused, and an empty value is refused \
-     rather than read as absent. When a service is applied the catalogue \
-     mounts the secret as a file and sets the `_FILE` variable, never the \
-     value.";
+/// The deep brain's research-warehouse sink (R12-DATA-9054).
+const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain streams \
+     graded theses to BigQuery only when `QIP_BIGQUERY_PROJECT` and \
+     `QIP_BIGQUERY_DATASET` are both set (`warehouse::OutcomeSink::from_lookup`), and \
+     refuses a half-named target. Every environment sets `enable_bigquery = false`, so \
+     there is no dataset to name, no TLS-terminating proxy applied for \
+     `QIP_GCP_ENDPOINT` to point at, and no credential for the others to carry; the \
+     banner prints the warehouse as off. `ManagedSettings::from_env` is asked for the \
+     BigQuery target only, so the Cloud Storage bucket and the Memorystore pair it also \
+     names are never read by this binary, though the source walk counts them with the \
+     rest of the family. The entries end together when an environment sets \
+     `enable_bigquery` and the catalogue names the deep brain's project, dataset, \
+     endpoint and one credential.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     // QIP_ARTEFACT_SIGNER, QIP_TRUST_BUNDLE_PATH, QIP_KMS_KEY_VERSIONS_PATH
@@ -1503,51 +1483,6 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     // (a `== null ? {} : {` arm, so each RunService omits them until its
     // environment commits a bundle) and node.env sets the node's bundle path
     // unconditionally, so the general rule covers all five.
-    (
-        "qip-deepbrain",
-        "QIP_BIGQUERY_DATASET",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_BIGQUERY_PROJECT",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_CLOUD_STORAGE_BUCKET",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_ENDPOINT",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_METADATA_SERVER",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_TOKEN_FILE",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_MEMORYSTORE_ADDRESS",
-        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_GCP_ACCESS_TOKEN",
-        NO_MANAGED_DATA_SERVICE_AND_THE_CREDENTIAL_IS_FILE_ONLY,
-    ),
-    (
-        "qip-deepbrain",
-        "QIP_MEMORYSTORE_AUTH",
-        NO_MANAGED_DATA_SERVICE_AND_THE_CREDENTIAL_IS_FILE_ONLY,
-    ),
     (
         "qip-api",
         "QIP_LOCAL_SIGNING_KEYS_PATH",
@@ -1681,6 +1616,51 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-deepbrain",
         "QIP_GOOGLE_TLS_ROOTS_PATH",
         THE_DESKS_FABRIC_LINK_IS_BUILT_ONLY_WHEN_A_FABRIC_IS_NAMED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_BIGQUERY_DATASET",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_BIGQUERY_PROJECT",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_CLOUD_STORAGE_BUCKET",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_ACCESS_TOKEN",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_ENDPOINT",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_METADATA_SERVER",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_TOKEN_FILE",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_MEMORYSTORE_ADDRESS",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_MEMORYSTORE_AUTH",
+        NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT,
     ),
     // The fast brain's desk shipper (qip-desk-ship, re-exported as `ship`) carries the
     // desk's booked fills to qip-ledgerd over the fabric, with the edge node's

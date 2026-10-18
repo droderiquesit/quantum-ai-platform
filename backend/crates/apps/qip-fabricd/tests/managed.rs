@@ -111,6 +111,18 @@ fn start(
     catalogue: &str,
     managed: Option<Arc<dyn ManagedLog>>,
 ) -> (PathBuf, Result<Running>) {
+    start_after(instance, catalogue, managed, |_| {})
+}
+
+/// [`start`], running `before_start` on the instance's root directory once
+/// it exists and before the broker opens: what a previous process left
+/// behind.
+fn start_after(
+    instance: &str,
+    catalogue: &str,
+    managed: Option<Arc<dyn ManagedLog>>,
+    before_start: impl FnOnce(&std::path::Path),
+) -> (PathBuf, Result<Running>) {
     let unique = ROOTS.fetch_add(1, Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!(
         "qip-fabricd-managed-{instance}-{}-{unique}",
@@ -118,6 +130,7 @@ fn start(
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
+    before_start(&root);
     std::fs::write(root.join("streams.json"), catalogue).unwrap();
     let identities = [WRITER, READER]
         .iter()
@@ -518,5 +531,175 @@ fn a_drain_file_hands_the_lease_over_and_the_drained_broker_does_not_take_it_bac
         lease_of(&log, &partition),
         Some(("zone-b".to_string(), 2)),
         "a drained broker takes no lease, lapsed or not"
+    );
+}
+
+/// A `GET /health` on `address`, the body parsed.
+fn health_body(address: &str) -> serde_json::Value {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(StdDuration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let body = response.split("\r\n\r\n").nth(1).unwrap();
+    serde_json::from_str(body).unwrap()
+}
+
+/// A drain is a request answered once. The file lives in the persistent data
+/// directory, so one left in place drained the restarted broker too: an
+/// upgrade that drained each broker in turn left both draining for good and
+/// every P0/P1 produce refused until someone deleted the files by hand.
+///
+/// Mutation: delete the start-up `remove_file` of `DRAIN_FILE` in
+/// `start_composed` — the stale file survives, the lease thread drains the
+/// restarted broker and the produce below is refused. Mutation: delete the
+/// `remove_file(&drain_file)` in the lease thread — the file written to a
+/// running broker is still there after the follower has taken over and the
+/// last assertion fires.
+#[test]
+fn a_drain_file_is_answered_once_and_a_restarted_broker_leads_again() {
+    let database_time = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 18)));
+    let log: Arc<MemoryManagedLog> = Arc::new(MemoryManagedLog::new(database_time.clone()));
+    let catalogue = catalogue("managed_majority", 3);
+
+    // What the pre-stop hook left behind in the old process's data directory.
+    let (root, started) = start_after("zone-a", &catalogue, Some(log.clone()), |root| {
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("data").join(qip_fabricd::DRAIN_FILE), b"").unwrap();
+    });
+    let restarted = Instance {
+        root,
+        running: Some(started.expect("the restarted instance starts")),
+    };
+    let stale = restarted.root.join("data").join(qip_fabricd::DRAIN_FILE);
+    assert!(
+        !stale.exists(),
+        "a DRAIN file from the previous process is cleared at start"
+    );
+    // Longer than two renewal periods (TTL/3): a broker that read the stale
+    // file would have drained on the first of them.
+    std::thread::sleep(StdDuration::from_millis(1_300));
+    let mut writer = producer(&restarted.address(), AckProfile::ManagedMajority);
+    writer
+        .send(batch("after-restart"))
+        .expect("a restarted broker takes leases again and acknowledges");
+
+    // A file written to a running broker is removed once it has acted.
+    let partition = qip_streaming::event_fabric::managed::PartitionRef::new(OUTCOMES, 0);
+    let follower = instance("zone-b", &catalogue, Some(log.clone()));
+    assert_eq!(
+        lease_of(&log, &partition),
+        Some(("zone-a".to_string(), 1)),
+        "premise: the restarted broker leads"
+    );
+    let live = restarted.root.join("data").join(qip_fabricd::DRAIN_FILE);
+    std::fs::write(&live, b"").unwrap();
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    while lease_of(&log, &partition) != Some(("zone-b".to_string(), 2)) {
+        assert!(
+            Instant::now() < deadline,
+            "the follower never took the lease the drain file released"
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+    }
+    assert!(
+        !live.exists(),
+        "the lease thread acted on the DRAIN file and left it to drain the next process too"
+    );
+    drop(follower);
+}
+
+/// A drained broker stays a follower, as `Running::drain` promises: the new
+/// leader's commits reach its disk and its health body says it leads
+/// nothing. The draining pass used to hand leases back and `continue` past
+/// the only code that follows, so the drained broker served a high
+/// watermark frozen at the drain and `/health` repeated the pre-drain
+/// `leading` count.
+///
+/// Mutation: delete the `broker.follow_leases()` call in the draining branch
+/// of the lease thread — the drained broker never serves offset 3 and the
+/// deadline assertion fires. Mutation: in `Broker::follow_leases`, call
+/// `acquire` before `catch_up` — the drained broker takes the lease back
+/// at once and the successor never leads: the produce loop panics.
+#[test]
+fn a_drained_broker_keeps_following_and_reports_that_it_leads_nothing() {
+    let database_time = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 18)));
+    let log: Arc<MemoryManagedLog> = Arc::new(MemoryManagedLog::new(database_time.clone()));
+    let catalogue = catalogue("managed_majority", 3);
+    let drained = instance("zone-a", &catalogue, Some(log.clone()));
+    let successor = instance("zone-b", &catalogue, Some(log.clone()));
+
+    let mut writer = producer(&drained.address(), AckProfile::ManagedMajority);
+    for n in 0..3 {
+        writer.send(batch(&format!("fill-{n}"))).unwrap();
+    }
+    let health_address = drained
+        .running
+        .as_ref()
+        .unwrap()
+        .health_address()
+        .to_string();
+    assert_eq!(
+        health_body(&health_address)["leases"]["leading"],
+        1,
+        "premise: before the drain /health says this broker leads one partition"
+    );
+
+    drained.running.as_ref().unwrap().drain().unwrap();
+    let mut writer = producer(&successor.address(), AckProfile::ManagedMajority);
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    loop {
+        match writer.send(batch("fill-3")) {
+            Ok(ack) => {
+                assert_eq!(ack.base_offset(), 3, "premise: dense across the handover");
+                break;
+            }
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(StdDuration::from_millis(50));
+                writer = producer(&successor.address(), AckProfile::ManagedMajority);
+            }
+            Err(error) => panic!("the successor never took the released lease: {error}"),
+        }
+    }
+
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    while served_at(&drained.address(), 3).is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the drained broker never followed the successor's commit at offset 3"
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+    }
+    assert_eq!(
+        served_at(&drained.address(), 3),
+        Some(b"fill-3".to_vec()),
+        "the drained broker serves the successor's record byte for byte"
+    );
+    let lease_body = health_body(&health_address)["leases"].clone();
+    assert_eq!(
+        lease_body["leading"], 0,
+        "a drained broker leads nothing: {lease_body}"
+    );
+    assert_eq!(
+        lease_body["following"], 1,
+        "a drained broker follows its partition: {lease_body}"
+    );
+    // Lapse the successor and give the drained broker passes at it: following
+    // must not turn into leading.
+    successor.running.as_ref().unwrap().drain().unwrap();
+    database_time.advance(Duration::from_millis(1_501));
+    std::thread::sleep(StdDuration::from_millis(1_800));
+    let partition = qip_streaming::event_fabric::managed::PartitionRef::new(OUTCOMES, 0);
+    assert_eq!(
+        lease_of(&log, &partition),
+        Some(("zone-b".to_string(), 2)),
+        "following without a lease does not take the lapsed one"
     );
 }

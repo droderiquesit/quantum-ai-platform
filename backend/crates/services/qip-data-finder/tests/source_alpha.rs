@@ -4,6 +4,8 @@
 // is its reporting mechanism, not a defect.
 #![allow(clippy::panic_in_result_fn)]
 
+mod common;
+
 use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::source_alpha::{
@@ -125,5 +127,91 @@ fn the_gain_over_every_held_series_matches_the_pairwise_one_and_survives_a_dupli
     let over = incremental_information_gain_over(&combination, &[own, duplicate, other])?;
     assert!(over < 1e-9, "a combination of held series earned {over}");
     assert!(incremental_information_gain_over(&candidate, &[]).is_err());
+    Ok(())
+}
+
+/// R12-DATA-2023. A source's timeliness was the age of the one sample it was
+/// probed with, so a source that arrived after every other source's copy of a
+/// fact scored as fresh as the one that arrived first. The lead ledger's
+/// ranking now moves the term.
+///
+/// Mutation: ignore the ranking in the freshness blend (`None => freshness`
+/// for every source) - the two sources score identically and the ordering
+/// assertion fails. Mutation: score `led_share` as `1.0` - the lagging source
+/// matches the leading one and the same assertion fails.
+#[test]
+fn a_leading_source_outscores_a_lagging_one_on_timeliness() -> Result<()> {
+    use crate::common::{AGENT, candidate, licensed_for, now, permissive_robots, probe_for};
+    use qip_contracts::governance::Usage;
+    use qip_core::Duration;
+    use qip_data_finder::finder::{DataFinder, FinderConfig};
+    use qip_data_finder::freshness::SourceLeadSummary;
+
+    const URL_A: &str = "https://a.example/data/prices.json";
+    const URL_B: &str = "https://b.example/data/prices.json";
+    let freshness_of = |leads: &[SourceLeadSummary]| -> Result<(f64, f64)> {
+        let mut finder =
+            DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?);
+        finder.observe_leads(leads);
+        let mut probe = probe_for(URL_A, "a.example", permissive_robots());
+        probe = probe.with_robots("b.example", permissive_robots());
+        probe = probe.with_head(URL_B, crate::common::ok_head());
+        probe = probe.with_sample(URL_B, crate::common::sample(crate::common::QUOTE_PAYLOAD));
+        let decisions = finder.assess(
+            vec![
+                candidate("alpha", URL_A, licensed_for(&[Usage::Derive])?, &["EU0001"])?,
+                candidate("beta", URL_B, licensed_for(&[Usage::Derive])?, &["EU0002"])?,
+            ],
+            &mut probe,
+            now(),
+        )?;
+        let of = |id: &str| -> Result<f64> {
+            decisions
+                .iter()
+                .find(|decision| decision.source_id() == id)
+                .and_then(|decision| decision.scores())
+                .map(qip_data_finder::scoring::SourceScores::freshness)
+                .ok_or_else(|| qip_core::error::Error::not_found(format!("{id} has no scores")))
+        };
+        Ok((of("alpha")?, of("beta")?))
+    };
+
+    let (alpha, beta) = freshness_of(&[])?;
+    assert!(
+        (alpha - beta).abs() < 1e-12,
+        "premise: with no measured lead the two score alike on sample age ({alpha} vs {beta})"
+    );
+
+    let led = SourceLeadSummary {
+        source: "alpha".into(),
+        led: 10,
+        trailed: 0,
+        mean_lead: Duration::from_secs(60),
+        longest_lead: Duration::from_secs(90),
+    };
+    let trailed = SourceLeadSummary {
+        source: "beta".into(),
+        // Led once by as much as the leader's usual margin and trailed on
+        // the other nine: only the share of comparisons it led separates it.
+        led: 1,
+        trailed: 9,
+        mean_lead: Duration::from_secs(60),
+        longest_lead: Duration::from_secs(60),
+    };
+    let (leading, lagging) = freshness_of(&[led, trailed])?;
+    assert!(
+        leading > lagging,
+        "the source that led scored {leading}, the one that trailed {lagging}"
+    );
+    // A fresh sample already scores one, which a lead cannot raise: it is
+    // the lag that moves the term, so the leader keeps its score.
+    assert!(
+        (leading - alpha).abs() < 1e-12,
+        "a measured lead lowered the leading source's timeliness: {alpha} -> {leading}"
+    );
+    assert!(
+        lagging < beta,
+        "a measured lag did not lower the lagging source's timeliness"
+    );
     Ok(())
 }
