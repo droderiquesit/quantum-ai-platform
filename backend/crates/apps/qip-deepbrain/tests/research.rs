@@ -562,6 +562,76 @@ fn an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied(
     assert!(remediator.audit().verify());
 }
 
+/// A sink that takes the authorising record and then goes: the disk fills
+/// between the record that precedes the effect and the one that follows it.
+#[derive(Debug, Default)]
+struct FailsAfterTheAuthorisation {
+    taken: usize,
+}
+
+impl AuditSink for FailsAfterTheAuthorisation {
+    fn journal(&mut self, _record: &AuditRecord) -> qip_core::error::Result<()> {
+        self.taken += 1;
+        if self.taken > 1 {
+            return Err(qip_core::error::Error::io("the journal's disk is full"));
+        }
+        Ok(())
+    }
+}
+
+/// An action that ran and whose outcome record then failed to journal is an
+/// applied action. `open_incident` counted it `refused` and marked the
+/// incident's remediation failed while research was in fact switched off, so
+/// the series and the incident said the opposite of the node.
+///
+/// Mutation: in `Operations::open_incident`, label the unjournalled case
+/// `applied` instead of `applied_unjournalled` — the count reads 0 and the
+/// first assertion fires. Mutation: make `Remediator::remediate_outcome`
+/// return `Err` for the unjournalled case — the incident takes the refused
+/// arm and the same assertion fires.
+#[test]
+fn an_action_that_ran_but_could_not_journal_its_outcome_is_counted_applied_not_refused() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    let mut ops =
+        Operations::journalled_to(start(), Box::new(FailsAfterTheAuthorisation::default()))
+            .unwrap_or_else(|e| panic!("{e}"));
+    let mut incident = None;
+    for i in 0..24i64 {
+        let ms = if i < 12 {
+            10.0 + (i % 2) as f64
+        } else {
+            1_000.0
+        };
+        let at = start().saturating_add(Duration::from_secs(i));
+        let round = ops
+            .observe(&platform, &facts(at, ms, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        incident = incident.or(round.incident);
+    }
+    assert!(ops.is_disabled("research"), "premise: the runbook ran");
+    let counted = |outcome: &str| {
+        metrics.snapshot().counter(
+            names::AIOPS_REMEDIATIONS,
+            &labels([("action", "disable_capability"), ("outcome", outcome)]),
+        )
+    };
+    assert_eq!(counted("applied_unjournalled"), 1);
+    assert_eq!(
+        counted("refused"),
+        0,
+        "research is off, so the action was not refused"
+    );
+    let incident = incident.unwrap_or_else(|| panic!("premise: a shift opened an incident"));
+    let remediation = incident
+        .remediation
+        .unwrap_or_else(|why| panic!("the incident marks an applied action failed: {why}"));
+    assert!(
+        remediation.contains("could not be journalled"),
+        "the incident says the outcome was not journalled: {remediation}"
+    );
+}
+
 /// R12-OBS-9164: model package freshness and the research queue's depth are
 /// objectives backed by recorded series. A round of the operations loop and
 /// a research sweep move both from unmeasured to measured.

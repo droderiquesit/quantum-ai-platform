@@ -627,25 +627,26 @@
   },
   {
     "id": "R12-LEDGER-5028",
-    "status": "PARTIAL",
-    "current": "Cell journal records PolicyApplied with payload sequence (backend/crates/libs/qip-contracts/src/reflex.rs:265) so versions in force are recoverable from the chain; plan admission checks model digest against trained_models manifest (backend/crates/edge/qip-edge/src/cell.rs:3318). OrderSent/Filled decisions do not carry version ids themselves (reflex.rs:148-207); OpportunityEpoch carries model_versions (backend/crates/services/qip-mesh/src/peer.rs:189) but is unintegrated.",
+    "status": "COMPLETE",
+    "current": "The journal now names every version an order was sent under. PolicyApplied records the payload sequence (which carries the risk envelope and feasibility slots); PlanAdmitted, new, records each admitted strategy's deployment digest and each inline model's own digest, written in Cell::install and again when Cell::classify changes the digest; StrategyWithdrawn ends a plan; OrderSent records the grants it drew on. qip_edge::replay::versions_in_force reads the entries in sequence and names, at each OrderSent, the policy sequence, the plans and models in force and the grants.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/reflex.rs:265 PolicyApplied",
-      "backend/crates/edge/qip-edge/src/cell.rs:3318 check_models_promoted",
-      "backend/crates/services/qip-mesh/src/peer.rs:189 model_versions"
+      "backend/crates/libs/qip-contracts/src/reflex.rs:444 Decision::PlanAdmitted",
+      "backend/crates/edge/qip-edge/src/cell.rs:3592 install journals the admission; :3684 classify re-journals; :3746 plan_admitted names plan and model digests",
+      "backend/crates/edge/qip-edge/src/replay.rs:41 versions_in_force",
+      "backend/crates/edge/qip-edge/tests/replay.rs:125 deploying_a_plan_with_a_model_journals_the_plan_digest_and_the_model_digest; :184 the_versions_in_force_at_each_order_are_named_from_the_journal_alone; :261 an_order_before_any_policy_or_plan_is_named_with_no_version_rather_than_a_guess"
     ],
-    "gap": "Stamp each decision (or each pass) with plan digest, model digests, grant and risk-limit versions; test reconstructing versions per order from the journal.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new qip-edge test: replay journal, assert versions per OrderSent",
+    "verification": "cargo test -p qip-edge --test replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. Mutations: not journaling the admission in install fails the deploy test (0 admissions, expected 1); dropping the PolicyApplied arm of the reader fails the reader test (None, expected Some(7)); not removing a plan on StrategyWithdrawn fails it at the last order (alpha still in force). Limits of the claim: risk limits are named by the policy sequence, not restated, and CapitalRenewed still records approver and expiry only; the reader is a library function with no binary calling it, so replay is by an auditor's tooling, not a node subcommand."
   },
   {
     "id": "R12-REFLEX-5029",

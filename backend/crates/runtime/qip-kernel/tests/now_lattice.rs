@@ -460,3 +460,165 @@ fn every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped
         "{refused:?}"
     );
 }
+
+/// R12-WORLD-3083: a forecast inconsistent with its adjacent horizon is
+/// flagged by the cycle, on the record and on the counter, and never repaired.
+/// The first cycle over calm history issues hours-days medians that sit outside
+/// the weeks-months 80% interval for both instruments, so the premise is a real
+/// finding rather than a manufactured one. The flagged list must be exactly
+/// what `constrain` finds over the forecasts the same record carries, and the
+/// forecasts must be unchanged by being flagged: a silently widened interval is
+/// a forecast nobody issued. Mutations: skip the `constrain` call in
+/// `LatticeStage::run` (the premise fails); drop the
+/// counter increment in `Platform` (the counter assertion fails).
+#[test]
+fn a_forecast_outside_its_longer_neighbours_interval_is_flagged_in_the_review_and_on_the_counter() {
+    use qip_observability::metrics::labels;
+    use qip_world_model::lattice::{InconsistencyKind, constrain};
+
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let review: LatticeReview = last(&platform, "lattice:");
+
+    let flagged: Vec<_> = review
+        .inconsistencies
+        .iter()
+        .filter(|i| i.kind == InconsistencyKind::MedianOutside)
+        .collect();
+    assert!(
+        !flagged.is_empty(),
+        "premise: calm history leaves a short-horizon median outside the longer interval"
+    );
+    for finding in &flagged {
+        assert_eq!(
+            (finding.shorter.as_str(), finding.longer.as_str()),
+            ("hours_days", "weeks_months"),
+            "{finding:?}"
+        );
+    }
+    let targets: BTreeSet<&str> = flagged.iter().map(|f| f.target.as_str()).collect();
+    assert_eq!(targets, BTreeSet::from(["obj-AAA/close", "obj-BBB/close"]));
+
+    // Flagged, not repaired: the journaled forecasts reproduce the flags.
+    let mut recomputed = Vec::new();
+    for target in &targets {
+        let chain: Vec<_> = review
+            .issued
+            .iter()
+            .filter(|f| f.target == *target)
+            .map(|f| f.fields())
+            .collect();
+        recomputed.extend(constrain(&chain));
+    }
+    assert_eq!(recomputed, review.inconsistencies);
+
+    let count = platform.telemetry().metrics.snapshot().counter(
+        qip_kernel::lattice_stage::LATTICE_INCONSISTENCIES_TOTAL,
+        &labels([("kind", "median_outside")]),
+    );
+    assert_eq!(count, flagged.len() as u64);
+}
+
+/// R12-WORLD-9026: forecasts resolved under two different regime labels are
+/// scored under each, and the per-regime score history is durable in the log:
+/// the `ScoreRecord`s the cycle journals whole rebuild exactly the per-horizon, per-regime
+/// Brier the calibrator holds. Driven at the stage, which is what each cycle
+/// calls, because the platform's own regime label reads a surprise series that
+/// bars never feed, so a cycle over bars alone labels every instrument
+/// `quiet/normal` and could not show two regimes. The premise (two labels
+/// resolved) is asserted, not assumed. Mutations in
+/// `Calibrator::score` (qip-world-model): blank the regime on the
+/// `ScoreRecord` (the distinct-regimes premise fails); file every resolution
+/// under the `other` label (no card exists for a scored label).
+#[test]
+fn forecasts_resolved_in_two_regimes_are_scored_under_each_and_the_journal_rebuilds_the_regime_cards()
+ {
+    use qip_kernel::lattice_stage::{LatticeInputs, LatticeStage, LatticeTarget};
+
+    let target = |subject: &str, regime: &str, answer: Option<f64>| LatticeTarget {
+        subject: subject.to_string(),
+        closes: (0..30_i64)
+            .map(|i| (day(i - 29), if i % 2 == 0 { 100.2 } else { 99.8 }))
+            .chain(answer.map(|close| (day(1), close)))
+            .collect(),
+        regime: regime.to_string(),
+        held_quantity: 0.0,
+        now_return: None,
+    };
+    let mut stage = LatticeStage::new().expect("the stage builds");
+    stage.run(
+        LatticeInputs {
+            cycle: 1,
+            targets: vec![
+                target("obj-AAA", "trending/elevated", None),
+                target("obj-BBB", "quiet/normal", None),
+            ],
+            surprised: BTreeSet::new(),
+        },
+        start(),
+    );
+    // A day later each close answers the day-ahead forecast; the climbing
+    // instrument closes far from its forecast and the quiet one near it.
+    let review = stage.run(
+        LatticeInputs {
+            cycle: 2,
+            targets: vec![
+                target("obj-AAA", "trending/elevated", Some(112.0)),
+                target("obj-BBB", "quiet/normal", Some(100.05)),
+            ],
+            surprised: BTreeSet::new(),
+        },
+        day(1),
+    );
+
+    let day_ahead: Vec<_> = review
+        .scored
+        .iter()
+        .filter(|s| s.horizon == LatticeHorizon::HoursDays)
+        .collect();
+    assert_eq!(
+        day_ahead.len(),
+        2,
+        "premise: both day-ahead forecasts resolved"
+    );
+    let regimes: BTreeSet<&str> = day_ahead.iter().map(|s| s.regime.as_str()).collect();
+    assert_eq!(
+        regimes,
+        BTreeSet::from(["quiet/normal", "trending/elevated"]),
+        "premise: two distinct regimes"
+    );
+
+    let cards = stage.calibrator().regime_scorecards();
+    for regime in &regimes {
+        let rebuilt: Vec<f64> = day_ahead
+            .iter()
+            .filter(|s| s.regime == *regime)
+            .map(|s| s.brier)
+            .collect();
+        let card = cards
+            .get(&(LatticeHorizon::HoursDays, (*regime).to_string()))
+            .unwrap_or_else(|| panic!("no card for {regime}: {:?}", cards.keys()));
+        assert_eq!(card.resolved, rebuilt.len() as u64, "{regime}");
+        let mean = rebuilt.iter().sum::<f64>() / rebuilt.len() as f64;
+        assert!(
+            (card.brier_sum / card.resolved as f64 - mean).abs() < 1e-12,
+            "{regime}: the journal rebuilds {mean}, the card holds {}",
+            card.brier_sum / card.resolved as f64
+        );
+        let pinball: f64 = day_ahead
+            .iter()
+            .filter(|s| s.regime == *regime)
+            .map(|s| s.pinball)
+            .sum();
+        assert!(
+            (card.pinball_sum - pinball).abs() < 1e-12,
+            "{regime}: the journal rebuilds a pinball sum of {pinball}, the card holds {}",
+            card.pinball_sum
+        );
+    }
+    assert!(
+        (day_ahead[0].pinball - day_ahead[1].pinball).abs() > 1e-6,
+        "premise: the regimes differ in score, so a merged card would be wrong"
+    );
+}

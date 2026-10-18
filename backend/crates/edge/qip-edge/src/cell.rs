@@ -3577,17 +3577,19 @@ impl Cell {
             realised_loss: self.realised.realised_loss(&owner),
             ..Utilisation::default()
         };
-        self.deployed.insert(
-            owner,
-            Deployed {
-                strategy,
-                runtime,
-                envelope,
-                utilisation,
-                class: StrategyClass::PriceOnly,
-                pricing,
-            },
-        );
+        let deployed = Deployed {
+            strategy,
+            runtime,
+            envelope,
+            utilisation,
+            class: StrategyClass::PriceOnly,
+            pricing,
+        };
+        // Named before it is installed, so a plan that cannot be encoded to
+        // be named is refused here and not run under no identity at all.
+        let admitted = Self::plan_admitted(&owner, &deployed)?;
+        self.deployed.insert(owner, deployed);
+        self.journal.record(admitted, verified_at);
         // A grant the applied manifest names is now held, so the share the
         // manifest carries can be summed against it — see
         // `rederive_region_share`.
@@ -3675,6 +3677,11 @@ impl Cell {
         match self.deployed.get_mut(strategy) {
             Some(deployed) => {
                 deployed.class = class;
+                // The class is inside the deployment digest, so the digest
+                // the admission recorded no longer names what runs.
+                let at = deployed.envelope.verified_at();
+                let admitted = Self::plan_admitted(strategy, deployed)?;
+                self.journal.record(admitted, at);
                 Ok(())
             }
             None => Err(Error::invalid(format!(
@@ -3703,9 +3710,13 @@ impl Cell {
     /// on every pass and a grant the centre renews is a different act with
     /// its own record.
     pub fn deployment_digest(&self, strategy: &str) -> Result<Option<String>> {
-        let Some(deployed) = self.deployed.get(strategy) else {
-            return Ok(None);
-        };
+        self.deployed
+            .get(strategy)
+            .map(|deployed| Self::digest_of(strategy, deployed))
+            .transpose()
+    }
+
+    fn digest_of(strategy: &str, deployed: &Deployed) -> Result<String> {
         let unencodable = |error: serde_json::Error| {
             Error::invalid(format!(
                 "the deployment of {strategy} could not be encoded to be named by digest: \
@@ -3721,13 +3732,34 @@ impl Cell {
                 format!("rest_at_mid:{}", time_to_live.as_nanos())
             }
         };
-        Ok(Some(qip_core::sha256_hex(
+        Ok(qip_core::sha256_hex(
             format!(
                 "{compiled}\n{program}\n{}\n{pricing}",
                 deployed.class.as_str()
             )
             .as_bytes(),
-        )))
+        ))
+    }
+
+    /// The journal record naming what a deployed strategy runs: its
+    /// deployment digest and each inline model's own digest, by name.
+    fn plan_admitted(strategy: &str, deployed: &Deployed) -> Result<Decision> {
+        let program = deployed.runtime.program();
+        let mut models: BTreeMap<String, String> = BTreeMap::new();
+        for node in program.reachable_from(deployed.strategy.plan()) {
+            if let Some(Node {
+                op: Op::Model { model, .. },
+                ..
+            }) = program.node(node)
+            {
+                models.insert(model.name().to_string(), model.digest());
+            }
+        }
+        Ok(Decision::PlanAdmitted {
+            strategy: strategy.to_string(),
+            digest: Self::digest_of(strategy, deployed)?,
+            models: models.into_iter().collect(),
+        })
     }
 
     /// Withdraw a deployed strategy, handing back the envelope it ran under.
