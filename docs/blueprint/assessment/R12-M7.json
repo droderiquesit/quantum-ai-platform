@@ -1632,12 +1632,13 @@
   {
     "id": "R12-CONTRACT-7073",
     "status": "PARTIAL",
-    "current": "ReplayManifest over PassMarker: tape digest/range, control positions, config/plan digests, gateway seed, binary version, reproducibility hash.",
+    "current": "ReplayManifest can state ReplayAssumptions (clock, latency, queue, fill, impact) and per-component model versions via ReplayManifest::with_assumptions; blank assumptions, no versions and blank names are refused naming what is missing; the reproducibility hash covers marker, assumptions and versions together, a manifest stating none hashes and encodes exactly as before, and is_consistent catches an assumption altered after the hash was taken.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/replay.rs:114-175",
-      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs"
+      "backend/crates/libs/qip-contracts/src/replay.rs ReplayManifest::with_assumptions / hash_with / ReplayAssumptions",
+      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs a_manifest_states_its_assumptions_and_model_versions_and_a_change_to_either_changes_the_hash",
+      "backend/crates/libs/qip-contracts/tests/replay_manifest.rs a_blank_assumption_or_a_missing_model_version_is_refused_naming_what_is_missing"
     ],
-    "gap": "Explicit latency/queue/fill/impact assumption fields and model versions.",
+    "gap": "ReplayManifest has no production constructor: the edge node records the PassMarker (qip-edge-node scheduler.rs marker(), schema locked by event_fabric_schema_lock) and nothing builds a ReplayManifest from it, so no run states its assumptions. The triage names qip-edge/src/replay.rs, which does not exist. Needs a manifest builder at the node, and the simulated gateway (qip-edge-node gateway.rs over qip_brokers SimulatedExchange) to state its own clock, latency (none: every offset is zero), queue (price-time), fill and impact assumptions from its ExchangeSettings rather than from prose, then the manifest recorded beside the marker.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1648,7 +1649,7 @@
     "verification": "cargo test -p qip-contracts --test replay_manifest",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutation that fired: hashing the assumptions as null left the hash unchanged and failed the changes-the-hash test. Contract half only; assumption text is for the gateway to supply, not guessed here."
   },
   {
     "id": "R12-CONTRACT-7074",
