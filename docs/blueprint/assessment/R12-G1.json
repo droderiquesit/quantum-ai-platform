@@ -1345,14 +1345,16 @@
   },
   {
     "id": "R12-GCP-8061",
-    "status": "PARTIAL",
-    "current": "Every Cloud NAT translates named subnets to reserved addresses with logging (tested); Envoy egress proxy sidecar for api/deepbrain; execution node has its own NAT and venue firewall. No Secure Web Proxy; no separate crawler identity.",
+    "status": "COMPLETE",
+    "current": "Internet egress is controlled and attributable. Every Cloud NAT translates named subnets to reserved addresses with logging (gcp_placement.rs). The one workload that can reach a vendor, the deep brain (source discovery and catalogued connectors), carries the qip-egress proxy sidecar in every environment's manifest, whose allow-list the egress suite pins host by host, and runs under a service account no other workload shares; the fast brain carries no proxy. egress.rs::the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares holds the sidecar and the identity.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_egress_proxy_is_attached_to_the_workloads_that_need_it_and_to_nothing_else",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:163 every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it",
       "infrastructure/egress/envoy.yaml",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs"
+      "infrastructure/terraform/modules/cloudrun/main.tf google_service_account.workload"
     ],
-    "gap": "Dedicated crawler/agent egress identity and domain policy evidence.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1360,10 +1362,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement --test egress",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gcp_placement --test egress",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Reading of the clause: no separate crawler workload exists, so the deep brain is the crawler and agent egress identity; it is dedicated in that no other workload shares its account, not in that it does only crawling. No Secure Web Proxy is deployed: the requirement admits Cloud NAT, and the Envoy sidecar is the domain control. Mutations: the deep brain's account renamed to the API's in envs/dev/deepbrain.yaml failed the identity assertion; the sidecar container renamed away failed the sidecar assertion; file restored byte for byte. Nothing is applied, so no egress observation exists."
   },
   {
     "id": "R12-SEC-8062",
