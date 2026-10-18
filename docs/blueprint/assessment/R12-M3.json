@@ -1198,15 +1198,14 @@
   {
     "id": "R12-REASON-3055",
     "status": "PARTIAL",
-    "current": "Timeline orders anomaly/hypothesis/deadline, refuses effect-before-cause and records whether the deadline passed; no settlement-calendar reasoning.",
+    "current": "Timeline orders anomaly/hypothesis/deadline, refuses effect-before-cause and records whether the deadline passed; since 2026-10-18 it also records the subject's settlement instant (formed_at plus the convention lag from the asset-class record the platform registered the subject under) and poses settlement-before-deadline, so a claim that resolves before its trade could settle is recorded as a refused link and listed in violated_assumptions. The settlement input is kept on TemporalInputs and rebuilt by replay.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:412 temporal with deadline",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:200 event_ordering_is_a_strict_partial_order..."
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:107 SymbolicInput.settlement, :172 TemporalInputs.settlement, :542 settlement posed against the deadline",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13623 the convention handed from the asset-class registry",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:1050 a_claim_that_resolves_before_its_trade_could_settle_records_the_settlement_link_as_refused",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay (asserts the platform handed the convention)"
     ],
-    "gap": "Settlement calendars and state-transition reasoning beyond hypothesis status.",
+    "gap": "The lag counts calendar days: no business-day or holiday calendar moves the settlement instant (a weekend only makes it later, so the check is a lower bound). State-transition reasoning beyond hypothesis status is still absent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1214,10 +1213,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-kernel --lib symbolic_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production caller and deadlines; calendars still absent."
+    "notes": "Re-graded 2026-10-18 by lane L05: settlement ordering added, PARTIAL kept for the calendar and state transitions. Mutations fired: settlement placed at formation instead of formation plus lag -> the unit test fails (T+2 link admitted); the platform handing no settlement -> the integration test fails 'the platform handed the subject's settlement convention'. Earlier: re-graded 2026-10-11 by an independent audit."
   },
   {
     "id": "R12-REASON-3056",
