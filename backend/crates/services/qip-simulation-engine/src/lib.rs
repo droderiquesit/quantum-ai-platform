@@ -83,7 +83,9 @@ pub use baseline::{
     size,
 };
 pub use clock::{ExecutionAssumptions, PointInTimeView, SimulationClock};
-pub use conditions::{ConditionSchedule, ConditionWindow, FeedFault, MarketCondition, Regime};
+pub use conditions::{
+    ConditionSchedule, ConditionWindow, FeedFault, MarketCondition, MessageBudget, Regime,
+};
 pub use costs::{CostModel, TradeCost, Unfillable};
 pub use execution::{ExecutionPlan, ExecutionReport, FillSlice, FillStatus, PlanReport, SimOrder};
 pub use market::{

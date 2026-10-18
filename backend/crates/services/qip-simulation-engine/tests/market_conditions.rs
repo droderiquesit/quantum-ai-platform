@@ -1721,3 +1721,43 @@ fn injecting_a_condition_never_improves_a_worked_or_a_sold_execution() -> Result
     }
     Ok(())
 }
+
+/// R12-TICK-2075: two message budgets in force at once compose to the tighter
+/// one, by rate rather than by count, and a malformed budget is refused.
+///
+/// Mutation: make `MessageBudget::tighter` always keep `self` — the regime
+/// keeps the first budget (10 per second) and the assertion fails.
+#[test]
+fn overlapping_message_budgets_compose_to_the_tighter_rate() {
+    let loose = MarketCondition::MessageBudget {
+        per_window: 10,
+        window: Duration::from_secs(1),
+    };
+    // Fewer per window would read as tighter by count; it is looser by rate
+    // (5 per second against 10).
+    let tight = MarketCondition::MessageBudget {
+        per_window: 25,
+        window: Duration::from_secs(5),
+    };
+    assert!(loose.validate().is_ok() && tight.validate().is_ok());
+    let schedule = ConditionSchedule::new()
+        .with(ConditionWindow::always(loose))
+        .with(ConditionWindow::always(tight));
+    let regime = schedule.regime(Timestamp::from_nanos(0), "XNAS", "obj", 0, 7);
+    assert_eq!(
+        regime.message_budget,
+        Some(qip_simulation_engine::MessageBudget {
+            per_window: 25,
+            window: Duration::from_secs(5),
+        })
+    );
+    assert!(
+        MarketCondition::MessageBudget {
+            per_window: 0,
+            window: Duration::from_secs(1),
+        }
+        .validate()
+        .is_err(),
+        "a budget of zero messages is an outage and must be stated as one"
+    );
+}

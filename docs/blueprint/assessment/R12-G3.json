@@ -1496,16 +1496,15 @@
   },
   {
     "id": "R12-FABRIC-10070",
-    "status": "PARTIAL",
-    "current": "Terraform's only topic is Secret Manager's rotation notice (peripheral) and tests enforce that; no client crate. But qip-streaming still declares TransportKind::PubSub (an inert port that always errors) in its registry's ALL list, whose module doc names Pub/Sub as the target ingestion-to-centre transport.",
+    "status": "COMPLETE",
+    "current": "qip-streaming carries no Pub/Sub transport: TransportKind has Local, Durable and Mesh only (ALL is three), src/pubsub.rs and PubSubBinding/PubSubTransport are deleted, and the name `pubsub` is refused as unknown by TransportKind::parse and by TransportConfig deserialisation. An acceptance scan refuses the identifier `PubSub` anywhere in qip-streaming/src. Terraform's only topics remain the rotation notice and the asset-change feed, guarded by blueprint_arch.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:64 terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
-      "infrastructure/terraform/modules/secrets/main.tf:78 google_pubsub_topic rotation (peripheral)",
-      "backend/crates/services/qip-streaming/src/registry.rs:69-80 TransportKind::PubSub",
-      "backend/crates/services/qip-streaming/src/pubsub.rs:1-10"
+      "backend/crates/services/qip-streaming/src/registry.rs TransportKind (Local, Durable, Mesh; ALL: [Self; 3])",
+      "backend/crates/services/qip-streaming/tests/registry.rs a_managed_pub_sub_transport_cannot_be_configured_by_name_or_by_document",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs qip_streaming_source_names_no_pub_sub_transport",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice"
     ],
-    "gap": "Remove the PubSub transport kind from qip-streaming's registry so it cannot be configured as an internal path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1513,10 +1512,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test blueprint_arch --test event_fabric_bridge_boundary",
+    "verification": "cargo test -p qip-streaming --test registry && cargo test -p qip-acceptance --test event_fabric_bridge_boundary --test blueprint_arch",
     "work_item": "",
     "size": "S",
-    "notes": "qip-streaming/src/pubsub.rs states the target architecture puts Pub/Sub between ingestion and the centre, contradicting §19.1."
+    "notes": "Lane L21 2026-10-18. Mutations: appending `pub struct PubSubBinding;` to registry.rs fails qip_streaming_source_names_no_pub_sub_transport naming the file; making parse map \"pubsub\" to Mesh fails the registry test (\"the name `pubsub` was accepted: Mesh\"). The routing test that used the refusing port as a never-called durable side now uses a local refusing publisher."
   },
   {
     "id": "R12-FABRIC-10071",
