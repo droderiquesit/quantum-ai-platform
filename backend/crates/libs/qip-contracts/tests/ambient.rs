@@ -109,6 +109,32 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
     assert!(loud.is_err());
 }
 
+/// R12-AMBIENT-3065: `Pathway::CapitalPreparation` has a route. With four
+/// classes it had none, so the pathway the blueprint names for "prepare
+/// capital" was a label no signal could reach.
+///
+/// Mutation: route `SignalClass::Capital` to `Pathway::ResearchTask` in
+/// `RoutingPolicy::standard`.
+#[test]
+fn a_capital_signal_is_routed_to_capital_preparation_and_no_other_class_is() {
+    assert!(
+        SignalClass::ALL.contains(&SignalClass::Capital),
+        "premise: capital is a class"
+    );
+    let mut reached = Vec::new();
+    for class in SignalClass::ALL {
+        let mut router = AttentionRouter::new(policy(1_000, 0));
+        let events = router
+            .route(&signal(1, class, 9_000, 0), at(0))
+            .expect("routes");
+        assert_eq!(events.len(), 1, "{class:?}");
+        if events[0].pathway == Pathway::CapitalPreparation {
+            reached.push(class);
+        }
+    }
+    assert_eq!(reached, vec![SignalClass::Capital]);
+}
+
 #[test]
 fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway() {
     let mut rng = Lcg(7);
@@ -117,12 +143,13 @@ fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_clas
         SignalClass::Opportunity => Pathway::ResearchTask,
         SignalClass::Risk => Pathway::RiskReview,
         SignalClass::Assumption => Pathway::ReflexModelUpdate,
+        SignalClass::Capital => Pathway::CapitalPreparation,
     };
     let (mut quiet, mut material) = (0, 0);
     for i in 0..400usize {
         // A fresh router per case: this property is about one signal, not the budget.
         let mut router = AttentionRouter::new(policy(1_000, 0));
-        let class = SignalClass::ALL[(rng.next() % 4) as usize];
+        let class = SignalClass::ALL[(rng.next() % SignalClass::ALL.len() as u64) as usize];
         let severity = (rng.next() % 10_001) as u32;
         let events = router
             .route(&signal(i, class, severity, 0), at(0))
@@ -159,7 +186,12 @@ fn a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferre
         for c in 0..calls {
             let secs = w * WINDOW_SECS + if c == 0 { 0 } else { (rng.next() % 59) as i64 };
             let secs = secs.max(w * WINDOW_SECS);
-            let s = signal(n, SignalClass::ALL[(rng.next() % 4) as usize], 9_000, secs);
+            let s = signal(
+                n,
+                SignalClass::ALL[(rng.next() % SignalClass::ALL.len() as u64) as usize],
+                9_000,
+                secs,
+            );
             material_ids.insert(s.id().to_string());
             n += 1;
             events.extend(router.route(&s, at(secs)).expect("routes"));
@@ -1096,4 +1128,61 @@ fn an_attention_event_missing_any_contract_field_is_refused_on_decode() {
     let mut granted = full.clone();
     granted["authority"] = serde_json::json!("execution");
     assert!(serde_json::from_value::<AttentionEvent>(granted).is_err());
+}
+
+/// Mutation: remove the `uncertainty_reduction_bp` shrinkage in
+/// `InfoRequest::record_acquisition` — the request then stays viable however
+/// much has been bought, and the final assertion fails.
+#[test]
+fn a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value() {
+    let mut req = InfoRequest::new(
+        "req-1",
+        "decision-1",
+        criteria(10_000, 9_000, 8_000, 1_000),
+        at(1_000),
+        at(0),
+    )
+    .expect("valid request");
+    let floor = 2_000;
+    let initial = req.criteria().net_value_bp();
+    assert_eq!(
+        initial, 6_480,
+        "premise: 1.0 * 0.9 * 0.8 * 0.9 of the scale"
+    );
+    assert!(
+        !req.should_halt(at(1), floor),
+        "premise: the request is viable at creation"
+    );
+
+    // One purchase of 1,000 bp keeps nine tenths of the reduction on offer.
+    req.record_acquisition(1_000).expect("valid cost");
+    assert_eq!(req.criteria().uncertainty_reduction_bp, 8_100);
+    assert!(req.criteria().net_value_bp() < initial);
+
+    let mut purchases = 1;
+    while !req.should_halt(at(1), floor) {
+        let before = req.criteria().net_value_bp();
+        req.record_acquisition(1_000).expect("valid cost");
+        purchases += 1;
+        assert!(
+            req.criteria().net_value_bp() < before,
+            "a purchase did not lower the marginal value"
+        );
+        assert!(purchases < 100, "the request never halted");
+    }
+    assert!(req.criteria().net_value_bp() < floor);
+    assert_eq!(req.cumulative_cost_bp(), purchases * 1_000);
+
+    // An acquisition that costs the whole decision value leaves nothing to buy.
+    let mut all = InfoRequest::new(
+        "req-2",
+        "decision-2",
+        criteria(10_000, 10_000, 10_000, 0),
+        at(1_000),
+        at(0),
+    )
+    .expect("valid request");
+    all.record_acquisition(10_000).expect("valid cost");
+    assert_eq!(all.criteria().net_value_bp(), 0);
+    assert!(all.should_halt(at(1), 1));
 }

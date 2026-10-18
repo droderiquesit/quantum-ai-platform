@@ -156,6 +156,7 @@ fn pass(rate_window: u64) -> PassDecl {
                 evidence_citations: vec![EvidenceCitation {
                     source_id: "venue-feed".into(),
                     evidence_id: "spread-series-1".into(),
+                    claim: None,
                     confidence_bps: 9000,
                 }],
                 disclosures: vec![Disclosure {

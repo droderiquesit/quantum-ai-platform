@@ -917,6 +917,27 @@ fn run() -> Result<()> {
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
     );
+    // The research warehouse (`warehouse.rs`, R12-DATA-9054): resolved
+    // outcomes streamed to BigQuery. Off, and printed as off, in every
+    // environment that names no QIP_BIGQUERY_PROJECT and
+    // QIP_BIGQUERY_DATASET; a half-named or unreachable target stops the
+    // process here rather than reading as a warehouse that is quietly absent.
+    let mut warehouse = qip_deepbrain::warehouse::OutcomeSink::from_lookup(
+        &|name| std::env::var(name).ok(),
+        clock.clone(),
+    )
+    .map_err(configuration)?;
+    println!(
+        "  warehouse:        {}",
+        if warehouse.is_some() {
+            format!(
+                "resolved outcomes stream to {}",
+                qip_deepbrain::warehouse::OUTCOMES_TABLE
+            )
+        } else {
+            "off (QIP_BIGQUERY_PROJECT and QIP_BIGQUERY_DATASET unset)".to_string()
+        }
+    );
     // The remediation journal: the audit record of an automated action is
     // written here before the action runs, so a node that restarts after
     // disabling research still holds the account of why.
@@ -965,6 +986,7 @@ fn run() -> Result<()> {
             permissions: permission_watch.as_mut(),
             ambient: Some(&mut ambient),
             agency: Some(&mut agency),
+            warehouse: warehouse.as_mut(),
             desk: Some(&mut desk_shipper),
         },
         |outcome| {
@@ -1050,6 +1072,9 @@ fn run() -> Result<()> {
                 println!("  {}", round.describe());
             }
             if let Some(round) = &outcome.agency {
+                println!("  {}", round.describe());
+            }
+            if let Some(round) = &outcome.warehouse {
                 println!("  {}", round.describe());
             }
             if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {

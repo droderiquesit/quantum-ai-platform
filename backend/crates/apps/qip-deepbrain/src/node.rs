@@ -133,6 +133,9 @@ pub struct StepOutcome {
     /// What routing the sweep's activated attention events through the
     /// agency's door did (`ambient_agency.rs`).
     pub agency: Option<crate::ambient_agency::AgencyRound>,
+    /// What shipping resolved outcomes to the research warehouse did this
+    /// cycle (`warehouse.rs`), where a sink is attached.
+    pub warehouse: Option<crate::warehouse::ShipRound>,
     /// What the operations loop observed of this iteration (`operations.rs`).
     pub operations: Option<crate::operations::OperationsRound>,
     /// What the tick desk's round did, on the cycles where one ran
@@ -222,6 +225,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         source_alpha: None,
         research: None,
         agency: None,
+        warehouse: None,
         operations: None,
         tick: None,
         side_failures: Vec::new(),
@@ -371,6 +375,12 @@ pub struct Loops<'a> {
     /// and drafted to an internal outbox. A sweep it cannot route is a side
     /// failure on the cycle line, never a stopped node.
     pub agency: Option<&'a mut crate::ambient_agency::AmbientAgency>,
+    /// Streams each cycle's newly resolved outcomes to the research
+    /// warehouse (`warehouse.rs`, R12-DATA-9054). Absent in every
+    /// environment that names no warehouse; a send that fails is a side
+    /// failure on the cycle line and the grades are offered again next
+    /// cycle, never a stopped node.
+    pub warehouse: Option<&'a mut crate::warehouse::OutcomeSink>,
     /// Ships the desk's ledger records to qip-ledgerd after each cycle, on
     /// the deep brain's own chain ([`DESK_CHAIN`]), and flushes what is
     /// pending at shutdown. A delivery that fails is retried by the shipper,
@@ -619,9 +629,17 @@ pub fn run_with(
                 }
             }
         }
+        if let Some(sink) = loops.warehouse.as_deref_mut() {
+            match sink.ship(platform.evaluations(), now) {
+                Ok(round) => outcome.warehouse = Some(round),
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("warehouse: {}", error.message())),
+            }
+        }
         if let Some(desk) = loops.tick.as_deref_mut() {
             let world = platform.world();
-            match desk.maybe_round(world.graph(), cycles, now) {
+            match desk.maybe_round_with_fills(world.graph(), cycles, now, platform.fill_scores()) {
                 Ok(round) => outcome.tick = round,
                 Err(error) => outcome
                     .side_failures

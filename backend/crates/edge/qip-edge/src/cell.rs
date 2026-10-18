@@ -34,7 +34,7 @@ use crate::telemetry::{AdversaryPostureLabel, CellMetrics, RegionShareOutcome};
 use qip_arbitrage::liquidity::LiquiditySource;
 use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalAdmission, Utilisation};
-use qip_contracts::degradation::{DegradationState, StrategyClass};
+use qip_contracts::degradation::{Capability, DegradationState, Freshness, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::Dispositions;
@@ -1676,7 +1676,11 @@ impl Cell {
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
-            journaled_narrowing: narrowed_names(&DegradationState::nothing_known()),
+            journaled_narrowing: narrowed_names(&Self::narrowing_of(
+                None,
+                journal_pressure,
+                Timestamp::from_secs(0),
+            )),
             liquidity: CellLiquidity::new(),
             features,
             deployed: BTreeMap::new(),
@@ -2785,11 +2789,67 @@ impl Cell {
     /// Ingestion is deliberately not observed here: the cell's book-staleness
     /// seam already refuses to route on a stale book, per book, which is
     /// stricter than the capability-level pause would be.
+    ///
+    /// Two dependency rows of the v12 failure table are recorded beside the
+    /// payload-fed ones, because they are the two a cell can read:
+    ///
+    /// * [`Capability::Ledger`] from the journal wire, when the cell has one:
+    ///   `Normal` is fresh, `Narrow` stale, `Exhausted` unavailable. The wire
+    ///   already narrows and halts the pass by its own gate, so the pass does
+    ///   not compound [`DegradationState::dependency_multiplier`] over it a
+    ///   second time; the row is here so the chain and the table state the
+    ///   same fact. A cell built without the wire records no ledger row, as
+    ///   it has no journal halt to report.
+    /// * [`Capability::Fabric`], derived from what the fabric carries: no
+    ///   policy held is unavailable, a held policy with every payload-fed row
+    ///   fresh is fresh, and anything else stale. Derived and not measured —
+    ///   the mesh link's own circuit lives in the node — and it narrows
+    ///   nothing, by [`qip_contracts::degradation::FABRIC_MULTIPLIER`].
+    ///
+    /// Custody and clock are not recorded: a cell has no reading of either,
+    /// and a row without a reading would be a number nobody computed.
     pub fn narrowing(&self, now: Timestamp) -> DegradationState {
-        match &self.policy {
+        Self::narrowing_of(self.policy.as_ref(), self.journal_pressure, now)
+    }
+
+    /// [`Self::narrowing`] over its inputs, so construction can state the
+    /// reading a cell holds before its first pass and the pass's first
+    /// comparison against it is not itself a change.
+    fn narrowing_of(
+        policy: Option<&VerifiedPolicy>,
+        journal_pressure: Option<JournalPressure>,
+        now: Timestamp,
+    ) -> DegradationState {
+        let mut state = match policy {
             Some(policy) => policy.payload().narrowing(now),
             None => DegradationState::nothing_known(),
+        };
+        let fabric = if policy.is_none() {
+            Freshness::Unavailable
+        } else if [
+            Capability::CausalGraph,
+            Capability::EpisodicMemory,
+            Capability::BeliefState,
+        ]
+        .into_iter()
+        .all(|capability| state.freshness(capability).is_fresh())
+        {
+            Freshness::Fresh
+        } else {
+            Freshness::Stale
+        };
+        state.observe(Capability::Fabric, fabric);
+        if let Some(pressure) = journal_pressure {
+            state.observe(
+                Capability::Ledger,
+                match pressure {
+                    JournalPressure::Normal => Freshness::Fresh,
+                    JournalPressure::Narrow(_) => Freshness::Stale,
+                    JournalPressure::Exhausted(_) => Freshness::Unavailable,
+                },
+            );
         }
+        state
     }
 
     /// The sequence of the applied policy, if any.
@@ -11172,9 +11232,15 @@ pub trait Placer: std::fmt::Debug {
 /// Every capability a reading leaves less than fresh, as the journal names
 /// them: `capability:freshness`, in the table's own order.
 fn narrowed_names(state: &DegradationState) -> Vec<String> {
+    // The cognitive rows only. The dependency rows (ledger, fabric) are in
+    // the table [`Cell::narrowing`] returns and are not named here: this list
+    // is hashed into the chain, and the ledger row moves with the journal
+    // wire, so naming it would make a wired cell's chain differ from an
+    // unwired one's for the same session — the leak the wire's tests refuse.
     state
         .narrowed()
         .iter()
+        .filter(|(capability, _)| !capability.is_dependency())
         .map(|(capability, freshness)| format!("{}:{}", capability.as_str(), freshness.as_str()))
         .collect()
 }
