@@ -26,3 +26,4 @@ extensions:
       - ["<qip_brokers::rest::RestOrderEntryAdapter as qip_brokers::adapter::VenueAdapter>::authenticate", "ReturnValue", "log-injection", "manual"]
       - ["qip_storage::gcp::workload_certificate::workload_certificate", "ReturnValue", "log-injection", "manual"]
       - ["qip_fastbrain::config::live_feed", "ReturnValue", "log-injection", "manual"]
+      - ["<qip_edge_node::scheduler::DecisionLoop>::with_certificate", "ReturnValue", "log-injection", "manual"]
