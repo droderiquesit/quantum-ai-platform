@@ -4298,12 +4298,16 @@
   {
     "id": "R12-MESH-1190",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. No measured peer latency series confirmed.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. The session thread now stores the shortest fresh clock round trip (PeerStatus::clock_round_trip_ns, host.rs record) and DecisionLoop::turn writes it to qip_edge_peer_round_trip_ms in the scrape registry through telemetry::PeerSeries; it is a gauge of the nearest peer, not a histogram of samples, and absent while no clock is measured.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:88 Lane",
-      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs"
+      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs",
+      "backend/crates/edge/qip-peer-link/src/host.rs:record",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs:PeerSeries",
+      "backend/crates/apps/qip-edge-node/tests/telemetry_wiring.rs",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs"
     ],
-    "gap": "Default-on peer link with measured latency recorded.",
+    "gap": "Default-on peer link: nothing sets the peer listen/peers variables in a committed deployment and no node is deployed, so the latency series reaches no running process. Measured latency is recorded (nearest-peer gauge); a per-sample histogram would need the endpoint to count samples.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4313,10 +4317,10 @@
       "R12-MESH-1010"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-peer-link; cargo test -p qip-edge-node --test telemetry_wiring --test decision_loop",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L25 2026-10-18 added the latency gauge; mutations: dropping the clock_round_trip_ns store in host.rs record fails telemetry_wiring::a_peer_clock_exchange_records_the_measured_round_trip_in_the_scrape_registry, and dropping series.observe in DecisionLoop::turn fails decision_loop::the_decision_loop_publishes_the_peer_round_trip_it_reads_from_the_port."
   },
   {
     "id": "R12-ARCH-1191",

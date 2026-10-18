@@ -2535,16 +2535,17 @@
   },
   {
     "id": "R12-CICD-10115",
-    "status": "PARTIAL",
-    "current": "scripts/fleet dispatches scoped tasks to workers with tests; no incident/expansion-gap trigger.",
+    "status": "COMPLETE",
+    "current": "scripts/fleet/dispatch.mjs::goalFromInput turns an aiops finding (an Anomaly: series, window, score) or a non-COMPLETE assessment gap row into a findings-only scout packet that worker.mjs::validatePacket admits, with the acceptance commands (the row's verification, or grep and git log for the series) in its acceptance text. `node scripts/fleet/dispatch.mjs goal --from <file>` prints the packet and the commands and starts nothing. Reserved-source evidence paths are withheld and named, not sent.",
     "evidence": [
-      "scripts/fleet/dispatch.mjs",
+      "scripts/fleet/dispatch.mjs:goalFromInput",
+      "scripts/fleet/dispatch.mjs:goal",
       "scripts/fleet/dispatch.test.mjs"
     ],
-    "gap": "Triggers from incidents and expansion gaps.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2552,7 +2553,7 @@
     "verification": "node --test scripts/fleet/dispatch.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation run 2026-10-18: renaming the assessment-gap branch's kind in goalFromInput fails the gap-row and the no-gap-source tests; commenting out the goal subcommand dispatch fails the subcommand test. Nothing calls it from a scheduler: a person or a lane runs it on a finding file, which is what 'creates a goal' means for a desktop dispatcher (ADR 0102)."
   },
   {
     "id": "R12-CICD-10116",
