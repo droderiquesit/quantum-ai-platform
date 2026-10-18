@@ -70,3 +70,14 @@ variable "workload_metrics_exist" {
   type        = bool
   default     = false
 }
+
+variable "log_retention_days" {
+  description = "How long the workload log bucket keeps entries. Bounded on purpose: Cloud Logging's own default for a custom bucket is thirty days, and an unbounded or very long retention on the cell's per-pass lines is a bill that grows with every pass. The event log, not this bucket, is the platform's record; this is for operating it."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.log_retention_days >= 1 && var.log_retention_days <= 400 && floor(var.log_retention_days) == var.log_retention_days
+    error_message = "log_retention_days is a whole number of days from 1 to 400. Longer than that is an archive, and an archive is a bucket in Cloud Storage with a lifecycle, not a log bucket that bills by ingestion and retention."
+  }
+}

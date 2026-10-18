@@ -436,6 +436,22 @@ type QuotaSpend = BTreeMap<(String, String), (i64, u64, u64)>;
 /// policy sizes its stream in (FABRIC-049).
 const QUOTA_WINDOW_NS: i64 = 1_000_000_000;
 
+/// The hot window, in batches, a stream of `class` keeps on local disk when
+/// the operator configured `keep_batches`.
+///
+/// A class retained nowhere beyond its ring (§22.1's `Never`: raw ticks,
+/// book deltas, quote updates) keeps one batch, the segment the next produce
+/// chains to; every other class keeps the configured window, and an
+/// archive-required class is further held behind its archived and indexed
+/// boundary by [`Broker::retain_hot`].
+pub fn hot_window(class: qip_events::RetentionClass, keep_batches: u64) -> u64 {
+    if class.retention() == qip_events::Retention::Never {
+        1
+    } else {
+        keep_batches
+    }
+}
+
 impl Broker {
     /// Open (or create) a broker rooted at `data_dir`, bumping and
     /// persisting its leader epoch before returning — see the module
@@ -1545,8 +1561,12 @@ impl Broker {
     /// hydrate is history lost; and it stops each partition's boundary at the
     /// first segment that is not both archived and indexed, so a segment
     /// archived before the index existed is kept rather than orphaned.
-    /// Streams whose retention class is replaceable are trimmed by the same
-    /// window, which is what their class declares.
+    /// Each stream's window comes from its retention class
+    /// ([`hot_window`]): a stream whose class retains nothing beyond its
+    /// ring keeps only the batch the next produce chains to, and every other
+    /// class keeps `keep_batches`. One global window applied the operator's
+    /// figure to a stream whose policy says its records are gone in seconds,
+    /// so the log held what the policy had already let go.
     pub fn retain_hot(&self, keep_batches: u64) -> Result<u64> {
         let reader = self.archive.as_ref().ok_or_else(|| {
             Error::invalid(
@@ -1560,18 +1580,25 @@ impl Broker {
                  to; keep at least one",
             ));
         }
-        let declared: Vec<(String, u32, bool)> = {
+        let declared: Vec<(String, u32, bool, u64)> = {
             let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
             declared
                 .iter()
-                .map(|(name, d)| (name.clone(), d.partition_count, d.policy.archive_required()))
+                .map(|(name, d)| {
+                    (
+                        name.clone(),
+                        d.partition_count,
+                        d.policy.archive_required(),
+                        hot_window(d.policy.retention(), keep_batches),
+                    )
+                })
                 .collect()
         };
         let mut deleted = 0u64;
-        for (stream, partition_count, archive_required) in declared {
+        for (stream, partition_count, archive_required, keep) in declared {
             for partition in 0..partition_count {
                 let state = self.partition_state(&stream, partition)?;
-                let mut boundary = state.log.high_water().saturating_sub(keep_batches);
+                let mut boundary = state.log.high_water().saturating_sub(keep);
                 if archive_required {
                     for (start, end, archived) in state.log.sealed_segments()? {
                         if end > boundary {
@@ -1723,6 +1750,9 @@ impl Broker {
     /// broker); index groups by partition if that count ever grows large.
     fn refuse_when_a_group_lags(&self, stream: &str, partition: u32) -> Result<()> {
         let policy = self.stream_policy(stream)?;
+        if super::admission::drops_oldest_for_lag(&policy) {
+            return self.drop_oldest_past_lag(stream, partition, &policy);
+        }
         if !super::admission::refuses_for_lag(&policy) {
             return Ok(());
         }
@@ -1743,6 +1773,43 @@ impl Broker {
                     policy.lag_limit()
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// FABRIC-8095: on a `sample_or_shed` stream, a group trailing past the
+    /// lag limit does not refuse the producer and does not let the backlog
+    /// grow: the partition's sealed segments lying wholly more than
+    /// `lag_limit` batches behind the high watermark are deleted, oldest
+    /// first, and the new batch is admitted. A fetch of a dropped offset
+    /// returns nothing, which the lagging group reads as the gap it is.
+    /// Segment granularity means up to one segment past the limit is kept.
+    fn drop_oldest_past_lag(
+        &self,
+        stream: &str,
+        partition: u32,
+        policy: &StreamPolicy,
+    ) -> Result<()> {
+        let state = self.partition_state(stream, partition)?;
+        let high_watermark = state.log.high_water();
+        let suffix = format!("|{stream}|{partition}");
+        let mut lagging = false;
+        for key in self.checkpoints.keys_with_prefix("")? {
+            let Some(group) = key.strip_suffix(&suffix) else {
+                continue;
+            };
+            let Some(committed) = self.committed_offset(group, stream, partition)? else {
+                continue;
+            };
+            if high_watermark.saturating_sub(committed.saturating_add(1)) > policy.lag_limit() {
+                lagging = true;
+                break;
+            }
+        }
+        if lagging {
+            state
+                .log
+                .retain_before(high_watermark.saturating_sub(policy.lag_limit()))?;
         }
         Ok(())
     }
