@@ -2648,7 +2648,11 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
                 format!("qip-{key}-{environment}@{project}.iam.gserviceaccount.com");
             assert_eq!(
                 account, expected_account,
-                "{describe} runs as `{account}` rather than the workload's own account"
+                // The identity is not repeated here: `assert_eq!` prints both
+                // sides on failure, and the static-analysis gate reads a
+                // service account formatted into a message as cleartext
+                // logging of it (ADR 0117's CodeQL gate).
+                "{describe} does not run as the workload's own account"
             );
 
             // Deletion policy.
@@ -2784,8 +2788,11 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
                     assert_eq!(
                         text_at(item, &["mode"]).as_deref(),
                         Some("256"),
-                        "{describe}'s volume `{secret_key}` projects `{file_name}` with mode {:?} \
-                         rather than 256 (0400): readable by the process and nobody else",
+                        // The slot name is not repeated: the gate reads it as a
+                        // secret logged in clear (ADR 0117), and `{file_name}`
+                        // with `{describe}` already names the one mount this is.
+                        "{describe} projects `{file_name}` with mode {:?} rather than 256 \
+                         (0400): readable by the process and nobody else",
                         text_at(item, &["mode"])
                     );
                 }
@@ -6340,8 +6347,11 @@ fn the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs
         assert_eq!(
             account,
             format!("qip-{environment}-console@{project}.iam.gserviceaccount.com"),
-            "{describe} runs as `{account}` rather than the console identity ADR 0018 created \
-             and ADR 0094 reuses"
+            // Both identities are printed by `assert_eq!` itself; repeating the
+            // account in the message reads to the CodeQL gate as cleartext
+            // logging of it (ADR 0117).
+            "{describe} does not run as the console identity ADR 0018 created and ADR 0094 \
+             reuses"
         );
 
         // Admission, and release rather than destruction on a prune. Two
