@@ -1392,23 +1392,28 @@
   },
   {
     "id": "R12-AMBIENT-3064",
-    "status": "PARTIAL",
-    "current": "Deepbrain research sweep runs by default after cycles, raising AmbientSignals from gaps and NOW surprises, journaled to the ambient journal.",
+    "status": "COMPLETE",
+    "current": "The deep brain's research sweep runs on its own cadence after each cycle (ResearchConfig.every_cycles, default 1), not on a prompt or strategy tick. NowEstimator maintains an expected-state distribution per domain (mean and variance, gauged as qip_now_state/qip_now_uncertainty); the sweep generates conditional scenarios from risk and assumption signals; signals, attention and scenarios are journaled. every_cycles = 0 stops the sweep and the journal stays empty.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:66 AmbientSignal"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1360 conditional_scenarios called from every sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1736-1800 conditional_scenarios",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:62-69,221-232 the Scenario record, caused by its signal's record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:237 a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (mutation: drop the conditional_scenarios call; no scenario record and the test fails)",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:895-907 maybe_sweep honours every_cycles",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:154 the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none (mutation: let every_cycles = 0 sweep; the disabled loop journals and the test fails)"
     ],
-    "gap": "No forecasts, expected-state distributions or conditional scenarios maintained; tied to cycle cadence; no test that stopping it stops signals beyond the disabled-path test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new integration test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed. The sweep follows the cycle cadence by design — it reads what the cycle recorded — which is not a prompt or a strategy tick."
   },
   {
     "id": "R12-AMBIENT-3065",
@@ -2559,7 +2564,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L03, 2026-10-18: not closable inside the research loop. The closure's per-class exposure does not exist: CalibrationReport::hit_rate_by_class is keyed by hypothesis class and no Platform accessor maps a hypothesis class to positions or notional, so 'that class's own exposure' needs a new kernel accessor in qip-kernel platform.rs (another lane's file). Registering a wakeable BrainSpec per proposal is possible but would mint specialists ranked on the same whole-book weight, so it was not done."
   },
   {
     "id": "R12-AMBIENT-3114",
