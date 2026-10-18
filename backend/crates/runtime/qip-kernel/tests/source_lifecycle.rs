@@ -330,7 +330,11 @@ fn a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refus
         defaulted.registered_sources().len(),
         "the registrations themselves are not lost"
     );
-    assert!(assessment.catalogued.is_empty(), "{:?}", assessment.catalogued);
+    assert!(
+        assessment.catalogued.is_empty(),
+        "{:?}",
+        assessment.catalogued
+    );
     assert!(defaulted.catalog().is_empty());
     assert_eq!(
         assessment.catalogue_problems.len(),

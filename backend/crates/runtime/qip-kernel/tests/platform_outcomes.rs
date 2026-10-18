@@ -19,7 +19,6 @@ use qip_capital_fabric::{
 use qip_contracts::edge::DeductionKind;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueClass, VenueId};
-use qip_risk::hedge::HedgeAxis;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, ObjectId, dec};
@@ -29,16 +28,15 @@ use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
-use qip_kernel::central::{
-    ArbitragePolicy, CentralConfig, WhitelistedMarket, WhitelistedVenue,
-};
+use qip_kernel::central::{ArbitragePolicy, CentralConfig, WhitelistedMarket, WhitelistedVenue};
 use qip_kernel::config::PlatformConfig;
-use qip_kernel::hedge_review::HedgePolicyDeclaration;
 use qip_kernel::cycle::Stage;
+use qip_kernel::hedge_review::HedgePolicyDeclaration;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
+use qip_risk::hedge::HedgeAxis;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_simulation_engine::costs::CostModel;
 use qip_twin::asof::TwinMarket;
@@ -399,7 +397,9 @@ fn a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge
         "the premise: the menu names the whitelisted venue"
     );
     assert_eq!(
-        menu.hedge.as_ref().map(|(instrument, _)| instrument.clone()),
+        menu.hedge
+            .as_ref()
+            .map(|(instrument, _)| instrument.clone()),
         Some(object("BBB")),
         "the premise: the menu names the declared hedge"
     );
@@ -412,7 +412,10 @@ fn a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge
     bars.extend(twin_bars("BBB", 90, 30));
     let mut market = TwinMarket::new(bars, CostModel::liquid_equity(), 20)?;
     let set = platform.evaluate_alternatives(&order_id, &mut market)?;
-    assert!(set.by_kind("do_not_trade").is_some(), "the premise: the set was priced");
+    assert!(
+        set.by_kind("do_not_trade").is_some(),
+        "the premise: the set was priced"
+    );
     let venue = set
         .by_kind("different_venue")
         .expect("a scored decision carries the different-venue alternative");
@@ -435,7 +438,11 @@ fn a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge
 
     // Priced on the production path: the LEARN stage's own market holds the
     // hedge instrument's bars, so the fill is scored rather than refused.
-    assert_eq!(platform.filled_awaiting_score(), 1, "the premise: one fill waits");
+    assert_eq!(
+        platform.filled_awaiting_score(),
+        1,
+        "the premise: one fill waits"
+    );
     platform.observe(
         twin_bars("AAA", 0, 5)
             .into_iter()
@@ -453,7 +460,10 @@ fn a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge
     assert_eq!(platform.filled_awaiting_score(), 0);
     let scores = platform.fill_scores();
     assert_eq!(
-        scores.iter().filter(|score| score.order_id == order_id).count(),
+        scores
+            .iter()
+            .filter(|score| score.order_id == order_id)
+            .count(),
         1,
         "the fill was not priced: {:?}",
         learn.detail

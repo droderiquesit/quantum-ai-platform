@@ -207,8 +207,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
-    VenueOption,
-    EstimationMethod,
+    EstimationMethod, VenueOption,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -5063,7 +5062,8 @@ impl Platform {
                 firm_quotes: false,
             });
         }
-        let counterfactuals = CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
+        let counterfactuals =
+            CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
         let pre_positioner = PrePositioningPlanner::new(
             CapitalAllocator::new(
                 AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
