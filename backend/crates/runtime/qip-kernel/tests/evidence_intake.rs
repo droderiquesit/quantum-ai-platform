@@ -562,3 +562,43 @@ fn a_reworded_campaign_across_three_sources_is_found_by_the_near_duplicate_arm()
         campaign.evidence
     );
 }
+
+/// R12-DATA-2012: the gate cannot be bypassed by handing the world fabric a
+/// verdict the caller wrote. `CheckedEvidence`'s fields are public, so a
+/// composition root — or a connector with a defect — can forward a claim on
+/// an impossible timeline under an admissible verdict carrying full weight.
+/// The world fabric must re-check the claim and hold it inadmissible at zero
+/// weight, whatever the forwarded verdict said. Mutation: making the world
+/// fabric's admissibility ignore its own temporal check — so the forwarded
+/// verdict is the only judgement left — holds the forgery admissible.
+#[test]
+fn an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing() {
+    let mut platform = platform();
+    assert_eq!(
+        platform.evidence_held(),
+        0,
+        "premise: an empty world fabric"
+    );
+    let honest = checked("h1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    assert!(
+        honest.verdict.admissible && honest.verdict.belief_weight > 0.0,
+        "premise: the borrowed verdict is admissible and weighs something"
+    );
+    let mut forged = checked("f1", "https://b.example", "rate 1.12", "1.10", &hash('b'));
+    // Ingested before it was published: no fabric admits this.
+    forged.record.ingestion_timestamp = at(5);
+    forged.verdict = honest.verdict.clone();
+
+    let intake = platform.absorb_evidence(vec![forged], at(30));
+
+    assert_eq!(intake.admitted, 1, "{intake:?}");
+    assert_eq!(intake.inadmissible, 1, "{intake:?}");
+    let held = platform
+        .world()
+        .evidence()
+        .get("f1")
+        .map(|h| h.verdict.clone())
+        .expect("the claim is held for the poisoning detector");
+    assert!(!held.admissible, "the forged verdict was believed");
+    assert_eq!(held.belief_weight, 0.0);
+}

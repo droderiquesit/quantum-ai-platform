@@ -570,3 +570,56 @@ fn the_journal_flushes_successfully_while_a_mesh_partition_stops_control_distrib
 
     Ok(())
 }
+
+#[test]
+fn a_centre_answer_larger_than_the_bound_is_refused_before_it_is_read_and_the_cell_keeps_running()
+-> Result<()> {
+    // MESH-9181: the centre link bounds message size and refuses rather
+    // than truncates. The centre here declares one byte past
+    // MAX_CENTRE_RESPONSE_BYTES and sends nothing more; a client that
+    // honoured the declaration would sit reading a body that never comes
+    // and fail on the timeout or the closed socket instead, and one that
+    // truncated would hand the cell a batch nobody signed.
+    use qip_edge_node::mesh::MAX_CENTRE_RESPONSE_BYTES;
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| Error::io(format!("bind: {error}")))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| Error::io(format!("address: {error}")))?;
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                MAX_CENTRE_RESPONSE_BYTES + 1
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    let mut cell = deployed_cell(3_600)?;
+    let mut node_link = link(&format!("http://{address}"))?;
+    let tick = node_link.exchange(&mut cell, &WorkReport::default(), t(30));
+
+    let errors: Vec<&String> = tick
+        .poll_error
+        .iter()
+        .chain(tick.policy_poll_error.iter())
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "an over-size answer polled fine: {tick:?}"
+    );
+    for error in &errors {
+        assert!(
+            error.contains(&format!("the limit is {MAX_CENTRE_RESPONSE_BYTES}")),
+            "the over-size answer was not refused for its size: {error}"
+        );
+    }
+    assert!(tick.renewed.is_empty() && tick.policies.is_empty());
+    assert!(!cell.is_halted(), "an over-size answer stopped the cell");
+    assert_eq!(cell.deployed_strategies(), vec!["mean-reversion-1"]);
+    Ok(())
+}

@@ -1175,7 +1175,7 @@
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:505 no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder",
       "infrastructure/terraform/modules/network/main.tf:33-41,73,134"
     ],
-    "gap": "NCC hub/spokes with route filters.",
+    "gap": "Not built. modules/network declares three VPCs (and the console egress subnet), none with an endpoint a hub could carry, and an NCC hub with spokes and route export filters changes how the networks reach one another: it is a topology decision for an ADR, with route filters that must be reasoned per pair, not a resource to add beside the deny-ingress rules. No peering joins two networks today, which is the half an acceptance scan could pin now.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1188,7 +1188,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "M",
-    "notes": "network/main.tf comments say the data/engineering VPCs 'join others only through NCC spokes'; no google_network_connectivity_* resource exists in the tree."
+    "notes": "Gap corrected 2026-10-18 after reading the network module; status unchanged."
   },
   {
     "id": "R12-API-8054",
@@ -2114,13 +2114,15 @@
   },
   {
     "id": "R12-FABRIC-8095",
-    "status": "PARTIAL",
-    "current": "P4 ack None; over-quota P4 produce is shed (refused) visibly; health served directly.",
+    "status": "COMPLETE",
+    "current": "Under pressure telemetry is shed at both ends. A P4 producer over its quota is answered Shed (existing), and since this lane a sample_or_shed stream whose consumer group trails the high watermark by more than the lag limit drops its oldest sealed segments past the limit and admits the newest batch, where a P0/P1 stream refuses the producer and P2/P3 keep their declared backlog. Broker::produce runs the check on every produce, so qip-fabricd applies it to the committed catalogue's telemetry.local stream (p4_telemetry, sample_or_shed). Health remains on the direct path.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs drops_oldest_for_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::drop_oldest_past_lag (from refuse_when_a_group_lags)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_pressure.rs a_lagging_p4_stream_drops_its_oldest_batches_and_admits_the_newest",
+      "infrastructure/event-fabric/streams.local.json telemetry.local sample_or_shed"
     ],
-    "gap": "Shed refuses the new batch; no drop-oldest behaviour under pressure, untested.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2128,10 +2130,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new pressure test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_pressure",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Pressure is consumer lag, not producer quota: dropping stored batches does not relieve a producer's rate, so an over-quota P4 batch is still shed (the newest) and a lagging P4 backlog loses its oldest. Granularity is a segment. Mutation: drops_oldest_for_lag returning false keeps offset 0 on the lagging telemetry stream. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 158 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-8096",
