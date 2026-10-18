@@ -1821,7 +1821,7 @@
       "backend/crates/apps/qip-fabricd/src/telemetry.rs",
       "backend/crates/apps/qip-fabricd/tests/broker.rs:1184 health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops"
     ],
-    "gap": "Traces; OTel export; a deployed scraper.",
+    "gap": "Traces, OTLP export and a deployed scraper. qip-fabricd records no spans at all (its telemetry is a metrics registry only; the Tracer lives in qip_observability::Telemetry, which the fabric broker does not construct), so an exporter has nothing to drain until append and replay are instrumented at Broker::produce and fetch off the data plane; and the exporter itself waits on the shared drain home and the collector decisions recorded on R12-OBS-9140.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1832,7 +1832,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from fabricd's telemetry.rs and main.rs; nothing in the code changed."
   },
   {
     "id": "R12-FABRIC-8083",
@@ -3154,7 +3154,7 @@
       "backend/crates/apps/qip-ledgerd/tests/store.rs:925,1014",
       "infrastructure/terraform/modules/evidence/main.tf:58"
     ],
-    "gap": "Export job to a locked bucket; reconstruction test from export.",
+    "gap": "The closure as graded contradicts a standing decision: store.rs removed import_state and refuses any restore from an export ('a ledger is restored by replaying the stream it was built from'), so an 'export -> rebuilt balances equal' test has nothing to rebuild with; the honest reconstruction proof is replay (R12-RES-9175) and the export's use is an auditor's comparison. What is missing is (1) an export job: the ledger has no signing-key configuration (record_watermark takes a key nothing supplies; it would be a Secret Manager file read through qip_core::secret), no evidence-bucket or blob-store configuration, and no scheduler in its run loop; (2) a verifier that replays the stream and compares its balances, chain count and watermark chain to a stored export; (3) landing in the locked bucket, which is deploy-dependent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3165,6 +3165,6 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L15 from the code (store.rs module doc 'Balances are a fold of the history', LedgerStateExport 'there is no import'); nothing in the code changed."
   }
 ]

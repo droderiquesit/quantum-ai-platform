@@ -618,6 +618,7 @@ mod tests {
             smaller_favoured: false,
             larger_favoured: false,
             trade_error_bps: error_bps,
+            unfilled: qip_core::Decimal::ZERO,
         }
     }
 

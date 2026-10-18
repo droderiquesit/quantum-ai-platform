@@ -786,6 +786,54 @@ fn a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are
 }
 
 #[test]
+fn a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left() -> Result<()> {
+    // The failure this guards (R12-MODEL-6004): the simulated venue fills 60%
+    // of an order on acceptance and leaves the rest working, and the fill
+    // score was the same record whether the order had filled whole or in
+    // part, so a size finding priced on the quantity that traded read as
+    // though the order had been the size that was asked for.
+    let mut platform = platform()?;
+    platform.observe(flat_bars_after(
+        "AAA",
+        start().saturating_sub(Duration::from_days(91)),
+        90,
+        100.0,
+    ));
+    let order_id = fill_one(&mut platform, "prop-partial", start())?;
+    let left = platform
+        .orders()
+        .order(&order_id)
+        .expect("the order the manager booked")
+        .remaining_quantity();
+    assert!(
+        left.is_positive(),
+        "premise: the venue left part of the order unfilled ({left})"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let scores = platform.fill_scores();
+    assert_eq!(scores.len(), 1, "premise: the fill was priced");
+    assert_eq!(scores[0].order_id, order_id);
+    assert_eq!(
+        scores[0].unfilled, left,
+        "the score does not carry what the venue left unfilled"
+    );
+    assert!(scores[0].is_partial());
+
+    // A score written before the field existed reads as whole, the reading
+    // those records were made under.
+    let mut old = serde_json::to_value(&scores[0]).expect("a score serialises");
+    old.as_object_mut()
+        .expect("a score is an object")
+        .remove("unfilled");
+    let old: qip_kernel::platform::FillScore =
+        serde_json::from_value(old).expect("an old score decodes");
+    assert!(!old.is_partial());
+    Ok(())
+}
+
+#[test]
 fn a_fill_that_lost_purely_to_an_adverse_price_move_does_not_favour_the_smaller_size() -> Result<()>
 {
     // The code-review finding this guards: comparing the smaller-size

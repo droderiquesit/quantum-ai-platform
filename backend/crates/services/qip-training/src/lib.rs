@@ -134,6 +134,7 @@
 //! and no other.
 
 pub mod cadence;
+pub mod campaign;
 pub mod dataset;
 pub mod distill;
 pub mod estimators;

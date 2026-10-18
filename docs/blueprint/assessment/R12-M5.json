@@ -921,7 +921,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3318",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:227"
     ],
-    "gap": "No calibration of local scores at the edge; manifest producer (kernel model_serving.rs) not shipped to nodes by any deployed path.",
+    "gap": "DistilledModel (qip-strategy model.rs) has no calibration: it returns the raw tree or linear score, and there is no calibration table in the struct, its digest or the training distillation (qip-training distill.rs); the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path. DistilledModel is constructed or matched at over a hundred sites, so a new field changes every model digest and manifest.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -932,7 +932,7 @@
     "verification": "cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; the change alters digests that manifests pin. Kept PARTIAL."
   },
   {
     "id": "R12-REFLEX-5041",
@@ -1479,7 +1479,7 @@
       "backend/crates/edge/qip-arbitrage/src/plan.rs:130",
       "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first"
     ],
-    "gap": "A per-cycle policy that selects concurrent versus risk-ordered execution, honoured by the cell's send path, with a test proving each arm.",
+    "gap": "No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1490,7 +1490,7 @@
     "verification": "cargo test -p qip-arbitrage --test arbitrage",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged."
+    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL."
   },
   {
     "id": "R12-MESH-5065",
@@ -1524,7 +1524,7 @@
       "backend/crates/libs/qip-contracts/src/reflex.rs:359",
       "backend/crates/apps/qip-ledgerd/src/store.rs:729"
     ],
-    "gap": "Cycle-completion record and a netting test.",
+    "gap": "CycleCommitted is journaled on the P2 lane only: qip-edge-node's event_fabric/writer.rs::is_outcome returns false for it because ADR 0100 §5's P1 row names six kinds and the cycle kinds are not among them, and qip-ledgerd consumes the P1 outcomes stream, so a cycle-completion record cannot reach the ledger without widening that row by a new ADR. The cell also keeps no per-cycle fill tally to decide 'every leg filled' (observe_cycle_leg watches legs as they are sent). Then qip-contracts reflex.rs needs the new Decision variant, store.rs a balanced cycle event over the leg fills, and an acceptance test that the cycle's cash nets and that dropping one leg's posting breaks it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1537,7 +1537,7 @@
     "verification": "acceptance test cycle -> ledger",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Individual fills can reach the ledger, but the requirement's cycle-level record does not exist. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged by the commits."
+    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Re-graded 2026-10-17: unchanged. Gap corrected 2026-10-18 by lane L15 from writer.rs::is_outcome and cell.rs's CycleCommitted sites; nothing in the code changed."
   },
   {
     "id": "R12-CAPITAL-5067",
@@ -1567,7 +1567,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)"
     ],
-    "gap": "Counterfactual scoring of cycles and the coordination rule.",
+    "gap": "Cell refusals cannot be priced from the centre: a cell's report carries them as DeltaRefusal { gate, reason, venue } only (qip-edge cell.rs refusals: Vec<(String, String)>, mesh.rs DeltaRefusal), with no instrument, side or quantity, and the twin's evaluate_alternatives needs an order to re-price. Closing needs the cell wire to carry the refused intent (a qip-mesh/qip-edge change outside the kernel) or the cell to price locally; then score_declined can queue them beside the desk's own. The desk's own refusals are already captured and priced (tests/learning.rs a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1578,7 +1578,7 @@
     "verification": "new kernel/learning test over cycle refusals",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined."
   },
   {
     "id": "R12-MESH-5069",
@@ -1843,7 +1843,7 @@
       "qip-execution-engine/src/market_creation.rs::tests::an_approved_creation_lists_seeds_and_publishes_its_rule_at_the_simulated_venue",
       "qip-kernel/tests/breadth.rs::a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_journaled"
     ],
-    "gap": "Inventory management after seeding (fills against the created book debit inventory, replenishment/withdrawal on exhaustion); live creation stays BLOCKED (ADR 0003/0021).",
+    "gap": "Inventory management after seeding is absent and has no flow to drive it: SimulatedBroker::fill_price only sweeps the listed book read-only (broker.rs:456), so a fill never consumes resting depth, and nothing routes a fill on a created product back to MarketFactory. The factory side (a settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder) is the easy half; the broker consuming the book and the kernel reporting the fill are the missing path. Live creation stays BLOCKED (ADR 0003/0021).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1856,7 +1856,7 @@
     "verification": "acceptance test listing + seeding at SimulatedExchange",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: False claim: the kernel test's doc says 'Mutation: make MarketFactory::seed skip venue.list_book(book) and the venue's book is empty' (tests/breadth.rs:114-116), but the test never reads the venue's book; it asserts market.stage == Seeded and the journal, both set regardless (market_creation.rs:496-512). The unit test does assert depth (market_creation.rs:796-800)."
+    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL."
   },
   {
     "id": "R12-EXEC-5081",
