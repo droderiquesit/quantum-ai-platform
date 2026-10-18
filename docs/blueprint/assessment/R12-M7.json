@@ -1544,12 +1544,14 @@
   {
     "id": "R12-CONTRACT-7069",
     "status": "PARTIAL",
-    "current": "LedgerEvent with source event (cell/session/journal digest/order), settlement, fee and balanced postings; deserialisation goes through the same refusals.",
+    "current": "LedgerEvent carries an optional owner (desk or mandate id) and an optional Attribution chain (fill, order, intent, decision ids) beside the SourceEvent; both are refused when blank, the chain is refused when its order is not the source order, a stored event meets the same refusals on decode, and an event stating neither re-encodes byte for byte as before. LedgerOperationFields::to_event books treasury allocations, capital grants (funded, recalled) and mandate subscriptions under their single owner; the other operation kinds name no single owner and stay unowned.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:103-175",
-      "backend/crates/libs/qip-contracts/tests/ledger_event.rs"
+      "backend/crates/libs/qip-contracts/src/ledger.rs LedgerEvent::with_owner / with_attribution / Attribution",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs LedgerOperationFields::owner / to_event",
+      "backend/crates/libs/qip-contracts/tests/ledger_event.rs an_owner_and_an_attribution_chain_are_refused_when_blank_and_round_trip_when_stated",
+      "backend/crates/libs/qip-contracts/tests/ledger_operation.rs an_operation_with_exactly_one_owner_books_its_event_under_that_owner_and_the_rest_stay_unowned"
     ],
-    "gap": "Ownership field and full attribution chain beyond the source event.",
+    "gap": "Ownership is stated only on the capital operations the kernel ships; fill events (qip_portfolio::ledger::post from a PaperFill) state no owner and no attribution chain, because a fill carries a strategy share map and a source (cell, session, journal digest, order id) and neither an intent id nor a decision id nor a mandate: the chain is recoverable from the journal by order id but is not on the PaperFill. The triage closure to refuse a missing owner cannot land without refusing every fill event ledgerd already holds. Needs the cell to carry the signal intent and decision ids on Decision::Filled (a journal chain-version change) and the central plane to map a strategy to its mandate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1557,10 +1559,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ledger_event",
+    "verification": "cargo test -p qip-contracts --test ledger_event --test ledger_operation",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: dropping the blank-owner refusal failed the ledger_event test; returning no owner for the funded-grant kind failed the ledger_operation test. AttributedFill (qip-capital) carries strategy, source, currency and amount, not the fill, order, intent and decision ids the triage assumed."
   },
   {
     "id": "R12-CONTRACT-7070",
