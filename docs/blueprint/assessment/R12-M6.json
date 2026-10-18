@@ -432,23 +432,26 @@
   },
   {
     "id": "R12-MODEL-6020",
-    "status": "PARTIAL",
-    "current": "incremental_information_gain exists for data sources only (qip-data-finder, library-only).",
+    "status": "COMPLETE",
+    "current": "Tournament::resolve computes a leave-one-out information value per forecaster (the log-score gain of the aggregate with the forecaster over the aggregate without it), and the kernel's LEARN stage calls TournamentStage::learn, which resolves every pending question against the bar history, so the value is tracked every cycle. The check (a forecaster duplicating another scores near-zero incremental value) is met.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:28"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:1103 information_value (leave-one-out)",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:1847 a_forecaster_duplicating_another_adds_no_information",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:657 TournamentStage::learn resolves pending questions",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::stage_learn calls self.tournament.learn"
     ],
-    "gap": "Apply to forecasters and wire it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-learning-engine (new)",
+    "verification": "cargo test -p qip-learning-engine --lib a_forecaster_duplicating_another_adds_no_information",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: scoring `with.ln()` instead of `with.ln() - without.ln()` fails the test at tournament.rs:1865 ('a duplicate added ...'). The former text ('data sources only, library-only') predated the tournament."
   },
   {
     "id": "R12-MODEL-6021",
@@ -881,25 +884,27 @@
   },
   {
     "id": "R12-EXPAND-6041",
-    "status": "PARTIAL",
-    "current": "ResearchQueue with eleven criteria, budgeted scheduling, tested. qip-expansion is library-only: no composition root constructs a ResearchQueue (its own lib.rs:13-17 says so, and grep of backend/crates/apps and runtime finds only the unused anomaly_to_observation in qip-deepbrain/src/signal_mapper.rs, which nothing calls).",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain constructs a ResearchLoop at start (main.rs:853) that sweeps every cycle unless switched off and refuses a malformed cadence; a sweep turns an unsupported asset class into a validated CurriculumItem scored on measurements and carrying its derivation, and an asset class with no history becomes a queued research item through the attention router. The check (a CurriculumItem/ResearchQueue record produced by the mechanism, validated, with lineage) is met.",
     "evidence": [
-      "backend/crates/services/qip-expansion/src/curriculum.rs:47 Criteria",
-      "backend/crates/services/qip-expansion/src/curriculum.rs:280 ResearchQueue",
-      "backend/crates/services/qip-expansion/tests/expansion.rs:257"
+      "backend/crates/apps/qip-deepbrain/src/main.rs:853 ResearchLoop::new on the default path",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:189 the_research_loop_sweeps_every_cycle_unless_switched_off_and_a_malformed_cadence_is_refused",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:302 an_unsupported_asset_class_becomes_a_validated_curriculum_item_scored_on_measurements_and_carrying_its_derivation",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:191 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router",
+      "backend/crates/services/qip-expansion/src/curriculum.rs:280 ResearchQueue"
     ],
-    "gap": "A composition-root caller fed by real detectors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing CurriculumItem / ResearchQueue)",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows; cargo test -p qip-deepbrain --test research an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former text ('library-only, no composition root constructs a ResearchQueue') was older than qip-deepbrain's ResearchLoop. No mutation run by this lane; the proving tests' own doc comments record theirs."
   },
   {
     "id": "R12-EXPAND-6042",
@@ -1568,14 +1573,16 @@
   },
   {
     "id": "R12-EXPAND-6073",
-    "status": "PARTIAL",
-    "current": "Manifest validation refuses a specialist with no competency boundary (tested); FindingStatus::Deferred exists; no test that an out-of-boundary question produces Deferred.",
+    "status": "COMPLETE",
+    "current": "A manifest without a competency boundary is refused; each analyst declares its remit and answers outside it with a Deferred finding of exactly zero effective conviction (the macro analyst on an intraday horizon, the equity analyst on a non-equity instrument), so downstream weights nothing. The check is met; enforcement is per agent through `out_of_scope` rather than a generic manifest match.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/manifest.rs:269",
+      "backend/crates/libs/qip-agents/src/manifest.rs:269 competency boundary required",
       "backend/crates/libs/qip-agents/tests/agents.rs:120",
-      "backend/crates/libs/qip-agents/src/finding.rs:382"
+      "backend/crates/agents/qip-investment-agents/src/support.rs:174 out_of_scope -> AgentFinding::deferred",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:946 the_macro_analyst_defers_on_an_intraday_horizon",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:915 the_equity_analyst_declines_an_instrument_outside_its_remit"
     ],
-    "gap": "Abstention enforced by boundary match, tested.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1583,10 +1590,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents",
+    "verification": "cargo test -p qip-investment-agents --test organisation the_macro_analyst_defers_on_an_intraday_horizon; cargo test -p qip-investment-agents --test organisation the_equity_analyst_declines_an_instrument_outside_its_remit",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: disabling the macro analyst's horizon check (analysts.rs:84) fails the test at organisation.rs:964 (the finding is no longer Deferred)."
   },
   {
     "id": "R12-MODEL-6074",

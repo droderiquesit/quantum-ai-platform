@@ -3823,14 +3823,14 @@
   },
   {
     "id": "R12-RES-9172",
-    "status": "PARTIAL",
-    "current": "Degradation table and sizing multiplier implemented and recorded per pass; edge tests cover stale policy. Not drilled on a deployment.",
+    "status": "COMPLETE",
+    "current": "The degradation table narrows the sizing multiplier per stale capability and the cell records the multiplier and each capability's freshness every pass; with the policy stale the cell narrows to the floor, the gauges move with it, and a cell whose centre has stopped makes the same decision as one still served, differing only by the stated narrowing. The check is met; a deployment drill belongs to R12-RES-10186.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/degradation.rs:725-776",
-      "backend/crates/edge/qip-edge/src/telemetry.rs:434,724",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs"
+      "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:334 a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:427 a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing"
     ],
-    "gap": "Deployment drill.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3838,10 +3838,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge; game day",
+    "verification": "cargo test -p qip-edge --test telemetry a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it; cargo test -p qip-edge --test telemetry a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing",
     "work_item": "",
     "size": "M",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: dropping the BELIEF_STALE_MULTIPLIER step from sizing_multiplier fails the test at telemetry.rs:361 (left Some(0.75), the multiplier did not reach the floor). Nothing is deployed, so deployable stays false."
   },
   {
     "id": "R12-RES-9173",

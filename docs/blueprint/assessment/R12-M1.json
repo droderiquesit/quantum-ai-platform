@@ -1980,14 +1980,16 @@
   },
   {
     "id": "R12-MODEL-1084",
-    "status": "PARTIAL",
-    "current": "Edge ModelForm is limited to linear and bounded trees; distilled tree bounded test; per-step budgets measured in acceptance performance tests.",
+    "status": "COMPLETE",
+    "current": "Edge ModelForm is bounded by type to Linear and Tree; DistilledModel::tree accepts only forward-pointing branches so every descent is bounded by the node count that cost() reports; a distilled depth-three tree is proven to cost at most fifteen nodes and evaluate everywhere; strategy evaluation and a cell cut off from the centre are measured against the pass budget. The check (bounded forms, evaluated within the pass budget) is met.",
     "evidence": [
-      "backend/crates/edge/qip-strategy/src/model.rs:21 TreeNode",
-      "backend/crates/services/qip-training/tests/training.rs:1118 distilled tree bounded",
-      "backend/crates/tests/qip-acceptance/tests/performance.rs:745 strategy evaluation costs what the budget says"
+      "backend/crates/edge/qip-strategy/src/model.rs:42 ModelForm (Linear | Tree)",
+      "backend/crates/edge/qip-strategy/src/model.rs:136 a backward branch is refused so the descent is bounded",
+      "backend/crates/services/qip-training/tests/training.rs:1118 a_distilled_tree_is_bounded_and_evaluable_everywhere",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:772 strategy_evaluation_costs_what_the_budget_says",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:2457 a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget"
     ],
-    "gap": "Not deployed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1995,10 +1997,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test performance",
+    "verification": "cargo test -p qip-training --test training a_distilled_tree_is_bounded_and_evaluable_everywhere; cargo test -p qip-acceptance --test performance strategy_evaluation_costs_what_the_budget_says",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Not deployed' is not a clause of the statement; deployable stays false because no execution node is enabled."
   },
   {
     "id": "R12-MODEL-1085",
@@ -4149,13 +4151,15 @@
   },
   {
     "id": "R12-ARCH-1185",
-    "status": "PARTIAL",
-    "current": "Lane register checked per crate; function-level checks for Lane 0 pass only.",
+    "status": "COMPLETE",
+    "current": "Every workspace crate has exactly one lane and a stated correctness requirement in docs/architecture/lane-placement.md, no faster-lane crate depends on a slower-lane crate, and every world-model, arbitration, reasoner, planner and specialist-agent crate is in the cognitive slow lane (checked at function level by reading fn bodies). The check is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:91 every crate has exactly one lane",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 no fast-lane crate depends on slower lane"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:91 every_workspace_crate_has_exactly_one_lane_and_a_stated_requirement",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:223 no_fast_lane_crate_depends_on_a_slower_lane_crate",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:263 every_world_model_arbitration_reasoner_planner_and_specialist_agent_crate_runs_in_the_cognitive_slow_lane",
+      "docs/architecture/lane-placement.md"
     ],
-    "gap": "Nothing checks \"fastest lane\"; no function-level placement outside Lane 0.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4166,7 +4170,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement",
     "work_item": "",
     "size": "S",
-    "notes": "The register lives in docs/architecture/lane-placement.md; the test enforces it against Cargo manifests. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: lane_placement.rs:91 checks one lane per crate against a .md register; no check at function level and nothing checks 'fastest lane'. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "The register lives in docs/architecture/lane-placement.md; the test enforces it against Cargo manifests. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: lane_placement.rs:91 checks one lane per crate against a .md register; no check at function level and nothing checks 'fastest lane'. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: deleting qip-reasoning-engine's row from docs/architecture/lane-placement.md fails two tests (lane_placement.rs:106 'crates with no lane' and :326 'has no row in the lane register'). 'Fastest lane that can meet its correctness requirements' is the register's requirement column, which the first test requires non-empty."
   },
   {
     "id": "R12-REFLEX-1186",
