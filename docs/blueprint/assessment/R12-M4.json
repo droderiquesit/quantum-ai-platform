@@ -2499,16 +2499,16 @@
   },
   {
     "id": "R12-RISK-4113",
-    "status": "PARTIAL",
-    "current": "DegradationState::sizing_multiplier compounds stale causal-graph and belief rows at the edge and, with the self-model row, at the centre; both sizes narrow and never widen. Capital envelopes do not contract.",
+    "status": "COMPLETE",
+    "current": "DegradationState::central_sizing_multiplier now narrows the next capital grant as well as the construction: Platform::issue_capital takes Platform::grant_narrowing (platform.rs), the confidence governor's grant decision compounded with the centre's freshness multiplier (causal graph, belief state and self-model rows) and records the contraction as Trigger::EvidenceFreshness in the grant entry's detail. The multiplier is in (0,1] and the product is checked, so a grant narrows and never widens. A reading that cannot be taken refuses the grant.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/degradation.rs:776-788",
-      "backend/crates/edge/qip-edge/src/cell.rs:4773-4784",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12801",
-      "backend/crates/libs/qip-contracts/tests/contracts.rs:1478 a_causal_graph_beyond_its_horizon_reads_stale_and_narrows_central_sizing",
-      "backend/crates/edge/qip-edge/tests/telemetry.rs:334"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::grant_narrowing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::issue_capital",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs::Trigger::EvidenceFreshness",
+      "runtime/qip-kernel/src/platform.rs::central_sizing_tests::a_stale_causal_graph_narrows_the_next_capital_grant_below_a_fresh_one_and_neither_widens_it",
+      "runtime/qip-kernel/tests/central.rs::decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant"
     ],
-    "gap": "Grant (envelope) contraction on freshness.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2516,10 +2516,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib a_stale_causal_graph_narrows && cargo test -p qip-kernel --test central",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed. Behaviour change to state plainly: a platform whose causal graph, beliefs and self-model have never been produced now signs 0.1875 of the allocation (central_sizing_multiplier: belief 0.5 x self-model 0.5 x graph 0.75), as its construction budget already narrowed; a grant widens only as those rows read fresh. Mutations: disabling the freshness branch in grant_narrowing -> the fresh-graph premise fails; restoring issue_capital to the governor's decision alone -> central.rs 'only the evidence-freshness contraction bites' fails; both restored (qip-kernel 965 passed, 0 failed; qip-acceptance security, vertical_slice_ship, api_boundary pass). qip-api's own test binaries were not run: the container disk filled while building them."
   },
   {
     "id": "R12-RISK-4114",
