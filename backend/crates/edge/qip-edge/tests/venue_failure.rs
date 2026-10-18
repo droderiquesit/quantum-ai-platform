@@ -23,7 +23,8 @@ use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
-    Cell, CellConfig, GATE_SILENT_FEED, GATE_VENUE_QUARANTINE, Placer, PricingPolicy, WorkReport,
+    Cell, CellConfig, GATE_CROSS_SOURCE, GATE_SILENT_FEED, GATE_VENUE_QUARANTINE, Placer,
+    PricingPolicy, WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -1245,4 +1246,91 @@ fn an_order_that_would_have_gone_to_a_silent_venue_is_placed_at_the_healthy_venu
         "an order reached the venue the cell cannot see"
     );
     Ok(())
+}
+
+#[test]
+fn two_venues_serving_one_instrument_at_mids_further_apart_than_the_tolerance_are_traded_on_by_neither()
+-> Result<()> {
+    // The failure this prevents: a poisoned or manipulated feed is a book
+    // that looks healthy on its own — sequenced, fresh, two-sided — so every
+    // per-book check admits it and the cell trades on a price nobody else is
+    // quoting. Only a second source for the same instrument gives it away.
+    let mut cell = fed_cell(&[(XLON, "obj-ACME")])?;
+    cell.track(VenueState::aggregated(
+        object("obj-ACME"),
+        venue(XPAR),
+        VenueStatus::Open,
+    ));
+    let mut gateway = Gateway::default();
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99.5\t500\n2\tobj-ACME\tA\t100.5\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-ACME\tB\t103\t500\n2\tobj-ACME\tA\t105\t400",
+        t(10),
+    )?;
+
+    // Premise: four per cent apart is inside the default five, and the
+    // order goes out; the gate is a tolerance, not a demand for equality.
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XLON, "obj-ACME")],
+        "the premise failed: {:?}",
+        report.refusals
+    );
+
+    // XPAR's book jumps to a mid of 120, twenty per cent from XLON's. The
+    // cell refuses under the gate that names both sources, and nothing goes
+    // to either venue.
+    feed(
+        &mut cell,
+        XPAR,
+        "3\tobj-ACME\tB\t103\t0\n4\tobj-ACME\tA\t105\t0\n5\tobj-ACME\tB\t119\t500\n6\tobj-ACME\tA\t121\t400",
+        t(11),
+    )?;
+    cell.feed_heartbeat(&venue(XLON), t(11));
+    let placed = gateway.attempts_at(XLON) + gateway.attempts_at(XPAR);
+    let report = cell.work(t(11), &mut gateway)?;
+    assert!(report.orders.is_empty(), "{:?}", report.orders);
+    let refusals = refused_under(&report, GATE_CROSS_SOURCE);
+    assert_eq!(refusals.len(), 1, "{:?}", report.refusals);
+    assert!(
+        refusals[0].starts_with("XLON serves a mid of 100 for obj-ACME and XPAR serves 120,"),
+        "{}",
+        refusals[0]
+    );
+    assert_eq!(
+        gateway.attempts_at(XLON) + gateway.attempts_at(XPAR),
+        placed,
+        "an order reached a venue while its sources disagreed"
+    );
+    assert!(
+        journaled(&cell, |decision, _| match decision {
+            Decision::Refused { gate, .. } if gate == GATE_CROSS_SOURCE => Some(()),
+            _ => None,
+        })
+        .len()
+            == 1,
+        "the refusal did not reach the journal once"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cross_source_tolerance_that_could_never_judge_two_sources_stops_assembly() {
+    for tolerance in [dec!("0"), dec!("1"), dec!("-0.01")] {
+        let mut config = CellConfig::new(CELL, REGION).with_venue(venue(XLON));
+        config.cross_source_tolerance = tolerance;
+        let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+        assert!(
+            Cell::new(config, features).is_err(),
+            "a tolerance of {tolerance} was admitted"
+        );
+    }
 }

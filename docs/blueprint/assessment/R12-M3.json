@@ -178,13 +178,15 @@
   },
   {
     "id": "R12-MODEL-3009",
-    "status": "PARTIAL",
-    "current": "qip-training and deepbrain learning assembly exist; covered in MODEL slice.",
+    "status": "COMPLETE",
+    "current": "The deep brain trains models from its own bars in the slow lane: LearningDesk::maybe_learn fits a baseline and a challenger with qip_training::local::LocalTrainer on the subject's observed bars, promote_candidate promotes a candidate that beats every incumbent on held-out rows through the platform's serving provider (journalled as a ModelPromotion naming the artifact digest), and main.rs writes the PublishedArtifact into the blob store under MODEL_ARTIFACTS_NAMESPACE as <digest>.json, readable back by that digest with the promoted reference as its manifest.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs",
-      "backend/crates/services/qip-training/src/job.rs"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::learn, trainer.fit(&spec_for(BASELINE_CLASS), ..)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs write_model_artifact(model_artifacts.as_ref(), published)",
+      "backend/crates/apps/qip-deepbrain/src/artifacts.rs write_model_artifact, read_model_artifact",
+      "backend/crates/apps/qip-deepbrain/tests/model_artifacts.rs::a_learning_round_writes_one_trained_artifact_named_by_the_digest_its_promotion_records"
     ],
-    "gap": "Assessed in the foundry slice; here only noted that the deep brain owns training.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -192,10 +194,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test model_artifacts",
     "work_item": "",
     "size": "L",
-    "notes": "Not re-assessed in depth in this slice."
+    "notes": "Re-graded 2026-10-18 by lane L04; the earlier text deferred to the foundry slice and asserted nothing. Mutation-verified: making the baseline's trainer.fit a refusal leaves no fit that clears the skill bar, nothing is promoted and the test fails; restored byte-identical and it passes. The test composes the same three calls main.rs composes; it does not run main.rs itself."
   },
   {
     "id": "R12-REASON-3010",
@@ -1358,15 +1360,16 @@
   },
   {
     "id": "R12-REASON-3062",
-    "status": "PARTIAL",
-    "current": "SymbolicDerivation is a machine-readable, replayable derivation per hypothesis with refusals recorded; it carries no violated-assumptions list and no uncertainty field beyond the posterior.",
+    "status": "COMPLETE",
+    "current": "Every SymbolicDerivation REASON journals carries violated_assumptions (the rule pack's refusal, each refused timeline link, each constraint in the acting conflict) and uncertainty (normalised entropy of P(claim_holds), None when the posterior was refused), beside the machine-readable derivation and its cited evidence; symbolic_stage::verify recomputes both from the record's parts and refuses an edited one.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:595 replay"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13603 symbolic_stage::derive called in REASON for every formed hypothesis",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:241 violated_assumptions, :247 uncertainty",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:573 violated_assumptions, :600 uncertainty_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:748 a_derivation_records_its_violated_assumptions_and_uncertainty_and_replay_refuses_either_edited"
     ],
-    "gap": "Violated assumptions and uncertainty on important conclusions.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1374,10 +1377,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Derivation artifact now exists; two required fields missing."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: verify's violated-assumptions comparison disabled -> the test fails 'a corrupted derivation was accepted'; verify's uncertainty comparison disabled -> same; derive recording uncertainty None -> replay refuses every journaled derivation (6 tests fail). Restored byte for byte."
   },
   {
     "id": "R12-REASON-3063",

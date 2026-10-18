@@ -375,6 +375,62 @@ fn a_duty_and_purchase_tax_in_the_plan_are_charged_into_the_all_in_cost_and_jour
     Ok(())
 }
 
+/// A received unit carries its share of the duty and the purchase tax in
+/// its cost basis, not only the journaled assessment (R12-COMMERCE-1093).
+/// Without this the ledger could book units at their pre-border price while
+/// the assessment read correctly, and every margin the plane later realised
+/// would be overstated by exactly the border.
+///
+/// Mutation: drop `self.duty` from `LandedCost::total` and the taxed unit's
+/// basis rises over the free one's by the tax alone, not by duty plus tax.
+#[test]
+fn a_received_units_cost_basis_carries_its_duty_and_purchase_tax() -> Result<()> {
+    let mut taxed_plan = commerce_plan()?;
+    taxed_plan.terms.customs.duty_rate = dec!("0.1");
+    taxed_plan.purchase_tax_rate = dec!("0.2");
+    let quantity = taxed_plan.quantity;
+    let platform = run("basis-taxed", taxed_plan, 1)?;
+    let pass = simulated(&platform)?;
+    let purchase = pass[0]
+        .purchases
+        .first()
+        .cloned()
+        .expect("one purchase was made");
+    let taxed = pass[0]
+        .assessed
+        .iter()
+        .find(|a| a.product == purchase.sku && a.venue == purchase.merchant)
+        .cloned()
+        .expect("the purchased candidate was assessed");
+    // The same candidate with no border, assessed on the same synthetic feed.
+    let free = simulated(&run("basis-free", commerce_plan()?, 1)?)?[0]
+        .assessed
+        .iter()
+        .find(|a| a.product == taxed.product && a.venue == taxed.venue)
+        .cloned()
+        .expect("the duty-free run assessed the same candidate");
+
+    // Premise: units were received, and only the taxed run paid a border.
+    assert_eq!(Decimal::from_int(purchase.units.len() as i64), quantity);
+    assert_eq!(
+        (free.duty, free.purchase_tax),
+        (Decimal::ZERO, Decimal::ZERO)
+    );
+    assert!(taxed.duty > Decimal::ZERO && taxed.purchase_tax > Decimal::ZERO);
+
+    let ledger = platform.commerce_research().expect("installed").ledger();
+    for unit in &purchase.units {
+        let basis = ledger.units()[unit].cost_basis;
+        assert_eq!(basis * quantity, taxed.all_in_cost, "unit {unit}");
+        assert_eq!(
+            basis * quantity - free.all_in_cost,
+            taxed.duty + taxed.purchase_tax,
+            "unit {unit}'s basis carries its share of the duty and the tax"
+        );
+    }
+    Ok(())
+}
+
 /// Every sale the cycle makes is settled on the simulated marketplace at
 /// gross less its fee, and the cycle's realised resale is that net (1094).
 ///
