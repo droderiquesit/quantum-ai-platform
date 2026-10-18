@@ -9,6 +9,11 @@
 //!   promoted after it has been supported by a minimum number of independent
 //!   episodes, because a rule learned from one observation is a coincidence.
 //!
+//! * **Procedural** — how a kind of question has been answered well: a named,
+//!   versioned sequence of steps, recorded only once a minimum number of held
+//!   episodes that followed it resolved correctly. One success is luck; a
+//!   procedure written from it would be a ritual.
+//!
 //! Episodic memory is bounded. [`ResearchMemory::with_capacity`] fixes how
 //! many episodes are held, and recording past it gives up the oldest one,
 //! counted in [`ResearchMemory::evicted`]. An unbounded store here grew with
@@ -24,6 +29,33 @@ use qip_core::ids::{AgentRunId, LessonId};
 use qip_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+
+/// Correct, resolved episodes a procedure must cite before it is recorded.
+pub const MINIMUM_PROCEDURE_SUPPORT: usize = 3;
+
+/// Versions kept per procedure name. Past it the oldest is given up; the
+/// version number still rises.
+pub const VERSIONS_PER_PROCEDURE: usize = 16;
+
+/// Procedure names held. A new name past it is refused rather than evicting
+/// a procedure something may still follow.
+pub const MAX_PROCEDURES: usize = 256;
+
+/// A way of answering a kind of question, distilled from episodes that
+/// followed it and turned out right.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Procedure {
+    /// The kind of question it answers, e.g. `earnings-surprise-review`.
+    pub name: String,
+    /// One for the first version of a name, then rising by one.
+    pub version: u32,
+    /// The steps, in order.
+    pub steps: Vec<String>,
+    /// The resolved, correct episodes it was distilled from.
+    pub supporting_episodes: Vec<AgentRunId>,
+    /// When it became known. Reads are filtered on this.
+    pub learned_at: Timestamp,
+}
 
 /// Episodes [`ResearchMemory::new`] holds before giving up the oldest.
 pub const DEFAULT_EPISODE_CAPACITY: usize = 4_096;
@@ -139,6 +171,8 @@ pub struct ResearchMemory {
     evicted: usize,
     capacity: usize,
     lessons: Vec<Lesson>,
+    /// Versions per procedure name, oldest first, never empty.
+    procedures: BTreeMap<String, VecDeque<Procedure>>,
     by_agent: BTreeMap<String, VecDeque<usize>>,
 }
 
@@ -149,6 +183,7 @@ impl Default for ResearchMemory {
             evicted: 0,
             capacity: DEFAULT_EPISODE_CAPACITY,
             lessons: Vec::new(),
+            procedures: BTreeMap::new(),
             by_agent: BTreeMap::new(),
         }
     }
@@ -324,6 +359,86 @@ impl ResearchMemory {
         let id = lesson.lesson_id.clone();
         self.lessons.push(lesson);
         Ok(id)
+    }
+
+    /// Record the next version of procedure `name`, returning its version.
+    ///
+    /// Refused unless it names at least [`MINIMUM_PROCEDURE_SUPPORT`]
+    /// distinct episodes this memory holds, each resolved correct by `at`:
+    /// a procedure is a claim about what worked, and an episode that was
+    /// wrong, unresolved, or no longer held is not evidence that anything
+    /// did. Also refused: a blank name, no steps, a blank step.
+    pub fn record_procedure(
+        &mut self,
+        name: &str,
+        steps: Vec<String>,
+        supporting_episodes: Vec<AgentRunId>,
+        at: Timestamp,
+    ) -> Result<u32> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::invalid("a procedure must be named"));
+        }
+        if steps.is_empty() || steps.iter().any(|step| step.trim().is_empty()) {
+            return Err(Error::invalid(format!(
+                "procedure `{name}` needs at least one step and no blank step"
+            )));
+        }
+        let mut distinct: Vec<&AgentRunId> = Vec::new();
+        for run_id in &supporting_episodes {
+            if distinct.contains(&run_id) {
+                continue;
+            }
+            let succeeded = self.episodes.iter().any(|episode| {
+                &episode.run_id == run_id
+                    && episode
+                        .outcome
+                        .as_ref()
+                        .is_some_and(|outcome| outcome.correct && outcome.resolved_at <= at)
+            });
+            if !succeeded {
+                return Err(Error::invalid(format!(
+                    "procedure `{name}` cites {run_id}, which is not a held episode resolved \
+                     correct by {at:?}; cite only episodes that followed it and were right"
+                )));
+            }
+            distinct.push(run_id);
+        }
+        if distinct.len() < MINIMUM_PROCEDURE_SUPPORT {
+            return Err(Error::invalid(format!(
+                "procedure `{name}` cites {} correct episode(s) and {MINIMUM_PROCEDURE_SUPPORT} \
+                 are required; one success is not a procedure",
+                distinct.len()
+            )));
+        }
+        if !self.procedures.contains_key(name) && self.procedures.len() >= MAX_PROCEDURES {
+            return Err(Error::invalid(format!(
+                "the memory holds {MAX_PROCEDURES} procedures; supersede one before naming \
+                 another"
+            )));
+        }
+        let versions = self.procedures.entry(name.to_string()).or_default();
+        let version = versions
+            .back()
+            .map_or(1, |latest| latest.version.saturating_add(1));
+        if versions.len() >= VERSIONS_PER_PROCEDURE {
+            versions.pop_front();
+        }
+        versions.push_back(Procedure {
+            name: name.to_string(),
+            version,
+            steps,
+            supporting_episodes,
+            learned_at: at,
+        });
+        Ok(version)
+    }
+
+    /// The latest version of procedure `name` known at `as_of`.
+    pub fn procedure_as_of(&self, name: &str, as_of: Timestamp) -> Option<&Procedure> {
+        self.procedures
+            .get(name.trim())
+            .and_then(|versions| versions.iter().rev().find(|p| p.learned_at <= as_of))
     }
 
     /// Mark a lesson superseded from `at`, keeping it readable for earlier

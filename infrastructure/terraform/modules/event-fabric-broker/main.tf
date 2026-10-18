@@ -141,6 +141,25 @@ resource "google_compute_instance_template" "event_fabric_broker" {
   }
 }
 
+# FABRIC-089: each broker's address is a reserved internal address in the
+# control-fabric subnet, not only a literal handed to the interface. A literal
+# on `network_ip` is held for exactly as long as the machine exists: replace
+# the broker and the address is free for anything in the subnet to take while
+# the A record still names it. Reserved here, the address outlives the
+# machine, and Google refuses to hand it to anything else.
+resource "google_compute_address" "event_fabric_broker" {
+  for_each = local.brokers
+
+  name         = "qip-event-fabric-broker-${replace(each.value, ".", "-")}"
+  project      = var.project_id
+  region       = var.region
+  subnetwork   = var.subnet_id
+  address_type = "INTERNAL"
+  purpose      = "GCE_ENDPOINT"
+  address      = each.value
+  description  = "Stable internal address of an event-fabric broker; the fabric SRV/A records name it."
+}
+
 # The brokers: one machine per stable address the DNS records name. Not a
 # managed instance group: a group's surge creates a replacement before
 # retiring the original, outside any lease the broker takes, and on the local
@@ -161,7 +180,7 @@ resource "google_compute_instance_from_template" "event_fabric_broker" {
   network_interface {
     network    = var.network_id
     subnetwork = var.subnet_id
-    network_ip = each.value
+    network_ip = google_compute_address.event_fabric_broker[each.value].address
     stack_type = "IPV4_ONLY"
   }
 }

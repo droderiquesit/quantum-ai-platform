@@ -732,15 +732,15 @@
   {
     "id": "R12-EVID-2032",
     "status": "PARTIAL",
-    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts and writes the ids onto the new record and Corroborates/Contradicts edges into the provenance graph (fabric.rs:657-765). The world fabric is now fed in production (evidence_intake.rs:103-150). Links are recorded on the new claim only: the earlier claim's corroborates/contradicts lists are not updated (fabric.rs:760-765 push onto `record`, the incoming one). The fabric is in-memory, bounded and evicts (fabric.rs:812-838); nothing journals it, and the intake module states durability is not claimed (evidence_intake.rs:33-38).",
+    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts. Since 2026-10-18 the relation is recorded on both claims: the incoming record names the held ones and each held record names the incoming one, with Corroborates/Contradicts edges in both directions in the provenance graph; when a claim is evicted, every survivor's lists drop it. The world fabric is fed in production (evidence_intake.rs). The fabric is in-memory, bounded and evicts; nothing journals it, and the intake module states durability is not claimed.",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-765",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:812-838",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:911 both-sides links in EvidenceFabric::admit",
+      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::evict prunes evicted ids from survivors",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:797 a_relation_is_recorded_on_both_claims_and_forgotten_on_both_when_one_is_evicted",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:33-38",
-      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
       "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
     ],
-    "gap": "Record the relation on both records, persist links to the event log, and a replay test proving links survive.",
+    "gap": "Persist links to the event log, and a replay test proving links survive. The intake's module doc names the blocker: EvidenceAttached already carries the symbolic stage's derivations, so evidence links need their own journal kind or topic, and a replay that re-admits journaled claims in order to rebuild the fabric.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -750,10 +750,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model evidence",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable. 2026-10-18 lane L23: both-sides recording landed; mutations fired - back-link loop skipped (a.corroborates left [], right [\"b\"]); eviction prune skipped (b still named the evicted a)."
   },
   {
     "id": "R12-EVID-2033",
@@ -887,15 +887,15 @@
   {
     "id": "R12-EVID-2038",
     "status": "PARTIAL",
-    "current": "Contests keep every hypothesis and now resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser.",
+    "current": "Contests keep every hypothesis and resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser. Since 2026-10-18 capacity eviction takes the oldest claim standing in no open contest, so a full fabric no longer drops a competing hypothesis; only when every held claim is contested does the oldest go anyway, keeping the bound.",
     "evidence": [
+      "backend/crates/libs/qip-evidence/src/fabric.rs:1006 contest-exempt eviction",
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-704",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
-      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "Hypotheses are dropped on capacity eviction and nothing persists contests across restart; nothing downstream reads contests.",
+    "gap": "Nothing persists contests or their resolutions across restart (the fabric is in-memory and unjournaled; see R12-EVID-2032 for the topic blocker), and nothing downstream reads contests. A fabric whose every held claim is contested still evicts the oldest contested claim.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -905,10 +905,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine contradiction",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed)."
   },
   {
     "id": "R12-EVID-2039",

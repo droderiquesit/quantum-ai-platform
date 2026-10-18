@@ -1345,14 +1345,16 @@
   },
   {
     "id": "R12-GCP-8061",
-    "status": "PARTIAL",
-    "current": "Every Cloud NAT translates named subnets to reserved addresses with logging (tested); Envoy egress proxy sidecar for api/deepbrain; execution node has its own NAT and venue firewall. No Secure Web Proxy; no separate crawler identity.",
+    "status": "COMPLETE",
+    "current": "Internet egress is controlled and attributable. Every Cloud NAT translates named subnets to reserved addresses with logging (gcp_placement.rs). The one workload that can reach a vendor, the deep brain (source discovery and catalogued connectors), carries the qip-egress proxy sidecar in every environment's manifest, whose allow-list the egress suite pins host by host, and runs under a service account no other workload shares; the fast brain carries no proxy. egress.rs::the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares holds the sidecar and the identity.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_egress_proxy_is_attached_to_the_workloads_that_need_it_and_to_nothing_else",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:163 every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it",
       "infrastructure/egress/envoy.yaml",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs"
+      "infrastructure/terraform/modules/cloudrun/main.tf google_service_account.workload"
     ],
-    "gap": "Dedicated crawler/agent egress identity and domain policy evidence.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1360,10 +1362,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement --test egress",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gcp_placement --test egress",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Reading of the clause: no separate crawler workload exists, so the deep brain is the crawler and agent egress identity; it is dedicated in that no other workload shares its account, not in that it does only crawling. No Secure Web Proxy is deployed: the requirement admits Cloud NAT, and the Envoy sidecar is the domain control. Mutations: the deep brain's account renamed to the API's in envs/dev/deepbrain.yaml failed the identity assertion; the sidecar container renamed away failed the sidecar assertion; file restored byte for byte. Nothing is applied, so no egress observation exists."
   },
   {
     "id": "R12-SEC-8062",
@@ -2171,7 +2173,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
       "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked; no measurement yet ties the default 3000 IOPS / 140 MiB/s to the catalogue's peak_bytes_per_second. The root object now carries journal_provisioned_iops and journal_provisioned_throughput_mibps and fabric.tf passes them (2bf53e03).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2182,7 +2184,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider. Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Re-graded after 2bf53e03 wired the two figures from the root: still PARTIAL, because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2210,11 +2212,14 @@
   {
     "id": "R12-FABRIC-8099",
     "status": "PARTIAL",
-    "current": "Template has no access_config and internal-only tag; addresses are an input variable, not reserved resources; no NCC.",
+    "current": "Each broker address is a reserved INTERNAL google_compute_address (purpose GCE_ENDPOINT) in the control-fabric subnet, and the machine takes its network_ip from that reservation; the template and machines declare no access_config, the template is tagged internal-only, and the folder's org policy denies every VM external address. No NCC hub or export exists. The module is instantiated only when event_fabric_broker is set, which no environment does.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:48-56,66"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:150 google_compute_address.event_fabric_broker (INTERNAL, subnet, one per broker)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:265 each_broker_address_is_a_reserved_internal_address_the_machine_takes",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:952 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
+      "infrastructure/foundation/main.tf google_org_policy_policy.vm_external_ip deny_all"
     ],
-    "gap": "Reserved internal addresses; NCC export.",
+    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: no NCC hub, spoke or export filter exists in the tree, and mirroring is refused for every stream class (fabric_083), so there is nothing yet to export. Not deployed: event_fabric_broker is null in every environment.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2224,10 +2229,10 @@
       "R12-GCP-8057"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment."
   },
   {
     "id": "R12-SEC-8100",

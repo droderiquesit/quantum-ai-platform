@@ -3431,13 +3431,15 @@
   {
     "id": "R12-COVERAGE-7153",
     "status": "PARTIAL",
-    "current": "CausalGraph, SelfModel, counterfactual trials, episode memory exist.",
+    "current": "CausalGraph, SelfModel, counterfactual trials, episode memory exist. Since 2026-10-18 the research memory holds all three kinds apart: episodic (bounded, append-only), semantic (lessons promoted on support) and procedural (named, versioned step sequences, recorded only when they cite at least MINIMUM_PROCEDURE_SUPPORT distinct held episodes resolved correct, read through procedure_as_of so a backtest cannot see a procedure learned later).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/causal.rs",
       "backend/crates/services/qip-learning-engine/src/self_model.rs",
-      "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs"
+      "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs",
+      "backend/crates/libs/qip-agents/src/memory.rs:371 ResearchMemory::record_procedure",
+      "backend/crates/libs/qip-agents/tests/memory.rs:119 a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
     ],
-    "gap": "Semantic/procedural memory distinction.",
+    "gap": "The procedural store exists and nothing on a running path distils a procedure into it: no caller of ResearchMemory::record_procedure outside tests, so the Platform's desk memory holds none. No acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3448,7 +3450,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - recording on one correct episode admitted the two-episode procedure; counting a resolved wrong episode as support admitted it."
   },
   {
     "id": "R12-COVERAGE-7154",
