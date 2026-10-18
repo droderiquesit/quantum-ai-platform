@@ -281,6 +281,8 @@ impl Handler for HealthPlane {
 /// The file whose presence in the data directory drains the broker's
 /// leadership (RES-8103): an operator or a pre-stop hook creates it, and the
 /// lease thread hands every lease back on its next pass and stops renewing.
+/// The thread removes the file once it has acted, and a broker removes any
+/// it finds at start, so a drain lasts one process and not every restart.
 /// A file rather than a signal because the process holds no handler for one
 /// (`unsafe` is forbidden), and the data directory is the one place this
 /// binary already owns the filesystem of.
@@ -579,6 +581,21 @@ fn start_composed(
     // TTL. A pass that cannot reach the database is reported, not fatal: the
     // P2-P4 streams this broker also serves do not depend on it.
     if let Some(settings) = &config.managed {
+        // A DRAIN file found here belongs to the process that was stopped:
+        // a drain lasts for the process lifetime, as `Running::drain` says,
+        // so the restarted broker leads again. Removed before the first
+        // lease pass, or that pass takes leases the thread then hands back.
+        match std::fs::remove_file(config.data_dir.join(DRAIN_FILE)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(qip_core::error::Error::io(format!(
+                    "cannot clear the {DRAIN_FILE} file a previous process left in {}: {error}; \
+                     remove it by hand, or this broker would drain for good",
+                    config.data_dir.display()
+                )));
+            }
+        }
         let report = broker.tend_leases(settings.lease_ttl_ms);
         if let Ok(report) = &report {
             telemetry.leases(report);
@@ -698,6 +715,14 @@ fn start_composed(
                 std::thread::sleep(renew_every);
                 if drain_file.exists() {
                     draining.store(true, Ordering::SeqCst);
+                    // The file is a request, answered once. Left in the
+                    // persistent data directory it would drain the restarted
+                    // process too, and an upgrade that drains each broker in
+                    // turn would leave every one of them draining for good.
+                    // If the removal fails the flag above already holds for
+                    // this process; the start-up removal clears it for the
+                    // next.
+                    let _ = std::fs::remove_file(&drain_file);
                 }
                 // Every pass of a draining broker hands back whatever it
                 // holds, rather than once: a renewal that was already in
@@ -705,6 +730,15 @@ fn start_composed(
                 // the first release, and this is what returns it.
                 if draining.load(Ordering::SeqCst) {
                     let _ = broker.relinquish_leases();
+                    // Still follow, without a lease: the doc on
+                    // `Running::drain` promises a broker that keeps up, and
+                    // the health body and the series must say it leads
+                    // nothing rather than repeat the last pre-drain count.
+                    let report = broker.follow_leases();
+                    if let Ok(report) = &report {
+                        telemetry.leases(report);
+                    }
+                    health.lease_pass(&report);
                     continue;
                 }
                 let report = broker.tend_leases(ttl_ms);
