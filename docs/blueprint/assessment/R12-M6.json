@@ -463,15 +463,15 @@
   },
   {
     "id": "R12-MODEL-6021",
-    "status": "PARTIAL",
-    "current": "Real marked P&L is joined to forecaster (Model) keys and split pro rata; by_forecaster feeds the tournament's cumulative attributed P&L each LEARN. Closure is proven on a hand-built join only.",
+    "status": "COMPLETE",
+    "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/attribution.rs:199",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15463",
       "backend/crates/runtime/qip-kernel/src/attribution.rs::by_forecaster",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentReview::attributed"
+      "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs",
+      "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
+      "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source"
     ],
-    "gap": "No cycle test shows a forecaster credited P&L (the only cycle test reads UNATTRIBUTED); downstream capital impact per forecaster is not attributed separately.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -481,10 +481,10 @@
       "R12-MODEL-6003"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause."
   },
   {
     "id": "R12-MODEL-6022",
