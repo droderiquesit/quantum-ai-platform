@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 389 | 25.6% |
+| Blueprint completion (COMPLETE) | 390 | 25.7% |
 | Implemented (behaviour exists in code) | 1328 | 87.5% |
 | Tested (a named test demonstrates it) | 1214 | 80.0% |
-| Integrated (reached from a composition root) | 841 | 55.4% |
-| Deployable (provisionable from committed config) | 200 | 13.2% |
-| End-to-end demonstrated | 16 | 1.1% |
+| Integrated (reached from a composition root) | 842 | 55.5% |
+| Deployable (provisionable from committed config) | 201 | 13.2% |
+| End-to-end demonstrated | 17 | 1.1% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 389 |
-| PARTIAL | 982 |
+| COMPLETE | 390 |
+| PARTIAL | 981 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -52,7 +52,7 @@ register (ADR 0099), and there is no second one.
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 10 | 11 | 3 | 2 | 0 | 21 | 21 | 2 |
 | [SEC](#sec) | 57 | 17 | 36 | 4 | 0 | 0 | 50 | 40 | 0 |
-| [OBS](#obs) | 50 | 13 | 31 | 6 | 0 | 0 | 44 | 42 | 0 |
+| [OBS](#obs) | 50 | 14 | 30 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
 | [GCP](#gcp) | 54 | 5 | 28 | 15 | 6 | 0 | 33 | 24 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
@@ -1443,7 +1443,7 @@ register (ADR 0099), and there is no second one.
 | R12-OBS-7126 | SLO defined for ledger commit | The ledger-commit objective (0.999 of commits under 100 ms, Day window) is declared in critical_path_slos and is now evaluated in production by qip-ledgerd against its own registry: PartitionWorker::step calls LedgerTelemetry::evaluate_objectives once per applied batch, which evaluates every objective whose service is 'ledger' and records qip_slo_budget_consumed and qip_slo_observations. A test started through qip_ledgerd::start commits two fills and reads the objective measured over exactly two observations. | COMPLETE |  |  | P1 | cargo test -p qip-ledgerd --test fabric a_ledger_that_commits_fills_reports_its_commit_objective_measured; cargo test -p qip-observability --test critical_paths |  |
 | R12-OBS-7127 | SLO defined for reconciliation | reconciliation-breaks-zero-unexplained declared in blueprint_slos (target 1.0, Day) and fed by Platform::ingest_cell_report; critical_paths 'reconciliation' objective is NotCountable so always unmeasured. Register text stale. | PARTIAL | Evaluation reached only via qip-api mesh, which runs only when QIP_MESH_CELLS is set; no committed deployment sets it. The critical-path reconciliation objective can never be measured. |  | P1 | slo test |  |
 | R12-OBS-7128 | SLO defined for model serving | critical_paths declares model-serving-package (0.99, Week) on qip_model_packages_total{outcome}, evaluated every deep-brain round and recorded as qip_slo_budget_consumed. Register text stale (says no SLO). | PARTIAL | Objective measures whether a promoted package was written, not model serving availability/latency; no serving-path series feeds it. |  | P1 | slo test |  |
-| R12-OBS-7129 | SLO defined for data provenance | data-lineage-completeness SLO defined. | PARTIAL | Evaluation from a deployment. |  | P1 | slo test |  |
+| R12-OBS-7129 | SLO defined for data provenance | Platform::count_lineage counts every received record under qip_data_lineage_records_total{outcome}: linked when observe_with_lineage appended it to the event log under its ingestion correlation id (fast brain via bus_bridge, qip-api via observe_fresh), unlinked when it arrived bare through Platform::observe or its append failed; qip_data_lineage_completeness carries the same counts as a ratio. The data-provenance-lineage-completeness critical path is now a CounterOutcome rule on that counter, and the deep brain evaluates every critical path over the platform telemetry each iteration (operations.rs critical_paths::evaluate), so the objective is measured in a deployed binary rather than reading unmeasured. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-kernel --test kernel lineage_completeness_counts_records_logged_under_a_lineage_against_records_handed_in_bare |  |
 | R12-OBS-7130 | SLO defined for quantum job success | quantum-job-success objective (0.95, Week) on qip_quantum_jobs_total{outcome}; deep brain counts succeeded/failed from journalled dispatch and evaluates every round. Test asserts 0.75 achieved and not met; lookup panics if objective removed. | COMPLETE | None for the requirement; not deployed. |  | P1 | slo test |  |
 | R12-OBS-7131 | Action lineage graph GoalSpec to EffectAttribution | journal::lineages folds every AgencyRecord on the hash-chained log into one PassLineage per pass (goal target and acting identity from PassOpened, GoalApproval, PlanApproval, ExecutionRecord, tool decisions, released voices, the learned EffectAttribution, the concluded outcome), journal::lineage_of answers for one pass, and PassLineage::verify refuses a chain with a link missing or mis-cited (a plan approval citing no goal approval, an execution citing no or another plan approval, a charge or a voice with no execution, an attribution over a plan nobody approved). On the default path qip-cli's Session::pass reads its own pass back through lineage_of and verify immediately after record_pass and prints the lineage line, so a journal that cannot be folded stops the binary rather than an auditor later. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-agency --test journal one_pass_folds && cargo +1.94.1 test -p qip-cli --test agency |  |
 | R12-OBS-7132 | Channel health: identity integrity, reach, provenance, violations, coordination | No channel health metrics (no external channels exist). | MISSING | Define metrics with channels. |  | P2 | metrics test |  |
