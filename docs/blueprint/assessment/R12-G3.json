@@ -1254,13 +1254,16 @@
   },
   {
     "id": "R12-OBS-10058",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Cloud Run captures stderr by default; NAT/flow logs are configured; the edge node bounds per-event lines to 5 per 10 s. No log sinks or retention policy declared.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:874 PassLog::new(5, 10s)",
-      "infrastructure/terraform/modules/execution-node/main.tf:140 flow logs"
+      "infrastructure/terraform/modules/execution-node/main.tf:140 flow logs",
+      "infrastructure/terraform/modules/observability/logging.tf",
+      "infrastructure/terraform/modules/observability/tests/logging.tftest.hcl",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_workload_log_bucket_has_a_retention_bounded_by_a_validated_variable"
     ],
-    "gap": "Log sinks/retention.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1268,10 +1271,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test pass (PassLog bound)",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- log_; cd infrastructure/terraform/modules/observability && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18. A dedicated bucket qip-<env>-workloads with retention_days = var.log_retention_days (default 90, whole days 1 to 400) and a sink routing only this environment's Cloud Run revisions and execution nodes to it; the project's own _Default bucket is deliberately not managed because this repository did not create it. No exclusion for per-pass stderr was written: volume is bounded at the source by PassLog::new(5, 10s) and a filter against a log shape no deployed process has produced would drop lines on a guess. Not applied anywhere: plan-time only. terraform 1.9.8 (checksum-verified) `Success! 10 passed, 0 failed.` for the module, `terraform validate` on the root valid. Mutation, restored: a literal retention of 9999 failed the acceptance test naming the bounded variable."
   },
   {
     "id": "R12-OBS-10059",
