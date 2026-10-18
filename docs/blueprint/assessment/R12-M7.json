@@ -4019,24 +4019,24 @@
   },
   {
     "id": "R12-COVERAGE-7180",
-    "status": "PARTIAL",
-    "current": "Federation with branches and arbitration.",
+    "status": "COMPLETE",
+    "current": "An acceptance suite proves the composite through a real Platform: fourteen cycles of divergent members journal arbitrations whose spread is material and whose views differ (not averaged), a Branch decision whose branch later appears in a recorded Disagreement with its parent, trigger and depth 1, and no cycle's ACT stage released an order or moved the book. The register's 'numerous deployed models' gap was already stale: federation_stage.rs declares and runs the population every UNDERSTAND pass.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:246-275,641 Disagreement/Decision/Arbitration, arbitrate",
-      "backend/crates/services/qip-world-model/tests/federation.rs:204,243,472,509 keeps every view; branches stay live; material disagreement raises research task"
+      "backend/crates/tests/qip-acceptance/tests/federation_disagreement.rs divergent_members_journal_a_disagreement_with_branch_lineage_and_no_cycle_releases_an_order",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs act_on_decisions (the branch lineage)"
     ],
-    "gap": "Numerous deployed models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test federation_disagreement",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutation fired: feeding only the momentum member in FederationStage::run -> 'no material disagreement was recorded'."
   },
   {
     "id": "R12-COVERAGE-7181",

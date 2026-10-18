@@ -591,6 +591,8 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
         moves: BTreeMap::from([("kestrel".to_string(), -0.05)]),
         settlement: None,
         subject_class: Some("equity".into()),
+        lot_headroom: None,
+        cash_headroom: None,
     };
     let derivation = derive(input, &causal, now);
     // Premise: abduction named Kestrel, seen to move, so there is a cause to
@@ -953,6 +955,8 @@ fn the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_unty
             moves: std::collections::BTreeMap::new(),
             settlement: None,
             subject_class: None,
+            lot_headroom: None,
+            cash_headroom: None,
         }
     };
     let unregistered = derive(input.clone(), platform.world().causal(), start());
