@@ -230,6 +230,35 @@ pub const GATE_CONDUCT_SPOOFING: &str = "conduct_spoofing";
 /// [`Cell::refuse`], so the label needs no second enumeration.
 pub const GATE_CROSS_SOURCE: &str = "cross_source";
 
+/// What a cell does, beyond withdrawing what rests there, with a position
+/// it holds at a venue whose feed has gone silent.
+///
+/// A silent feed leaves a position the cell can no longer watch: its book
+/// serves the prices from before the silence, and nothing the market does
+/// there reaches the cell. Withdrawing resting orders stops the exposure
+/// growing; it does nothing about what already filled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FeedLossPlaybook {
+    /// Withdraw resting orders and hold the position until the feed returns.
+    /// For an operator who would rather carry a blind position than trade
+    /// against it elsewhere.
+    Withdraw,
+    /// Withdraw resting orders and offset the position, once per silence,
+    /// at a venue still heard that lists the same instrument — chosen by
+    /// the cell's own venue choice, sent through [`Cell::send`], and
+    /// journaled as [`Decision::Hedged`]. With no such venue the cell says
+    /// so under [`GATE_FEED_LOSS_PLAYBOOK`]. The default, because a
+    /// position nobody can watch is the exposure a playbook exists for.
+    #[default]
+    Hedge,
+}
+
+/// The gate a feed-loss hedge is refused under when the cell holds a
+/// position at a silent venue and no venue still heard can take the
+/// offset. Refused through [`Cell::refuse`], so the label needs no second
+/// enumeration.
+pub const GATE_FEED_LOSS_PLAYBOOK: &str = "feed_loss_playbook";
+
 /// Five per cent. Venues quoting one instrument normally sit within a few
 /// basis points; a gap twenty times the widest arbitrage the scanner acts
 /// on is a broken or manipulated book, not an opportunity.
@@ -533,6 +562,10 @@ pub struct CellConfig {
     /// under [`GATE_CROSS_SOURCE`]. Always in force; validated at
     /// [`Cell::new`], where a bound outside `(0, 1)` stops assembly.
     pub cross_source_tolerance: Decimal,
+    /// What the cell does with a position held at a venue whose feed has
+    /// gone silent ([`FeedLossPlaybook`]). Resting orders there are
+    /// withdrawn under either arm.
+    pub feed_loss_playbook: FeedLossPlaybook,
     /// Whether this cell reads the journal-pressure wire (ADR 0100 §6).
     ///
     /// Off by default, and that is the decision rather than an omission. A
@@ -619,6 +652,7 @@ impl CellConfig {
             decomposition: DecompositionPolicy::default(),
             conduct: ConductPolicy::default(),
             cross_source_tolerance: DEFAULT_CROSS_SOURCE_TOLERANCE,
+            feed_loss_playbook: FeedLossPlaybook::Hedge,
             journal_wire: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
@@ -1559,6 +1593,10 @@ pub struct Cell {
     /// last heard — so the incident is recorded once, not once per pass, and
     /// the reconciliation entry can name where the blind interval began.
     feed_silent: BTreeMap<VenueId, Timestamp>,
+    /// The silent venues the feed-loss playbook has already acted on, so a
+    /// silence is hedged once and a venue heard again can be hedged on its
+    /// next silence.
+    feed_loss_handled: BTreeSet<VenueId>,
     /// What each venue has done with the orders sent to it, when the
     /// composition root armed the quarantine. `None` records nothing.
     venue_health: Option<HealthTracker>,
@@ -1685,6 +1723,7 @@ impl Cell {
             resume: None,
             feed_heard: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
+            feed_loss_handled: BTreeSet::new(),
             venue_health,
             quarantined: BTreeMap::new(),
             unwithdrawable: BTreeSet::new(),
@@ -3880,6 +3919,130 @@ impl Cell {
         }
     }
 
+    /// Act on each venue newly found silent, once, per
+    /// [`CellConfig::feed_loss_playbook`].
+    ///
+    /// Run after the halt check: a halted cell sends nothing, and the offset
+    /// is an order. The resting orders at the silent venue are withdrawn by
+    /// [`Cell::withdraw_expired`] whatever the playbook says.
+    fn apply_feed_loss_playbook(
+        &mut self,
+        gateway: &mut dyn Placer,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        let silent: BTreeSet<VenueId> = self.feed_silent.keys().cloned().collect();
+        self.feed_loss_handled
+            .retain(|venue| silent.contains(venue));
+        let fresh: Vec<VenueId> = silent
+            .into_iter()
+            .filter(|venue| !self.feed_loss_handled.contains(venue))
+            .collect();
+        for venue in fresh {
+            self.feed_loss_handled.insert(venue.clone());
+            if self.config.feed_loss_playbook == FeedLossPlaybook::Withdraw {
+                continue;
+            }
+            let prefix = format!("{}/", venue.as_str());
+            let held: Vec<(ObjectId, Decimal)> = self
+                .positions
+                .iter()
+                .filter(|(_, quantity)| !quantity.is_zero())
+                .filter_map(|(key, quantity)| {
+                    key.strip_prefix(&prefix)
+                        .map(|object| (ObjectId::from_string(object), *quantity))
+                })
+                .collect();
+            for (object_id, quantity) in held {
+                self.hedge_blind_position(&venue, &object_id, quantity, gateway, now, report);
+            }
+        }
+    }
+
+    /// Offset `held` of `object_id`, held at the silent `blind` venue, at a
+    /// venue still heard, or refuse and say why.
+    fn hedge_blind_position(
+        &mut self,
+        blind: &VenueId,
+        object_id: &ObjectId,
+        held: Decimal,
+        gateway: &mut dyn Placer,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        // Long is offset by selling into the bid, short by buying the ask.
+        let side = if held.is_positive() {
+            BookSide::Bid
+        } else {
+            BookSide::Ask
+        };
+        let quantity = held.abs();
+        let target = self
+            .venue_for(object_id, now)
+            .filter(|venue| venue != blind && self.venue_withheld(venue, now).is_none());
+        let touch = target.as_ref().and_then(|venue| {
+            self.liquidity
+                .get(venue, object_id)
+                .and_then(|state| match side {
+                    BookSide::Ask => state.best_ask(),
+                    BookSide::Bid => state.best_bid(),
+                })
+                .map(|level| level.price)
+        });
+        let (Some(target), Some(price)) = (target, touch) else {
+            self.refuse(
+                report,
+                GATE_FEED_LOSS_PLAYBOOK,
+                &format!(
+                    "the feed for {} is silent and the cell holds {held} {} there; no venue \
+                     still heard quotes the instrument, so the position stands unhedged until \
+                     the feed returns",
+                    blind.as_str(),
+                    object_id.as_str()
+                ),
+                now,
+            );
+            return;
+        };
+        match self.send(
+            object_id,
+            &target,
+            side,
+            quantity,
+            price,
+            now,
+            now,
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            gateway,
+        ) {
+            Ok((order_id, simulated)) => {
+                self.journal.record(
+                    Decision::Hedged {
+                        order_id,
+                        venue: target.as_str().to_string(),
+                        object: object_id.as_str().to_string(),
+                        quantity: quantity.to_string(),
+                        simulated,
+                    },
+                    now,
+                );
+            }
+            Err(error) => self.refuse(
+                report,
+                GATE_FEED_LOSS_PLAYBOOK,
+                &format!(
+                    "the feed for {} is silent and the offset of {held} {} at {} was not \
+                     sent: {}",
+                    blind.as_str(),
+                    object_id.as_str(),
+                    target.as_str(),
+                    error.message()
+                ),
+                now,
+            ),
+        }
+    }
+
     /// Give up on every sequence gap whose deadline has passed.
     ///
     /// The sequencer abandons a gap on a deadline only when it is told the
@@ -4402,6 +4565,7 @@ impl Cell {
             self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
         }
+        self.apply_feed_loss_playbook(gateway, now, &mut report);
 
         // The class of the gateway this pass was handed, before a signal is
         // raised or a net is formed. `Cell::send` refuses each order at the

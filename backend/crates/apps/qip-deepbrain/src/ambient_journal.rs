@@ -71,6 +71,13 @@ pub enum AmbientRecord {
         cycle: u64,
         assumptions: Vec<AssumptionState>,
     },
+    /// A tick campaign concluded on its re-measured venue
+    /// (R12-EXPAND-6042): the microstructure delta, whose id is the
+    /// campaign's.
+    MicrostructureDelta {
+        cycle: u64,
+        delta: qip_contracts::microstructure_delta::MicrostructureDelta,
+    },
 }
 
 impl EventBody for AmbientRecord {
@@ -222,6 +229,18 @@ impl AmbientJournal {
                     cycle,
                     signal_id: generated.signal_id.clone(),
                     scenario: generated.scenario.clone(),
+                },
+                at,
+                at,
+            )?;
+            count += 1;
+        }
+        for delta in &round.deltas {
+            self.append(
+                &lineage,
+                AmbientRecord::MicrostructureDelta {
+                    cycle,
+                    delta: delta.clone(),
                 },
                 at,
                 at,

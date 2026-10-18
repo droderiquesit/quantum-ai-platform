@@ -214,6 +214,11 @@ fn run() -> Result<()> {
     // The limit set, read once here and never again: a bound reaches a
     // running process through this file and nothing else (ADR 0061).
     let (limits, limits_banner) = load_risk_limits()?;
+    // The Hedge Brain searches the catalogue this node sizes against; an
+    // empty list planned no hedge in any binary (R12-RISK-4106).
+    let platform_config = platform_config.with_hedge_candidates(
+        qip_kernel::config::paper_hedge_candidates(&catalogue.universe),
+    );
     let mut platform = Platform::new(
         platform_config,
         context,

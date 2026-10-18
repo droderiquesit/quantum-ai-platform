@@ -178,6 +178,16 @@ fn open_archive(target: &ArchiveTarget, clock: Arc<dyn Clock>) -> Result<Arc<dyn
     }
 }
 
+/// The protocol listener's limits: the transport's defaults — among them
+/// the connection cap, past which a connection is answered 503 rather than
+/// queued — with the body ceiling raised to the broker's own.
+pub fn data_plane_limits() -> ServerLimits {
+    ServerLimits {
+        max_body: MAXIMUM_REQUEST_BYTES,
+        ..ServerLimits::default()
+    }
+}
+
 /// The protocol listener's handler: every request goes to the [`Service`],
 /// and what it did is recorded here, at the seam where it became known.
 struct DataPlane {
@@ -546,10 +556,7 @@ fn start_composed(
         telemetry: telemetry.clone(),
         clock,
     });
-    let data_limits = ServerLimits {
-        max_body: MAXIMUM_REQUEST_BYTES,
-        ..ServerLimits::default()
-    };
+    let data_limits = data_plane_limits();
     // ADR 0112: the protocol listener is mutual TLS whenever the
     // configuration carries a certificate, which outside a `local`
     // deployment it must. Loaded here — after storage is proven, before the
