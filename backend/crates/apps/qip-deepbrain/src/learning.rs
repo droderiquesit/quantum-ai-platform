@@ -305,6 +305,14 @@ fn record_validation_scope(
     Ok(())
 }
 
+/// Write the campaign and build a fit is attributed to onto its card.
+fn stamp_provenance(card: &mut ModelCard, provenance: &Option<(String, String)>) {
+    if let Some((campaign_id, code_version)) = provenance {
+        card.campaign_id = Some(campaign_id.clone());
+        card.code_version = Some(code_version.clone());
+    }
+}
+
 fn card_subject(card: &ModelCard) -> Option<&str> {
     let mut found: Option<&str> = None;
     for dataset in &card.training_datasets {
@@ -741,6 +749,13 @@ pub struct LearningDesk {
     /// stability index of 12.4 that was about a different instrument. That is
     /// worse than no score, because it reads as a measurement.
     reference: BTreeMap<String, FittedSample>,
+    /// The campaign and build the next fit is attributed to
+    /// (R12-EXPAND-6076), set by the engine before each round.
+    provenance: Option<(String, String)>,
+    /// Whether [`Self::promote_candidate`] refuses a card with no campaign
+    /// or code version. The engine, which always supplies both, sets it; a
+    /// desk driven alone in a test does not.
+    require_provenance: bool,
     /// The feature stream as it stood when the desk last fitted, held as
     /// summaries rather than as the stream.
     ///
@@ -806,12 +821,30 @@ impl LearningDesk {
             promoted_artifacts: BTreeMap::new(),
             displaced_artifacts: BTreeMap::new(),
             reference: BTreeMap::new(),
+            provenance: None,
+            require_provenance: false,
             stream_reference: BTreeMap::new(),
             classes: Scoreboard::models(),
             fits: 0,
             seed,
             stats: LearningStats::default(),
         }
+    }
+
+    /// Refuse to promote a card that cannot be traced to a research campaign
+    /// and a build (R12-EXPAND-6076). The production engine turns this on.
+    pub const fn requiring_provenance(mut self) -> Self {
+        self.require_provenance = true;
+        self
+    }
+
+    /// Attribute the next round's fits to `campaign_id` and `code_version`.
+    pub fn note_provenance(
+        &mut self,
+        campaign_id: impl Into<String>,
+        code_version: impl Into<String>,
+    ) {
+        self.provenance = Some((campaign_id.into(), code_version.into()));
     }
 
     /// The model-class board: how often each teacher class cleared the skill
@@ -912,6 +945,11 @@ impl LearningDesk {
         // refused here, because the desk is the one producer that always
         // writes it and a card without it was not registered by a fit.
         if let Some(card) = self.registry.get(&reference) {
+            if self.require_provenance
+                && let Some(gap) = card.provenance_gap()
+            {
+                return not_promoted(gap);
+            }
             let missing = card.features_without_lineage();
             if !missing.is_empty() {
                 return not_promoted(format!(
@@ -1562,9 +1600,11 @@ impl LearningDesk {
         // Every card this round registers names the source window and the
         // code its features came from (MODEL-029).
         let lineage = FeatureLineage::of(bars, now).audited(audited_rows);
+        let provenance = self.provenance.clone();
         if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
             lineage.record_on(card);
             record_validation_scope(card, regime, &dataset)?;
+            stamp_provenance(card, &provenance);
         }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         // Skill is judged by the evaluator from the predictions each class
@@ -1622,6 +1662,7 @@ impl LearningDesk {
                 if let Some(card) = self.registry.get_mut(&registration.reference) {
                     lineage.record_on(card);
                     record_validation_scope(card, regime, &dataset)?;
+                    stamp_provenance(card, &provenance);
                 }
                 registration
             }
@@ -2931,6 +2972,60 @@ mod tests {
         assert!(
             reason.contains("records no lineage for return_1"),
             "{reason}"
+        );
+        Ok(())
+    }
+
+    /// R12-EXPAND-6076. A desk that requires provenance does not promote a
+    /// card fitted with none, and promotes the same fit once the campaign and
+    /// build are noted.
+    ///
+    /// Mutation: delete the `provenance_gap` refusal in `promote_candidate` —
+    /// the unattributed fit is promoted and the `NotPromoted` match fails.
+    #[test]
+    fn a_desk_requiring_provenance_refuses_a_fit_with_no_campaign_or_code_version() -> Result<()> {
+        let bars = super::tests_support::learnable(400);
+        let mut platform = serving_platform()?;
+
+        let mut bare = learning_desk().requiring_provenance();
+        bare.maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        let outcome = bare
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        let PromotionOutcome::NotPromoted { reason, .. } = outcome else {
+            return Err(Error::invalid(
+                "an unattributed fit was promoted".to_string(),
+            ));
+        };
+        assert!(
+            reason.contains("neither a research campaign nor a code version"),
+            "{reason}"
+        );
+
+        let mut noted = learning_desk().requiring_provenance();
+        noted.note_provenance("CMP-1", "qip-kernel 0.1.0 (test)");
+        let reference = noted
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = noted
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(card.campaign_id.as_deref(), Some("CMP-1"));
+        assert_eq!(
+            card.code_version.as_deref(),
+            Some("qip-kernel 0.1.0 (test)")
+        );
+        let outcome = noted
+            .promote_candidate(&mut serving_platform()?, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(outcome, PromotionOutcome::Promoted { .. }),
+            "the attributed fit was not promoted: {}",
+            outcome.describe()
         );
         Ok(())
     }

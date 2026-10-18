@@ -410,7 +410,7 @@ impl EvolutionEngine {
             foundries: BTreeMap::new(),
             priors: BTreeMap::new(),
             desk,
-            learning: LearningDesk::new(config_learning, seed),
+            learning: LearningDesk::new(config_learning, seed).requiring_provenance(),
             stats: EvolutionStats::default(),
             discovery: None,
             campaign_config: CampaignConfig::standard()?,
@@ -664,6 +664,12 @@ impl EvolutionEngine {
                 return Ok(Some(LearningRound::refused_at_door(&subject, reason)));
             }
         };
+        // The campaign this window came through and the build running the
+        // fit, written onto the cards the fit registers (R12-EXPAND-6076).
+        self.learning.note_provenance(
+            window.summary.id.clone(),
+            qip_kernel::decision_record::code_version(),
+        );
         let mut round = self
             .learning
             .learn_window(&subject, &window.bars, &regime, now)?;
@@ -2269,6 +2275,52 @@ mod tests {
             1,
             "one campaign closed, one manifest journaled"
         );
+        Ok(())
+    }
+
+    /// R12-EXPAND-6076. The card a production round registers names the
+    /// campaign whose window it was fitted on and the build that fitted it.
+    ///
+    /// Mutation: delete the `note_provenance` call before `learn_window` —
+    /// the card records neither and the first assertion fails.
+    #[test]
+    fn a_card_the_engine_registers_names_its_campaign_and_the_build_that_fitted_it() -> Result<()> {
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let mut round = None;
+        for cycle in 1..=16u64 {
+            if let Some(produced) = engine.maybe_learn(&mut platform, cycle, now)? {
+                round = Some(produced);
+                break;
+            }
+        }
+        let round = round.ok_or_else(|| Error::not_found("a learning round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        let campaign = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the round's campaign"))?;
+        let card = engine
+            .learning
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(card.campaign_id.as_deref(), Some(campaign.id.as_str()));
+        assert_eq!(
+            card.code_version.as_deref(),
+            Some(qip_kernel::decision_record::code_version().as_str())
+        );
+        assert!(card.provenance_gap().is_none());
         Ok(())
     }
 
