@@ -836,3 +836,61 @@ fn a_promoted_model_package_resets_the_freshness_gauge_and_it_ages_between_promo
     observe(&mut ops, at(4), true);
     assert_eq!(age(), Some(0.0), "a newer promotion resets the age");
 }
+
+/// Launched information requests reach the Scout Fabric (R12-AMBIENT-9033):
+/// scout jobs handed to the discovery desk wait in hand-off order and the
+/// desk's next pass reads each job's entities as discovery targets after
+/// the platform's own, each once, and takes the queue. Mutation: drop the
+/// scout loop in `DiscoveryDesk::maybe_run` — the entities are not targeted
+/// and the assertion fails.
+#[test]
+fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() {
+    let mut platform = platform();
+    let mut desk = qip_deepbrain::discovery::DiscoveryDesk::new(
+        qip_deepbrain::discovery::DiscoveryConfig {
+            every_cycles: 1,
+            ..qip_deepbrain::discovery::DiscoveryConfig::default()
+        },
+        vec![],
+    );
+    let job = |id: &str, rank_bp: u32, entities: &[&str]| qip_deepbrain::research::ScoutRequest {
+        request_id: id.to_string(),
+        question: format!("question {id}"),
+        rank_bp,
+        entities: entities.iter().map(|e| (*e).to_string()).collect(),
+    };
+    let jobs = vec![
+        job("info-b", 6_000, &["venue:XSIM"]),
+        job("info-a", 3_000, &["venue:XSIM", "class:Equity"]),
+    ];
+    desk.hand_off(&jobs);
+    let queued: Vec<_> = desk.scout_queue().cloned().collect();
+    assert_eq!(queued, jobs, "the desk holds the jobs in hand-off order");
+
+    let before: BTreeSet<String> = platform
+        .discovery_targets(start())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .map(|t| t.entity)
+        .collect();
+    assert!(
+        !before.contains("venue:XSIM") && !before.contains("class:Equity"),
+        "premise: the platform does not target them itself: {before:?}"
+    );
+    let pass = desk
+        .maybe_run(&mut platform, 1, start())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap_or_else(|| panic!("the pass runs on its cadence"));
+    let targeted: Vec<&str> = pass
+        .targets
+        .iter()
+        .map(|t| t.entity.as_str())
+        .filter(|e| e.starts_with("venue:") || e.starts_with("class:"))
+        .collect();
+    assert_eq!(
+        targeted,
+        ["venue:XSIM", "class:Equity"],
+        "each once, in order"
+    );
+    assert_eq!(desk.scout_queue().count(), 0, "the pass took the queue");
+}

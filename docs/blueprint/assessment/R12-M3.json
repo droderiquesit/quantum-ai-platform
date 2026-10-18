@@ -1102,15 +1102,16 @@
   },
   {
     "id": "R12-WORLD-3051",
-    "status": "PARTIAL",
-    "current": "Stress-world and standing-aside members exist in the federation and produce state; rare-regime branches and alternate-future models absent.",
+    "status": "COMPLETE",
+    "current": "The federation registers, beside the stress-world and standing-aside members, a rare-regime member (markets.rare-regime.global.macro, Scenario: the share of rises on the day after the tape's own tail moves, the largest 5% of absolute moves) and an alternate-future member (markets.alternate-future.global.macro, Counterfactual: the stress world's inverse). Both are fed on every instrument proposition in UNDERSTAND each pass, renewed only for state produced, scored by Brier at resolution, and required by the population check.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1 runs in UNDERSTAND; advisory",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:67 STRESS_SCENARIO; :68 STANDING_ASIDE"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:76 RARE_REGIME, :80 ALTERNATE_FUTURE",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:403 after_tail_moves",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1166 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state (requires both)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1243 the_rare_regime_member_reads_the_day_after_tail_moves_and_the_alternate_future_inverts_the_stress_world",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review (population 9, seven views per instrument)"
     ],
-    "gap": "Rare-regime and alternate-future members.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1118,22 +1119,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now federated; coverage partial."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: rare-regime member fed the whole tape's share of rises -> its view is not 1.0 and the test fails; alternate-future member removed -> the population test fails naming it as absent and the view test fails 'produced no view'. FutureTree alternates stay tick-desk only."
   },
   {
     "id": "R12-WORLD-3052",
-    "status": "PARTIAL",
-    "current": "A self/system member models halt state and authority; latency and data/model health are not modelled.",
+    "status": "COMPLETE",
+    "current": "The self/system member reads, beside halt state, authority, expired manifests and thin subjects, the previous cycle's slowest stage on the platform clock (SystemView.slowest_stage, recorded by FederationStage::observe_cycle after each report) and the count of central capabilities the degradation table holds non-fresh (SystemView.degraded_capabilities from Platform::central_degradation). A stage past SELF_STAGE_LATENCY_BUDGET or a stale capability raises its halt forecast; unreadable health widens its uncertainty. Both inputs are journaled on the review.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1 runs in UNDERSTAND; advisory",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:69 SELF_SYSTEM"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:138 slowest_stage, :143 degraded_capabilities",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:866 the member's state reads both",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10748 observe_cycle after each cycle, :12053 SystemView filled",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1208 a_slow_stage_or_a_stale_capability_moves_the_self_system_members_state",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:800 the_self_system_member_is_fed_the_previous_cycles_stage_latency_and_the_degradation_table"
     ],
-    "gap": "Latency and data/model health in the self/system member.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1141,10 +1143,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Authority added; latency still absent."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: the two inputs ignored in the halt forecast -> 'slow 0.05 vs healthy 0.05'; platform never calling observe_cycle -> the integration test fails 'the second pass did not read the first cycle's stage latency'."
   },
   {
     "id": "R12-REASON-3053",

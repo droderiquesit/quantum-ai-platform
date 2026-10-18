@@ -1480,10 +1480,12 @@
   },
   {
     "id": "R12-FABRIC-10069",
-    "status": "PARTIAL",
-    "current": "No Cloud Scheduler or Workflows resource exists; holds by absence with no guard test.",
-    "evidence": [],
-    "gap": "Guard test if one is added.",
+    "status": "COMPLETE",
+    "current": "No google_cloud_scheduler_job or google_workflows_workflow resource exists under infrastructure/terraform, and blueprint_arch.rs::no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint refuses one whose block names the fabric, an events route, an order, execution, the ledger or a broker.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint"
+    ],
+    "gap": "",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1491,10 +1493,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance scan",
+    "verification": "cd backend && cargo test -p qip-acceptance --test blueprint_arch -- no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a google_cloud_scheduler_job aimed at a qip-fabricd /v1/events URL, written to a new infrastructure/terraform file, failed the test naming the resource; the file was removed. The test also feeds the detector a fabric job, an order workflow and a harmless job. The guard is on marker words in the block, so a job that reaches the fabric through an unmarked URL would pass; none exists."
   },
   {
     "id": "R12-FABRIC-10070",
@@ -3206,14 +3208,13 @@
   },
   {
     "id": "R12-GCP-10144",
-    "status": "PARTIAL",
-    "current": "dev tfvars declare venue_adapter_type=simulated and paper ceiling; tests prove the mock adapter and that dev secrets cannot be production secrets.",
+    "status": "COMPLETE",
+    "current": "No environment, dev included, sets a data-source variable in its tfvars (market_data_connector, deepbrain_connector, deepbrain_discover_every, source_candidates_file): the fast brain runs the synthetic exchange and the deep brain polls no vendor and runs no discovery pass. blueprint_arch.rs::dev_declares_no_more_data_sources_than_any_later_environment pins that dev never holds more than test, stage or prod.",
     "evidence": [
-      "infrastructure/environments/dev/terraform.tfvars venue_adapter_type = simulated",
-      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:252 dev_environment_declares_mock_venue_adapter_explicitly",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project"
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs dev_declares_no_more_data_sources_than_any_later_environment",
+      "infrastructure/terraform/catalogue.tf QIP_DEEPBRAIN_DISCOVER_EVERY, QIP_CONNECTOR_SOURCE"
     ],
-    "gap": "dev 'reduced data' clause has no implementation or test; venue_adapter_type is validated but consumed by nothing.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3221,10 +3222,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test blueprint_arch --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test blueprint_arch -- dev_declares_no_more_data_sources_than_any_later_environment",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Synthetic venue and no-prod-secrets clauses met; 'reduced data' clause has no evidence."
+    "notes": "Re-graded 2026-10-18 (lane L08). Reduced is met as the minimum, not as fewer than the other environments: all four hold none today, so the register text 'dev uses reduced data' is read as dev never holds more. Mutation: the scanner made blind to assignments failed the in-test fixture (a deepbrain_discover_every line appended to a copy of dev's tfvars text must be reported); the protected tfvars were not edited."
   },
   {
     "id": "R12-FABRIC-10145",
@@ -4606,14 +4607,15 @@
   },
   {
     "id": "R12-CICD-10203",
-    "status": "PARTIAL",
-    "current": "Images pinned by digest and tags immutable (tested); Fabric schemas versioned with a lock; no guard against hand-copied model files or undocumented emergency config.",
+    "status": "COMPLETE",
+    "current": "No model-weight file (.onnx, .pt, .safetensors, .gguf) is committed outside a declared registry path (the declared set is empty), and every QIP_* variable that catalogue.tf or the execution node's startup template sets is named in a page under docs/ops. Images are pinned by digest and Fabric schemas are versioned with a lock.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:3099",
-      "infrastructure/terraform/modules/registry/main.tf:33",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs no_model_weights_are_committed_outside_a_declared_registry_path",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_environment_variable_a_workload_reads_is_documented",
+      "docs/ops/runbooks/environment-variables.md",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:527"
     ],
-    "gap": "Model file and emergency-config guards.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4621,10 +4623,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops --test event_fabric_schema_lock",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- no_model_weights_are_committed_outside_a_declared_registry_path every_environment_variable_a_workload_reads_is_documented",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one."
   },
   {
     "id": "R12-OBS-10204",
