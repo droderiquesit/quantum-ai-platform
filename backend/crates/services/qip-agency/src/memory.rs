@@ -14,7 +14,13 @@
 //! to whatever happened to run just before it was measured.
 //!
 //! [`crate::engine::learn`] is the production writer: it keeps an outcome
-//! only after the action ran and its attribution validated.
+//! only after the action ran — or, since the shadow-learning lane, after a
+//! pass shadowed it — and its attribution validated. Which of the two it was
+//! is the record's twelfth field, [`Observed`], and it is not optional: a
+//! simulated effect filed as a measured one is the exact lie this memory
+//! exists to refuse, and [`ActionOutcomeMemory::recommend_for`] reads only
+//! what was measured, so the platform cannot learn to repeat what its own
+//! model predicted would work.
 //!
 //! The memory is a bounded working set. When it is full the oldest record
 //! leaves it; the durable record of an intervention is the event log, not
@@ -22,11 +28,25 @@
 
 use crate::{non_empty, required, text};
 use qip_core::{Decimal, Error};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+
+/// Where an outcome's observation came from. Required on every record, so a
+/// reader never has to infer from a figure whether anything happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observed {
+    /// The success metric was measured in the world after an executed action.
+    Measured,
+    /// The figures are the pass's own simulation of the action it shadowed:
+    /// nothing ran, nothing was reached, and the no-action counterfactual is
+    /// the structural model's, not the venue's.
+    Simulated,
+}
 
 /// The nine fields §24 requires, and the audience and delay R12-AGENCY-6108
 /// learns over, each optional so absence is a refusal that names the field.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ActionOutcomeDraft {
     pub intervention_context: Option<String>,
     /// The audience or environment state the action met: the regime.
@@ -48,9 +68,13 @@ pub struct ActionOutcomeDraft {
     pub side_effects: Option<Vec<String>>,
     /// The success metric as estimated had nothing been done.
     pub no_action_counterfactual: Option<Decimal>,
+    /// Measured in the world, or simulated by the pass that shadowed the
+    /// action.
+    pub observed: Option<Observed>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ActionOutcome {
     pub intervention_context: String,
@@ -64,6 +88,7 @@ pub struct ActionOutcome {
     pub attribution_confidence: Decimal,
     pub side_effects: Vec<String>,
     pub no_action_counterfactual: Decimal,
+    pub observed: Observed,
 }
 
 impl ActionOutcomeDraft {
@@ -89,6 +114,7 @@ impl ActionOutcomeDraft {
                 "no_action_counterfactual",
                 self.no_action_counterfactual,
             )?,
+            observed: required("observed", self.observed)?,
         })
     }
 }
@@ -154,7 +180,11 @@ impl ActionOutcomeMemory {
     ///
     /// Only records in `environment_state` (and, when given, reaching
     /// `audience`) are read; what worked for another audience is not
-    /// evidence about this one. A sequence seen fewer than `min_support`
+    /// evidence about this one. Only [`Observed::Measured`] records are
+    /// read: a simulated outcome is the planner's own prediction filed under
+    /// another name, and recommending on it would teach the platform to
+    /// repeat what its model said would work rather than what did. A
+    /// sequence seen fewer than `min_support`
     /// times there has not earned an opinion, and a mean effect
     /// (`observed - counterfactual`) that is not strictly positive loses to
     /// doing nothing. The winner carries its mean delay, so a caller knows
@@ -175,7 +205,8 @@ impl ActionOutcomeMemory {
         // Per sequence: summed effect, count, summed delay.
         let mut seen: BTreeMap<&[String], (Decimal, i64, u128)> = BTreeMap::new();
         for outcome in &self.records {
-            if outcome.environment_state != environment_state
+            if outcome.observed != Observed::Measured
+                || outcome.environment_state != environment_state
                 || audience.is_some_and(|a| a != outcome.audience)
             {
                 continue;

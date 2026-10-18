@@ -331,9 +331,13 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::PlanApproved { .. } => "plan",
             AgencyRecord::Executed { .. } => "executed",
             AgencyRecord::ToolDecision { .. } => "tool",
+            AgencyRecord::Learned { .. } => "learned",
+            AgencyRecord::LearningWithheld { .. } => "learning withheld",
             AgencyRecord::PassConcluded { .. } => "concluded",
         })
         .collect();
+    // The attempt was refused at the adapter, so there is no outcome to learn
+    // from, and the record says so rather than staying silent.
     assert_eq!(
         kinds,
         [
@@ -343,6 +347,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             "plan",
             "executed",
             "tool",
+            "learning withheld",
             "concluded"
         ]
     );

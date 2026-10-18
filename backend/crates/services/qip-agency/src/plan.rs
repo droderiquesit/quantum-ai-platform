@@ -263,10 +263,23 @@ pub struct Proposal {
     pub comparison: Comparison,
 }
 
+/// Which proposal [`select`] chose, and the comparison it won on, so a
+/// later stage can read the plan's own prediction (its expected effect and
+/// time to effect) rather than re-deriving it from the steps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chosen {
+    /// Index into the proposals `select` was given.
+    pub index: usize,
+    pub comparison: Comparison,
+}
+
 /// What [`select`] chose, and every proposal it refused with the reason.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Selection {
     pub chosen: Candidate,
+    /// The proposal behind `chosen`, when it is a plan; `None` for the
+    /// no-action baseline.
+    pub origin: Option<Chosen>,
     /// Index into the proposals, and the refusal.
     pub refused: Vec<(usize, Error)>,
 }
@@ -290,7 +303,7 @@ pub fn select(
     proposals: Vec<Proposal>,
 ) -> Result<Selection, Error> {
     let mut refused = Vec::new();
-    let mut admitted: Vec<(Decimal, Comparison, InterventionPlan)> = Vec::new();
+    let mut admitted: Vec<(usize, Decimal, Comparison, InterventionPlan)> = Vec::new();
     for (index, proposal) in proposals.into_iter().enumerate() {
         let mut steps = Vec::new();
         proposal.root.all_steps(&mut steps);
@@ -307,28 +320,37 @@ pub fn select(
                 .and_then(|plan| proposal.comparison.score().map(|score| (score, plan)))
         };
         match verdict {
-            Ok((score, plan)) => admitted.push((score, proposal.comparison, plan)),
+            Ok((score, plan)) => admitted.push((index, score, proposal.comparison, plan)),
             Err(refusal) => refused.push((index, refusal)),
         }
     }
-    let mut best: Option<&(Decimal, Comparison, InterventionPlan)> = None;
+    let mut best: Option<&(usize, Decimal, Comparison, InterventionPlan)> = None;
     for entry in &admitted {
-        if !entry.0.is_positive() {
+        if !entry.1.is_positive() {
             continue;
         }
         let better = match best {
             None => true,
-            Some((score, comparison, _)) => {
-                entry.1.rank(entry.0, comparison, *score) == std::cmp::Ordering::Greater
+            Some((_, score, comparison, _)) => {
+                entry.2.rank(entry.1, comparison, *score) == std::cmp::Ordering::Greater
             }
         };
         if better {
             best = Some(entry);
         }
     }
-    let chosen = best.map_or(Candidate::NoAction, |(_, _, plan)| {
-        Candidate::Plan(plan.clone())
-    });
+    let (chosen, origin) = best.map_or(
+        (Candidate::NoAction, None),
+        |(index, _, comparison, plan)| {
+            (
+                Candidate::Plan(plan.clone()),
+                Some(Chosen {
+                    index: *index,
+                    comparison: comparison.clone(),
+                }),
+            )
+        },
+    );
     // Routed through `CandidateSet` so the baseline is present by the same
     // rule everywhere, not by this function remembering to add it.
     if !admitted.is_empty() {
@@ -336,9 +358,13 @@ pub fn select(
         all.extend(
             admitted
                 .into_iter()
-                .map(|(_, _, plan)| Candidate::Plan(plan)),
+                .map(|(_, _, _, plan)| Candidate::Plan(plan)),
         );
         CandidateSet::new(all)?;
     }
-    Ok(Selection { chosen, refused })
+    Ok(Selection {
+        chosen,
+        origin,
+        refused,
+    })
 }
