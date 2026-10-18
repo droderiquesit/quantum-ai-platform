@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 396 | 26.1% |
+| Blueprint completion (COMPLETE) | 397 | 26.2% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1216 | 80.1% |
-| Integrated (reached from a composition root) | 845 | 55.7% |
-| Deployable (provisionable from committed config) | 204 | 13.4% |
-| End-to-end demonstrated | 17 | 1.1% |
+| Integrated (reached from a composition root) | 846 | 55.7% |
+| Deployable (provisionable from committed config) | 205 | 13.5% |
+| End-to-end demonstrated | 18 | 1.2% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 396 |
-| PARTIAL | 975 |
+| COMPLETE | 397 |
+| PARTIAL | 974 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -47,7 +47,7 @@ register (ADR 0099), and there is no second one.
 | [AGENCY](#agency) | 69 | 31 | 31 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 19 | 58 | 3 | 1 | 0 | 76 | 70 | 0 |
 | [QUANT](#quant) | 78 | 24 | 28 | 26 | 0 | 0 | 52 | 51 | 0 |
-| [EXPAND](#expand) | 68 | 20 | 46 | 2 | 0 | 0 | 65 | 64 | 2 |
+| [EXPAND](#expand) | 68 | 21 | 45 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 10 | 11 | 3 | 2 | 0 | 21 | 21 | 2 |
@@ -1226,7 +1226,7 @@ register (ADR 0099), and there is no second one.
 | R12-EXPAND-6039 | Collective/federated intelligence produces KnowledgeDelta | KnowledgeDelta contract exists in qip-contracts. | PARTIAL | No producer on a binary path; no SharedEpisode. |  | P2 | cargo test (crate producing KnowledgeDelta / SharedEpisode) |  |
 | R12-EXPAND-6040 | Self-evaluation + calibration produces Scorecard | Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in qip_ai::language::ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window. | PARTIAL | No committed deployment installs the hosted adapter (ADR 0037 preconditions unmet: no pinned provider, attestation or credential anywhere), so language::assemble returns replies: None and no reply is ever counted on a running path. The counting and the GapSignal are implemented and mutation-tested; they run once an operator satisfies ADR 0037. |  | P2 | cargo test -p qip-deepbrain --test expansion_rows |  |
 | R12-EXPAND-6041 | Self-generated curriculum produces CurriculumItem | qip-deepbrain constructs a ResearchLoop at start (main.rs:853) that sweeps every cycle unless switched off and refuses a malformed cadence; a sweep turns an unsupported asset class into a validated CurriculumItem scored on measurements and carrying its derivation, and an asset class with no history becomes a queued research item through the attention router. The check (a CurriculumItem/ResearchQueue record produced by the mechanism, validated, with lineage) is met. | COMPLETE |  |  | P2 | cargo test -p qip-deepbrain --test expansion_rows; cargo test -p qip-deepbrain --test research an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router |  |
-| R12-EXPAND-6042 | Market-microstructure expansion produces TickCampaign | TickCampaign is opened from the deep-brain sweep. TickCampaignDetector::conclude (campaigns.rs:421) produces a validated MicrostructureDelta for a venue-scoped campaign from its re-measured residuals, the delta_id being the campaign id and the residual kind taken from the trigger; no production caller yet. | PARTIAL | Producer exists but nothing on the default path calls it: apps/qip-deepbrain/src/research.rs keeps no open campaigns between sweeps, so it never knows a campaign's residual was re-measured; it needs to retain each opened TickCampaign (bounded) and, when a later sweep's fills re-measure that venue and instrument, call TickCampaignDetector::conclude and journal the delta. |  | P2 | cargo test -p qip-expansion --test loop a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign |  |
+| R12-EXPAND-6042 | Market-microstructure expansion produces TickCampaign | TickCampaign is opened from the deep-brain sweep. Since 2026-10-18 the sweep retains every venue-scoped fill-prediction campaign it opens (bounded at RETAINED) and, once at least MIN_REMEASURED fills at that venue and instrument have scored since it opened, calls TickCampaignDetector::conclude with the twin's calibrated fill bias as the modelled figure, the fills' mean trade error as the observed one, the calibration state as the model version and the opening-to-now window; the MicrostructureDelta (delta_id = campaign id) is put on the round and journaled as an AmbientRecord::MicrostructureDelta. A concluded campaign leaves the set. | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta |  |
 | R12-EXPAND-6043 | World-model population expansion produces WorldModelSpec | WorldModelSpec and residual-triggered WorldModelBranch proposals exist in qip-world-model; benchmarking of incremental value not found. | PARTIAL | Incremental-value benchmark and spawn path. |  | P2 | cargo test (crate producing WorldModelSpec / WorldModelBranch) |  |
 | R12-EXPAND-6044 | Symbolic theory growth produces RulePack | RulePack exists and the kernel reviews rules in LEARN; no ConstraintPack/TheoryDelta or contradiction-driven revision task. | PARTIAL | TheoryDelta and contradiction-to-task path. |  | P2 | cargo test (crate producing RulePack / ConstraintPack / TheoryDelta) |  |
 | R12-EXPAND-6045 | Ambient proactive expansion produces AmbientSignal | Each raised gap becomes a validated AmbientSignal; the router's Activated AttentionEvent, not a person, creates the curriculum item, which carries its origin gap; journaled records carry causation lineage. | COMPLETE | None for the requirement; not deployed. |  | P2 | cargo test (crate producing AmbientSignal / AttentionEvent) |  |
