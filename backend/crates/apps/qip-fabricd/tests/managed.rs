@@ -389,3 +389,134 @@ fn a_seated_broker_refuses_a_local_p1_stream_and_a_local_broker_refuses_a_manage
     assert!(error.to_string().contains("no managed log"), "{error}");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// The instance and epoch the lease names; the holder string the broker
+/// writes is the instance name and its process epoch (`zone-a#1`).
+fn lease_of(
+    log: &MemoryManagedLog,
+    partition: &qip_streaming::event_fabric::managed::PartitionRef,
+) -> Option<(String, u64)> {
+    log.lease_of(partition).map(|(holder, epoch)| {
+        (
+            holder.split('#').next().unwrap_or_default().to_string(),
+            epoch,
+        )
+    })
+}
+
+/// RES-8103: a leader that is drained hands its lease back, so the follower
+/// leads at once — with no database time passing — and no record the
+/// drained leader acknowledged is lost. The drained leader stops
+/// acknowledging before it is stopped, which is what makes the handover
+/// safe to do while producers are still writing.
+///
+/// Mutation: in `Broker::relinquish_leases`, delete the `seat.log.release`
+/// call (keep the `set_lease(.., None)`) — the leader refuses, the lease is
+/// never lapsed, the follower is never promoted without the clock moving and
+/// the deadline assertion fires. Mutation: in `MemoryManagedLog::release`,
+/// return `Ok(true)` without lapsing the row — same failure.
+#[test]
+fn a_drained_leader_hands_its_lease_to_the_follower_with_no_acknowledged_record_lost() {
+    let database_time = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 18)));
+    let log: Arc<MemoryManagedLog> = Arc::new(MemoryManagedLog::new(database_time.clone()));
+    let catalogue = catalogue("managed_majority", 3);
+    let leader = instance("zone-a", &catalogue, Some(log.clone()));
+    let follower = instance("zone-b", &catalogue, Some(log.clone()));
+
+    let mut writer = producer(&leader.address(), AckProfile::ManagedMajority);
+    for n in 0..3 {
+        let ack = writer.send(batch(&format!("fill-{n}"))).unwrap();
+        assert_eq!(ack.managed_commit_epoch(), Some(1));
+    }
+    let partition = qip_streaming::event_fabric::managed::PartitionRef::new(OUTCOMES, 0);
+    assert_eq!(
+        lease_of(&log, &partition),
+        Some(("zone-a".to_string(), 1)),
+        "premise: the leader holds the lease before it is drained"
+    );
+
+    let report = leader.running.as_ref().unwrap().drain().unwrap();
+    assert_eq!(
+        report.released,
+        vec![(OUTCOMES.to_string(), 0)],
+        "the drain handed back the one managed partition it led: {report:?}"
+    );
+    let mut refused = producer(&leader.address(), AckProfile::ManagedMajority);
+    assert!(
+        refused.send(batch("after-drain")).is_err(),
+        "a drained leader acknowledges nothing more"
+    );
+
+    // No `database_time.advance`: a lapsed-by-TTL takeover cannot happen
+    // here, so a promotion is the release's doing.
+    let mut writer = producer(&follower.address(), AckProfile::ManagedMajority);
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    let ack = loop {
+        match writer.send(batch("fill-3")) {
+            Ok(ack) => break ack,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(StdDuration::from_millis(50));
+                writer = producer(&follower.address(), AckProfile::ManagedMajority);
+            }
+            Err(error) => panic!("the follower never took the released lease: {error}"),
+        }
+    };
+    assert_eq!(ack.base_offset(), 3, "dense across the handover");
+    assert_eq!(ack.managed_commit_epoch(), Some(2));
+    for n in 0..4u64 {
+        assert_eq!(
+            payload_at(&follower.address(), n),
+            format!("fill-{n}").into_bytes()
+        );
+    }
+}
+
+/// The operator's lever on a broker nobody holds a handle to: a `DRAIN` file
+/// in its data directory. The drained broker hands its lease back and then
+/// does not take it again, even when the lease lapses with nobody left to
+/// renew it — a draining broker that went on renewing would be the old
+/// leader again one pass after it was drained.
+///
+/// Mutation: in the lease thread, delete the `drain_file.exists()` check —
+/// the file is never read, the follower is never promoted and the deadline
+/// assertion fires. Mutation: delete the `continue` after `relinquish_leases`
+/// in the same loop — the drained broker renews, takes the lapsed lease at
+/// epoch 3 and the final `lease_of` assertion fires.
+#[test]
+fn a_drain_file_hands_the_lease_over_and_the_drained_broker_does_not_take_it_back() {
+    let database_time = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 18)));
+    let log: Arc<MemoryManagedLog> = Arc::new(MemoryManagedLog::new(database_time.clone()));
+    let catalogue = catalogue("managed_majority", 3);
+    let leader = instance("zone-a", &catalogue, Some(log.clone()));
+    let follower = instance("zone-b", &catalogue, Some(log.clone()));
+    let partition = qip_streaming::event_fabric::managed::PartitionRef::new(OUTCOMES, 0);
+    let mut writer = producer(&leader.address(), AckProfile::ManagedMajority);
+    writer.send(batch("fill-0")).unwrap();
+    assert_eq!(
+        lease_of(&log, &partition),
+        Some(("zone-a".to_string(), 1)),
+        "premise: the leader leads at epoch 1"
+    );
+
+    std::fs::write(leader.root.join("data").join(qip_fabricd::DRAIN_FILE), b"").unwrap();
+    let deadline = Instant::now() + StdDuration::from_secs(30);
+    while lease_of(&log, &partition) != Some(("zone-b".to_string(), 2)) {
+        assert!(
+            Instant::now() < deadline,
+            "the follower never took the lease the drain file released: {:?}",
+            lease_of(&log, &partition)
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+    }
+
+    // Lapse the follower's lease with nobody to renew it, then give the
+    // drained broker several passes at it.
+    follower.running.as_ref().unwrap().drain().unwrap();
+    database_time.advance(Duration::from_millis(1_501));
+    std::thread::sleep(StdDuration::from_millis(1_800));
+    assert_eq!(
+        lease_of(&log, &partition),
+        Some(("zone-b".to_string(), 2)),
+        "a drained broker takes no lease, lapsed or not"
+    );
+}

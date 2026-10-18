@@ -278,6 +278,14 @@ impl Handler for HealthPlane {
     }
 }
 
+/// The file whose presence in the data directory drains the broker's
+/// leadership (RES-8103): an operator or a pre-stop hook creates it, and the
+/// lease thread hands every lease back on its next pass and stops renewing.
+/// A file rather than a signal because the process holds no handler for one
+/// (`unsafe` is forbidden), and the data directory is the one place this
+/// binary already owns the filesystem of.
+pub const DRAIN_FILE: &str = "DRAIN";
+
 /// A started broker: its two addresses, and the handles that stop it.
 pub struct Running {
     address: String,
@@ -289,6 +297,9 @@ pub struct Running {
     stop_data: Arc<AtomicBool>,
     stop_health: Arc<AtomicBool>,
     stop_housekeeping: Arc<AtomicBool>,
+    /// Set by [`Running::drain`] or by the operator's [`DRAIN_FILE`]; read by
+    /// the lease thread, which then hands leases back instead of renewing.
+    draining: Arc<AtomicBool>,
     data_thread: Option<JoinHandle<()>>,
     other_threads: Vec<JoinHandle<()>>,
     /// The listener's certificate and its renewal loop, under
@@ -336,6 +347,19 @@ impl Running {
 
     pub fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    /// Drain leadership (RES-8103): stop leading every managed partition and
+    /// hand each lease back, so a follower takes over now rather than a TTL
+    /// from now. The broker stays up and keeps following, so a P2-P4 stream
+    /// and the health plane are unaffected; it does not take a lease again
+    /// until the process restarts.
+    ///
+    /// An error means the broker is not seated at a managed log, so there is
+    /// no leadership to hand over.
+    pub fn drain(&self) -> Result<qip_streaming::event_fabric::broker::ReleaseReport> {
+        self.draining.store(true, Ordering::SeqCst);
+        self.service.broker().relinquish_leases()
     }
 
     /// Stop serving the protocol and leave health and metrics up, reporting
@@ -648,16 +672,30 @@ fn start_composed(
     };
     // ADR 0111's lease loop, on a thread of its own: a Spanner round trip
     // that stalls holds this thread, never the produce path's.
+    let draining = Arc::new(AtomicBool::new(false));
     let lease_thread = config.managed.as_ref().map(|settings| {
         let broker = service.broker().clone();
         let health = health.clone();
         let telemetry = telemetry.clone();
         let stop = stop_housekeeping.clone();
+        let draining = draining.clone();
+        let drain_file = config.data_dir.join(DRAIN_FILE);
         let ttl_ms = settings.lease_ttl_ms;
         let renew_every = Duration::from_millis(ttl_ms / 3);
         std::thread::spawn(move || {
             while !stop.load(Ordering::SeqCst) {
                 std::thread::sleep(renew_every);
+                if drain_file.exists() {
+                    draining.store(true, Ordering::SeqCst);
+                }
+                // Every pass of a draining broker hands back whatever it
+                // holds, rather than once: a renewal that was already in
+                // flight when the drain began can have taken a lease after
+                // the first release, and this is what returns it.
+                if draining.load(Ordering::SeqCst) {
+                    let _ = broker.relinquish_leases();
+                    continue;
+                }
                 let report = broker.tend_leases(ttl_ms);
                 if let Ok(report) = &report {
                     telemetry.leases(report);
@@ -694,6 +732,7 @@ fn start_composed(
         stop_data,
         stop_health,
         stop_housekeeping,
+        draining,
         data_thread: Some(data_thread),
         other_threads: [health_thread, archive_thread, catalogue_thread]
             .into_iter()

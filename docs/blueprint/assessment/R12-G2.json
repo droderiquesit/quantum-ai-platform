@@ -4202,7 +4202,7 @@
       "backend/crates/libs/qip-storage/src/compaction.rs",
       "backend/crates/libs/qip-storage/src/segment/archive.rs:138"
     ],
-    "gap": "Async compaction proof.",
+    "gap": "The closure as graded cannot be taken: qip_storage::compaction::Compactor concatenates every object under a prefix into a content-addressed blob (segments/compacted/<sha256>) and returns the originals as deletable without deleting them, and the archive's objects (segments/sha256/<hash>, one per sealed segment) are each named by an archive-manifest row that ArchiveReader::hydrate fetches by that exact key and verifies against the manifest's content hash. Compacting the archive prefix would either leave the originals (storage grows by a merged copy per pass, since the compactor re-reads its own output) or, if they were deleted, break hydration of every archived segment. Closing needs a compactor that rewrites the manifest's blob key and replay-index offsets atomically with the merge (an ADR 0100 archive-format decision) and honours min_object_size, which Compactor never reads; then a housekeeping-tick caller and a broker test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4213,7 +4213,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed."
   },
   {
     "id": "R12-FINOPS-9188",
