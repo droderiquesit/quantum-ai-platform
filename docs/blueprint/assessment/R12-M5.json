@@ -1567,7 +1567,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined (proposals only)"
     ],
-    "gap": "Counterfactual scoring of cycles and the coordination rule.",
+    "gap": "Cell refusals cannot be priced from the centre: a cell's report carries them as DeltaRefusal { gate, reason, venue } only (qip-edge cell.rs refusals: Vec<(String, String)>, mesh.rs DeltaRefusal), with no instrument, side or quantity, and the twin's evaluate_alternatives needs an order to re-price. Closing needs the cell wire to carry the refused intent (a qip-mesh/qip-edge change outside the kernel) or the cell to price locally; then score_declined can queue them beside the desk's own. The desk's own refusals are already captured and priced (tests/learning.rs a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1578,7 +1578,7 @@
     "verification": "new kernel/learning test over cycle refusals",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the wire, not a missing call in score_declined."
   },
   {
     "id": "R12-MESH-5069",

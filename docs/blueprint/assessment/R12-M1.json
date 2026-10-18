@@ -3692,7 +3692,7 @@
       "backend/crates/libs/qip-financial/tests/ladder.rs",
       "backend/crates/tests/qip-acceptance/tests/region_share.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Rides R12-CAPITAL-4075/4078/4079: idle-cash routing needs a yield shelf nothing supplies and a floor that must be the survival governor's, and DatedLadder needs dated obligations the kernel does not produce except through the commitment book. Design decisions recorded on those rows come first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3703,7 +3703,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-RISK-1162",
@@ -3735,7 +3735,7 @@
       "backend/crates/services/qip-capital-fabric/src/rebalance.rs",
       "backend/crates/tests/qip-acceptance/tests/capital_corridor.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Yield routing is blocked on the shelf named under R12-CAPITAL-4078; financing/credit is licence-gated and excluded under ADR 0003 and is to be recorded as such in the register once routing exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3746,7 +3746,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-LEDGER-1164",

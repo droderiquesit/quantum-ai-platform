@@ -4708,7 +4708,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn",
       "backend/crates/runtime/qip-kernel/tests/learning.rs"
     ],
-    "gap": "Rejected-by-risk and edge-refusal outcomes in learning; desk outcome records not consumed by any learner.",
+    "gap": "Desk risk-limit vetoes are already learned from: capture_submission records Action::Rejected with gate, rules and readings and queues the sizing-evidence refusals for score_declined. Not learned from: edge-cell refusals, which reach the centre as DeltaRefusal { gate, reason, venue } with no instrument, side or size (see R12-MESH-5068 for the wire change), and desk outcome records, which DeskShipper carries to the ledger stream and no learner consumes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4719,7 +4719,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent."
   },
   {
     "id": "R12-FABRIC-7211",

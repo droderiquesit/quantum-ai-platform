@@ -394,7 +394,7 @@
       "backend/crates/runtime/qip-kernel/tests/capital_calls.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "No private-markets agent. Commitments and capital calls exist only in the kernel, and illiquid marks would come from the desk book, which is fixed at assembly. Needs a desk facility the kernel writes commitments and calls into, and a fed book, before an agent can cover illiquid valuation, commitments and capital calls.",
+    "gap": "Blocked on the same kernel feed as R12-CAPITAL-3020 (BookView and RiskView as Upstreams) plus a desk facility the kernel writes commitments and capital calls into; the private-markets agent comes after both.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -405,7 +405,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed."
   },
   {
     "id": "R12-ASSET-3019",
@@ -416,7 +416,7 @@
       "grep -rn '\"approved_conviction\"' over runtime, apps and services finds no writer outside tests",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "PortfolioConstruction is constructed but reports no data in every running binary: nothing in production writes the approved_conviction feature it sizes from. Divestment also needs the live book, which the desk fixes at assembly. Needs the kernel to record approved convictions on the world model in REASON and to feed the book, then divestment and causal-driver allocation findings in the agent.",
+    "gap": "Two prerequisites, neither done: the kernel feeding BookView as an Upstream (see R12-CAPITAL-3020), and a kernel writer for the approved_conviction feature PortfolioConstruction sizes from (nothing outside tests writes it; REASON approves a thesis and the conviction is not recorded on the world model). Then divestment and causal-driver findings in the agent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -427,7 +427,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding. Gap sharpened 2026-10-18 (lane L01); no code changed."
   },
   {
     "id": "R12-CAPITAL-3020",
@@ -438,7 +438,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:21671 forecast_capital_demand, kernel-side",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "No capital specialist. Its inputs — cash, gross, leverage, funding, grants — are on the desk's book and risk facilities, which production fixes at assembly (empty book at initial equity), so an agent added now would report the assembly-time book forever. Needs the kernel to feed book and risk as Upstreams (the RiskView patch in lane L16's report) before an agent here can cover its scope.",
+    "gap": "No capital specialist, and the kernel half is not done: Desk::new is given a BookView and RiskView at assembly (empty book, initial equity) that nothing updates, while only world, market and research memory are Upstreams. Feeding them is a kernel change with a behavioural consequence that needs a decision: RiskView with the live risk_state and limits makes the Risk agent veto against the real book instead of the assembly-time empty one, and BookView needs a qip_portfolio::Portfolio rebuilt from the desk's fills. Then an agent in qip-investment-agents can cover cash, gross, leverage, funding and grants.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -449,7 +449,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  Gap sharpened 2026-10-18 (lane L01); no code changed."
   },
   {
     "id": "R12-RISK-3021",
