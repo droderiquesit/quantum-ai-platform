@@ -74,4 +74,7 @@ pub use episode::{
 };
 pub use experience::{ExperienceReport, RegimeExperience, regime_key};
 pub use sampler::{EpisodeGrade, EpisodeSampler, HIGH_SURPRISE_BPS, TAIL_RESERVE_DIVISOR};
-pub use store::{EpisodicMemory, PrecedentDigest, Recall, Recalled};
+pub use store::{
+    ABSTRACTION_MEMBERS_RETAINED, EpisodeAbstraction, EpisodicMemory, PrecedentDigest, Recall,
+    Recalled,
+};

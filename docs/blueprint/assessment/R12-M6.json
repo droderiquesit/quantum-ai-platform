@@ -280,13 +280,14 @@
   },
   {
     "id": "R12-WORLD-6013",
-    "status": "PARTIAL",
-    "current": "qip-ai episodic store is capacity-bounded with a graded sampler choosing what to give up; no consolidation into abstractions or deduplication of near-duplicates.",
+    "status": "COMPLETE",
+    "current": "The episodic store consolidates as it forgets. At capacity, EpisodicMemory spends a calm episode whose pattern (instrument, regime, claim direction) it still holds another instance of before a unique calm one, even an older unique one; the tail reserve of §54.2's sampler is untouched. Every evicted episode is folded into an EpisodeAbstraction for its pattern: the count folded, the newest 32 member ids as lineage, the mean realised move over resolved members, and the known-at span. Abstractions are bounded by the store's capacity. The kernel holds EpisodicMemory::default() on every Platform, so this runs on the default path.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/memory/store.rs:220 bounded capacity refused at zero",
-      "backend/crates/libs/qip-ai/src/memory/store.rs:350 remember evicts beyond capacity"
+      "backend/crates/libs/qip-ai/src/memory/store.rs EpisodicMemory::stale_calm, abstract_away, EpisodeAbstraction",
+      "backend/crates/runtime/qip-kernel/src/platform.rs episodes: EpisodicMemory::default()",
+      "backend/crates/libs/qip-ai/tests/episodic.rs at_capacity_a_stale_near_duplicate_is_folded_into_an_abstraction_before_a_unique_episode_goes"
     ],
-    "gap": "Abstraction/consolidation step and dedup of near-duplicate episodes.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -294,10 +295,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ai",
+    "verification": "cargo test -p qip-ai --test episodic && cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: stale_calm returning the oldest calm slot evicts the stale duplicate's older unique neighbour instead; skipping abstract_away produces no abstraction. qip-kernel: 930 passed, 0 failed across 62 binaries with the new eviction in force."
   },
   {
     "id": "R12-TICK-6014",
@@ -616,13 +617,14 @@
   },
   {
     "id": "R12-EXPAND-6028",
-    "status": "PARTIAL",
-    "current": "Bounded episodic memory with graded eviction; MemoryEntry contract with retention/value policy; no MemoryPack/EpisodeCluster.",
+    "status": "COMPLETE",
+    "current": "Memories consolidate, summarise and deduplicate on the default path: the kernel's EpisodicMemory evicts a near-duplicate (same instrument, regime and claim direction) before a unique episode and folds every evicted episode into an EpisodeAbstraction, the consolidation record, carrying the folded count, member episode ids as lineage (newest 32), the mean realised move of the resolved members and the known-at span, bounded by the store's capacity. MemoryEntry's retention/value contract is unchanged.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/memory/store.rs:350",
-      "backend/crates/libs/qip-contracts/src/expansion.rs:549 MemoryEntry"
+      "backend/crates/libs/qip-ai/src/memory/store.rs EpisodeAbstraction, EpisodicMemory::abstractions",
+      "backend/crates/libs/qip-ai/tests/episodic.rs at_capacity_a_stale_near_duplicate_is_folded_into_an_abstraction_before_a_unique_episode_goes",
+      "backend/crates/runtime/qip-kernel/src/platform.rs episodes: EpisodicMemory::default()"
     ],
-    "gap": "Consolidation into packs/clusters.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -630,10 +632,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing MemoryPack / EpisodeCluster)",
+    "verification": "cargo test -p qip-ai --test episodic",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. The record is EpisodeAbstraction in qip-ai, keyed by pattern rather than the triage proposal's EpisodeCluster in qip-contracts keyed by embedding bucket: a pattern key states what made two episodes the same lesson, where an LSH bucket co-locates unrelated episodes by projection. No deep-brain call was added; consolidation runs inside the kernel's store on every eviction. Mutation: skipping abstract_away produces no abstraction."
   },
   {
     "id": "R12-EXPAND-6029",

@@ -179,6 +179,107 @@ impl PrecedentDigest {
     }
 }
 
+/// How many folded episode ids an abstraction keeps as lineage, newest last.
+/// The count of everything folded is kept in full; the ids are bounded so an
+/// abstraction over a long-running pattern does not grow with the stream.
+pub const ABSTRACTION_MEMBERS_RETAINED: usize = 32;
+
+/// What makes two episodes near-duplicates of one another: the same
+/// instrument, the same regime, and a claim pointing the same way. Two such
+/// episodes teach the same lesson; the older calm one is the stale detail.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PatternKey {
+    instrument: String,
+    market: String,
+    volatility: String,
+    direction: i8,
+}
+
+impl PatternKey {
+    fn of(episode: &Episode) -> Self {
+        let d = episode.claim.direction;
+        Self {
+            instrument: episode.instrument.clone(),
+            market: episode.regime.market.clone(),
+            volatility: episode.regime.volatility.clone(),
+            direction: if d > 0.0 {
+                1
+            } else if d < 0.0 {
+                -1
+            } else {
+                0
+            },
+        }
+    }
+}
+
+/// What an evicted episode leaves behind: the pattern it was an instance of,
+/// how many instances the store has given up, which ones (the newest
+/// [`ABSTRACTION_MEMBERS_RETAINED`]), and what their resolved outcomes
+/// averaged.
+///
+/// Eviction used to forget an episode outright. A pattern seen two hundred
+/// times and kept as twenty episodes then read, to recall, as a pattern seen
+/// twenty times; the abstraction is where the other hundred and eighty are
+/// still counted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EpisodeAbstraction {
+    pub instrument: String,
+    pub market_regime: String,
+    pub volatility_regime: String,
+    /// `+1`, `-1` or `0`, the sign of the folded claims' direction.
+    pub direction: i8,
+    /// Episodes folded in, in full.
+    pub consolidated: usize,
+    /// The newest folded episode ids, oldest first.
+    pub members: Vec<String>,
+    /// Folded episodes that had resolved, and the mean realised move over
+    /// them, in basis points. `None` until one has.
+    pub resolved: usize,
+    pub mean_realised_move_bps: Option<f64>,
+    pub first_known_at: Timestamp,
+    pub last_known_at: Timestamp,
+}
+
+impl EpisodeAbstraction {
+    fn start(key: &PatternKey, episode: &Episode) -> Self {
+        Self {
+            instrument: key.instrument.clone(),
+            market_regime: key.market.clone(),
+            volatility_regime: key.volatility.clone(),
+            direction: key.direction,
+            consolidated: 0,
+            members: Vec::new(),
+            resolved: 0,
+            mean_realised_move_bps: None,
+            first_known_at: episode.known_at,
+            last_known_at: episode.known_at,
+        }
+    }
+
+    fn fold(&mut self, episode: &Episode) {
+        self.consolidated += 1;
+        self.members.push(episode.episode_id.clone());
+        if self.members.len() > ABSTRACTION_MEMBERS_RETAINED {
+            self.members.remove(0);
+        }
+        if let Some(outcome) = &episode.outcome
+            && outcome.realised_move_bps.is_finite()
+        {
+            let prior = self.mean_realised_move_bps.unwrap_or(0.0) * self.resolved as f64;
+            self.resolved += 1;
+            self.mean_realised_move_bps =
+                Some((prior + outcome.realised_move_bps) / self.resolved as f64);
+        }
+        if episode.known_at < self.first_known_at {
+            self.first_known_at = episode.known_at;
+        }
+        if episode.known_at > self.last_known_at {
+            self.last_known_at = episode.known_at;
+        }
+    }
+}
+
 /// The bounded, bitemporal episode store.
 #[derive(Clone, Debug)]
 pub struct EpisodicMemory {
@@ -199,6 +300,12 @@ pub struct EpisodicMemory {
     /// a total order rather than an iteration accident. A hashed set here
     /// would make two memories fed the same episodes retain different ones.
     graded: BTreeMap<EpisodeGrade, BTreeSet<Slot>>,
+    /// Held slots by near-duplicate pattern, so eviction can find the stale
+    /// copy of a lesson the store still holds.
+    patterns: BTreeMap<PatternKey, BTreeSet<Slot>>,
+    /// What eviction has folded away, one record per pattern, bounded by the
+    /// store's own capacity.
+    abstractions: BTreeMap<PatternKey, EpisodeAbstraction>,
 }
 
 impl Default for EpisodicMemory {
@@ -242,7 +349,14 @@ impl EpisodicMemory {
             next_sequence: 0,
             sampler: EpisodeSampler::default(),
             graded: BTreeMap::new(),
+            patterns: BTreeMap::new(),
+            abstractions: BTreeMap::new(),
         }
+    }
+
+    /// What eviction has folded away, by pattern, in pattern order.
+    pub fn abstractions(&self) -> impl Iterator<Item = &EpisodeAbstraction> {
+        self.abstractions.values()
     }
 
     /// Sample on a stated policy rather than [`EpisodeSampler::default`].
@@ -374,6 +488,10 @@ impl EpisodicMemory {
         // asked, and a replay would not reproduce it.
         let grade = self.sampler.grade(&episode);
         self.graded.entry(grade).or_default().insert(slot);
+        self.patterns
+            .entry(PatternKey::of(&episode))
+            .or_default()
+            .insert(slot);
         self.stored.insert(
             slot,
             Stored {
@@ -388,13 +506,50 @@ impl EpisodicMemory {
         Ok(())
     }
 
+    /// The calm episode to spend first: the oldest calm one whose pattern
+    /// the store still holds another instance of, and only when there is
+    /// none, the oldest calm one. A duplicate lesson goes before a unique one
+    /// of the same grade; the tail is never touched here, so §54.2's reserve
+    /// is untouched by deduplication.
+    fn stale_calm(&self) -> Option<Slot> {
+        let calm = self.graded.get(&EpisodeGrade::Calm)?;
+        calm.iter()
+            .copied()
+            .find(|slot| {
+                self.stored.get(slot).is_some_and(|stored| {
+                    self.patterns
+                        .get(&PatternKey::of(&stored.episode))
+                        .is_some_and(|held| held.len() > 1)
+                })
+            })
+            .or_else(|| calm.first().copied())
+    }
+
+    /// Fold an evicted episode into its pattern's abstraction, keeping at
+    /// most `capacity` abstractions by dropping the one least recently fed.
+    fn abstract_away(&mut self, episode: &Episode) {
+        let key = PatternKey::of(episode);
+        if !self.abstractions.contains_key(&key) && self.abstractions.len() >= self.capacity {
+            let stalest = self
+                .abstractions
+                .iter()
+                .min_by(|a, b| a.1.last_known_at.cmp(&b.1.last_known_at).then(a.0.cmp(b.0)))
+                .map(|(k, _)| k.clone());
+            if let Some(stalest) = stalest {
+                self.abstractions.remove(&stalest);
+            }
+        }
+        self.abstractions
+            .entry(key.clone())
+            .or_insert_with(|| EpisodeAbstraction::start(&key, episode))
+            .fold(episode);
+    }
+
     /// Give up the episode §54.2's sampling names, or nothing if empty.
     fn evict_sampled(&mut self) {
         let victim = self.sampler.victim(
             self.capacity,
-            self.graded
-                .get(&EpisodeGrade::Calm)
-                .and_then(|slots| slots.first().copied()),
+            self.stale_calm(),
             self.graded
                 .get(&EpisodeGrade::Tail)
                 .and_then(|slots| slots.first().copied()),
@@ -410,6 +565,14 @@ impl EpisodicMemory {
         for slots in self.graded.values_mut() {
             slots.remove(&slot);
         }
+        let key = PatternKey::of(&stored.episode);
+        if let Some(held) = self.patterns.get_mut(&key) {
+            held.remove(&slot);
+            if held.is_empty() {
+                self.patterns.remove(&key);
+            }
+        }
+        self.abstract_away(&stored.episode);
         for (table, bucket) in stored.buckets.iter().enumerate() {
             let key = (table, *bucket);
             if let Some(members) = self.buckets.get_mut(&key) {
