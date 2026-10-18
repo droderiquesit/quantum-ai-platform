@@ -702,3 +702,123 @@ fn holds_its_shape(request: &ModelRequest, completion: &Completion) -> bool {
         schema.validate(structured).is_ok() && NumericGuard::enforce(structured).is_ok()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Answers by the prompt it is given, so one model can be made to serve,
+    /// refuse, and return each kind of malformed reply on demand.
+    #[derive(Debug)]
+    struct Scripted;
+
+    impl LanguageModel for Scripted {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+
+        fn is_available(&self) -> bool {
+            true
+        }
+
+        fn complete(&self, request: &ModelRequest, now: Timestamp) -> Result<Completion> {
+            let structured = match request.prompt.as_str() {
+                "refuse" => return Err(Error::unavailable("the provider refused")),
+                "reject" => return Err(Error::schema("the provider's own schema check failed")),
+                "guarded" => return Err(Error::guard("the provider's numeric guard refused")),
+                "bare" => None,
+                // A hallucination's usual shape: every required field present
+                // and a number volunteered beside them, which the schema
+                // admits and only the guard refuses.
+                "number" => Some(serde_json::json!({
+                    "summary": "spreads widened",
+                    "expected_return": 0.08,
+                })),
+                _ => Some(serde_json::json!({ "summary": "spreads widened" })),
+            };
+            Ok(Completion {
+                text: "a reply".to_string(),
+                structured,
+                model: self.name().to_string(),
+                input_tokens: 1,
+                output_tokens: 1,
+                finish_reason: FinishReason::Complete,
+                produced_at: now,
+            })
+        }
+    }
+
+    /// R12-EXPAND-6040's classification, in the file that now owns it. The
+    /// deep brain's sweep test drives only refusals through the tally, so
+    /// nothing else proves a reply that came back in the wrong shape — the
+    /// hallucination the rate exists to surface — is counted as a failure
+    /// rather than as served. And the wrapper must not change a single
+    /// reply, or the chain's fall-through stops being the same chain.
+    ///
+    /// Mutations: `holds_its_shape` returning `true` unconditionally — the
+    /// bare and numeric replies count as served and the malformed count
+    /// reads two, not four; and `"guard"` struck from the error arm — the
+    /// guard's refusal counts as a refusal and malformed reads three. The
+    /// second was a gap until 2026-10-18: neither this test nor the deep
+    /// brain's covered a guard error, so the arm could lose its code
+    /// unnoticed.
+    #[test]
+    fn a_counted_model_tells_served_refused_and_malformed_replies_apart_and_changes_none() {
+        let now = Timestamp::from_civil(2026, 10, 18);
+        let schema = OutputSchema::new("brief", vec![FieldSpec::text("summary", "what changed")]);
+        let asked = |prompt: &str| ModelRequest::new("narrate", prompt).with_schema(schema.clone());
+        let requests = [
+            asked("good"),
+            ModelRequest::new("narrate", "bare"),
+            asked("refuse"),
+            asked("bare"),
+            asked("number"),
+            asked("reject"),
+            asked("guarded"),
+        ];
+
+        // Premise: the script produces every outcome the tally must tell
+        // apart — two well-formed, one refusal, four that did not hold.
+        let direct: Vec<_> = requests.iter().map(|r| Scripted.complete(r, now)).collect();
+        let structured_ok = |r: &ModelRequest| Scripted.complete_structured(r, now).is_ok();
+        assert_eq!(
+            requests.iter().filter(|&r| structured_ok(r)).count(),
+            2,
+            "premise: exactly two replies survive complete_structured"
+        );
+
+        let tally = ReplyTally::new();
+        let counted = tally.wrap(Arc::new(Scripted));
+        for (request, expected) in requests.iter().zip(&direct) {
+            let reply = counted.complete(request, now);
+            match (&reply, expected) {
+                (Ok(got), Ok(want)) => assert_eq!(got, want, "a reply was changed in passing"),
+                (Err(got), Err(want)) => assert_eq!(
+                    (got.code(), got.to_string()),
+                    (want.code(), want.to_string()),
+                    "an error was changed in passing"
+                ),
+                _ => panic!("the wrapper turned {expected:?} into {reply:?}"),
+            }
+        }
+
+        let want = ReplyCounts {
+            served: 2,
+            refused: 1,
+            malformed: 4,
+        };
+        assert_eq!(
+            tally.take_at_least(want.total() + 1),
+            None,
+            "below the sample nothing is judged"
+        );
+        assert_eq!(tally.take_at_least(want.total()), Some(want));
+        assert_eq!(want.failed(), 5);
+        assert_eq!(
+            tally.take_at_least(1),
+            None,
+            "the window was taken, so the same replies are not reported twice"
+        );
+    }
+}

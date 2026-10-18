@@ -47,7 +47,6 @@ use qip_core::{Decimal, dec};
 use qip_edge::cell::{
     Cell, CellConfig, ExecutionReport, Placer, PolledHalt, PricingPolicy, WorkReport,
 };
-use qip_edge::conduct::ConductPolicy;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{self as edge_feasibility, Granularity, VenueModel};
@@ -1356,8 +1355,9 @@ fn firing_strategy(
 }
 
 /// An envelope wide enough that the grant is never what refuses over a long
-/// loop: a hundred million gross, a hundred thousand per order.
-fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
+/// loop: a hundred million gross, a hundred thousand per order, granted for
+/// `lifetime` from the start of the run.
+fn edge_envelope(strategy: &str, lifetime: Duration) -> Result<VerifiedEnvelope> {
     let build = |signature: &str| {
         CapitalEnvelope::new(
             StrategyId::new(strategy),
@@ -1367,7 +1367,7 @@ fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
             dec!("50000"),
             vec![venue()],
             start(),
-            start().saturating_add(Duration::from_hours(1)),
+            start().saturating_add(lifetime),
             "alice@example.com",
             signature,
         )
@@ -1383,22 +1383,25 @@ fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
 }
 
 /// A cell holding the ACME book and one always-firing strategy per entry,
-/// each priced as given.
+/// each priced as given, under envelopes granted for an hour.
 fn edge_cell(strategies: &[(&str, SignalKind, &str, PricingPolicy)]) -> Result<Cell> {
-    edge_cell_with(CellConfig::new(EDGE_CELL, EDGE_REGION), strategies)
+    edge_cell_granted_for(strategies, Duration::from_hours(1))
 }
 
-fn edge_cell_with(
-    config: CellConfig,
+/// [`edge_cell`] with envelopes granted for `lifetime`, for a loop whose
+/// simulated span is longer than the hour: an envelope that lapsed inside the
+/// loop would refuse every later pass and read here as a fast one.
+fn edge_cell_granted_for(
     strategies: &[(&str, SignalKind, &str, PricingPolicy)],
+    lifetime: Duration,
 ) -> Result<Cell> {
-    let config = config.with_venue(venue());
+    let config = CellConfig::new(EDGE_CELL, EDGE_REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut cell = Cell::new(config, features)?;
     cell.track(edge_book("ACME")?);
     for (id, kind, size, pricing) in strategies {
         let (compiled, program) = firing_strategy(id, "ACME", *kind, size)?;
-        cell.deploy_with_pricing(compiled, program, edge_envelope(id)?, *pricing)?;
+        cell.deploy_with_pricing(compiled, program, edge_envelope(id, lifetime)?, *pricing)?;
     }
     Ok(cell)
 }
@@ -1974,33 +1977,40 @@ fn an_internal_cross_costs_what_the_execution_measurements_say() -> Result<()> {
 
 #[test]
 fn a_resting_orders_expiry_costs_what_the_execution_measurements_say() -> Result<()> {
-    // An order rested at the mid for one second, and the next pass two
+    // An order rested at the mid for one second, and the next pass thirty
     // seconds later withdrawing it: `withdraw_expired` through the venue's
     // cancel, the region hold returned, the order closed and settled. The
     // premise is the venue's cancel count — an order the cell forgot rather
     // than withdrew would leave the venue holding it and read here as fast.
+    //
+    // Thirty seconds apart, not two, and the gap is the scenario rather than
+    // a tolerance. A rester that never fills, pulled at its time to live
+    // every two seconds on one side of one book, is the place-and-cancel
+    // pattern the cell refuses (`qip_edge::conduct`, under
+    // `GATE_CONDUCT_SPOOFING`): from the fifth pass the window held four
+    // unfilled withdrawals of four placements, and this loop timed a cell
+    // refusing rather than one resting. Thirty seconds apart, no conduct
+    // window holds more than two such withdrawals — the quiet-market rester
+    // the default policy is written to admit — so every pass still rests,
+    // withdraws and settles one order, which is the work being timed, under
+    // the same default conduct policy every cell runs. A thousand passes that
+    // far apart span more than the hour the other edge loops fit in, so the
+    // envelope is granted for the run plus an hour: one that lapsed inside it
+    // would refuse every later pass.
     const PASSES: usize = 1_000;
-    // This loop is, order for order, the place-and-withdraw-unfilled pattern
-    // the cell's conduct gate (`qip_edge::conduct`) refuses after four
-    // rounds, which is the gate working. What is measured here is the
-    // expiry path, so the cell is given a conduct policy that cannot judge
-    // inside the loop — more withdrawals than the loop makes — and the
-    // gate's own cost and behaviour are proven in `qip-edge`'s pricing
-    // suite. Left at the default, 868 of the thousand passes were refused.
-    let mut config = CellConfig::new(EDGE_CELL, EDGE_REGION);
-    config.conduct = ConductPolicy::new(Duration::from_secs(60), PASSES + 1, dec!("0.75"))?;
-    let mut cell = edge_cell_with(
-        config,
+    let step = Duration::from_secs(30);
+    let mut cell = edge_cell_granted_for(
         &[(
             "alpha",
             SignalKind::Enter,
             "100",
             PricingPolicy::rest_at_mid(Duration::from_secs(1))?,
         )],
+        step * PASSES as i64 + Duration::from_hours(1),
     )?;
     let mut gateway = PaperVenue::default();
 
-    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_secs(2))?;
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, step)?;
 
     assert_eq!(totals.orders, PASSES, "not every pass rested its order");
     assert_eq!(
