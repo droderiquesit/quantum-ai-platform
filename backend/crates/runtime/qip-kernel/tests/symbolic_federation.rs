@@ -991,6 +991,78 @@ fn the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_unty
     Ok(())
 }
 
+// --- the federation's disagreement narrows DECIDE's bound (R12-RES-7105) ----
+
+#[test]
+fn a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agreeing_one_does_not()
+-> Result<()> {
+    // The failure this guards: the federation kept every view, measured the
+    // spread, raised research, and the order path never heard of any of it, so
+    // two strong irreconciled views sized exactly as one confident one.
+    use qip_reasoning_engine::redteam::ReviewPolicy;
+    let config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: 0.10,
+            ..ReviewPolicy::default()
+        },
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+
+    // Premise: the journaled arbitration really is a material disagreement,
+    // and the platform kept a narrowing for exactly that spread.
+    let reviews = federation_stage::replay(&platform)?;
+    let arbitration = reviews[0]
+        .arbitrations
+        .iter()
+        .find(|a| a.proposition.contains("obj-AAA:next-close-up@"))
+        .expect("the instrument was arbitrated");
+    let spread = arbitration.disagreement.spread;
+    assert!(
+        spread >= qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+        "premise: a material disagreement, got {spread}"
+    );
+    let (narrowing, kept) = platform
+        .federation_narrowing()
+        .get("obj-AAA")
+        .copied()
+        .expect("a material disagreement earned no narrowing");
+    assert!(
+        (kept - spread).abs() < f64::EPSILON,
+        "the narrowing rests on the journaled spread: {kept} against {spread}"
+    );
+    assert!(narrowing.multiplier() > 0.0 && narrowing.multiplier() < 1.0);
+
+    // And DECIDE says so: the cycle sized the thesis and named the narrowing.
+    let decide = report.stage(Stage::Decide).expect("DECIDE ran");
+    assert!(
+        decide.detail.contains("the world models disagree by"),
+        "DECIDE did not name the federation's narrowing: {}",
+        decide.detail
+    );
+
+    // An agreeing population earns nothing: below the material spread there is
+    // no schedule band, and a spread nobody could measure earns none either.
+    assert!(federation_stage::Narrowing::of_spread(0.0).is_none());
+    assert!(
+        federation_stage::Narrowing::of_spread(
+            qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD - 0.01
+        )
+        .is_none()
+    );
+    assert!(federation_stage::Narrowing::of_spread(f64::NAN).is_none());
+    // Nothing in the schedule enlarges a bound.
+    assert!(
+        federation_stage::NARROWING_SCHEDULE
+            .iter()
+            .all(|(_, multiplier)| *multiplier > 0.0 && *multiplier < 1.0)
+    );
+    Ok(())
+}
+
 /// R12-QUANT-4040. The symbolic reasoner's constraint encoder produced a QUBO
 /// for the quantum path's solver port and nothing ever ran a quantum solver on
 /// one, so "the constraint problem is compared to classical solvers" was a

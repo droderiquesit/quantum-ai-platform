@@ -1882,32 +1882,29 @@
   {
     "id": "R12-FABRIC-8085",
     "status": "PARTIAL",
-    "current": "Records are routed by an explicit key: Broker::produce computes partition::partition_for(key, count) (services/qip-streaming/src/event_fabric/broker.rs:680; partition.rs:109-124, SHA-256 prefix mod count, refuses count 0). A rendezvous (highest-random-weight) leader function exists, partition.rs:140-170 (leader_for), but nothing outside tests calls it: leadership in the shipped binary is a Spanner lease contended by every seated instance (broker.rs:1145-1180 tend_leases, called from apps/qip-fabricd/src/lib.rs:490 and :584), not rendezvous placement. Non-leaders follow the committed managed log onto their own disks (broker.rs:1145-1178 catch_up), only for P0/P1 managed_majority streams and only when QIP_EVENT_FABRIC_MANAGED_LOG=spanner. The deployable is one broker in one zone (infrastructure/terraform/modules/event-fabric-broker/main.tf:14-21; module variables.tf:143-144 refuses more than one address) and null in every environment (infrastructure/terraform/variables.tf:1682-1700); fabricd is outside the image matrix (apps/qip-fabricd/src/lib.rs:38-39).",
+    "current": "Records are routed by an explicit key (partition_for). Leadership is a Spanner lease, and since 2026-10-18 rendezvous chooses who tries: with QIP_EVENT_FABRIC_INSTANCES naming the region's instances, qip-fabricd seats Broker::with_placement, and Broker::tend_leases (called from the lease thread and the pre-serve pass) contends at once only for partitions partition::leader_for names this instance for. For any other it only follows during a settling window of one grace after start, and afterwards takes another holder's lease only once it has been expired for QIP_EVENT_FABRIC_PLACEMENT_GRACE_MS (default a third of the TTL) through ManagedLog::acquire_after_expiry, implemented for the in-memory log and for Spanner (SELECT_LEASE_AFTER_GRACE). Safety still comes from the lease epoch, never from the hash. With the variable unset every instance contends for everything, as before. The deployable is one broker in one zone (event-fabric-broker module refuses more than one address) and null in every environment.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:109",
-      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:140",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:680",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1145",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:30",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:584",
-      "services/qip-streaming/tests/event_fabric_leader.rs",
-      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs with_placement, ManagedSeat::deferral, tend_leases",
+      "backend/crates/services/qip-streaming/src/event_fabric/managed.rs ManagedLog::acquire_after_expiry",
+      "backend/crates/apps/qip-fabricd/src/spanner.rs acquire_after_expiry",
+      "backend/crates/apps/qip-fabricd/src/config.rs INSTANCES, PLACEMENT_GRACE_MS",
+      "backend/crates/apps/qip-fabricd/src/lib.rs with_placement",
+      "backend/crates/services/qip-streaming/tests/event_fabric_managed.rs a_non_preferred_instance_waits_the_grace_before_contending_a_live_lease"
     ],
-    "gap": "Wire leader_for into lease contention: an instance contends immediately only for partitions it is the rendezvous-preferred leader of, otherwise after expiry plus grace (ADR 0111 Amendment 1); followers in other zones via the broker module. P2-P4 stay RF1 by ADR 0111 §2.",
+    "gap": "No committed deployment sets QIP_EVENT_FABRIC_INSTANCES: the event-fabric-broker module deploys one instance in one zone and refuses a second address, and fabricd is outside the image matrix and null in every environment, so rendezvous placement runs only in tests. The Spanner graced statement (SELECT_LEASE_AFTER_GRACE) is compiled but has not run against a Spanner database or emulator. P2-P4 stay RF1 by ADR 0111 section 2.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-FABRIC-8075"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming --test event_fabric_broker",
+    "verification": "cargo test -p qip-streaming --test event_fabric_managed && cargo test -p qip-fabricd --lib",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: leader_for is a tested library function with no production caller; the property 'leader assignment stable under broker list order' is proven of a function the broker never uses. ADR 0111 replaced in-tree replication with a Spanner-lease model for P0/P1; whether lease contention satisfies 'rendezvous leaders' is an owner/register call."
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: passing a zero grace to the log lets the non-preferred instance take a lease expired for 1 ms (a_non_preferred_instance_waits... fails); skipping the settling branch lets the instance that asks first lead a vacant partition; applying the deferral to every instance makes the preferred one wait (two tests fail); dropping the config refusal of a set that omits this instance loads it (config test fails). The closure named qip-fabricd/tests/managed.rs; the test is at the Broker seam in qip-streaming/tests because it needs a manual clock, which the served-process tests cannot advance. Kept PARTIAL: wiring is done, deployment is not."
   },
   {
     "id": "R12-FABRIC-8086",
@@ -2007,13 +2004,14 @@
   {
     "id": "R12-FABRIC-8090",
     "status": "PARTIAL",
-    "current": "CI runs the schema-gate lock diff; broker refuses unregistered schema ids. Runtime registration registers only the per-class batch schema, not per-topic body schemas.",
+    "current": "CI runs the schema-gate lock diff; the broker refuses an unregistered batch schema id. At runtime Service::apply_catalogue now also registers each catalogue stream's body topics (Broker::register_body_topics), and Broker::produce_to refuses with SchemaRefused, before anything is appended, a batch carrying a record whose event topic the stream does not admit or whose body cannot be read. A stream the catalogue declares with no topics admits any, as before.",
     "evidence": [
-      ".github/workflows/ci.yml:94",
-      "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs:124 judge",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:870 an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs register_body_topics, require_admitted_topics",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs apply_catalogue",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_record_body_under_an_unregistered_topic_schema_is_refused_before_append",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
     ],
-    "gap": "Per-topic body schema registration at runtime.",
+    "gap": "The body's schema version and shape per topic are still not registered: the broker admits a topic by name and not by (SchemaId, version), because the service's SchemaRegistry is empty by design (the_schema_registry_is_a_production_caller_in_qip_fabricd asserts len 0) and qip-streaming holds no EventBody descriptors to take a topic's current version and shape from. A stream with an empty topic list in the catalogue is unrestricted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2024,7 +2022,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: skipping the admitted-topic comparison appends the off-topic batch and the fetch returns two batches; the service registering nothing leaves the stream unrestricted. Existing suites pass: qip-streaming, qip-fabricd, qip-ledgerd, qip-edge-node, qip-transport, and the qip-acceptance event_fabric suites run. Kept PARTIAL: topic admission is the half that needs no descriptors; version and shape need the registry populated first."
   },
   {
     "id": "R12-FABRIC-8091",

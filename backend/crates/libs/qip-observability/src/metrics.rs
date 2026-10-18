@@ -676,9 +676,10 @@ pub mod names {
     /// the platform became aware of it. A histogram recording the observed lag
     /// for each archive. Recorded when archive ingestion completes.
     pub const DATA_ARCHIVE_DELAY_MINUTES: &str = "qip_data_archive_delay_minutes";
-    /// Source re-fetch successes and failures, recorded by source as attempts
-    /// that did/did not produce new data. Gauge at 0 for failures, 1 for
-    /// success, recorded per source on each re-fetch cycle.
+    /// Source re-fetch health, per source on each re-fetch pass that asked for
+    /// anything: the share of the extents re-requested that the source still
+    /// served, from 1 (all served) to 0 (none). Recorded by
+    /// `Platform::record_refetch_health`.
     pub const DATA_REFETCH_HEALTH: &str = "qip_data_refetch_health";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a

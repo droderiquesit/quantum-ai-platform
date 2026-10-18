@@ -666,6 +666,9 @@ pub struct Platform {
     /// Production models whose drift stands past their threshold, as the last
     /// registry read found them (R12-RES-7101). Bounded by the registry.
     drifted_models: BTreeSet<String>,
+    /// What the latest federation review earns each instrument in DECIDE's
+    /// caps (ADR 0125 decision 4), with the spread behind it.
+    federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -5300,6 +5303,7 @@ impl Platform {
             cycle_solver_routing: None,
             pending_routing: None,
             drifted_models: BTreeSet::new(),
+            federation_narrowing: BTreeMap::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -5870,6 +5874,11 @@ impl Platform {
         metrics.describe(
             names::DATA_LINEAGE_COMPLETENESS,
             "the fraction of records received since assembly whose lineage reached the event log",
+        );
+        metrics.describe(
+            names::DATA_REFETCH_HEALTH,
+            "the share of the extents a re-fetch pass asked a source for again that the source \
+             still served, per source: 1 all served, 0 none",
         );
         metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
@@ -12120,6 +12129,18 @@ impl Platform {
                     );
                 }
             }
+            // The calibration objective, judged each cycle from the same card.
+            if let Some(breached) = crate::lattice_stage::calibration_slo_breached(
+                &card,
+                crate::lattice_stage::CALIBRATION_BRIER_BOUND,
+                crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
+            ) {
+                self.telemetry.metrics.gauge(
+                    crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
+                    labels([("horizon", horizon.as_str())]),
+                    if breached { 1.0 } else { 0.0 },
+                );
+            }
         }
         for inconsistency in &lattice.inconsistencies {
             self.telemetry.metrics.count(
@@ -12286,6 +12307,13 @@ impl Platform {
             }),
         };
         let review = self.federation.run(&inputs, now);
+        // What this review's disagreements earn each instrument in DECIDE
+        // (ADR 0125 decision 4), replaced wholesale so a disagreement that
+        // has resolved stops narrowing on the next pass.
+        self.federation_narrowing = crate::federation_stage::narrowings_of(
+            &review,
+            inputs.instruments.iter().map(|view| view.subject.clone()),
+        );
         let detail = review.detail();
         let mut problems: Vec<String> = review
             .refused
@@ -12327,6 +12355,14 @@ impl Platform {
             ));
         }
         (detail, problems)
+    }
+
+    /// What the latest federation review earns each instrument in DECIDE's
+    /// caps, and the spread it rests on.
+    pub const fn federation_narrowing(
+        &self,
+    ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
+        &self.federation_narrowing
     }
 
     /// The World Model Federation as the UNDERSTAND stage runs it.
@@ -14314,6 +14350,7 @@ impl Platform {
                 realised_move_bps: outcome.realised_move_bps,
                 realised_pnl: outcome.realised_pnl,
                 expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
+                fills: self.fills_expressing(&outcome.hypothesis_id),
             });
             episode.known_at = now;
             if let Some(lesson) = self.write_research_memory(&episode, now) {
@@ -14323,6 +14360,56 @@ impl Platform {
             remembered += 1;
         }
         Ok((remembered, lessons))
+    }
+
+    /// The weakest estimated accuracy among the components that produced
+    /// `hypothesis` (its detector and the analysts that ran on it), read from
+    /// the self-model at sizing. `None` when the hypothesis has no remembered
+    /// lineage or none of its components has a graded record: silence is not
+    /// unreliability.
+    fn thesis_reliability(&self, hypothesis: &str) -> Option<f64> {
+        let lineage = self.attribution_lineage.lineage(hypothesis)?;
+        lineage
+            .forecasters
+            .iter()
+            .filter_map(|forecaster| {
+                let (kind, id) = forecaster.split_once(':')?;
+                let key = match kind {
+                    "detector" => ComponentKey::detector(id),
+                    "analyst" => ComponentKey::analyst(id),
+                    _ => return None,
+                }
+                .ok()?;
+                self.self_model.factor(&key)
+            })
+            .reduce(f64::min)
+    }
+
+    /// The venue's fills on every remembered order that expressed
+    /// `hypothesis`, so an episode says what the platform did about its claim
+    /// and not only what it claimed. Matched through the attribution
+    /// lineage's belief key, which is stamped when the order is accepted; an
+    /// order whose lineage was evicted is not found, and the episode then
+    /// records no fill rather than a guessed one.
+    fn fills_expressing(&self, hypothesis: &str) -> Vec<qip_ai::memory::EpisodeFill> {
+        use qip_learning_engine::keyed_attribution::Dimension;
+        let orders: BTreeSet<String> = self
+            .attribution_lineage
+            .keys()
+            .into_iter()
+            .filter(|(_, keys)| keys.values(Dimension::Belief).contains(&hypothesis))
+            .map(|(order, _)| order)
+            .collect();
+        self.orders()
+            .fills()
+            .into_iter()
+            .filter(|fill| orders.contains(fill.order_id.as_str()))
+            .map(|fill| qip_ai::memory::EpisodeFill {
+                order_id: fill.order_id.to_string(),
+                quantity: fill.quantity,
+                price: fill.price,
+            })
+            .collect()
     }
 
     /// Write one resolved episode into the research organisation's memory,
@@ -15048,6 +15135,7 @@ impl Platform {
                 hypothesis_id: thesis.hypothesis_id.clone(),
                 object_id: thesis.object_id.as_str().to_string(),
                 regime: self.market_regime(thesis.object_id.as_str()),
+                reliability: self.thesis_reliability(&thesis.hypothesis_id),
             })
             .collect();
         let figures = self.survival_figures(free, now)?;
@@ -15103,6 +15191,17 @@ impl Platform {
         crate::regime_allocation::narrow(&mut caps, &mut capped, theses, |subject| {
             self.market_regime(subject)
         });
+        // ADR 0125 decision 4: a federation that disagrees about an
+        // instrument narrows its bound by the declared schedule, compounding
+        // with the two above and never above one.
+        crate::federation_stage::narrow(
+            &mut caps,
+            &mut capped,
+            theses
+                .iter()
+                .map(|thesis| thesis.object_id.as_str().to_string()),
+            &self.federation_narrowing,
+        );
         // Every survival tier and confidence contraction that bit, on the
         // same DECIDE detail line the caps above reach: the recorded capital
         // response a tail world the book does not survive is required to
@@ -26568,6 +26667,139 @@ mod self_model_tests {
         .expect("the platform assembles")
     }
 
+    fn objects() -> Universe {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        universe
+    }
+
+    /// The founding tape: noise with a jump two thirds of the way in, so a
+    /// detector finds something and REASON forms a hypothesis.
+    fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+        use qip_market::bar::{Bar, Interval};
+        let mut price = 100.0_f64;
+        (0..120_usize)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + jump;
+                let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
+                qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(open).expect("a price"),
+                    high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                    low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                    close: Decimal::from_f64(price).expect("a price"),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect()
+    }
+
+    fn reasoning_platform() -> Platform {
+        let config = PlatformConfig {
+            review: qip_reasoning_engine::redteam::ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            objects(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// R12-RISK-4110: the self-model's per-component reliability is read at
+    /// sizing. The same tape is sized twice; the second platform's self-model
+    /// has graded the detector that raises the hypothesis wrong twelve times
+    /// first, and its construction carries a reliability contraction the first
+    /// does not. Mutations: pass `reliability: None` in `construct_from`'s
+    /// `ThesisView` (the contraction disappears); skip the reliability block in
+    /// `ConfidenceSignals::decide` (same).
+    #[test]
+    fn a_thesis_raised_by_a_detector_the_self_model_grades_worse_than_chance_is_sized_smaller() {
+        use crate::confidence::Trigger;
+        use qip_learning_engine::self_model::{MINIMUM_SAMPLE, ScoredOutcome};
+
+        let mut probe = reasoning_platform();
+        probe.observe(tape());
+        probe.run_cycle(start());
+        let class = probe.predictions()[0]
+            .claim
+            .as_ref()
+            .map(|claim| claim.class.clone())
+            .expect("premise: the tape formed a claim");
+        let reliability_contraction = |platform: &Platform| {
+            platform.governor.last().and_then(|budget| {
+                budget
+                    .confidence
+                    .contractions
+                    .iter()
+                    .find(|c| c.trigger == Trigger::Reliability)
+                    .cloned()
+            })
+        };
+        assert!(
+            probe.governor.last().is_some(),
+            "premise: the cycle sized a construction"
+        );
+        assert!(
+            reliability_contraction(&probe).is_none(),
+            "an ungraded detector contracted the size"
+        );
+
+        let mut graded = reasoning_platform();
+        let key = ComponentKey::detector(class).expect("a detector key");
+        for n in 0..=MINIMUM_SAMPLE + 2 {
+            graded.self_model.record(
+                key.clone(),
+                ScoredOutcome::new(format!("past-{n}"), 0.9, false, start())
+                    .expect("a probability"),
+            );
+        }
+        assert!(
+            graded.self_model.factor(&key).is_some_and(|f| f < 0.35),
+            "premise: twelve misses leave the detector far below chance"
+        );
+        graded.observe(tape());
+        graded.run_cycle(start());
+        let contraction = reliability_contraction(&graded)
+            .expect("a worse-than-chance detector contracted nothing");
+        assert!(contraction.multiplier < Decimal::ONE, "{contraction:?}");
+    }
+
     #[test]
     fn a_graded_thesis_is_charged_to_its_detector_and_to_every_roster_analyst_that_ran_on_it() {
         // The failure this guards: a thesis resolved, the calibration moved,
@@ -29768,6 +30000,7 @@ mod episodic_slot_tests {
                 realised_move_bps: 12.0,
                 realised_pnl: 250.0,
                 expected_move_bps: None,
+                fills: Vec::new(),
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,

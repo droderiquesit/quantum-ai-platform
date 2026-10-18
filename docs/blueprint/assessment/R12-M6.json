@@ -119,12 +119,13 @@
   {
     "id": "R12-DATA-6006",
     "status": "PARTIAL",
-    "current": "qip-data-finder source_alpha computes incremental information gain and realised contribution with bounded history; no cost or delay term, and nothing outside the crate calls it.",
+    "current": "qip-data-finder source_alpha computes incremental information gain over every held series and realised contribution with bounded history, and the deep brain SourceAlphaDesk (qip-deepbrain/src/source_alpha.rs, driven from the node loop through EvolutionEngine::maybe_score_sources) scores each connector arm against the own stream on a cadence. The score is gross: no cost or delay term.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:28 duplicate vs informative source",
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71 bounded score history"
+      "backend/crates/services/qip-data-finder/src/source_alpha.rs realised_contribution, SourceAlphaHistory::score_over",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs SourceAlphaDesk::score",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs"
     ],
-    "gap": "Add net-of-cost and delay-adjusted attribution; call it from LEARN or the deep brain with real decision outcomes.",
+    "gap": "Net-of-cost and delay-adjusted attribution needs two inputs the desk does not have and one decision nobody has made. The desk knows an arm by source id only (observe_source), not its manifest, so it cannot read SourceCost; the manifest carries no publication_delay_ms (the REST connector config has a contractual publication_delay and the kernel calibrates observed delays per source in Platform::publication_delays); and converting an information coefficient into money or a discount factor needs a price of information (what a unit of IC is worth per month) that no ADR states. Choosing one would be inventing a number that moves source selection, so it is an owner decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -135,7 +136,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L22: no code changed. The row text said nothing outside the crate calls source_alpha; the deep brain desk is a caller, so that is corrected."
   },
   {
     "id": "R12-QUANT-6007",
@@ -463,15 +464,15 @@
   },
   {
     "id": "R12-MODEL-6021",
-    "status": "PARTIAL",
-    "current": "Real marked P&L is joined to forecaster (Model) keys and split pro rata; by_forecaster feeds the tournament's cumulative attributed P&L each LEARN. Closure is proven on a hand-built join only.",
+    "status": "COMPLETE",
+    "current": "Real marked P&L is joined to the forecaster (Model) keys stamped at order acceptance and split pro rata (qip-learning-engine keyed_attribution; Platform::attribute in LEARN). attribution::by_forecaster returns each forecaster's share and feeds the tournament's cumulative attributed P&L each LEARN. In a cycle: a hypothesis REASON formed, an order citing it filling and LEARN marking the position up credits the detector that raised it a positive share, and the shares sum to the position's marked P&L.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/attribution.rs:199",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15463",
       "backend/crates/runtime/qip-kernel/src/attribution.rs::by_forecaster",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentReview::attributed"
+      "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs",
+      "runtime/qip-kernel/tests/model_tournament.rs::each_forecaster_a_cycle_credited_is_attributed_a_share_of_the_marked_pnl_that_sums_to_the_position",
+      "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source"
     ],
-    "gap": "No cycle test shows a forecaster credited P&L (the only cycle test reads UNATTRIBUTED); downstream capital impact per forecaster is not attributed separately.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -481,10 +482,10 @@
       "R12-MODEL-6003"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed (same cycle fixture as R12-MODEL-6003). Mutations: by_forecaster reading Dimension::Belief -> credited map keyed by the hypothesis id, 'detector that raised the hypothesis is not among the credited'; dropping the note_hypothesis call -> credited map {unattributed}; both restored (model_tournament: 10 passed). Downstream capital impact per forecaster is not attributed separately and remains a later clause."
   },
   {
     "id": "R12-MODEL-6022",
@@ -578,12 +579,13 @@
   {
     "id": "R12-EXPAND-6026",
     "status": "PARTIAL",
-    "current": "qip-data-finder discovers and registers sources (integrated in qip-api and qip-deepbrain campaign); no SourceSpec/FeedPack artifact.",
+    "current": "qip_contracts::SourceSpec (lineage from the finder, licence, permitted usages, cost, freshness; validate/decode refuse a blank field and a negative fee) is produced by RegisteredSource::source_spec from the registry entry at registration, so the spec cannot disagree with the registry. A FeedPack type still does not exist.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/decision.rs:464 SourceRegistryEntry",
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs uses qip_data_finder"
+      "backend/crates/libs/qip-contracts/src/expansion.rs SourceSpec",
+      "backend/crates/services/qip-data-finder/src/decision.rs RegisteredSource::source_spec",
+      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs a_registered_source_yields_a_validated_source_spec_carrying_its_lineage"
     ],
-    "gap": "SourceSpec/FeedPack artifacts and continuous scout coverage beyond configured targets.",
+    "gap": "Nothing calls source_spec outside its test: the deep brain DiscoveryDesk does not journal the spec (a journal record needs a new event Topic, whose retention class is a decision for the owner of qip-events), and discovery itself runs only when QIP_DEEPBRAIN_DISCOVER_EVERY is above zero, which it is in no committed environment. FeedPack and scout coverage beyond configured targets are untouched.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -591,10 +593,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing SourceSpec / FeedPack)",
+    "verification": "cargo test -p qip-data-finder --test scoring_and_routing a_registered_source_yields_a_validated_source_spec_carrying_its_lineage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L22: contract, producer and test added; kept PARTIAL. Mutations that fired: read discovered_from from the source id; drop validate() from SourceSpec::decode."
   },
   {
     "id": "R12-EXPAND-6027",
@@ -1679,13 +1681,16 @@
   },
   {
     "id": "R12-EXPAND-6076",
-    "status": "PARTIAL",
-    "current": "Model cards carry dataset name and digest and rollback predecessor; no campaign or code-version lineage.",
+    "status": "COMPLETE",
+    "current": "ModelCard carries campaign_id (the research campaign whose window the model was fitted on) and code_version (the kernel's code_version(): crate version plus the source commit the build was stamped with). EvolutionEngine::maybe_learn notes both on the learning desk before learn_window, the desk stamps every card the round registers, and an engine-owned desk (requiring_provenance) refuses in promote_candidate to promote a card with neither or either missing.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:126 register_fit copies dataset name",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:605"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::campaign_id, code_version, provenance_gap",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs maybe_learn (note_provenance), LearningDesk::new(..).requiring_provenance()",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs stamp_provenance, promote_candidate",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_card_the_engine_registers_names_its_campaign_and_the_build_that_fitted_it",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_desk_requiring_provenance_refuses_a_fit_with_no_campaign_or_code_version"
     ],
-    "gap": "Campaign and code lineage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1693,10 +1698,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test serving",
+    "verification": "cargo test -p qip-deepbrain --lib -- a_desk_requiring_provenance a_card_the_engine_registers",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: removing the note_provenance call leaves the engine-registered card with no campaign (engine test fails); the provenance_gap refusal filtered to nothing promotes the unattributed fit (desk test fails). qip-ai and qip-deepbrain suites report no failures; clippy -D warnings clean. Differs from the triage closure in two places: the stamp is written by the learning desk rather than register_fit, because the campaign id exists only in the engine's round and register_fit is also called by tests and the API with none; and the refusal is the desk's, switched on by the engine, so a desk driven alone in a test, or a card registered elsewhere, is not blocked. code_version is read through qip_kernel::decision_record::code_version(), a compile-time stamp, so no std::env read is added outside apps."
   },
   {
     "id": "R12-EXPAND-6077",

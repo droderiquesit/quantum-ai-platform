@@ -74,6 +74,17 @@ pub const INSTANCE: &str = "QIP_EVENT_FABRIC_INSTANCE";
 /// Optional, with a managed log: how long a lease lasts in the database's
 /// time. The lease loop renews at a third of it.
 pub const LEASE_TTL_MS: &str = "QIP_EVENT_FABRIC_LEASE_TTL_MS";
+/// Optional, with a managed log: every instance of this region, comma
+/// separated, this one included (ADR 0111 Amendment 1 §2). Each instance then
+/// contends at once only for the partitions rendezvous hashing names it for,
+/// and waits [`PLACEMENT_GRACE_MS`] after a lease expires for the rest. Unset
+/// is every instance contending for everything, which is one broker's whole
+/// life today.
+pub const INSTANCES: &str = "QIP_EVENT_FABRIC_INSTANCES";
+/// Optional, with [`INSTANCES`]: how long after a lease expires a
+/// non-preferred instance waits before taking it. Defaults to a third of the
+/// lease TTL, one renewal period of the preferred instance.
+pub const PLACEMENT_GRACE_MS: &str = "QIP_EVENT_FABRIC_PLACEMENT_GRACE_MS";
 /// Optional: how many batches of each partition stay on this broker's disk
 /// once their segments are archived and indexed; older history is read back
 /// from the archive (FABRIC-8079). Unset keeps everything on disk.
@@ -109,6 +120,11 @@ pub struct ManagedConfig {
     pub region: String,
     pub instance: String,
     pub lease_ttl_ms: u64,
+    /// The region's instances when placement is configured, this one among
+    /// them; empty is no placement.
+    pub instances: Vec<String>,
+    /// How long a non-preferred instance waits after a lease expires.
+    pub placement_grace_ms: u64,
 }
 
 /// The most partitions a stream may be declared with. Every partition is a
@@ -258,7 +274,12 @@ fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<Managed
             // with the switch off mean somebody meant to turn it on, and a
             // broker that started local would acknowledge P0/P1 on one disk
             // while the deployment believed otherwise.
-            for stray in [SPANNER_DATABASE, LEASE_TTL_MS] {
+            for stray in [
+                SPANNER_DATABASE,
+                LEASE_TTL_MS,
+                INSTANCES,
+                PLACEMENT_GRACE_MS,
+            ] {
                 if present(variables, stray).is_some() {
                     return Err(Error::invalid(format!(
                         "{stray} is set but {MANAGED_LOG} is not; set {MANAGED_LOG}=spanner to \
@@ -303,11 +324,54 @@ fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<Managed
              not {lease_ttl_ms}"
         )));
     }
+    let mut instances: Vec<String> = Vec::new();
+    for name in present(variables, INSTANCES)
+        .map(|list| list.split(',').map(str::trim).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(Error::invalid(format!(
+                "{INSTANCES} names '{name}'; each instance is lower-case letters, digits and '-'"
+            )));
+        }
+        if instances.iter().any(|seen| seen == name) {
+            return Err(Error::invalid(format!(
+                "{INSTANCES} lists '{name}' twice; placement would score one instance under two \
+                 identities"
+            )));
+        }
+        instances.push(name.to_string());
+    }
+    if !instances.is_empty() && !instances.contains(&instance) {
+        return Err(Error::invalid(format!(
+            "{INSTANCES} does not include this instance '{instance}'; an instance outside its \
+             own set would never be preferred for any partition"
+        )));
+    }
+    let placement_grace_ms =
+        optional_number(variables, PLACEMENT_GRACE_MS)?.unwrap_or(lease_ttl_ms / 3);
+    if present(variables, PLACEMENT_GRACE_MS).is_some() && instances.is_empty() {
+        return Err(Error::invalid(format!(
+            "{PLACEMENT_GRACE_MS} is set but {INSTANCES} is not; with no instance set there is no \
+             preferred leader to defer to"
+        )));
+    }
+    if placement_grace_ms > MAXIMUM_LEASE_TTL_MS {
+        return Err(Error::invalid(format!(
+            "{PLACEMENT_GRACE_MS} must be at most {MAXIMUM_LEASE_TTL_MS}, not {placement_grace_ms}"
+        )));
+    }
     Ok(Some(ManagedConfig {
         backend,
         region,
         instance,
         lease_ttl_ms,
+        instances,
+        placement_grace_ms,
     }))
 }
 
@@ -868,6 +932,48 @@ mod tests {
     /// `MANAGED_LOG` value — the `raft` iteration is accepted and this fires.
     /// Mutation: drop the stray-setting check — a database with the switch
     /// off is accepted and this fires.
+    /// R12-FABRIC-8085. A placement set must name this instance once, with
+    /// valid names; a grace without a set is a half-configuration.
+    ///
+    /// Mutation: drop the `instances.contains(&instance)` refusal — the set
+    /// that omits this instance loads and the second assertion fails.
+    #[test]
+    fn a_placement_set_must_include_this_instance_and_name_each_once() {
+        let mut ok = spanner();
+        ok.insert(
+            INSTANCES.to_string(),
+            "fabricd-ew2-a, fabricd-ew2-b ,fabricd-ew2-c".to_string(),
+        );
+        let loaded = Config::parse(&ok).expect("premise: a complete set loads");
+        let managed = loaded.managed.expect("managed");
+        assert_eq!(
+            managed.instances,
+            ["fabricd-ew2-a", "fabricd-ew2-b", "fabricd-ew2-c"]
+        );
+        assert_eq!(managed.placement_grace_ms, DEFAULT_LEASE_TTL_MS / 3);
+
+        for (set, why) in [
+            ("fabricd-ew2-b,fabricd-ew2-c", "omits this instance"),
+            ("fabricd-ew2-a,fabricd-ew2-a", "repeats a name"),
+            ("fabricd-ew2-a,,fabricd-ew2-b", "has a blank name"),
+            ("fabricd-ew2-a,Fabricd_B", "has an invalid name"),
+        ] {
+            let mut bad = spanner();
+            bad.insert(INSTANCES.to_string(), set.to_string());
+            assert!(Config::parse(&bad).is_err(), "a set that {why} loaded");
+        }
+
+        let mut grace_alone = spanner();
+        grace_alone.insert(PLACEMENT_GRACE_MS.to_string(), "500".to_string());
+        assert!(Config::parse(&grace_alone).is_err(), "a grace with no set");
+        let mut stray = complete();
+        stray.insert(INSTANCES.to_string(), "fabricd-ew2-a".to_string());
+        assert!(
+            Config::parse(&stray).is_err(),
+            "a set with the managed log off"
+        );
+    }
+
     #[test]
     fn the_managed_log_is_local_by_default_complete_when_asked_for_and_refused_half_configured() {
         let local = Config::parse(&complete()).expect("premise: the local fabric loads");
@@ -887,6 +993,8 @@ mod tests {
                 region: "europe-west2".to_string(),
                 instance: "fabricd-ew2-a".to_string(),
                 lease_ttl_ms: DEFAULT_LEASE_TTL_MS,
+                instances: Vec::new(),
+                placement_grace_ms: DEFAULT_LEASE_TTL_MS / 3,
             })
         );
 

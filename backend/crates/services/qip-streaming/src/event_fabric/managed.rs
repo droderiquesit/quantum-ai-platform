@@ -122,6 +122,26 @@ pub trait ManagedLog: Send + Sync + std::fmt::Debug {
     /// its epoch; taking an expired one from anybody else bumps it.
     fn acquire(&self, partition: &PartitionRef, holder: &str, ttl_ms: u64) -> Result<LeaseOutcome>;
 
+    /// [`Self::acquire`], except that another holder's lease is not taken
+    /// until it has been expired for `grace_ms` of the database's own time
+    /// (ADR 0111 Amendment 1, §2): an instance that is not a partition's
+    /// rendezvous-preferred leader gives the preferred one that long to
+    /// renew or retake it. Renewing one's own lease is never delayed.
+    ///
+    /// The default contends at once. A log that cannot defer loses only the
+    /// placement preference, never safety: the lease alone decides who
+    /// holds, so ignoring the grace cannot let two instances lead.
+    fn acquire_after_expiry(
+        &self,
+        partition: &PartitionRef,
+        holder: &str,
+        ttl_ms: u64,
+        grace_ms: u64,
+    ) -> Result<LeaseOutcome> {
+        let _ = grace_ms;
+        self.acquire(partition, holder, ttl_ms)
+    }
+
     /// Hand `lease` back: lapse it now, in the database's own time, rather
     /// than leaving the next holder to wait out the TTL. `Ok(true)` when the
     /// row was still this holder's at this epoch and has been lapsed;
@@ -253,8 +273,22 @@ impl MemoryManagedLog {
 
 impl ManagedLog for MemoryManagedLog {
     fn acquire(&self, partition: &PartitionRef, holder: &str, ttl_ms: u64) -> Result<LeaseOutcome> {
+        self.acquire_after_expiry(partition, holder, ttl_ms, 0)
+    }
+
+    fn acquire_after_expiry(
+        &self,
+        partition: &PartitionRef,
+        holder: &str,
+        ttl_ms: u64,
+        grace_ms: u64,
+    ) -> Result<LeaseOutcome> {
         self.reachable(holder)?;
         let now = self.clock.now().as_nanos();
+        let grace_ns = i64::try_from(grace_ms)
+            .ok()
+            .and_then(|ms| ms.checked_mul(1_000_000))
+            .ok_or_else(|| Error::invalid(format!("a lease grace of {grace_ms} ms overflows")))?;
         let ttl_ns = i64::try_from(ttl_ms)
             .ok()
             .and_then(|ms| ms.checked_mul(1_000_000))
@@ -265,7 +299,7 @@ impl ManagedLog for MemoryManagedLog {
             Some((current, epoch, _)) if current == holder => {
                 (holder.to_string(), *epoch, now + ttl_ns)
             }
-            Some((current, epoch, expires)) if *expires > now => {
+            Some((current, epoch, expires)) if expires.saturating_add(grace_ns) > now => {
                 return Ok(LeaseOutcome::HeldByOther {
                     holder: current.clone(),
                     epoch: *epoch,

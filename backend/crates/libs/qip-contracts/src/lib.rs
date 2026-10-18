@@ -94,7 +94,7 @@ pub use episode::Episode;
 pub use evidence_packet::EvidencePacket;
 pub use expansion::{
     BrainSpec, CurriculumItem, GapClass, GapSignal, MemoryEntry, MemoryKind, RetentionPolicy,
-    ValuePolicy,
+    SourceSpec, ValuePolicy,
 };
 pub use feature::{
     Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,

@@ -3689,12 +3689,14 @@
   {
     "id": "R12-OBS-9163",
     "status": "PARTIAL",
-    "current": "data-archive-delay, data-refetch-health and data-lineage-completeness declared as SLOs; their metric names are registered but have no recording site.",
+    "current": "data-lineage-completeness is recorded by Platform::count_lineage (qip_data_lineage_completeness and the linked/unlinked records counter, kernel test tests/kernel.rs); data-refetch-health is now recorded per source by Platform::record_refetch_health from ConnectorArm::refetch, the share of re-requested extents the source still served. data-archive-delay, the Bigtable p99, knowledge-delta and BQ freshness objectives have no recording site. The three data-plane SLOs are declared in slo.rs default_slos.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:245-256",
-      "backend/crates/libs/qip-observability/src/metrics.rs:657-665"
+      "backend/crates/runtime/qip-kernel/src/platform.rs count_lineage records DATA_LINEAGE_COMPLETENESS",
+      "backend/crates/runtime/qip-kernel/src/references.rs Platform::record_refetch_health",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs ConnectorArm::refetch calls it",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable asserts the gauge at 1.0 and 0.0"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "(1) data-archive-delay has no seam to record at: nothing in the tree ingests a GCS archive and learns how long ago it was written (qip-fabricd writes the archive and records EVENT_FABRIC_ARCHIVE_LAG, a different fact). (2) No data-plane objective is evaluated: the three SLOs are declared but no SourceRule turns a gauge into good and total counts, so each reads unmeasured until a checks counter is added the way the ledger and service objectives have one. (3) The refetch pass runs only when QIP_DEEPBRAIN_REFETCH_EVERY is above zero, which no committed environment sets. (4) Bigtable p99, knowledge-delta and BQ freshness stay unmeasured until the data stores are on.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3702,10 +3704,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-deepbrain --lib a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L22: refetch-health recording added and the lineage recording found already in place (the row said neither had a site). Mutations that fired: delete the record call in ConnectorArm::refetch; invert the served share. DATA_REFETCH_HEALTH doc now says the gauge is the served share (it said 0/1 per attempt)."
   },
   {
     "id": "R12-OBS-9164",

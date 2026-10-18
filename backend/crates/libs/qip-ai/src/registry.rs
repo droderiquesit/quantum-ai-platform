@@ -282,6 +282,75 @@ pub struct ModelCard {
     /// licence invisibly; this is the field that makes it visible.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub permitted_locations: BTreeSet<String>,
+    /// The market regimes (`Platform::regime_context` keys) this model's
+    /// skill was measured in (R12-MODEL-4020). Empty means the card records
+    /// no regime, which [`ModelCard::decision_eligibility_in`] reads as
+    /// "not restricted" so a card that predates the field keeps working;
+    /// every card a learning desk registers names the regime it was judged
+    /// in, and a card that names one is restricted to exactly those.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub validated_regimes: BTreeSet<String>,
+    /// The `(minimum, maximum)` each feature took in the data the model was
+    /// fitted on (R12-RISK-4099). An input outside its range is an
+    /// extrapolation the fit says nothing about, whether it came from a real
+    /// market move or from someone shaping it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub training_bounds: BTreeMap<String, (f64, f64)>,
+    /// Per feature, where its values came from (R12-MODEL-4016). Empty on a
+    /// card that predates the field; [`ModelRegistry::promote`] refuses a
+    /// card whose recorded origins show a look-ahead or an unaudited
+    /// feature, and a learning desk refuses to promote a card missing any.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub feature_lineage: BTreeMap<String, FeatureOrigin>,
+    /// The research campaign whose window the model was fitted on
+    /// (R12-EXPAND-6076): the id of the campaign manifest the platform
+    /// journaled, so the data behind the fit can be found from the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_id: Option<String>,
+    /// The build that fitted it, as the kernel names itself in a decision
+    /// record (`qip-kernel <version> (<source commit>)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_version: Option<String>,
+}
+
+/// Where one feature's values came from (R12-MODEL-4016): enough for a
+/// reviewer to re-derive it and for a promotion to refuse a look-ahead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureOrigin {
+    /// How the value is computed, in words a person can check against the code.
+    pub derivation: String,
+    /// Digest of the source records the column was computed from.
+    pub source_digest: String,
+    /// Digest of the transformation code that computed it.
+    pub code_digest: String,
+    /// The latest instant of source data any value of the feature reads.
+    pub source_through: Timestamp,
+    /// The instant the newest value claims to be known at.
+    pub decision_at: Timestamp,
+    /// How many rows the as-of audit recomputed from truncated and perturbed
+    /// source. Zero is an audit that examined nothing, which is not a clean
+    /// one.
+    pub audited_rows: usize,
+}
+
+impl FeatureOrigin {
+    /// Why this origin cannot stand behind a promotion, if it cannot.
+    fn finding(&self, feature: &str) -> Option<String> {
+        if self.source_through > self.decision_at {
+            return Some(format!(
+                "feature {feature} reads source through {}, after the {} it claims to be known at: \
+                 look-ahead",
+                self.source_through, self.decision_at
+            ));
+        }
+        if self.audited_rows == 0 {
+            return Some(format!(
+                "feature {feature} was not audited as of its decision instant; an audit that \
+                 examined nothing is not a clean one"
+            ));
+        }
+        None
+    }
 }
 
 /// A declared ceiling on what a model may consume. A ceiling set at
@@ -345,7 +414,75 @@ impl ModelCard {
             alias_moves: Vec::new(),
             data_entitlements: BTreeSet::new(),
             permitted_locations: BTreeSet::new(),
+            validated_regimes: BTreeSet::new(),
+            training_bounds: BTreeMap::new(),
+            feature_lineage: BTreeMap::new(),
+            campaign_id: None,
+            code_version: None,
         }
+    }
+
+    /// What is missing to trace this card back to the campaign and the code
+    /// that fitted it, if anything.
+    pub fn provenance_gap(&self) -> Option<String> {
+        let blank = |field: &Option<String>| field.as_deref().is_none_or(|v| v.trim().is_empty());
+        match (blank(&self.campaign_id), blank(&self.code_version)) {
+            (false, false) => None,
+            (true, false) => Some("it records no research campaign".to_string()),
+            (false, true) => Some("it records no code version".to_string()),
+            (true, true) => {
+                Some("it records neither a research campaign nor a code version".to_string())
+            }
+        }
+    }
+
+    /// Every way the recorded feature lineage cannot stand behind a
+    /// promotion: a feature reading past its decision instant, or one never
+    /// audited. Empty for a card recording no lineage — see
+    /// [`Self::features_without_lineage`] for that half.
+    pub fn lineage_findings(&self) -> Vec<String> {
+        self.feature_lineage
+            .iter()
+            .filter_map(|(feature, origin)| origin.finding(feature))
+            .collect()
+    }
+
+    /// The features this card consumes that its lineage does not account for.
+    pub fn features_without_lineage(&self) -> Vec<&str> {
+        self.features
+            .iter()
+            .filter(|feature| !self.feature_lineage.contains_key(*feature))
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// Record a regime the model's skill was measured in.
+    pub fn with_validated_regime(mut self, regime: impl Into<String>) -> Self {
+        self.validated_regimes.insert(regime.into());
+        self
+    }
+
+    /// Record the range each feature took in the fitting data. Refuses a
+    /// non-finite or inverted range, and a name the card does not consume:
+    /// a bound on a feature the model never reads would pass every input.
+    pub fn with_training_bounds(mut self, bounds: BTreeMap<String, (f64, f64)>) -> Result<Self> {
+        for (name, (low, high)) in &bounds {
+            if !low.is_finite() || !high.is_finite() || low > high {
+                return Err(Error::invalid(format!(
+                    "{} bounds feature {name} to [{low}, {high}], which is not a finite range",
+                    self.reference()
+                )));
+            }
+            if !self.features.contains(name) {
+                return Err(Error::invalid(format!(
+                    "{} bounds feature {name}, which it does not consume; record the features \
+                     before their bounds",
+                    self.reference()
+                )));
+            }
+        }
+        self.training_bounds = bounds;
+        Ok(self)
     }
 
     /// Record the entitlements the model was trained under and the locations
@@ -480,6 +617,60 @@ impl ModelCard {
             ));
         }
         self.class.class_eligibility(self)
+    }
+
+    /// [`Self::decision_eligibility`] for a decision taken in `regime` on
+    /// `inputs` (R12-MODEL-4020, R12-RISK-4099).
+    ///
+    /// Two further refusals. A card that names the regimes it was validated in
+    /// is not accepted in another: skill measured in a calm market says
+    /// nothing about a stressed one, and the scoreboard that chose the model
+    /// only ever scored it where it ran. And an input outside the range the
+    /// fit saw, or not a finite number, is refused: the model would be
+    /// extrapolating, and an adversarial or corrupted value is exactly an
+    /// input chosen to land there. A bounded feature the caller did not supply
+    /// is refused too, since there is nothing to check it against.
+    pub fn decision_eligibility_in(
+        &self,
+        now: Timestamp,
+        regime: &str,
+        inputs: &BTreeMap<String, f64>,
+    ) -> std::result::Result<(), String> {
+        self.decision_eligibility(now)?;
+        if let Some(reason) = self.regime_gap(regime) {
+            return Err(reason);
+        }
+        for (name, (low, high)) in &self.training_bounds {
+            let Some(value) = inputs.get(name) else {
+                return Err(format!(
+                    "feature {name} has a recorded training range and no input to check against it"
+                ));
+            };
+            if !value.is_finite() {
+                return Err(format!("feature {name} is not a finite number"));
+            }
+            if value < low || value > high {
+                return Err(format!(
+                    "feature {name} is {value}, outside the [{low}, {high}] the model was fitted on"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Why this card's validation does not cover `regime`, if it does not.
+    fn regime_gap(&self, regime: &str) -> Option<String> {
+        if self.validated_regimes.is_empty() || self.validated_regimes.contains(regime) {
+            return None;
+        }
+        Some(format!(
+            "validated only in {}, never scored in {regime}",
+            self.validated_regimes
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     }
 }
 
@@ -665,6 +856,26 @@ impl ModelRegistry {
         Ok(card)
     }
 
+    /// [`Self::require_for_decision`] for a decision in `regime` on `inputs`:
+    /// the card must also have been validated in that regime and the inputs
+    /// must lie inside the range it was fitted on.
+    pub fn require_for_decision_in(
+        &self,
+        reference: &str,
+        regime: &str,
+        inputs: &BTreeMap<String, f64>,
+        now: Timestamp,
+    ) -> Result<&ModelCard> {
+        let card = self
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        card.decision_eligibility_in(now, regime, inputs)
+            .map_err(|reason| {
+                Error::denied(format!("{reference} may not drive a decision: {reason}"))
+            })?;
+        Ok(card)
+    }
+
     /// Promote a model to production, recording when.
     pub fn promote(&mut self, reference: &str, at: Timestamp) -> Result<()> {
         let card = self
@@ -673,6 +884,14 @@ impl ModelRegistry {
         if card.latest_evaluation().is_none_or(|e| !e.passed) {
             return Err(Error::denied(format!(
                 "{reference} cannot be promoted without a passing evaluation"
+            )));
+        }
+        let leaks = card.lineage_findings();
+        if !leaks.is_empty() {
+            return Err(Error::denied(format!(
+                "{reference} cannot be promoted: {}; a model fitted on the future backtests \
+                 beautifully and cannot trade",
+                leaks.join("; ")
             )));
         }
         card.stage = ModelStage::Production;
@@ -949,6 +1168,33 @@ impl ModelRegistry {
             .values()
             .filter(|c| c.stage == ModelStage::Production)
             .filter_map(|c| c.decision_eligibility(now).err().map(|reason| (c, reason)))
+            .collect()
+    }
+
+    /// [`Self::ineligible`] as it stands in `regime`: a production model whose
+    /// skill was measured elsewhere is listed with that as its reason, where
+    /// [`Self::ineligible`] would call it fine. `inputs_for` supplies the
+    /// current inputs of the cards it can speak for, whose recorded training
+    /// ranges are then checked against them too; a card it returns `None` for
+    /// is judged on regime alone.
+    pub fn ineligible_in_regime<'a>(
+        &self,
+        now: Timestamp,
+        regime: &str,
+        inputs_for: impl Fn(&ModelCard) -> Option<&'a BTreeMap<String, f64>>,
+    ) -> Vec<(&ModelCard, String)> {
+        self.cards
+            .values()
+            .filter(|c| c.stage == ModelStage::Production)
+            .filter_map(|c| {
+                let verdict = match inputs_for(c) {
+                    Some(inputs) => c.decision_eligibility_in(now, regime, inputs),
+                    None => c
+                        .decision_eligibility(now)
+                        .and_then(|()| c.regime_gap(regime).map_or(Ok(()), Err)),
+                };
+                verdict.err().map(|reason| (c, reason))
+            })
             .collect()
     }
 

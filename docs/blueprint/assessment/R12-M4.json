@@ -332,14 +332,16 @@
   },
   {
     "id": "R12-MODEL-4016",
-    "status": "PARTIAL",
-    "current": "Holdout is the last slice in time (split_at_fraction), the strategy HoldoutGate refuses a run whose leakage audit is not clean or empty, and purged splits are used. Per-feature lineage into a model card is not recorded.",
+    "status": "COMPLETE",
+    "current": "ModelCard.feature_lineage records, per consumed feature, a FeatureOrigin: its derivation in words, the digests of the source window and of the transformation code, the instant it reads through, the instant it claims to be known at, and the rows the as-of audit recomputed. The learning desk fills it for every card it registers from FeatureLineage (fed by audit_features_as_of's row count, which already refused a look-ahead fit before the dataset was built, MODEL-030). ModelRegistry::promote, which Platform::promote_model reaches through promote_artifact, refuses a card whose recorded origin reads past its decision instant or was never audited, and LearningDesk::promote_candidate refuses a card missing lineage for any feature it consumes.",
     "evidence": [
-      "backend/crates/services/qip-training/src/dataset.rs:181 split_at_fraction (time-ordered tail)",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:437-450 no_leakage check",
-      "backend/crates/services/qip-training/tests/training.rs:195 observations_out_of_time_order_are_refused"
+      "backend/crates/libs/qip-ai/src/registry.rs FeatureOrigin, ModelCard::lineage_findings, features_without_lineage, ModelRegistry::promote",
+      "backend/crates/apps/qip-deepbrain/src/features.rs FeatureLineage::record_on, DERIVATIONS",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs promote_candidate, audit_features_as_of",
+      "backend/crates/libs/qip-ai/tests/feature_lineage.rs a_feature_that_reads_past_its_decision_instant_blocks_the_promotion",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_registered_card_records_per_feature_lineage_and_one_without_it_is_not_promoted"
     ],
-    "gap": "Feature-level lineage on model cards; leakage audit applied to model training (it is applied to strategy promotion).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -347,10 +349,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-lifecycle; qip-training",
+    "verification": "cargo test -p qip-ai --test feature_lineage && cargo test -p qip-deepbrain --lib a_registered_card_records",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the registry's lineage refusal replaced by false promotes the look-ahead card (two tests fail); the audited_rows == 0 branch removed promotes the unaudited card; the desk's missing-lineage refusal removed promotes the stripped card; dropping lineage.record_on leaves the registered card with no lineage. qip-ai, qip-deepbrain and qip-kernel suites report no failures. The triage proposed the strategy gates.rs no_leakage check at Platform::promote_model; that gate reads a strategy HoldoutReport, which a model promotion does not have, so the same refusal lives at the registry chokepoint instead. A card recording no lineage is not blocked by the registry itself (cards predate the field); the desk, the one production producer, refuses it."
   },
   {
     "id": "R12-MODEL-4017",
@@ -422,11 +424,14 @@
   {
     "id": "R12-MODEL-4020",
     "status": "PARTIAL",
-    "current": "The deep brain keeps a scoreboard by class and by Platform::regime_context and registers a challenger only where its precedent in the current regime beats the baseline; acceptance does not require cross-regime evidence.",
+    "current": "ModelCard records validated_regimes and training_bounds. ModelCard::decision_eligibility_in refuses a card used in a regime it was never validated in (when it names any). ModelRegistry::require_for_decision_in is the refusing call, and ineligible_in_regime is the listing. The deep brain's learning desk stamps every card it registers with the regime the round classified (Platform::regime_context) and each feature's min and max over the fitted-and-judged rows, and each round lists a promoted model in another regime as ineligible with 'never scored in <regime>'. A card with no recorded regime stays unrestricted, so cards that predate the field keep working. No decision-time caller passes a regime yet.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:244-260 choose_class per regime"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, regime_gap, ModelRegistry::require_for_decision_in, ineligible_in_regime",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope and the ineligible_in_regime call in learn()",
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs a_model_validated_in_one_regime_is_refused_in_another",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_model_fitted_in_one_regime_is_listed_ineligible_in_another"
     ],
-    "gap": "No cross-regime validation gate and no restriction of a model to its validated regimes.",
+    "gap": "The refusal is reported in the learning round and available at ModelRegistry::require_for_decision_in, but the decision-time admissions (qip_compliance ModelRiskRegister::admit via require_for_decision, the cost-router reputation filter) still call the regime-free decision_eligibility and carry no regime to pass. Nothing in a cell's pass reads validated_regimes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -434,10 +439,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: regime_gap returning None admits the calm-only card in the stressed regime (2 qip-ai tests fail); dropping the record_validation_scope call leaves the card with no recorded regime and the deepbrain round lists nothing (assertion left: []). Kept PARTIAL: the decision-time admissions are the remaining half."
   },
   {
     "id": "R12-MODEL-4021",
@@ -708,7 +713,7 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled: false",
       "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1127 cardinality-violating quantum answer refused"
     ],
-    "gap": "A reachable quantum configuration (hosted provider wired with async submission, policy whose thresholds a provider can meet) and an end-to-end test of it.",
+    "gap": "No kernel cycle hands the router a problem the quantum arm can take. Measured 2026-10-18 in a throwaway probe (not committed): a Platform with PlatformConfig::with_quantum(), RoutingPolicy { minimum_assets_for_quantum: 4, exact_enumeration_limit: 2 }, a four-name universe with bars observed for all four and a holdings cap of two journaled solver_routing for six consecutive cycles with compute.task.variables = 1 and ran = [exact_enumeration] every time ('1 assets is below the 4 at which a quantum formulation could pay'). The problem has one variable per approved thesis and a cycle approved one, so the triage's closure (a 4+ asset universe and a policy of 4) does not reach the arm. Closing needs a fixture that yields four simultaneous approved theses in one DECIDE, or a seam handing the router the held book plus the thesis; then the end-to-end assertions the row names (both runs journaled; a cardinality-violating or limit-breaching quantum answer refused by PreTradeChecker before the broker). The quantum arm also stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -721,7 +726,7 @@
     "verification": "kernel test with quantum enabled reaching the QAOA arm",
     "work_item": "",
     "size": "M",
-    "notes": "CLAUDE.md lists IBM Quantum via Qiskit Runtime for QAOA; no composition root attaches HostedProvider or IbmQuantumSolver."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed."
   },
   {
     "id": "R12-QUANT-4033",
@@ -1393,7 +1398,7 @@
       "backend/crates/tests/qip-acceptance/tests/arch_033_quantum_path.rs:11-40 vacuous/text-search tests",
       "backend/crates/tests/qip-acceptance/tests/quantum_pretrade.rs::a_position_sized_from_a_winning_quantum_answer_is_still_refused_by_pre_trade_risk"
     ],
-    "gap": "The order is hand-built from router weights; no test drives a quantum-won construction through the kernel's DECIDE/ACT, so a kernel shortcut past the checker would pass.",
+    "gap": "No kernel cycle hands the router a problem the quantum arm can take. Measured 2026-10-18 in a throwaway probe (not committed): a Platform with PlatformConfig::with_quantum(), RoutingPolicy { minimum_assets_for_quantum: 4, exact_enumeration_limit: 2 }, a four-name universe with bars observed for all four and a holdings cap of two journaled solver_routing for six consecutive cycles with compute.task.variables = 1 and ran = [exact_enumeration] every time ('1 assets is below the 4 at which a quantum formulation could pay'). The problem has one variable per approved thesis and a cycle approved one, so the triage's closure (a 4+ asset universe and a policy of 4) does not reach the arm. Closing needs a fixture that yields four simultaneous approved theses in one DECIDE, or a seam handing the router the held book plus the thesis; then the end-to-end assertions the row names (both runs journaled; a cardinality-violating or limit-breaching quantum answer refused by PreTradeChecker before the broker). The quantum arm also stays off in every default composition (quantum_enabled false; QAOA runs on SimulatedProvider only; no hosted provider is wired).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1406,7 +1411,7 @@
     "verification": "",
     "work_item": "",
     "size": "S",
-    "notes": "arch_033_quantum_path.rs: quantum_service_exists asserts nothing; the other two pass if platform.rs contains the words 'baseline' or 'classical'. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed."
   },
   {
     "id": "R12-ASSET-4065",
@@ -2186,12 +2191,13 @@
   {
     "id": "R12-RISK-4099",
     "status": "PARTIAL",
-    "current": "ModelCard::decision_eligibility refuses on drift, failed or stale evaluation; ModelRiskRegister in qip-compliance; deep brain tracks drifted features. Adversarial inputs and regime mismatch not covered.",
+    "current": "ModelCard::decision_eligibility_in now refuses, beyond drift, failed or stale evaluation, an input that is not a finite number, one outside the (min, max) the fit saw for that feature (ModelCard.training_bounds, built with with_training_bounds, which refuses an inverted or non-finite range and a feature the card does not consume), a bounded feature with no input, and a regime the card was never validated in. The deep brain stamps every registered card with the bounds and regime, and each learning round checks the newest feature row against its standing models of the subject and lists any that fail.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:336-361",
-      "backend/crates/libs/qip-compliance/src/model_risk.rs"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, with_training_bounds",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope, and the latest-row check feeding ineligible_in_regime in learn()",
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through"
     ],
-    "gap": "Adversarial-input and regime-mismatch checks.",
+    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2199,10 +2205,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020."
   },
   {
     "id": "R12-RISK-4100",
@@ -2436,14 +2442,16 @@
   },
   {
     "id": "R12-RISK-4110",
-    "status": "PARTIAL",
-    "current": "The learning engine's self-model estimates component reliability from graded theses and scales evidence in REASON; the centre narrows sizing when the self-model is stale or unavailable.",
+    "status": "COMPLETE",
+    "current": "The learning engine's self-model estimates component reliability from graded theses and scales evidence in REASON; the centre narrows sizing when the self-model is stale or unavailable; and the confidence governor now reads the reliability value at sizing: ThesisView::reliability is the weakest estimated accuracy among the components behind a thesis (Platform::thesis_reliability, from the attribution lineage's detector and analysts and SelfModel::factor), and ConfidenceSignals::decide contracts the construction by RELIABILITY_SCHEDULE (below 0.50 estimated accuracy: 0.75, below 0.45: 0.5, below 0.35: 0.25) under Trigger::Reliability, weakest thesis deciding. A component with no graded record has no estimate and contracts nothing.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/self_model.rs",
-      "backend/crates/runtime/qip-kernel/tests/self_model.rs:143",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:797 central_sizing_multiplier"
+      "backend/crates/runtime/qip-kernel/src/confidence.rs::reliability_multiplier",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs::ConfidenceSignals::decide",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::thesis_reliability",
+      "runtime/qip-kernel/src/confidence.rs::tests::a_thesis_resting_on_a_component_worse_than_chance_is_sized_smaller_and_silence_is_not_unreliability",
+      "runtime/qip-kernel/src/platform.rs::self_model_tests::a_thesis_raised_by_a_detector_the_self_model_grades_worse_than_chance_is_sized_smaller"
     ],
-    "gap": "A predictor of being wrong (not just a reliability record) feeding the governor.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2451,10 +2459,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib reliability && cargo test -p qip-kernel --lib a_thesis_raised_by_a_detector",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed. Mutations: ThesisView built with reliability None in construct_from -> the platform test finds no contraction; the reliability block skipped in decide -> both tests fail; the schedule comparison inverted -> both fail; all restored (qip-kernel 977 passed, 0 failed; clippy -D warnings clean). Limits: the schedule bounds are stated policy, not fitted; only detector and analyst components are read (model: forecasters have no self-model key); the grant path (decide_for_grant) is platform-wide and does not read per-thesis reliability."
   },
   {
     "id": "R12-RISK-4111",
