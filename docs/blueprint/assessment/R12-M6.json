@@ -2408,7 +2408,7 @@
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:401 a_world_branch_refuses_each_broken_invariant",
       "backend/crates/services/qip-twin/src/futures.rs::to_world_branch"
     ],
-    "gap": "to_world_branch has no production caller; no seam between brains emits or consumes WorldBranch.",
+    "gap": "to_world_branch has no production caller. The triage closure (call Future::to_world_branch in Platform::stage_simulate where qip-twin futures are evaluated) rests on a seam that does not exist: stage_simulate evaluates no qip-twin futures, and FutureTree/TwinState::fit have no caller outside qip-twin/tests/futures.rs (grep -rn FutureTree backend/crates --include=*.rs). Closing this row first requires growing a FutureTree in SIMULATE from the desk price series (TwinState::fit over bar closes, TreeConfig, WorldDriver selection) and only then journaling one WorldBranch per live branch; that is an M-sized kernel change, not the S the triage sized it as.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2419,7 +2419,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-read 2026-10-18 by lane L01 (ran grep only): kept PARTIAL, closure not applicable as written; gap corrected to name the missing SIMULATE seam."
   },
   {
     "id": "R12-CONTRACT-6111",
@@ -2564,26 +2564,25 @@
   },
   {
     "id": "R12-GOV-6117",
-    "status": "PARTIAL",
-    "current": "ExecutableScope::route sends out-of-scope opportunities to ShadowRecord, which has no conversion to ActionIntent (tested, library-only). The agency CLI analyses and reports refused proposals (integrated).",
+    "status": "COMPLETE",
+    "current": "Platform::stage_discover routes every detected opportunity that names an instrument through ExecutableScope::route (crate::executable_scope::route_detected), the scope being the universe the platform was assembled with; a Routed::Shadow is journaled as OpportunityShadowed (Topic::OpportunityRanked, idempotent per opportunity id) and never queued, so no stage downstream can make an intent of it. DISCOVER detail reports the shadowed count. An opportunity naming no instrument (entity-level) is not routed: it has no instrument to be in or out of scope on and cannot become an order on its own.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:201 route",
-      "backend/crates/libs/qip-contracts/tests/action.rs:31",
-      "backend/crates/services/qip-agency/src/plan.rs:281 select records refusals",
-      "backend/crates/apps/qip-cli/tests/agency.rs:81"
+      "backend/crates/runtime/qip-kernel/src/executable_scope.rs Platform::executable_scope, route_detected, journal_shadow",
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_discover: let routing = self.route_detected(found, now) before self.queue.extend",
+      "backend/crates/runtime/qip-kernel/tests/executable_scope.rs an_opportunity_outside_the_executable_scope_is_shadowed_and_never_queued_however_often_it_is_rescored"
     ],
-    "gap": "Wire ExecutableScope into the kernel's opportunity path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test executable_scope",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Closed 2026-10-18 (lane L01). Mutation: the Routed::Shadow arm pushed onto executable as the Executable arm does; the test failed at pass 0 with an opportunity on ZZZ in the queue and 0 shadowed; restored byte-for-byte, passes."
   },
   {
     "id": "R12-GOV-6118",
@@ -2681,24 +2680,25 @@
   },
   {
     "id": "R12-GOV-6122",
-    "status": "PARTIAL",
-    "current": "ExecutableScope.route has no score parameter and ShadowRecord has no path to ActionIntent (tested); not called by the kernel. Everything is paper anyway.",
+    "status": "COMPLETE",
+    "current": "ExecutableScope::route takes no score, and the kernel calls it on every DISCOVER pass before the queue (crate::executable_scope::route_detected), so an out-of-scope opportunity re-detected and re-scored on a later pass is re-routed and re-shadowed; it never reaches the queue, REASON or an intent. Proven over three passes with fresh history each pass.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:199-225",
-      "backend/crates/libs/qip-contracts/tests/action.rs:31"
+      "backend/crates/runtime/qip-kernel/src/executable_scope.rs route_detected (no score reaches the route)",
+      "backend/crates/libs/qip-contracts/src/action.rs ExecutableScope::route: the score is not a parameter",
+      "backend/crates/runtime/qip-kernel/tests/executable_scope.rs an_opportunity_outside_the_executable_scope_is_shadowed_and_never_queued_however_often_it_is_rescored (three passes, queue and REASON asserted each pass)"
     ],
-    "gap": "Integration in the opportunity path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test executable_scope",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Closed 2026-10-18 (lane L01) by the same seam and test as R12-GOV-6117. The triage mutation (let a high score bypass the route) cannot be written because the route has no score parameter; the mutation run was the shadow arm queueing the opportunity, which failed the test on pass 0."
   },
   {
     "id": "R12-GOV-6123",

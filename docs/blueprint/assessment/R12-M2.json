@@ -2005,26 +2005,28 @@
   },
   {
     "id": "R12-TICK-2087",
-    "status": "PARTIAL",
-    "current": "capture_time is mandatory and the kernel uses it as known_at; publication/feed-arrival delays are not calibrated.",
+    "status": "COMPLETE",
+    "current": "capture_time is mandatory and Platform::observe files every trade and tick under known_at = capture_time; the same arms fold (capture_time - at) into a bounded per-source PublicationDelay table (Platform::publication_delays, observations/mean/max), and Platform::calibrated_feed_delay (the slowest source mean) is what stage_simulate capacity_probe runs the simulator behind through MarketCondition::DelayedFeed, reported in the SIMULATE detail off the simulator applied conditions.",
     "evidence": [
-      "backend/crates/libs/qip-market/src/quote.rs:43",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9293 known_at = tick.capture_time"
+      "backend/crates/runtime/qip-kernel/src/platform.rs observe_publication_delay, publication_delays, calibrated_feed_delay (grep -n \"R12-TICK-2087\" platform.rs)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs capacity_probe: with_conditions(ConditionWindow::always(MarketCondition::DelayedFeed))",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_read_at_decision_time_returns_only_records_with_known_at_at_or_before_it",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_sources_publication_delay_is_calibrated_from_its_ticks_and_the_capacity_probe_runs_behind_it"
     ],
-    "gap": "Calibrated publication delays and a decision-time read test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-TICK-2049"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-twin --test twin",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning -- a_read_at_decision_time a_sources_publication_delay",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Known-at now mandatory; delay calibration missing."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Known-at now mandatory; delay calibration missing. Closed 2026-10-18 (lane L01). Mutations: known_at = tick.at made the decision-time read test fail at its visibility assertion; dropping with_conditions in capacity_probe made the probe report no delayed_feed condition and the second test fail; dropping observe_publication_delay from the Tick arm failed the calibration premise. All restored byte-for-byte, both pass. Delay is calibrated by source (venue string), bounded to 64 sources; a source past the cap is left uncalibrated rather than assumed current. Only the capacity probe consumes the delay; the counterfactual twin (qip-twin) still reads bars without a feed delay."
   },
   {
     "id": "R12-TICK-2088",
