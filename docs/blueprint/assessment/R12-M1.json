@@ -355,9 +355,10 @@
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/contradiction.rs:21 ResolutionMethod",
       "backend/crates/services/qip-world-model/tests/contradictions.rs",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs",
+      "backend/crates/tests/qip-acceptance/tests/uncertainty_records.rs"
     ],
-    "gap": "Uniform uncertainty/contradiction fields across all five model kinds, integrated in the cycle.",
+    "gap": "Uncertainty is shown on four of the five model kinds by acceptance tests (2026-10-18): world Fact (confidence refused outside [0,1]), episodic ClaimRecord.confidence, self-model CapabilityEstimate (refuses a thin sample, never reports certainty), reasoning-engine confidence-by-arithmetic. Contradiction records exist only for the world graph (graph::Contradiction, both beliefs kept) and the reasoning engine (ContradictionResolution); the episodic, semantic and self models hold no contradiction record, and nothing shows a semantic-memory type carrying confidence. Uniform fields across all five kinds are unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -365,10 +366,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test contradictions",
+    "verification": "cd backend && cargo test -p qip-acceptance --test uncertainty_records && cargo test -p qip-world-model --test contradictions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations 2026-10-18, each failing its named test and restored: Fact::new confidence check disabled; contradiction gap threshold unreachable; MINIMUM_SAMPLE check removed (the first version of the test survived this, because an empty record errs by another path; strengthened to MINIMUM_SAMPLE-1 outcomes); ContradictionResolution two-id minimum lowered."
   },
   {
     "id": "R12-GOV-1017",
@@ -1626,14 +1627,18 @@
   {
     "id": "R12-EXEC-1068",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
+    "current": "Spoofing is a whole-word conduct phrase class (qip-contracts action.rs); and the edge cell now refuses a place-and-cancel pattern before the next order of its shape exists: GATE_CONDUCT_SPOOFING in place_net, on the cell's own record of placements and unfilled time-to-live withdrawals per venue, instrument and side.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/conduct.rs:42 ConductPolicy (default: 4 unfilled withdrawals in 60 s, above 0.75 of placements) and :151 ConductWatch::refusal, keyed by venue, instrument and side, bounded by the window and MAX_EVENTS_PER_KEY",
+      "backend/crates/edge/qip-edge/src/cell.rs:215 GATE_CONDUCT_SPOOFING; :5278 place_net refuses through Cell::refuse before pricing builds the order; :5536 Cell::send records each accepted placement; :6261 withdraw_all records an order withdrawn at its time to live with nothing filled, after the last reports",
+      "backend/crates/edge/qip-edge/tests/pricing.rs:659 a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
+      "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
       "backend/crates/libs/qip-contracts/src/action.rs:93 whole-word matcher"
     ],
-    "gap": "No behavioural spoofing control (order-to-cancel / intent patterns) in qip-edge quoting.",
+    "gap": "The behavioural control covers the cell's own place-then-withdraw-unfilled pattern only. Requotes sent beneath the placer seam (qip-edge-node reprice.rs, Cell::spend_requote) are deliberately not counted, so layering by repeated repricing away from the touch is not judged; cross-venue and momentum-ignition patterns have no control; and the desk's order path in qip-execution-engine has none.",
     "implemented": false,
     "tested": false,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1641,7 +1646,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Lane L11, 2026-10-18: PARTIAL kept. The clause says any order pattern constituting spoofing; one pattern is now refused (see R12-AGENCY-6100, closed by the same change, mutation-verified). A requote keeps an order's intent to trade and counting it would convict ordinary market making, so judging requote layering needs its own bound, not this one."
   },
   {
     "id": "R12-AGENCY-1069",
@@ -3571,9 +3576,11 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/cycle.rs:17 Stage",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_financial_agi_core_scope_item_names_a_seam_and_a_test_that_still_exist",
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "A scope map now names a seam and an existing test for all ten items, and a test pins the deep brain's unconditional AmbientAgency::open. Still PARTIAL: it is inspection, not behaviour; hypothesis generation (stage_reason) and uncertainty (calibrate_resolved) are covered only by a cycle-level test, not one named for them; planning and tool use run in the ambient agency's shadow/outbox path, not as an executing planner.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3581,10 +3588,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored."
   },
   {
     "id": "R12-MODEL-1157",
