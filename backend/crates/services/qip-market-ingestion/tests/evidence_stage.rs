@@ -111,6 +111,70 @@ fn every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_
     Ok(())
 }
 
+/// The audit found `EvidencePacket` had no producer outside `qip-contracts`:
+/// a claim left the connector as an `EvidenceRecord` and nothing stated it in
+/// the contract another brain receives. Mutation: drop `Public`'s
+/// `Redistribute` grant in `permitted_uses`, or hand the packet an empty
+/// `content_hash` — the licence and hash assertions fail.
+#[test]
+fn every_admitted_claim_leaves_the_connector_as_an_evidence_packet_with_source_licence_and_hash()
+-> Result<()> {
+    use qip_contracts::governance::Usage;
+    let text = body(&[
+        ("e1", "2026-08-24T14:59:00Z", "101.25"),
+        ("e2", "2026-08-24T14:59:30Z", "101.50"),
+    ]);
+    let mut emulator = serving(&text);
+    let mut runtime = runtime(manifest(), None)?;
+    let mut connector = TestConnector::new(manifest());
+    let transport: &mut dyn SourceTransport = &mut emulator;
+    let report = runtime.poll(&mut connector, transport, now())?;
+
+    assert_eq!(report.evidence.len(), 2, "premise: two claims were checked");
+    assert_eq!(report.packets.len(), 2, "one packet per admitted claim");
+    let document = qip_core::sha256_hex(text.as_bytes());
+    for (packet, checked) in report.packets.iter().zip(&report.evidence) {
+        assert_eq!(packet.packet_id, checked.record.id);
+        assert_eq!(packet.content_hash, document);
+        assert_eq!(packet.source.source_id, checked.record.source_identity);
+        assert_eq!(packet.licence.licence_id, "public");
+        assert!(
+            packet.licence.permitted.contains(&Usage::Redistribute),
+            "{:?}",
+            packet.licence.permitted
+        );
+    }
+    Ok(())
+}
+
+/// A packet is built from the claim and the body hash it was extracted from,
+/// and refuses rather than patches when the hash is not a digest. Mutation:
+/// build the packet with a fixed well-formed hash instead of the claim's own —
+/// the refusal below is never raised and the first assertion fails.
+#[test]
+fn a_checked_claim_whose_body_hash_is_not_a_digest_yields_no_packet() -> Result<()> {
+    let text = body(&[("e1", "2026-08-24T14:59:00Z", "101.25")]);
+    let mut emulator = serving(&text);
+    let mut runtime = runtime(manifest(), None)?;
+    let mut connector = TestConnector::new(manifest());
+    let transport: &mut dyn SourceTransport = &mut emulator;
+    let report = runtime.poll(&mut connector, transport, now())?;
+    let mut checked = report.evidence[0].clone();
+    assert!(
+        checked.packet(&manifest()).is_ok(),
+        "premise: the unaltered claim forms a packet"
+    );
+
+    checked.document_hash = "not-a-digest".to_string();
+
+    let refusal = checked.packet(&manifest());
+    assert!(
+        refusal.is_err(),
+        "a claim with no provenance left as a packet: {refusal:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_central_tick_is_stamped_with_the_poll_instant_and_a_per_feed_sequence_that_continues()
 -> Result<()> {

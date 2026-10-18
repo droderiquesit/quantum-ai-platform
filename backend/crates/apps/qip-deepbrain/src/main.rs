@@ -906,10 +906,18 @@ fn run() -> Result<()> {
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
     );
-    let mut operations = qip_deepbrain::operations::Operations::new(started)?;
+    // The remediation journal: the audit record of an automated action is
+    // written here before the action runs, so a node that restarts after
+    // disabling research still holds the account of why.
+    let remediation_journal = qip_deepbrain::operations::RemediationJournal::beside(
+        &config.event_log,
+        std::sync::Arc::new(qip_core::SystemClock),
+    )?;
+    let mut operations =
+        qip_deepbrain::operations::Operations::journalled(started, remediation_journal)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \
-         may switch off research until restart"
+         may switch off research until restart, and its audit record is journalled first"
     );
 
     // The tick desk (`tick_desk.rs`): the one reader of recorded market

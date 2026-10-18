@@ -32,11 +32,17 @@
 use super::manifest::{SchemaVersion, SourceManifest};
 use super::transport::ContentDigest;
 use crate::adapter::SensedRecord;
+use qip_contracts::evidence_packet::{
+    EvidencePacket, EvidencePacketFields, LicenceTerms, Location, SourceRef,
+};
+use qip_contracts::governance::Usage;
 use qip_core::Timestamp;
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_evidence::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
 use qip_evidence::{AuthenticitySignal, EvidenceRecord, EvidenceVerdict};
+use qip_financial::quality::LicensingClass;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// Which parser extracted a record, at which version, against which schema
 /// (R12-DATA-1034).
@@ -83,6 +89,98 @@ pub struct CheckedEvidence {
     /// SHA-256 of the body the record was extracted from.
     pub document_hash: String,
     pub verdict: EvidenceVerdict,
+}
+
+/// The uses a source's licensing class grants, narrowest honest reading.
+///
+/// A packet states what its receiver may do with the claim, so a class that
+/// has not said a use is allowed does not get it: redistribution is granted
+/// to `Public` alone (`Internal` is "may not be redistributed", `Licensed`
+/// carries per-seat terms, `Restricted` is derived-values-only), and a
+/// `Synthetic` source is never valid in a production decision, so it is not
+/// granted `Trade` or `RealTime`. The licensing *evaluation* stays in
+/// `qip-data-finder`; this only restates the class the manifest already
+/// declared in the contract's vocabulary.
+pub fn permitted_uses(class: LicensingClass) -> Vec<Usage> {
+    let mut uses = vec![Usage::Research, Usage::Derive];
+    if class.allows_production_decisions() {
+        uses.push(Usage::Trade);
+        uses.push(Usage::RealTime);
+    }
+    if class == LicensingClass::Public {
+        uses.push(Usage::Redistribute);
+    }
+    uses
+}
+
+impl CheckedEvidence {
+    /// This claim as the §27 [`EvidencePacket`] another brain receives
+    /// (R12-CONTRACT-7062, R12-COVERAGE-7152): source, licence terms, content
+    /// hash and the claims it contradicts, none optional.
+    ///
+    /// Refuses rather than patches. A body hash that is not a SHA-256 digest,
+    /// a confidence outside `[0, 1]` and a claim with no statement each come
+    /// back as the contract's own refusal, and the runtime quarantines the
+    /// record under it — a claim leaving the connector without its
+    /// provenance is the failure the packet exists to prevent.
+    pub fn packet(&self, manifest: &SourceManifest) -> Result<EvidencePacket> {
+        let record = &self.record;
+        if !(0.0..=1.0).contains(&record.confidence) {
+            return Err(Error::invalid(format!(
+                "claim `{}` has confidence {}, outside [0, 1]; a packet states a confidence, \
+                 and one nobody computed is not stated",
+                record.id, record.confidence
+            )));
+        }
+        // A claim about no named entity is about the source's own handle for
+        // it, labelled as such: inventing an instrument would be a guess.
+        let entity = record.subject().map_or_else(
+            || {
+                format!(
+                    "upstream:{}",
+                    record
+                        .metadata
+                        .get("upstream_key")
+                        .map_or(record.id.as_str(), String::as_str)
+                )
+            },
+            str::to_string,
+        );
+        EvidencePacket::new(EvidencePacketFields {
+            schema_version: 1,
+            packet_id: record.id.clone(),
+            claim: record.statement.clone(),
+            entities: vec![entity],
+            valid_at: record.claimed_at.unwrap_or(record.source_timestamp),
+            location: record
+                .location
+                .as_ref()
+                .map_or(Location::Unlocated, |name| Location::Place {
+                    name: name.clone(),
+                }),
+            source: SourceRef {
+                source_id: record.source_identity.clone(),
+                // The path, not `base_url`: the base is a deployment's egress
+                // proxy and says nothing about where the claim came from.
+                locator: format!("{}{}", manifest.source_id, manifest.endpoint.path),
+                retrieved_at: record.ingestion_timestamp,
+            },
+            licence: LicenceTerms {
+                licence_id: record.license.clone(),
+                permitted: permitted_uses(manifest.licensing),
+            },
+            // Rounded from a value just proven to be in [0, 1].
+            confidence_bp: (record.confidence * 10_000.0).round() as u32,
+            contradicts: record
+                .contradicts
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            content_hash: self.document_hash.clone(),
+        })
+    }
 }
 
 /// What a record asserts as an attribute and a value in canonical text, or

@@ -328,7 +328,10 @@ impl SimulatedFeed {
             now,
         );
         let hash = MarketEvent::hash_payload(&payload)?;
-        MarketEvent::new(
+        // The line as the venue's publisher wrote it: the bytes the decoder
+        // read, which is what `source_hash`'s canonical re-encoding is not.
+        let native = level_line(*sequence, venue_time, id, *side, *price, *size);
+        Ok(MarketEvent::new(
             payload,
             venue_time,
             now,
@@ -336,7 +339,8 @@ impl SimulatedFeed {
             qip_core::time::Duration::ZERO,
             hash,
             simulated_entitlement(),
-        )
+        )?
+        .with_native_bytes(native.as_bytes()))
     }
 
     /// Bind this feed's decoder to the cell, and state the venue's

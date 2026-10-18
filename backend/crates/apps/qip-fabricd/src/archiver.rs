@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use qip_core::error::Result;
 use qip_storage::segment::archive::Archiver;
-use qip_streaming::event_fabric::broker::Broker;
+use qip_streaming::event_fabric::broker::{Broker, RebuildReport};
 
 use crate::telemetry::FabricdTelemetry;
 
@@ -94,4 +94,15 @@ pub fn retain(
     let deleted = broker.retain_hot(keep)?;
     telemetry.segments_retained(deleted);
     Ok(deleted)
+}
+
+/// Rebuild every empty local partition from the archive, for a broker whose
+/// disk was lost or replaced (RES-9170). Run once before the broker serves.
+///
+/// Refuses when the archive cannot be read back and says so, rather than
+/// starting a partition at offset zero beside an archive that holds offsets
+/// the new records would be given again. See
+/// [`Broker::rebuild_from_archive`] for what is and is not recovered.
+pub fn rebuild(broker: &Broker) -> Result<RebuildReport> {
+    broker.rebuild_from_archive()
 }
