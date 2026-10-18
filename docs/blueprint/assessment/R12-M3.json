@@ -908,27 +908,26 @@
   },
   {
     "id": "R12-WORLD-3041",
-    "status": "PARTIAL",
-    "current": "Kernel resolves pending propositions through Federation::resolve each pass, closing refuted views with Brier.",
+    "status": "COMPLETE",
+    "current": "A Branch decision is executed in the cycle: FederationStage::act_on_decisions opens the runner-up's reading as a branch of the leader through Federation::branch (journaled as Event::Branched with its lineage), feeds it whatever the followed member is fed on every later proposition, and Federation::resolve (called each pass) closes it with its Brier score when it forecast the wrong side. Live branches are capped at FEDERATION_MAX_LIVE_BRANCHES and one branch follows one member.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:482 branch",
-      "backend/crates/services/qip-world-model/src/federation.rs:566 resolve",
-      "backend/crates/services/qip-world-model/tests/federation.rs:472 competing_branches_stay_live_until_the_outcome_and_the_refuted_one_is_closed_with_its_score",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1103 act_on_decisions, called from run at :1040",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1652 a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1688 a_branch_that_forecast_the_wrong_side_is_closed_with_its_score_when_the_close_answers",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation runs the stage every cycle"
     ],
-    "gap": "The cycle never calls Federation::branch, so no competing branches exist to stay live; branch/resolve lifecycle proven only in crate tests.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: act_on_decisions skipping the Branch arm -> a_branch_decision_opens_one_live_branch... and a_branch_that_forecast_the_wrong_side... both fail. symbolic_federation's seven-view assertion now counts roots, because a branch is an eighth voice."
   },
   {
     "id": "R12-WORLD-3042",

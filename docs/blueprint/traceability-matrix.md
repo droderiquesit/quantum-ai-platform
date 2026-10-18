@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 451 | 29.7% |
+| Blueprint completion (COMPLETE) | 452 | 29.8% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1224 | 80.6% |
-| Integrated (reached from a composition root) | 856 | 56.4% |
+| Integrated (reached from a composition root) | 857 | 56.5% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 19 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 451 |
-| PARTIAL | 920 |
+| COMPLETE | 452 |
+| PARTIAL | 919 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -41,7 +41,7 @@ register (ADR 0099), and there is no second one.
 | [DATA](#data) | 95 | 20 | 65 | 10 | 0 | 0 | 83 | 74 | 1 |
 | [EVID](#evid) | 25 | 3 | 22 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 17 | 77 | 3 | 0 | 0 | 93 | 82 | 1 |
-| [WORLD](#world) | 69 | 25 | 39 | 5 | 0 | 0 | 62 | 57 | 1 |
+| [WORLD](#world) | 69 | 26 | 38 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 14 | 25 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 20 | 26 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 34 | 28 | 0 | 7 | 0 | 63 | 61 | 0 |
@@ -807,7 +807,7 @@ register (ADR 0099), and there is no second one.
 | R12-WORLD-1155 | World model capability scope | NodeKind::Entity carries a typed EntityKind (qip_entity_resolution::entity::EntityKind, re-exported from graph.rs) whose variants include Company, Person, SupplyChain, Country, Product, Venue, Contract, Weather, Logistics and Market; assets are NodeKind::FinancialObject. Node::entity requires the kind at the write seam and WorldGraph::entities_of_kind queries by it. tests/entity_types.rs constructs one fixture of each of the eleven named kinds, reads each back typed, queries each kind to exactly its fixture, and proves the as-of exclusion on both time dimensions. The kernel writes typed entity nodes via Node::entity (platform.rs) and the world absorb seam types news mentions (world.rs). | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-world-model --test entity_types |  |
 | R12-WORLD-1156 | Financial AGI core capability scope | Eight-stage cycle with agents, hypotheses, counterfactual scoring (score_declined) and self-model; planning/tool use only in shadow agency. | PARTIAL | A scope map now names a seam and an existing test for all ten items, and a test pins the deep brain's unconditional AmbientAgency::open. Still PARTIAL: it is inspection, not behaviour; hypothesis generation (stage_reason) and uncertainty (calibrate_resolved) are covered only by a cycle-level test, not one named for them; planning and tool use run in the ambient agency's shadow/outbox path, not as an executing planner. |  | P2 | cd backend && cargo test -p qip-acceptance --test scope_inspections |  |
 | R12-WORLD-1178 | World Model Federation capability scope | Federation supports branch/merge/renew/expiry/calibration; not integrated. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
-| R12-WORLD-1181 | World-model arbitration & epistemic control capability scope | Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information. | PARTIAL | Decisions are recorded only: no branch or merge is executed, and contradiction detection is not a distinct mechanism. |  | P2 | inspection + crate tests per scope item |  |
+| R12-WORLD-1181 | World-model arbitration & epistemic control capability scope | Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information. A Branch decision is now executed (FederationStage::act_on_decisions opens a branch of the leader following the runner-up and journals its lineage; R12-WORLD-3041). A Merge decision folds the two best branches through Federation::merge and never two roots, because a merge stops the federation feeding both parents. | PARTIAL | The Merge arm is proven only by handing act_on_decisions a hand-built Merge arbitration over two seeded branches: no default-path scenario yet produces a Merge decision while two branches hold views, so the arm has not run from a real pass. Contradiction detection is still not a distinct mechanism. |  | P2 | cargo test -p qip-kernel --lib federation_stage |  |
 | R12-WORLD-3025 | World Model Arbitration Brain | Federation arbitration (four decisions with calibration) runs each UNDERSTAND pass and is journaled. | PARTIAL | Not constructed as a specialist Brain in the production organisation; no coverage registry drops its scope when removed; decisions are recorded, never acted on. |  | P2 | cargo test -p qip-investment-agents --test organisation |  |
 | R12-WORLD-3032 | Semantic memory of entities, relationships, definitions, policies | The desk research memory is the platform slot research_memory: Upstream<ResearchMemory>, gated into Desk::memory the way world and market are, so the reviewer reads what LEARN writes. LEARN remember_resolved calls write_research_memory for each resolved thesis: one qip-agents Episode per directional analyst stance (correct when the series moved the way it leaned, occurred_at = the instant the outcome became knowable), and a per-claim-class caution lesson (supporting = resolutions that moved against the claim, contradicting = those that held, applies_when = the class, which the opportunity context names) promoted through ResearchMemory::promote under PromotionPolicy::default and superseded once it no longer clears it; at most one lesson per class, so the list is bounded by detector kinds. Promotions and retirements appear on the LEARN stage detail, journaled with the cycle. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-kernel --lib resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads && cargo +1.94.1 test -p qip-kernel --test episodic the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_research_memory |  |
 | R12-WORLD-3033 | Episodic memory of world, belief, action and outcome | Platform EpisodicMemory written by LEARN (remember_resolved) with market and world state; episodic digest issued. | PARTIAL | Episodes are per resolved thesis; 'what it did' (orders/fills) is not part of the episode record. |  | P1 | cargo test -p qip-kernel --test episodic |  |
@@ -818,7 +818,7 @@ register (ADR 0099), and there is no second one.
 | R12-WORLD-3038 | Each world model declares scope, lineage, calibration, cadence, expiry | Each member is declared with scope, lineage, calibration, cadence and lease expiry; a declaration missing a field is refused and an expired member is excluded at expiry; run in the cycle. | COMPLETE |  |  | P1 | cargo test -p qip-world-model --test federation |  |
 | R12-WORLD-3039 | Model disagreement preserved as information | Arbitration keeps every live view and spread in Disagreement; arbitrated_probability is Option, present only for Merge and never apart from disagreement; replay refuses an arbitration not re-derivable from its views. | COMPLETE | None for the requirement; not deployed. |  | P1 | cargo test -p qip-world-model --test federation |  |
 | R12-WORLD-3040 | Arbitration compares evidence fit, performance, causal coherence, uncertainty | ScoredView records evidence fit, predictive performance, causal coherence and uncertainty in the cycle. | PARTIAL | In production causal_coherence is a hard-coded constant per member and evidence_fit is identical across instrument members, so two of four dimensions are not measured comparisons. |  | P1 | cargo test -p qip-world-model --test federation |  |
-| R12-WORLD-3041 | Multiple live branches preserved until reality resolves them | Kernel resolves pending propositions through Federation::resolve each pass, closing refuted views with Brier. | PARTIAL | The cycle never calls Federation::branch, so no competing branches exist to stay live; branch/resolve lifecycle proven only in crate tests. |  | P1 | cargo test -p qip-world-model --test federation |  |
+| R12-WORLD-3041 | Multiple live branches preserved until reality resolves them | A Branch decision is executed in the cycle: FederationStage::act_on_decisions opens the runner-up's reading as a branch of the leader through Federation::branch (journaled as Event::Branched with its lineage), feeds it whatever the followed member is fed on every later proposition, and Federation::resolve (called each pass) closes it with its Brier score when it forecast the wrong side. Live branches are capped at FEDERATION_MAX_LIVE_BRANCHES and one branch follows one member. | COMPLETE |  |  | P1 | cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation |  |
 | R12-WORLD-3042 | Federation includes global causal model | World-model CausalGraph integrated (claims, retirement, propagation). | PARTIAL | Not registered as a federation member with scope/expiry. |  | P2 | cargo test -p qip-world-model |  |
 | R12-WORLD-3043 | Federation includes macro/geopolitical models | No macro/geopolitical federation member; NOW Brain estimates economy state from macro surprises but is not a federation member. | MISSING | Build and register. |  | P2 | cargo test -p qip-world-model |  |
 | R12-WORLD-3044 | Federation includes company/fundamental models | No company/fundamental federation member; NOW Brain holds company-scope state from fundamentals, not registered in the federation. | MISSING | Build and register. |  | P2 | cargo test -p qip-world-model |  |

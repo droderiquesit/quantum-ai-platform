@@ -466,7 +466,15 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     for a in &scored {
         // Every view kept, minority included, on all four dimensions, with
         // the composite present only because performance is (1130, 3040).
-        assert_eq!(a.disagreement.views.len(), 7, "{a:?}");
+        // Seven roots; a branch the stage opened on an earlier split
+        // (WORLD-1181) is an eighth voice and carries its parent.
+        let roots = a
+            .disagreement
+            .views
+            .iter()
+            .filter(|v| v.lineage.parents.is_empty())
+            .count();
+        assert_eq!(roots, 7, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
