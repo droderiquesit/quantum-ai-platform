@@ -1354,6 +1354,75 @@ mod tests {
     }
 
     #[test]
+    fn a_desk_whose_ledger_feed_is_full_signs_nothing_new_until_the_feed_drains() {
+        // The failure this prevents (R12-RES-7098): nothing in a deployment
+        // may drain the feed, and a desk that kept authorising new exposure
+        // while its accounting could not be committed was taking risk the
+        // authoritative ledger would never be told about.
+        let unsigned = |platform: &Platform| {
+            platform
+                .telemetry()
+                .metrics
+                .snapshot()
+                .counter_total(qip_observability::metrics::names::PROPOSALS_UNSIGNED)
+        };
+        let ledger_withheld = |report: &crate::cycle::CycleReport| {
+            report
+                .stage(crate::cycle::Stage::Act)
+                .expect("ACT ran")
+                .problems
+                .iter()
+                .any(|problem| {
+                    problem.starts_with("no proposal was signed off: the desk's ledger feed")
+                })
+        };
+        let at = Timestamp::from_secs(1_760_000_000).saturating_add(Duration::from_mins(5));
+
+        // Premise: an empty feed withholds nothing for this reason.
+        let mut open = platform_with(Lie::Honest);
+        let open_report = open.run_cycle(at);
+        assert!(
+            !ledger_withheld(&open_report),
+            "premise: an empty feed was reported full: {:?}",
+            open_report
+                .stage(crate::cycle::Stage::Act)
+                .map(|s| &s.problems)
+        );
+
+        let mut full = platform_with(Lie::Honest);
+        for n in 0..DESK_OUTBOX_CAPACITY {
+            let fill = booked(&format!("pre{n}"), "f", dec!("1"), dec!("100"));
+            full.desk_ledger_mut()
+                .admit(&fill, "central-desk", "c")
+                .unwrap();
+        }
+        assert!(full.desk_ledger_mut().is_full(), "premise: no room");
+        let before = unsigned(&full);
+        let report = full.run_cycle(at);
+        assert!(
+            ledger_withheld(&report),
+            "a desk with a full ledger feed still authorised new exposure: {:?}",
+            report.stage(crate::cycle::Stage::Act).map(|s| &s.problems)
+        );
+        assert_eq!(
+            unsigned(&full),
+            before + 1,
+            "the withholding was not counted"
+        );
+
+        // Draining restores signing: the halt is the backlog, not a latch.
+        let through = full.desk_ledger_mut().next_sequence() - 1;
+        full.acknowledge_desk_outcomes(through)
+            .expect("acknowledged");
+        let again = full.run_cycle(at.saturating_add(Duration::from_mins(1)));
+        assert!(
+            !ledger_withheld(&again),
+            "the halt outlived the backlog: {:?}",
+            again.stage(crate::cycle::Stage::Act).map(|s| &s.problems)
+        );
+    }
+
+    #[test]
     fn a_fill_that_names_another_order_is_declined_as_a_mismatch() {
         let mut platform = platform_with(Lie::OtherOrder);
         let cash = platform.cash();

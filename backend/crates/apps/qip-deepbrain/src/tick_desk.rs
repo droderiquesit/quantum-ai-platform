@@ -552,6 +552,12 @@ impl TickDesk {
                         at: tick.knowable_at,
                         mid,
                         spread_bps: (observation.best_ask - observation.best_bid) / mid * 10_000.0,
+                        // Sizes are the top of book as the replay held it.
+                        depth: Some(observation.bid_size + observation.ask_size),
+                        imbalance: (observation.bid_size + observation.ask_size > 0.0).then(|| {
+                            (observation.bid_size - observation.ask_size)
+                                / (observation.bid_size + observation.ask_size)
+                        }),
                     });
             }
             observations.push(observation);

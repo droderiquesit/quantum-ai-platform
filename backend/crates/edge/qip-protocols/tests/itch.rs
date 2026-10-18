@@ -77,11 +77,15 @@ fn replace(original: u64, new: u64, shares: u32, price_ticks: u32) -> Vec<u8> {
 }
 
 fn trading_action(stock: &str, state: u8) -> Vec<u8> {
+    trading_action_for(stock, state, b"    ")
+}
+
+fn trading_action_for(stock: &str, state: u8, reason: &[u8; 4]) -> Vec<u8> {
     let mut out = header(b'H', 250);
     put_stock(&mut out, stock);
     out.push(state);
     out.push(b' ');
-    out.extend_from_slice(b"    ");
+    out.extend_from_slice(reason);
     out
 }
 
@@ -302,6 +306,37 @@ fn a_trading_action_becomes_a_status_change_the_router_can_read() {
         status.accepts_orders() && !matches!(status, VenueStatus::Open),
         "a quotation-only period accepts orders but is not continuous trading"
     );
+}
+
+#[test]
+fn a_breaker_reason_on_a_trading_action_decodes_as_a_circuit_breaker_not_an_ordinary_halt() {
+    let mut decoder = decoder();
+    for reason in [b"LUDP", b"LUDS", b"MWC1"] {
+        let messages = decoder
+            .decode(&trading_action_for("AAPL", b'P', reason), at())
+            .expect("decodes");
+        assert_eq!(
+            messages[0].body,
+            MessageBody::StatusChange {
+                status: VenueStatus::CircuitBreaker
+            },
+            "reason {}",
+            String::from_utf8_lossy(reason)
+        );
+    }
+    // Premise: the same state byte with a blank or non-breaker reason is the
+    // ordinary halt, so the reason code and not the state byte is what moved.
+    for reason in [b"    ", b"T1  "] {
+        let messages = decoder
+            .decode(&trading_action_for("AAPL", b'H', reason), at())
+            .expect("decodes");
+        assert_eq!(
+            messages[0].body,
+            MessageBody::StatusChange {
+                status: VenueStatus::Halted
+            }
+        );
+    }
 }
 
 #[test]

@@ -48,6 +48,15 @@ pub struct MarketEvent {
     /// rather than trusted, so this field can never name a hash for a payload
     /// other than the one it travels with.
     source_hash: String,
+    /// sha256 of the bytes the venue put on the wire for this message, where
+    /// the producer still holds them. `source_hash` is over the canonical
+    /// re-encoding of the decoded message, so it cannot answer "is this the
+    /// venue's frame?" — two different wire encodings of one fact hash to
+    /// the same `source_hash`, and a re-encoding bug hides inside it. Absent
+    /// (not zero) on an event whose producer never held the wire bytes, and
+    /// on events recorded before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_hash: Option<String>,
     /// The licence this event is admitted under. There is exactly one
     /// constructor for this type and it refuses an entitlement that is not
     /// granted at `event_time`, so a `MarketEvent` carrying data this
@@ -101,8 +110,22 @@ impl MarketEvent {
             normalized_time,
             uncertainty,
             source_hash: recomputed,
+            native_hash: None,
             entitlement,
         })
+    }
+
+    /// Record the venue's own bytes for this message, hashing them here so a
+    /// caller cannot attach a digest of bytes it is not handing over.
+    #[must_use]
+    pub fn with_native_bytes(mut self, bytes: &[u8]) -> Self {
+        self.native_hash = Some(sha256_hex(bytes));
+        self
+    }
+
+    /// sha256 of the source-native wire bytes, when they were retained.
+    pub fn native_hash(&self) -> Option<&str> {
+        self.native_hash.as_deref()
     }
 
     /// sha256 of the canonical JSON of `payload` — the figure a

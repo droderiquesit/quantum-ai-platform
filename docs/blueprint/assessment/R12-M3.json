@@ -795,11 +795,14 @@
   {
     "id": "R12-WORLD-3036",
     "status": "PARTIAL",
-    "current": "Self-model grades components and scales evidence; drift and operational health are not part of it; capability boundaries not modelled.",
+    "current": "The self-model grades components and scales evidence by them, and since 2026-10-18 it also detects model/data drift: CapabilityEstimate::drift compares the mean Brier of the older and newer half of a component's window (each at least MINIMUM_SAMPLE) and reports a Drift when the newer half is worse by more than DRIFT_TOLERANCE; Capability::weight then weights a drifting component by its recent shrunk accuracy instead of the window average, and SelfModel::factor and origin_factors (handed to REASON at platform.rs:9763) use it. Operational health and capability boundaries are not modelled.",
     "evidence": [
-      "(no line-cited evidence re-read in this audit; status carried from prior assessment)"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs Drift, CapabilityEstimate::drift, Capability::weight",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_has_started_missing_is_weighted_by_its_recent_record_not_its_window_average",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drifting",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9763 set_origin_factors(self.self_model.origin_factors())"
     ],
-    "gap": "Drift, operational health and capability boundaries in the self-model.",
+    "gap": "Operational health (kill-switch/halt and stale-feed facts the kernel already holds, as a self-model input) and a capability boundary per registered asset class are not in the self-model. Drift is per component and covers forecasts only; a feed whose data drifted without its component's Brier worsening is not seen.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -807,10 +810,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test self_model",
+    "verification": "cargo test -p qip-learning-engine --test self_model && cargo test -p qip-kernel --test self_model",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged; not re-read line by line in this audit (no landed lane commit targets it), so PARTIAL is carried, not re-proven."
+    "notes": "2026-10-18 lane L23: drift third closed, health and boundaries not. Mutations fired - Capability::weight returning the window accuracy ('a drifting component kept its window weight 0.5'); the tolerance check removed (the steady component reported drift). DRIFT_TOLERANCE 0.05 is a chosen constant, said so in its doc."
   },
   {
     "id": "R12-WORLD-3037",
@@ -821,7 +824,7 @@
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review"
     ],
-    "gap": "Decisions consume the federation; every member produces state each cycle.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same federation narrowing slice as WORLD-1003, so a decision reads the population rather than the single WorldModel.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -832,7 +835,7 @@
     "verification": "cargo test -p qip-world-model --test federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Federation now built by the kernel; advisory only. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Decisions consume the federation; every member produces state each cycle."
   },
   {
     "id": "R12-WORLD-3038",
@@ -1172,7 +1175,7 @@
       "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:18 advisory: called after REASON has decided"
     ],
-    "gap": "Compose at least one symbolic verdict into hypothesis formation, as the verification requires.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same veto slice as REASON-1004, feeding the rule verdict into approval.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1183,7 +1186,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Reasoners now run in the cycle, but as an advisory record. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Compose at least one symbolic verdict into hypothesis formation, as the verification requires."
   },
   {
     "id": "R12-REASON-3054",
@@ -1291,18 +1294,18 @@
       "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:488 acting() constraint problem",
       "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:598 a_constraint_problem_yields_a_satisfying_assignment_or_a_conflicting_subset_that_is_itself_unsatisfiable"
     ],
-    "gap": "Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent.",
+    "gap": "Owner decision O12 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit an SMT/MILP solver crate (Z3 refused by ADR 0099 C5). Enables: SMT theories and MILP in constraint.rs. Costs: A large native dependency or a long in-tree solver.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O12 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-reasoning-engine --test reasoners",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Now has a production caller; the in-cycle problem is small. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): constraint.rs states 'no SMT theories beyond bounded linear integer'; Z3 refused (ADR 0099 C5); no MILP solver (bounded enumeration only) and no graph solver cited. ADR lane 2026-10-18: gap re-graded against decision O12; gap before it: Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent."
   },
   {
     "id": "R12-REASON-3059",
@@ -1895,7 +1898,7 @@
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::the_central_lane_may_not_issue_a_microsecond_forecast",
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::the_cycle_issues_at_every_central_horizon_and_never_the_microsecond_row"
     ],
-    "gap": "The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22).",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: a ReflexForecast contract in qip-contracts and a node issuer with a calibration test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1908,7 +1911,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row."
+    "notes": "Round-2 independent audit, 2026-10-11: Admission is tested for this row. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. The admission test exercises wrong targets only for MicrosecondsMs and SecondsMinutes (forecast_lattice.rs:81-98). The microsecond row is never issued: no reflex-lane caller of issue() exists, and the cell's microstructure forecasts are disclaimed (lattice_stage.rs:20-22)."
   },
   {
     "id": "R12-WORLD-3085",
@@ -2469,7 +2472,7 @@
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs:443-453",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12585-12592"
     ],
-    "gap": "A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: observe_hypothesis returning a typed refusal that reason_about_the_queue honours, and a kernel test that a DataPoisoning refutation yields no proposal.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2480,7 +2483,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level."
+    "notes": "Round-2 independent audit, 2026-10-11: The poisoning critic is wired (old gap closed). 'Can refuse it' holds only at verdict level. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: A critic's refutation must be able to refuse the hypothesis it falsifies (today it is advisory: tournament hold-out only); a kernel test that a refuted thesis is not sized."
   },
   {
     "id": "R12-REASON-3109",
@@ -2627,7 +2630,7 @@
       "backend/crates/runtime/qip-kernel/src/central/foundry.rs:102",
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:821 StrategyFoundry::new"
     ],
-    "gap": "Discovery-to-symbolic-to-package pipeline.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: the same signer plus a reflex package loader in qip-edge, tested in research_market.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2638,7 +2641,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D07; gap before it: Discovery-to-symbolic-to-package pipeline."
   },
   {
     "id": "R12-REFLEX-3116",

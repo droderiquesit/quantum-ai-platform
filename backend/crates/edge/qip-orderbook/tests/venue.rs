@@ -245,6 +245,48 @@ fn a_halted_or_closed_venue_serves_no_price_but_keeps_its_book() -> Result<()> {
 }
 
 #[test]
+fn a_circuit_breaker_halts_the_book_and_withdraws_the_auction_it_replaced() -> Result<()> {
+    let mut state = two_sided()?;
+    state.apply(&message(
+        3,
+        MessageBody::StatusChange {
+            status: VenueStatus::Auction,
+        },
+    ))?;
+    state.apply(&message(
+        4,
+        MessageBody::AuctionUpdate {
+            indicative_price: Some(px("100.25")),
+            paired: qty(40_000),
+            imbalance: qty(10_000),
+            imbalance_side: Some(BookSide::Bid),
+        },
+    ))?;
+    assert!(state.auction().is_some(), "premise: an auction was running");
+    assert!(
+        state.status().accepts_orders(),
+        "premise: auctions accept orders"
+    );
+
+    state.apply(&message(
+        5,
+        MessageBody::StatusChange {
+            status: VenueStatus::CircuitBreaker,
+        },
+    ))?;
+
+    assert_eq!(state.status(), VenueStatus::CircuitBreaker);
+    assert!(!state.status().accepts_orders());
+    assert!(!state.prices_are_usable());
+    assert!(!state.continuous_trading());
+    assert!(state.mid().is_none());
+    assert!(state.auction().is_none());
+    // A breaker is not a gap: the book is intact for the reopening.
+    assert_eq!(state.book().mid(), Some(px("100.05")));
+    Ok(())
+}
+
+#[test]
 fn a_crossed_book_is_reported_by_the_venue_state_even_when_it_cannot_be_traded() -> Result<()> {
     let mut state = two_sided()?;
     state.apply(&message(3, level(BookSide::Bid, "100.20", 100)))?;

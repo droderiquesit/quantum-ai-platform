@@ -275,3 +275,55 @@ fn a_gap_in_source_sequence_is_detectable_between_consecutive_events() -> Result
     );
     Ok(())
 }
+
+#[test]
+fn a_native_hash_names_the_wire_bytes_not_the_canonical_reencoding() -> Result<()> {
+    let payload = message(origin("itch-a", 0, 1), dec!("100.25"));
+    let hash = MarketEvent::hash_payload(&payload)?;
+    let build = || {
+        MarketEvent::new(
+            payload.clone(),
+            t(0),
+            t(0),
+            t(0),
+            Duration::ZERO,
+            hash.clone(),
+            granted(t(10_000)),
+        )
+    };
+    let bare = build()?;
+    assert_eq!(
+        bare.native_hash(),
+        None,
+        "premise: a producer that never held the wire bytes records none, not a zero"
+    );
+
+    // Two different wire encodings of the one decoded fact: the canonical
+    // hash cannot tell them apart and the native hash must.
+    let wire_a = b"T|100.25|100|B\n";
+    let wire_b = b"T|100.250|100|B\n";
+    let a = build()?.with_native_bytes(wire_a);
+    let b = build()?.with_native_bytes(wire_b);
+    assert_eq!(a.source_hash(), b.source_hash());
+    assert_eq!(a.native_hash(), Some(qip_core::sha256_hex(wire_a).as_str()));
+    assert_ne!(a.native_hash(), b.native_hash());
+    assert_ne!(
+        a.native_hash(),
+        Some(a.source_hash()),
+        "the native hash must not be the canonical re-encoding's hash"
+    );
+
+    // Round trip keeps it; an event recorded before the field existed still
+    // decodes and reports none.
+    let text = serde_json::to_string(&a)?;
+    let back: MarketEvent = serde_json::from_str(&text)?;
+    assert_eq!(back, a);
+    let old = serde_json::to_string(&bare)?;
+    assert!(
+        !old.contains("native_hash"),
+        "an absent hash is not written"
+    );
+    let back: MarketEvent = serde_json::from_str(&old)?;
+    assert_eq!(back.native_hash(), None);
+    Ok(())
+}

@@ -70,6 +70,8 @@ const INSERT_LEASE: &str = "INSERT INTO fabric_leases (region, stream, partition
 const UPDATE_LEASE: &str = "UPDATE fabric_leases SET holder = @holder, epoch = @epoch, \
      expires_at = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL @ttl MILLISECOND) \
      WHERE region = @region AND stream = @stream AND partition_id = @partition";
+const RELEASE_LEASE: &str = "UPDATE fabric_leases SET expires_at = CURRENT_TIMESTAMP() \
+     WHERE region = @region AND stream = @stream AND partition_id = @partition";
 const NEXT_OFFSET: &str = "SELECT IFNULL(MAX(batch_offset) + 1, 0) FROM fabric_batches \
      WHERE region = @region AND stream = @stream AND partition_id = @partition";
 const INSERT_BATCH: &str = "INSERT INTO fabric_batches (region, stream, partition_id, \
@@ -526,6 +528,29 @@ impl ManagedLog for SpannerManagedLog {
         })
     }
 
+    fn release(&self, partition: &PartitionRef, lease: &Lease) -> Result<bool> {
+        self.read_write("lease release", |transaction| {
+            let found = attempt!(
+                transaction.execute(statement(SELECT_LEASE, self.partition_params(partition)))
+            );
+            let Some(row) = rows(&found).into_iter().next() else {
+                return Ok(Ok(Step::Rollback(false)));
+            };
+            let current_holder = as_text(cell(&row, 0, "the lease holder")?, "holder")?;
+            let epoch = as_u64(cell(&row, 1, "the lease epoch")?, "lease epoch")?;
+            // Only the holder at this epoch may lapse the row: a release that
+            // lapsed a successor's lease would depose the very instance the
+            // handover was for.
+            if current_holder != lease.holder || epoch != lease.epoch {
+                return Ok(Ok(Step::Rollback(false)));
+            }
+            attempt!(
+                transaction.execute(statement(RELEASE_LEASE, self.partition_params(partition)))
+            );
+            Ok(Ok(Step::Commit(true)))
+        })
+    }
+
     fn commit(&self, lease: &Lease, row: &CommittedBatch) -> Result<CommitOutcome> {
         row.verify()?;
         let reference = &row.partition;
@@ -892,6 +917,53 @@ mod tests {
                 epoch: 4
             }
         );
+        assert!(rpc.calls().iter().all(|c| !sql_of(c).starts_with("UPDATE")));
+    }
+
+    /// A release lapses the row only for the holder at the epoch it holds; a
+    /// successor's lease is never touched.
+    ///
+    /// Mutation: in `release`, skip the `current_holder != lease.holder ||
+    /// epoch != lease.epoch` comparison — the superseded call issues the
+    /// UPDATE and the "no UPDATE" assertion fires.
+    #[test]
+    fn a_release_lapses_the_holders_own_lease_and_leaves_a_successors_alone() {
+        let partition = PartitionRef::new("control.test", 0);
+        let rpc = Scripted::new(vec![
+            session(),
+            began(json!([["fabricd-a#3", "4", false]])),
+            RpcAnswer::Ok(json!({})),
+            RpcAnswer::Ok(json!({})),
+        ]);
+        let log = SpannerManagedLog::new(rpc.clone(), DB, "europe-west2");
+        let held = Lease {
+            holder: "fabricd-a#3".to_string(),
+            epoch: 4,
+        };
+        assert!(log.release(&partition, &held).expect("answered"));
+        let updates: Vec<String> = rpc
+            .calls()
+            .iter()
+            .map(sql_of)
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .collect();
+        assert_eq!(
+            updates.len(),
+            1,
+            "premise: the holder's release writes once"
+        );
+        assert!(
+            updates[0].contains("expires_at = CURRENT_TIMESTAMP()"),
+            "{updates:?}"
+        );
+
+        let rpc = Scripted::new(vec![
+            session(),
+            began(json!([["fabricd-b#1", "5", false]])),
+            RpcAnswer::Ok(json!({})),
+        ]);
+        let log = SpannerManagedLog::new(rpc.clone(), DB, "europe-west2");
+        assert!(!log.release(&partition, &held).expect("answered"));
         assert!(rpc.calls().iter().all(|c| !sql_of(c).starts_with("UPDATE")));
     }
 

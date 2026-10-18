@@ -1017,6 +1017,18 @@ fn an_unreachable_venue_is_treated_as_untradeable_and_unpriceable() {
 }
 
 #[test]
+fn a_circuit_breaker_is_its_own_status_that_refuses_orders_and_prices_and_round_trips() {
+    assert!(!VenueStatus::CircuitBreaker.accepts_orders());
+    assert!(!VenueStatus::CircuitBreaker.prices_are_usable());
+    assert_ne!(VenueStatus::CircuitBreaker, VenueStatus::Halted);
+    assert_eq!(VenueStatus::CircuitBreaker.as_str(), "circuit_breaker");
+    let encoded = serde_json::to_string(&VenueStatus::CircuitBreaker).expect("encodes");
+    assert_eq!(encoded, "\"CircuitBreaker\"");
+    let decoded: VenueStatus = serde_json::from_str(&encoded).expect("decodes");
+    assert_eq!(decoded, VenueStatus::CircuitBreaker);
+}
+
+#[test]
 fn a_stamped_value_keeps_both_times_through_a_transformation() {
     let stamped = Stamped::new(dec!("100"), t(10), t(12));
     let doubled = stamped.map(|price| price + price);

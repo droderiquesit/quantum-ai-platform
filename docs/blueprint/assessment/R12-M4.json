@@ -31,7 +31,7 @@
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes"
     ],
-    "gap": "qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage.",
+    "gap": "Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -42,7 +42,7 @@
     "verification": "new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage."
   },
   {
     "id": "R12-MODEL-4003",
@@ -230,7 +230,7 @@
       "backend/crates/libs/qip-contracts/src/ambient.rs:76-160 ambient signal types",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Distilled ambient models in fast lanes with test.",
+    "gap": "Distilled ambient models in fast lanes with test. The NOW stage's expected-state estimator is a local-level filter over bounded variables, and qip_training::distil takes a fitted teacher with training rows; no teacher exists for it, so distilling it would fit a student to the filter's own outputs and call that a distillate. A cell plan carrying an inline ambient model also needs a promoted model pack release (R12-CONTRACT-7064) to be named to a cell.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -241,7 +241,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4012",
@@ -493,7 +493,7 @@
       "backend/crates/edge/qip-edge/tests/model_release.rs",
       ".github/workflows/model-pack-publish.yml"
     ],
-    "gap": "Promotion writes the kernel's unsigned ModelPack ('nothing here signs'); signing is a separate manual workflow, the two pack types are not merged, and no attestation of the accepted model is recorded.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: promote_model drafting a qip_contracts ModelPack with an additive lineage field, and a test that the draft's digest and lineage match the promoted member.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -504,7 +504,7 @@
     "verification": "test that an unsigned/forged model is refused at install",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Big step from the old gap: asymmetric signing and verification now exist (ADR 0110). In deployment nothing produces a signed pack, so the fail-closed branch means no inline model reaches any cell. The two ModelPack types noted last audit still both exist. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Big step from the old gap: asymmetric signing and verification now exist (ADR 0110). In deployment nothing produces a signed pack, so the fail-closed branch means no inline model reaches any cell. The two ModelPack types noted last audit still both exist. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D07; gap before it: Promotion writes the kernel's unsigned ModelPack ('nothing here signs'); signing is a separate manual workflow, the two pack types are not merged, and no attestation of the accepted model is recorded."
   },
   {
     "id": "R12-MODEL-4024",
@@ -996,18 +996,18 @@
       "backend/crates/runtime/qip-kernel/src/compute_routing.rs:110-156",
       "apps/qip-deepbrain/src/main.rs::tests::the_deep_brains_compute_settings_attach_the_simulator_and_dispatch_through_the_gateway"
     ],
-    "gap": "GPU, TPU, hardware QPU and parallel-ensemble arms; a binary in which more than CPU/quantum-inspired/simulated-QPU can actually be chosen.",
+    "gap": "Owner decision O06 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit IBM QPU hardware: account, credential, egress route and budget. Enables: Hosted admission in compute_routing.rs::from_lookup. Costs: An external account, a credential, per-job QPU spend.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O06 (design-decisions-2026-10-18)",
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Improved since the old grade ('only CPU can ever be chosen'): three substrates are now choosable in deepbrain under dev/test config."
+    "notes": "Round-2 independent audit, 2026-10-11: Improved since the old grade ('only CPU can ever be chosen'): three substrates are now choosable in deepbrain under dev/test config. ADR lane 2026-10-18: gap re-graded against decision O06; gap before it: GPU, TPU, hardware QPU and parallel-ensemble arms; a binary in which more than CPU/quantum-inspired/simulated-QPU can actually be chosen."
   },
   {
     "id": "R12-QUANT-4047",
@@ -1603,14 +1603,15 @@
   },
   {
     "id": "R12-ASSET-4074",
-    "status": "PARTIAL",
-    "current": "LEARN reconciles the wallet (ledger view vs observed statements) through the fabric journal; the central plane halts a cell on a reconciliation break. Statements are handed in (simulated); nothing reaches a real custodian.",
+    "status": "COMPLETE",
+    "current": "LEARN reconciles the wallet (ledger view vs observed statements) through the fabric journal, and the desk now reads the outcome: Platform::submit_order, the only path to a venue, refuses an order in a venue-asset the desk venue's latest reconciliation halted (an instrument refuses every order in it; a halted settlement cash refuses buys), puts the refusal on the record under gate wallet-halt and counts it, while other instruments and sells against cash are untouched and a later clean reconciliation lifts the halt. The central plane still halts a cell on a reconciliation break. Statements reach the kernel through qip-api's statement route; nothing reaches a real custodian.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8284 reconcile_wallet",
-      "backend/crates/services/qip-capital-fabric/src/wallet.rs:633 reconcile",
+      "backend/crates/runtime/qip-kernel/src/platform.rs wallet_halt_for / refuse_for_wallet_halt, called first in submit_order (grep -n wallet_halt_for)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
+      "backend/crates/apps/qip-api/src/statement.rs production caller of observe_statement",
       "backend/crates/runtime/qip-kernel/tests/central.rs:682 a_reconciliation_break_halts_that_cell_and_only_that_cell"
     ],
-    "gap": "Desk-side halt on a wallet break; real custody statements need a deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1618,10 +1619,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test ledger a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutation: filtering wallet_halt_for's result to None in submit_order failed the test at 'a buy was sent into halted cash'; restored byte-for-byte, it passes. Real custody statements remain deploy-dependent: the halt is only as live as the statements an operator hands the qip-api route."
   },
   {
     "id": "R12-CAPITAL-4075",
@@ -1933,7 +1934,7 @@
       "backend/crates/edge/qip-edge/tests/envelope_exposure.rs",
       "backend/crates/libs/qip-contracts/src/capital.rs::ExposureBoundsFields"
     ],
-    "gap": "No drawdown (peak-to-trough) bound is in the envelope the cell enforces, distinct from the loss limit; the five-bound CapitalGrant contract is not what cells hold.",
+    "gap": "Decided by ADR 0126 (accepted 2026-10-18): The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse. Code left: the bounds block's max_drawdown in qip-contracts capital.rs and the RealisedLedger high-water measurement in Cell admission, with a test that a strategy past its drawdown but under its loss limit is refused.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1946,7 +1947,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: No drawdown (peak-to-trough) bound is in the envelope the cell enforces, distinct from the loss limit; the five-bound CapitalGrant contract is not what cells hold."
   },
   {
     "id": "R12-CAPITAL-4089",
@@ -2452,7 +2453,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs:1955-1975",
       "backend/crates/apps/qip-api/src/auth.rs:169-217"
     ],
-    "gap": "Implement ADR 0121 (attested operator presence), then ADR 0075 Gates B and C, so a grant is issued, and narrowed, in a deployed binary.",
+    "gap": "Already decided by ADR 0120: Attested operator presence is decided (ADR 0120, per-person WebAuthn keys); the row's 'write ADR 0121' is stale and the code slice is left.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2463,7 +2464,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The sizing half is COMPLETE-grade; the 'narrow the next issued grant' half is implemented and kernel-tested but unreachable in production. qip-cli's demo signs envelopes with issuer.issue directly (apps/qip-cli/src/demo/mod.rs:983), outside the governor; it is a demo, not a deployed path."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The sizing half is COMPLETE-grade; the 'narrow the next issued grant' half is implemented and kernel-tested but unreachable in production. qip-cli's demo signs envelopes with issuer.issue directly (apps/qip-cli/src/demo/mod.rs:983), outside the governor; it is a demo, not a deployed path. ADR lane 2026-10-18: gap re-graded against decision E03; gap before it: Implement ADR 0121 (attested operator presence), then ADR 0075 Gates B and C, so a grant is issued, and narrowed, in a deployed binary."
   },
   {
     "id": "R12-RISK-4112",
