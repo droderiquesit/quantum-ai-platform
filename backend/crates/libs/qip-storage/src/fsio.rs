@@ -97,6 +97,38 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Publish `bytes` at `path` only if nothing is there: `Ok(false)`, writing
+/// nothing, when a file already exists. The data is made durable in a
+/// scratch file first, as [`write_atomic`] does, and then published by a hard
+/// link rather than a rename, because a link fails when the name exists and a
+/// rename replaces it — the check and the publish are one system call, so
+/// two writers racing on one name cannot both succeed.
+pub(crate) fn create_atomic(path: &Path, bytes: &[u8]) -> Result<bool> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = temporary_path(path);
+    {
+        let mut file = File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    let linked = std::fs::hard_link(&temporary, path);
+    let _ = std::fs::remove_file(&temporary);
+    match linked {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                sync_directory(parent);
+            }
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Whether a path is a leftover scratch file rather than stored data.
 pub(crate) fn is_temporary(name: &str) -> bool {
     name.contains(TEMPORARY_SUFFIX)

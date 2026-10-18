@@ -699,7 +699,7 @@
       "infrastructure/terraform/catalogue.tf Cloud Run catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6357 every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance"
     ],
-    "gap": "No per-service latency SLO tied to instance floor; dev runs no workload.",
+    "gap": "The closure cannot be built as written: modules/cloudrun has no min_instances input to put a validation on, because the service is a Config Connector manifest (ADR 0036) and min and max instances live in infrastructure/gitops/envs/*/*.yaml and in catalogue.tf. What holds today: infrastructure.rs::every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance pins both brains to a floor of one with a written justification. Missing: a declared latency or cold-start bound per workload, and a rule that a workload with a zero floor says it tolerates a cold start. Building that is a new catalogue field consumed by nothing but the test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -710,7 +710,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module; status unchanged."
   },
   {
     "id": "R12-DATA-10033",
@@ -1310,14 +1310,16 @@
   },
   {
     "id": "R12-ARCH-10061",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "catalogue.tf holds one entry per Cloud Run workload (binary, plane, trust zone, traffic, variables, secrets) with acceptance tests on parity; no degraded-mode or scaling-model field, and VMs/managed stores are outside it.",
     "evidence": [
       "infrastructure/terraform/catalogue.tf:1-30 workload catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_deployable_binary_in_the_workspace_has_a_workload",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held",
+      "infrastructure/terraform/catalogue.tf state_owner/scaling/degraded_mode on api, fastbrain, deepbrain",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode"
     ],
-    "gap": "Add state owner, protocol, scaling and degraded-mode fields and cover non-Cloud-Run services.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1325,10 +1327,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- state_owner pinned_to_one blanked_contract; cd infrastructure/terraform && terraform init -backend=false && terraform validate",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered."
   },
   {
     "id": "R12-FABRIC-10062",

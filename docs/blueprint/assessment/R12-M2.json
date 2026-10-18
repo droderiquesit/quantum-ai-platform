@@ -1273,13 +1273,17 @@
   {
     "id": "R12-TICK-2055",
     "status": "PARTIAL",
-    "current": "Lake segments are checksummed and sealed with manifests; overwrite is refused by a get-then-put check, which does not prevent a concurrent overwrite; Cloud Storage disabled.",
+    "current": "Lake segments are checksummed and sealed with manifests. Since 2026-10-18 the seal is BlobStore::put_if_absent, atomic with its own check in every adapter (a lock in MemoryBlobStore, a hard link in FileBlobStore, ifGenerationMatch=0 with 412 read as 'already there' in CloudStorageBlobStore; the trait default refuses), so a concurrent writer that passed the get-then-put check is refused; the raw bytes are written after the seal, by the winner only. Cloud Storage remains disabled.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/lake.rs:231 get(&key) is_some -> denied; :246 put",
+      "backend/crates/libs/qip-storage/src/lake.rs:314 the conditional seal in Lake::write_segment",
+      "backend/crates/libs/qip-storage/src/fsio.rs:106 create_atomic",
+      "backend/crates/libs/qip-storage/tests/lake.rs:240 two_writers_racing_one_segment_id_seal_exactly_one",
+      "backend/crates/libs/qip-storage/tests/lake.rs a_file_store_creates_an_object_once_and_leaves_an_existing_one_untouched",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:1089 a_cloud_storage_put_if_absent_asks_for_generation_zero_and_reads_412_as_already_there",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)"
     ],
-    "gap": "Conditional (if-absent) write; durable store enabled.",
+    "gap": "Durable store enabled: enable_cloud_storage is false in every environment, an owner switch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1287,10 +1291,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-storage --test lake",
+    "verification": "cargo test -p qip-storage --test lake --test gcp --test outcome_lake",
     "work_item": "",
     "size": "M",
-    "notes": "lake.rs's own doc states the ifGenerationMatch gap. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge writer added; race and durability gaps remain."
+    "notes": "2026-10-18 lane L23: mutations fired - sealing with put reported as created ('both writers sealed one segment id'); file create published by write_atomic's rename (the second create reported true); ifGenerationMatch dropped ('the create was not conditional'); 412 read as created. outcome_lake's Faulty store now refuses on put_if_absent as on put, since the seal moved to that seam."
   },
   {
     "id": "R12-TICK-2056",
@@ -1737,12 +1741,14 @@
   {
     "id": "R12-TICK-2074",
     "status": "PARTIAL",
-    "current": "DelayedFeed, Latency and LatencySpike conditions are monotonically adverse; tapes release by known_at. Not driven by measured latency.",
+    "current": "Data-arrival delay is driven by measurement on the default path: the kernel's capacity probe runs behind Platform::calibrated_feed_delay, the largest mean of the publication delays the real sources have shown, as a DelayedFeed condition. The simulator can now calibrate both conditions from samples: MarketCondition::latency_from_measured centres the uniform latency band on the measured median (half-width the nearer of its distances to p10 and p90) and delayed_feed_from_measured takes the median; both refuse an empty or negative sample set. Decision latency is still not driven by measurement anywhere, because nothing measures it: SimulatedBroker stamps a configured acknowledgement latency and venue_measurement refuses it as untimed.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:151-157",
-      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs"
+      "backend/crates/services/qip-simulation-engine/src/conditions.rs MarketCondition::latency_from_measured, delayed_feed_from_measured",
+      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs conditions_calibrated_from_measured_samples_reproduce_the_sample_median",
+      "backend/crates/runtime/qip-kernel/src/platform.rs calibrated_feed_delay and the capacity probe's DelayedFeed",
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency"
     ],
-    "gap": "Calibrate arrival/decision latency from captured telemetry.",
+    "gap": "No binary measures decision-to-arrival latency (the paper venue stamps a declared latency, which venue_measurement refuses as untimed), so latency_from_measured has no production sample set to calibrate from; closing needs a timed acknowledgement path and a caller passing its samples into the replay or capacity probe.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1753,7 +1759,7 @@
     "verification": "cargo test -p qip-simulation-engine --test market_conditions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay)."
   },
   {
     "id": "R12-TICK-2075",
@@ -1853,15 +1859,15 @@
   },
   {
     "id": "R12-TICK-2079",
-    "status": "PARTIAL",
-    "current": "Typed counterparty agents (passive, informed, momentum, competitor, maker) and conditions (illiquidity, venue outage, flash event, volatility spike, crossed market) exist, seeded and deterministic; kernel uses the synthetic market. No manipulation-pattern agent (spoofing/layering).",
+    "status": "COMPLETE",
+    "current": "The agent-based simulator models manipulation patterns: AgentKind::Spoofer shows one order of a stated size behind the calm touch on a seeded coin-flipped side and AgentKind::Layerer stacks two or more such orders step_bps apart, each cancelled in the step it was shown and recorded as FlowAction::Cancelled. Both draw from the agent's own seeded stream, withdraw under any injected condition, carry NOT_CALIBRATED_STATEMENT in their run-record rule, and are covered by the run digest. A cancelled layer is never rested in the book an order fills against. Passive, informed, momentum, competitor and maker agents and the condition set are unchanged; the kernel's capacity probe composes passive and maker agents only.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/agents.rs:328-455",
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:96-165",
-      "backend/crates/services/qip-simulation-engine/tests/agents.rs:204",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13457-13465"
+      "backend/crates/services/qip-simulation-engine/src/agents.rs Behaviour::Spoofer, Behaviour::Layerer, CounterpartyAgent::show_and_cancel",
+      "backend/crates/services/qip-simulation-engine/src/market.rs FlowAction::Cancelled in the run digest and apply_flow",
+      "backend/crates/services/qip-simulation-engine/tests/agents.rs a_spoofing_agent_generates_the_same_cancelled_layers_from_the_same_seed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs capacity probe with_agents"
     ],
-    "gap": "Add manipulation agents; agents are explicitly uncalibrated (NOT_CALIBRATED_STATEMENT).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1872,7 +1878,7 @@
     "verification": "cargo test -p qip-simulation-engine --test agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: placing every layer at step_bps collapses the ladder onto one price; drawing the side coin from a fresh seed puts every layer on one side. The layers are not added to the kernel's capacity probe because a cancelled layer never rests and so cannot change that probe's fills."
   },
   {
     "id": "R12-TICK-2080",

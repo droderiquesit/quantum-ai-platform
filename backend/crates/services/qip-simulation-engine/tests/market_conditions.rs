@@ -1761,3 +1761,56 @@ fn overlapping_message_budgets_compose_to_the_tighter_rate() {
         "a budget of zero messages is an outage and must be stated as one"
     );
 }
+
+/// R12-TICK-2074: latency and feed delay calibrated from measured samples
+/// reproduce the samples' median, including when the samples are skewed.
+///
+/// Mutation: centre the latency band on the 10th–90th percentile midpoint
+/// (`base` = p10, `jitter` = p90 − p10) — the skewed samples' simulated median
+/// moves off the measured one and the latency assertion fails. Mutation: take
+/// the feed delay at the 0.9 quantile — the feed assertion fails.
+#[test]
+fn conditions_calibrated_from_measured_samples_reproduce_the_sample_median() -> Result<()> {
+    // Skewed: most orders arrive in 2-4ms, a long tail out to 40ms.
+    let mut samples: Vec<Duration> = (0..80)
+        .map(|i| Duration::from_micros(2_000 + i * 25))
+        .collect();
+    samples.extend((0..20).map(|i| Duration::from_micros(10_000 + i * 1_500)));
+    let mut sorted = samples.clone();
+    sorted.sort_unstable();
+    let measured_median = sorted[(sorted.len() - 1) / 2];
+
+    let latency = MarketCondition::latency_from_measured(&samples)?;
+    latency.validate()?;
+    let schedule = ConditionSchedule::new().with(ConditionWindow::always(latency));
+    let mut drawn: Vec<i64> = (0..2_001)
+        .map(|i| {
+            schedule
+                .regime(Timestamp::from_nanos(i * 1_000_000), "XNAS", "obj", 0, 11)
+                .order_latency
+                .as_nanos()
+        })
+        .collect();
+    drawn.sort_unstable();
+    let simulated_median = drawn[drawn.len() / 2];
+    let error = (simulated_median - measured_median.as_nanos()).abs();
+    // Premise: the samples are skewed enough that a p10-p90 band would miss.
+    let midpoint = (sorted[9].as_nanos() + sorted[89].as_nanos()) / 2;
+    assert!((midpoint - measured_median.as_nanos()).abs() > 1_000_000);
+    assert!(
+        error < 100_000,
+        "simulated median {simulated_median}ns against measured {}ns",
+        measured_median.as_nanos()
+    );
+
+    let feed = MarketCondition::delayed_feed_from_measured(&samples)?;
+    assert_eq!(
+        feed,
+        MarketCondition::DelayedFeed {
+            delay: measured_median
+        }
+    );
+    assert!(MarketCondition::latency_from_measured(&[]).is_err());
+    assert!(MarketCondition::latency_from_measured(&[Duration::from_nanos(-1)]).is_err());
+    Ok(())
+}
