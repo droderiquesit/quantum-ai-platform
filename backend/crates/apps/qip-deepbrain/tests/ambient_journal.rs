@@ -15,7 +15,7 @@ use qip_deepbrain::ambient_journal::{
 };
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::node::{self, Loops};
-use qip_deepbrain::research::{ResearchConfig, ResearchLoop};
+use qip_deepbrain::research::{PERSIST_SWEEPS, ResearchConfig, ResearchLoop};
 use qip_deepbrain::status::NodeStatus;
 use qip_events::EventLog;
 use qip_financial::quality::DataQuality;
@@ -452,6 +452,77 @@ fn an_anomaly_scan_is_journaled_as_signals_each_with_the_routers_decision() {
     );
     assert!(!decided.is_empty(), "{journaled:?}");
     assert!(decided.is_subset(&signalled), "{journaled:?}");
+}
+
+/// R12-AMBIENT-1141: the opportunity half of the ambient scans. A price
+/// discrepancy that persists for `PERSIST_SWEEPS` consecutive sweeps is a
+/// missed opportunity, and it reaches the journal as an Opportunity-class
+/// signal, not as one more anomaly. Without this the opportunity scan could
+/// be mapped to any class and the journal would still look busy.
+///
+/// Mutation: map `GapTrigger::MissedOpportunity` to `SignalClass::Assumption`
+/// in `research::signal_class` and no Opportunity-class record is journaled.
+#[test]
+fn a_discrepancy_persisting_for_the_sweep_count_is_journaled_as_an_opportunity_class_signal() {
+    let mut platform = platform();
+    let mut records_in = Vec::new();
+    for day in 0..61i64 {
+        let close = if day == 60 {
+            125.0
+        } else if day % 2 == 0 {
+            100.1
+        } else {
+            99.9
+        };
+        records_in.push(bar(
+            "obj-P",
+            start().saturating_sub(Duration::from_days(61 - day)),
+            close,
+        ));
+    }
+    platform.observe(records_in);
+    let mut loop_ = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ambient = journal();
+    let opportunity = |records: &[AmbientRecord]| -> Vec<String> {
+        records
+            .iter()
+            .filter_map(|r| match r {
+                AmbientRecord::Signal { signal, .. }
+                    if signal.class() == SignalClass::Opportunity =>
+                {
+                    Some(signal.evidence_ids().join(","))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    for sweep in 1..=u64::from(PERSIST_SWEEPS) {
+        let round = loop_
+            .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            round.anomalies >= 1,
+            "premise: the jump is flagged on sweep {sweep}"
+        );
+        ambient
+            .record(sweep, &round, start())
+            .unwrap_or_else(|e| panic!("{e}"));
+        if sweep < u64::from(PERSIST_SWEEPS) {
+            assert!(
+                opportunity(&read(ambient.log())).is_empty(),
+                "premise: no opportunity before the discrepancy has persisted"
+            );
+        }
+    }
+    let journaled = read(ambient.log());
+    let found = opportunity(&journaled);
+    assert!(
+        found
+            .iter()
+            .any(|evidence| evidence.split(',').any(|e| e == "persistent:obj-P")),
+        "the persistent discrepancy is journaled as an Opportunity-class signal: {journaled:?}"
+    );
 }
 
 /// `main`'s resolution: a blank variable is refused, an unset one journals
