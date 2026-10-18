@@ -41,7 +41,9 @@ use crate::comparison::ComparisonDraft;
 use crate::generate::{Simulated, Structural, StructuralDecl};
 use crate::goal::GoalSpec;
 use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl, Voice};
-use crate::memory::{ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, Observed};
+use crate::memory::{
+    ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, FailureEpisode, Observed,
+};
 use crate::plan::{
     ActingIdentity, Candidate, InterventionPlan, PlanNode, Proposal, Selection, Step, select,
 };
@@ -484,11 +486,13 @@ pub fn learn(
     outcome: ActionOutcomeDraft,
     attribution: &EffectAttribution,
 ) -> Result<Authority, Error> {
-    learn_outcome(log, steps, policy, memory, outcome, attribution).map(|(authority, _)| authority)
+    learn_outcome(log, steps, policy, memory, outcome, attribution)
+        .map(|(authority, _, _)| authority)
 }
 
 /// [`learn`], also returning the outcome as kept, so a caller can journal
-/// the record the memory holds rather than the draft it was given.
+/// the record the memory holds rather than the draft it was given, and the
+/// failure episode the memory filed when the outcome drifted.
 fn learn_outcome(
     log: &mut StageLog,
     steps: &[Step],
@@ -496,7 +500,7 @@ fn learn_outcome(
     memory: &mut ActionOutcomeMemory,
     outcome: ActionOutcomeDraft,
     attribution: &EffectAttribution,
-) -> Result<(Authority, ActionOutcome), Error> {
+) -> Result<(Authority, ActionOutcome, Option<FailureEpisode>), Error> {
     log.expect(Stage::ObserveEffect)?;
     let outcome = match outcome.build() {
         Ok(outcome) => outcome,
@@ -545,9 +549,17 @@ fn learn_outcome(
         .ok_or_else(|| Error::numeric("attributed effect overflowed"))?;
     let side_effects = outcome.side_effects.clone();
     memory.keep(outcome.clone());
+    // R12-RES-7111: a drift does not only narrow the policy; it files the
+    // plan that failed, how, and the stop and roll-back it calls for.
+    let before = policy.authority();
+    let drift = policy.drift(effect, &side_effects);
     let authority = policy.observe(effect, &side_effects);
+    let failure = FailureEpisode::of(policy.class(), &outcome, effect, drift, (before, authority));
+    if let Some(episode) = &failure {
+        memory.keep_failure(episode.clone());
+    }
     log.pass(Stage::Update)?;
-    Ok((authority, outcome))
+    Ok((authority, outcome, failure))
 }
 
 /// What one learning left: the record the memory kept, the attribution it
@@ -564,6 +576,8 @@ pub struct Learned {
     pub predicted_side_effects: BTreeSet<String>,
     pub before: Authority,
     pub after: Authority,
+    /// The failure episode, when the effect drifted (R12-RES-7111).
+    pub failure: Option<FailureEpisode>,
 }
 
 /// How a learning ended.
@@ -629,7 +643,7 @@ pub fn learn_shadowed(
     };
     let before = policy.authority();
     let outcome = match learn_outcome(&mut log, steps, policy, memory, outcome, attribution) {
-        Ok((after, outcome)) => LearningOutcome::Learned(Box::new(Learned {
+        Ok((after, outcome, failure)) => LearningOutcome::Learned(Box::new(Learned {
             effect: outcome
                 .actual_observations
                 .checked_sub(outcome.no_action_counterfactual)
@@ -640,6 +654,7 @@ pub fn learn_shadowed(
             predicted_side_effects: policy.predicted_side_effects().clone(),
             before,
             after,
+            failure,
         })),
         Err(refusal) => LearningOutcome::Withheld(refusal.message().to_string()),
     };
