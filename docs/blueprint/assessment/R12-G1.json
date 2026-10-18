@@ -2157,12 +2157,14 @@
   {
     "id": "R12-FABRIC-8097",
     "status": "PARTIAL",
-    "current": "Boot disk type defaults to hyperdisk-balanced; a journal device variable is passed to the startup script; no separate journal disk resource; module not instantiated.",
+    "current": "The broker template declares a dedicated, non-auto-deleted Hyperdisk journal disk (device qip-journal, its own size variable) and provisions its IOPS and throughput explicitly (journal_provisioned_iops, default 3000; journal_provisioned_throughput_mibps, default 140), validated to the Hyperdisk Balanced ranges; disk_type is refused unless it is a hyperdisk-* type, because only a Hyperdisk accepts provisioned performance. The module is instantiated by fabric.tf only when var.event_fabric_broker is set, and it is null in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf (disk_type default hyperdisk-balanced)",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:37-47"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:78 provisioned_iops / provisioned_throughput on the qip-journal disk",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:208 journal_provisioned_iops and journal_provisioned_throughput_mibps with range validations; disk_type hyperdisk-* validation",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
+      "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Dedicated Hyperdisk journal with throughput sizing.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2170,10 +2172,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "event_fabric_infrastructure.rs:218 fabric_085 asserts a hand-built struct, not Terraform."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",

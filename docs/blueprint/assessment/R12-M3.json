@@ -2221,7 +2221,7 @@
       "backend/crates/services/qip-twin/src/futures.rs::Branch",
       "backend/crates/libs/qip-contracts/src/world_model.rs::WorldBranchFields"
     ],
-    "gap": "Impact is per instrument, not portfolio impact; no named refusal test for each missing field on Branch; reached only via the tick desk, off by default.",
+    "gap": "Impact is per instrument (Branch::impact_bps), not portfolio impact: FutureTree::grow takes no positions, so no branch can state one. Nothing refuses a branch missing a field: grow builds the baseline branch with empty evidence and propagation, and hedge_for returns no hedge whenever no instrument moves down, so an empty hedge list means both 'no hedge required' and 'not computed'. The only production caller, qip-deepbrain's TickDesk, runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no committed environment sets, so even a refusal would run on no default path.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2234,7 +2234,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/futures.rs (Branch, to_world_branch, FutureTree::grow, hedge_for) and qip-deepbrain/src/main.rs (tick desk 'Off unless QIP_DEEPBRAIN_TICK_EVERY'); no code changed. Closing needs positions into grow (or a portfolio_outcomes pass, R12-TICK-10121), a typed hedge requirement distinguishing none-required from absent, a Branch::validate with one refusal test per field, and the tick desk on by default or committed."
   },
   {
     "id": "R12-TICK-3100",
@@ -2453,13 +2453,15 @@
   },
   {
     "id": "R12-REASON-3109",
-    "status": "PARTIAL",
-    "current": "RedTeam outcome gates hypotheses; SelfModel origin factors scale evidence by graded record.",
+    "status": "COMPLETE",
+    "current": "Every hypothesis the REASON stage forms is challenged by the reasoning engine's RedTeam review before it can become a thesis; in the kernel a hypothesis whose review status is not actionable takes the RejectedOnReview arm and is never queued for DECIDE, on the default cycle. The self-model's per-origin factors scale evidence by each origin's graded record once it has MINIMUM_SAMPLE resolutions, and the factor is recorded on the hypothesis.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:111-139",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs:111-139 RedTeam in ReasoningEngine",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13339 the REASON arm: `if !approved` journals RejectedOnReview and queues no thesis",
+      "backend/crates/runtime/qip-kernel/tests/episodic.rs:965 a_hypothesis_refused_on_review_forms_no_thesis_and_decide_sizes_nothing_for_it",
       "backend/crates/runtime/qip-kernel/tests/self_model.rs:351 the_reason_factor_scales_an_origin_only_with_a_sufficient_sample_and_is_recorded_on_the_hypothesis"
     ],
-    "gap": "Challenge is by deterministic checks, not independent critics; calibration authority applies per origin only after MINIMUM_SAMPLE.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2467,10 +2469,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-kernel --test episodic a_hypothesis_refused_on_review_forms_no_thesis_and_decide_sizes_nothing_for_it; cargo test -p qip-kernel --test self_model the_reason_factor_scales_an_origin_only_with_a_sufficient_sample_and_is_recorded_on_the_hypothesis",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22 with the kernel-level test the row lacked: a shipped Platform runs a full cycle on the tape the review rejects, the reasoning engine's own detail states the rejection, REASON queues no thesis and DECIDE weighs nothing for the instrument and sizes nothing. Mutation: in the REASON arm, `if false && !approved` in place of `if !approved` - REASON queues a thesis 'sized on conviction 0.396' and the thesis assertion fires; restored byte for byte. A first version asserted only on proposals and survived the mutation, because the action bar refuses so weak a thesis anyway; the assertion is now on the queue. Critics beside the red team (the tournament's forecasters, TournamentStage::observe_reasoning) are advisory and do not gate DECIDE; the gate is the review."
   },
   {
     "id": "R12-AMBIENT-3110",

@@ -946,3 +946,69 @@ fn the_learn_stage_reads_regime_experience_from_memory_and_journals_it_with_the_
     );
     Ok(())
 }
+
+/// R12-REASON-3109 at the kernel seam: a hypothesis the red team refuses on
+/// review never reaches DECIDE. The refusal was proven inside
+/// `qip-reasoning-engine`, where the review verdict is formed, and nothing
+/// proved that the platform honours it — that a rejected hypothesis is not
+/// still turned into a thesis and sized. This tape is the one the review
+/// rejects (see the episode test above); the cycle runs every stage, and the
+/// assertion is on what DECIDE sized, not on what REASON said.
+///
+/// Mutation: in `Platform`'s REASON arm, take the thesis branch whatever the
+/// verdict (`if false && !approved {` in place of `if !approved {`) — REASON
+/// queues a thesis "sized on conviction 0.396" and DECIDE weighs obj-AAA, so
+/// the thesis assertion fires. Nothing is sized even then, because the action
+/// bar refuses so weak a thesis, which is why the assertion is on the queue
+/// and not only on the proposals.
+#[test]
+fn a_hypothesis_refused_on_review_forms_no_thesis_and_decide_sizes_nothing_for_it() -> Result<()> {
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    platform.observe(leading_bars("BBB", 120));
+    let report = platform.run_cycle(start());
+
+    let reason = report
+        .stage(Stage::Reason)
+        .expect("premise: the cycle reports its REASON stage");
+    // The verdict as the reasoning engine stated it, read from the stage
+    // detail its own summary writes, rather than from the problem the
+    // kernel's rejection arm adds — the arm under test.
+    assert!(
+        reason
+            .detail
+            .contains("; hypothesis rejected at confidence "),
+        "premise: the review rejected a hypothesis on this tape:\n{}",
+        report.summarise()
+    );
+    let decide = report
+        .stage(Stage::Decide)
+        .expect("premise: the cycle reports its DECIDE stage");
+    assert!(decide.ran, "premise: DECIDE ran:\n{}", report.summarise());
+    // No thesis was queued for DECIDE: the clause REASON writes when it
+    // queues one is absent, and DECIDE has no clause about the instrument.
+    assert!(
+        !reason.detail.contains("; sized on conviction "),
+        "REASON queued a thesis for a hypothesis the review refused:\n{}",
+        report.summarise()
+    );
+    assert!(
+        !decide
+            .detail
+            .split("; ")
+            .any(|clause| clause.starts_with("obj-AAA: ")),
+        "DECIDE weighed the refused hypothesis's instrument:\n{}",
+        report.summarise()
+    );
+    let sized: Vec<String> = platform
+        .proposals()
+        .iter()
+        .flat_map(|p| p.legs.iter().map(|leg| leg.object_id.to_string()))
+        .collect();
+    assert!(
+        sized.is_empty(),
+        "DECIDE sized {sized:?} on a cycle whose only hypothesis the review refused:\n{}",
+        report.summarise()
+    );
+    Ok(())
+}

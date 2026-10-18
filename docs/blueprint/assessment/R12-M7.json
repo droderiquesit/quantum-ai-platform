@@ -546,25 +546,29 @@
   },
   {
     "id": "R12-AMBIENT-7026",
-    "status": "PARTIAL",
-    "current": "Attention budget is enforced by RoutingPolicy; acceptance proves no order-path crate names an ambient type.",
+    "status": "COMPLETE",
+    "current": "Ambient cognition (the AttentionRouter, its detectors and the research sweep) is constructed in exactly one binary, qip-deepbrain, whose ResearchLoop runs every cycle by default (QIP_DEEPBRAIN_RESEARCH_EVERY defaults to 1). In every environment's committed GitOps manifest that binary is its own Cloud Run service bounded to one instance and one request, with CPU and memory limits on its container (4 CPU, 8Gi, held to the catalogue by gitops.rs's parity test); the fast brain is a separate service with its own limits and the regional cell runs on its own Compute Engine node. Within that budget RoutingPolicy caps attention spend per window, and no order-path crate names an ambient type.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs:608 AttentionRouter::new(policy) in ResearchLoop",
+      "infrastructure/gitops/envs/{dev,test,stage,prod}/deepbrain.yaml resources.limits cpu/memory, maxInstanceCount 1, maxInstanceRequestConcurrency 1",
+      "infrastructure/terraform/catalogue.tf deepbrain entry cpu = \"4\", memory = \"8Gi\"",
       "backend/crates/libs/qip-contracts/src/ambient.rs:294-401 RoutingPolicy budget_per_window/window/defer_capacity; AttentionRouter::route",
       "backend/crates/libs/qip-contracts/tests/ambient.rs:148,203,213 a storm never exceeds the attention budget",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:138 no order-path crate names an ambient type; advisory only unwrapped by promote"
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:138 no order-path crate names an ambient type",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:215 ambient_cognition_runs_in_one_binary_whose_service_has_its_own_cpu_and_memory_limits"
     ],
-    "gap": "No compute/resource isolation of a running ambient service (none runs).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention",
+    "verification": "cargo test -p qip-acceptance --test ambient_attention; cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22. The grader's closure (add limits to the cloud_run module input) was stale: since ADR 0036 the service's resources are the GitOps manifest's, and the deep brain's were already declared and parity-tested; what no test held was that the ambient router runs only in that service. The new acceptance test asserts the router is constructed in qip-deepbrain alone and that every environment's deepbrain manifest carries CPU and memory limits and single-instance bounds, beside a separately limited fast brain. Mutations: delete the limits block from envs/dev/deepbrain.yaml - the limit assertion fires; insert an AttentionRouter::new( call above fn main in qip-fastbrain's main.rs - the single-host assertion fires with left {qip-deepbrain, qip-fastbrain}; both restored byte for byte. Evidence that the manifests are reconciled into a running project is the GitOps control plane's, not this row's."
   },
   {
     "id": "R12-AGENCY-7027",
@@ -1679,27 +1683,28 @@
   },
   {
     "id": "R12-CONTRACT-7076",
-    "status": "PARTIAL",
-    "current": "The NOW estimator constructs ModelDisagreement contracts when candidate estimators disagree beyond scale, and the kernel's now_stage journals them in NowReview.",
+    "status": "COMPLETE",
+    "current": "The typed ModelDisagreement contract (competing views with their evidence and calibration, disputed propositions, unresolved assumptions, arbitration status) refuses a missing, unknown or broken field. The NOW Brain constructs one whenever its estimators' spread on a variable passes NowConfig::disagreement_scales, and qip-kernel's NowStage::run, on the UNDERSTAND stage of every cycle, journals it in the NowReview record other brains read off the log.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/world_model.rs:242 type",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:660 a_model_disagreement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:681 a_model_disagreement_refuses_each_broken_invariant",
-      "backend/crates/services/qip-world-model/src/now.rs",
-      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowReview"
+      "backend/crates/services/qip-world-model/src/now.rs::NowBrain::update (disagreement past disagreement_scales)",
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run (disagreements: step.disagreements)",
+      "backend/crates/runtime/qip-kernel/tests/now_state.rs:834 estimators_that_disagree_past_their_bound_are_journaled_as_an_open_model_disagreement"
     ],
-    "gap": "Produced and journaled only; no second brain decodes or arbitrates on it, and no test asserts the production emission.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cargo test -p qip-contracts --test section27_contracts model_disagreement; cargo test -p qip-kernel --test now_state estimators_that_disagree_past_their_bound_are_journaled_as_an_open_model_disagreement",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelDisagreement exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L22: a kernel test runs two cycles of a shipped Platform (calm history, then a 30% break in one instrument) and reads the journaled NowReview off the event log, asserting an Open ModelDisagreement on that instrument's return naming at least two estimators that ran. Mutation: NowStage::run journals `disagreements: Vec::new()` - the test fails with `journaled: []`; restored byte for byte. Arbitration by a second brain is not part of this row's clause (the contract between brains and its field invariants); a consumer that resolves disputes is separate work."
   },
   {
     "id": "R12-CONTRACT-7077",
@@ -2737,24 +2742,28 @@
   },
   {
     "id": "R12-OBS-7124",
-    "status": "PARTIAL",
-    "current": "decision-latency-p99 and p99.9 SLOs defined.",
+    "status": "COMPLETE",
+    "current": "The decision-latency critical path (p99 under 50 ms over a day) reads EDGE_DECISION_LATENCY_MS, the histogram qip-edge-node's PassMeter records around every pass that ran, and is evaluated by the node itself: every /metrics scrape evaluates the node's critical paths (service edge-node) against the registry it then renders and records qip_slo_observations and qip_slo_budget_consumed for them. The deep brain evaluates every other path and no longer reports this one unmeasured. The reflex decision-latency-p99 and p99.9 objectives remain declared in slo.rs.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs; backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs:117 decision-latency on names::EDGE_DECISION_LATENCY_MS, service EDGE_NODE_SERVICE; evaluate_where",
+      "backend/crates/apps/qip-edge-node/src/pass.rs PassMeter::measure records EDGE_DECISION_LATENCY_MS per pass that ran",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs:62 respond evaluates and records the node's objectives on /metrics",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs:387 evaluates the paths outside edge-node",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:3657 a_scrape_after_a_metered_pass_evaluates_the_decision_latency_objective_as_measured",
+      "backend/crates/libs/qip-observability/src/slo.rs default_slos decision-latency-p99 / p99.9"
     ],
-    "gap": "Needs a deployment to measure.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-edge-node --test pass a_scrape_after_a_metered_pass_evaluates_the_decision_latency_objective_as_measured; cargo test -p qip-observability --test critical_paths; cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "S",
-    "notes": "NEEDS a deployment for the measurement half."
+    "notes": "Closed 2026-10-18 by lane L22. The path named EXECUTION_LATENCY_MS, which no production site records, and was evaluated only by the deep brain, so it read unmeasured everywhere while the node timed every pass. It is now bound to the node's series and evaluated where that series lives, on the health thread at scrape time rather than in the decision loop's turn, because an evaluation walks the registry and the decision thread may not wait. Mutation: delete the EDGE_DECISION_LATENCY_MS recording site in PassMeter::measure - the scrape after a pass reads zero observations and the test fails; restored byte for byte. No execution node is deployed (execution_nodes_enabled = false in dev), so the evaluation runs in the shipped binary and in test, not yet in a running deployment."
   },
   {
     "id": "R12-OBS-7125",

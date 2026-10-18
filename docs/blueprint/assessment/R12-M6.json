@@ -1194,7 +1194,7 @@
       "backend/crates/services/qip-data-finder/src/decision.rs:464-476",
       "backend/crates/apps/qip-api/src/registration_views.rs"
     ],
-    "gap": "Discovery methods and sensors/marketplaces as registry entries.",
+    "gap": "RegisteredSource::entry (decision.rs) is read only by tests/source_registry.rs: no binary consults the Source Registry entry on a running path, and discovery itself runs in the deep brain only when QIP_DEEPBRAIN_DISCOVER_EVERY is set (unset in every committed environment). Discovery method is already recorded and required: SourceCandidate::validate refuses an empty discovered_from and SourceLineage carries it into the entry's provenance. Sensors have no category of their own: §7.6.1's table has eight and a physical sensor feed classifies as PhysicalAndGeospatial; adding a ninth variant to qip_financial::SourceCategory would contradict the table it encodes, so the grader's closure (SourceCategory::Sensor) is not taken.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1205,7 +1205,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment."
   },
   {
     "id": "R12-EXPAND-6056",
