@@ -192,18 +192,35 @@ fn own_partition() -> u32 {
     partition_for("cell-local", PARTITIONS).unwrap()
 }
 
+/// A batch of one real event of a topic the committed journal stream admits:
+/// the broker refuses a record whose body is not an event of one of the
+/// stream's topics (R12-FABRIC-8090), so the tag cannot be the payload.
 fn batch(tag: &str) -> Batch {
+    let payload = serde_json::json!({ "tag": tag });
+    let at = qip_core::Timestamp::from_secs(1_790_000_000);
+    let event = qip_events::AnyEvent {
+        event_id: qip_core::EventId::from_string(tag.to_string()),
+        topic: qip_events::topic::Topic::ReflexJournalRecorded,
+        schema_version: 1,
+        occurred_at: at,
+        recorded_at: at,
+        sequence: 0,
+        lineage: qip_core::Lineage::root(
+            qip_core::CorrelationId::from_string("COR00000000000000000000009"),
+            "qip-cli.test",
+        ),
+        idempotency_key: Some(tag.to_string()),
+        payload_hash: qip_core::sha256_hex(
+            qip_core::canonical::canonical_json(&payload).as_bytes(),
+        ),
+        payload,
+    };
     Batch::new(
         MessageType::Data,
         QosClass::P2MarketJournal.batch_schema_id(),
         BATCH_SCHEMA_VERSION,
         PayloadCodec::CanonicalJson,
-        vec![Record {
-            event_id: tag.to_string(),
-            trace_id: None,
-            source_timestamp_ns: 1,
-            payload: tag.as_bytes().to_vec(),
-        }],
+        vec![Record::from_any_event(&event, PayloadCodec::CanonicalJson).unwrap()],
     )
     .unwrap()
 }
