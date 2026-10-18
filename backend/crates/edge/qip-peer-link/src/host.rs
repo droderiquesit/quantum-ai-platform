@@ -211,9 +211,19 @@ impl Host {
         cells
             .edge_peers_held
             .store(endpoint.edge_peers().len() as u64, Ordering::Relaxed);
+        let clocked = endpoint.clocked_peers(now);
         cells
             .clocks_measured
-            .store(endpoint.clocked_peers(now).len() as u64, Ordering::Relaxed);
+            .store(clocked.len() as u64, Ordering::Relaxed);
+        // Stored as zero when no peer has a fresh sample, so a link that
+        // lost its peers reads as unmeasured rather than as its last figure.
+        let nearest = clocked
+            .iter()
+            .filter_map(|peer| endpoint.peer_clock(peer, now))
+            .map(|sample| sample.round_trip_nanos.unsigned_abs())
+            .min()
+            .unwrap_or(0);
+        cells.clock_round_trip_ns.store(nearest, Ordering::Relaxed);
         cells
             .refusals
             .store(self.session.refusals().len() as u64, Ordering::Relaxed);
