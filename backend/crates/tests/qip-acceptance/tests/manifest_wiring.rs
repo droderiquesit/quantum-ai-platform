@@ -1460,6 +1460,40 @@ const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
      outside a local deployment by the binary itself. The entry ends when the \
      key ring's class keys and the bundle are applied and mounted.";
 
+/// The managed-provider variables `qip-storage` resolves for the deep brain's
+/// warehouse sink and storage target (`ManagedSettings::from_env`), before any
+/// managed data service is applied.
+const NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN: &str = "the \
+     deep brain reads the `qip-storage` managed-provider variables for its \
+     research-warehouse sink (`warehouse::OutcomeSink`, \
+     R12-DATA-9054) and for a managed storage target, and no \
+     managed data service is applied for it: `enable_bigquery`, \
+     `enable_cloud_storage` and `enable_memorystore` are false in every \
+     committed environment, so there is no dataset, bucket or Memorystore \
+     instance whose name or address could be set. An operator who could set \
+     one anyway would name a service that does not exist, and the sink \
+     would stop the process on a half-named target rather than stay off, \
+     which is the opposite of the absent value's meaning: with nothing set \
+     the warehouse is off and the banner says so. Setting \
+     `QIP_STORAGE_TARGET=cloud_storage` or `big_query` through the \
+     catalogue's root variable is likewise not offered a companion bucket \
+     or dataset yet. The entry ends when a data service is enabled and the \
+     catalogue sets its name from a root variable, so that an absent value \
+     still means the fallback.";
+
+/// The credentials among them.
+const NO_MANAGED_DATA_SERVICE_AND_THE_CREDENTIAL_IS_FILE_ONLY: &str = "no \
+     managed data service is applied for the deep brain (see \
+     NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN), so there is no \
+     credential to present. This one is a credential and is never argued \
+     into a plain environment value: `qip_storage::managed` reads it only \
+     through `qip_core::secret::resolve_from`, so the `_FILE` indirection \
+     is the form a deployment sets (a Secret Manager volume), setting both \
+     the variable and its file is refused, and an empty value is refused \
+     rather than read as absent. When a service is applied the catalogue \
+     mounts the secret as a file and sets the `_FILE` variable, never the \
+     value.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     // QIP_ARTEFACT_SIGNER, QIP_TRUST_BUNDLE_PATH, QIP_KMS_KEY_VERSIONS_PATH
     // and QIP_GOOGLE_TLS_ROOTS_PATH on qip-api, and QIP_TRUST_BUNDLE_PATH on
@@ -1469,6 +1503,51 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     // (a `== null ? {} : {` arm, so each RunService omits them until its
     // environment commits a bundle) and node.env sets the node's bundle path
     // unconditionally, so the general rule covers all five.
+    (
+        "qip-deepbrain",
+        "QIP_BIGQUERY_DATASET",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_BIGQUERY_PROJECT",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_CLOUD_STORAGE_BUCKET",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_ENDPOINT",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_METADATA_SERVER",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_TOKEN_FILE",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_MEMORYSTORE_ADDRESS",
+        NO_MANAGED_DATA_SERVICE_IS_APPLIED_FOR_THE_DEEP_BRAIN,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_GCP_ACCESS_TOKEN",
+        NO_MANAGED_DATA_SERVICE_AND_THE_CREDENTIAL_IS_FILE_ONLY,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_MEMORYSTORE_AUTH",
+        NO_MANAGED_DATA_SERVICE_AND_THE_CREDENTIAL_IS_FILE_ONLY,
+    ),
     (
         "qip-api",
         "QIP_LOCAL_SIGNING_KEYS_PATH",
