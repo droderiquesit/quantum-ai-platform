@@ -4049,3 +4049,115 @@ fn a_scrape_after_a_pass_evaluates_the_market_data_freshness_objective_from_the_
     );
     Ok(())
 }
+
+/// R12-OBS-9159: the six reflex objectives are evaluated by the node's scrape
+/// from series the node records. Each was declared in `slo::default_slos` and
+/// read by nothing, so the market-event-to-decision, venue round-trip,
+/// stale-book, risk-gate and dropped-feed objectives were published nowhere.
+///
+/// Three metered passes against a seeded two-sided book, so an order is
+/// placed (the risk gate is consulted) and the venue answers it (the ack is
+/// timed). Before any pass every reflex objective reads zero observations;
+/// after, each reads more than zero.
+type ReflexReadings = Vec<(String, f64)>;
+
+fn reflex_observations_after(passes: i64) -> Result<(ReflexReadings, ReflexReadings)> {
+    const REFLEX: [&str; 6] = [
+        "decision-latency-p99",
+        "decision-latency-p99.9",
+        "venue-round-trip-time-p99",
+        "stale-book-age-max",
+        "risk-gate-latency-p99",
+        "dropped-feed-messages-zero",
+    ];
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let registry = Arc::clone(node.scrape_registry());
+    let meter = PassMeter::new(Arc::clone(&registry), std::time::Duration::from_secs(2))?;
+    let mut stats = PassStats::default();
+    let read = || -> ReflexReadings {
+        let _ =
+            qip_edge_node::telemetry::respond(b"GET /metrics HTTP/1.1\r\n\r\n", &registry, "{}");
+        let snapshot = registry.snapshot();
+        REFLEX
+            .iter()
+            .map(|name| {
+                let seen = snapshot
+                    .gauge(names::SLO_OBSERVATIONS, &labels([("objective", *name)]))
+                    .unwrap_or(f64::NAN);
+                ((*name).to_string(), seen)
+            })
+            .collect()
+    };
+    let before = read();
+    for i in 0..passes {
+        let ran = meter.measure(|| {
+            run_pass(
+                &mut node.cell,
+                &mut gateway,
+                &mut feed,
+                None,
+                &mut stats,
+                t(10 + i),
+            )
+        })?;
+        assert!(
+            matches!(ran, PassOutcome::Ran { .. }),
+            "premise: the pass ran: {ran:?}"
+        );
+    }
+    Ok((before, read()))
+}
+
+fn assert_reflex_objective_measured(name: &str) -> Result<()> {
+    let (before, after) = reflex_observations_after(3)?;
+    let seen = |rows: &ReflexReadings| {
+        rows.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| *v)
+            .unwrap_or(f64::NAN)
+    };
+    assert!(
+        seen(&before).abs() < f64::EPSILON,
+        "premise: before any pass {name} is evaluated and unmeasured: {before:?}"
+    );
+    assert!(
+        seen(&after) >= 1.0,
+        "{name} is still unmeasured after three metered passes: {after:?}"
+    );
+    Ok(())
+}
+
+/// Mutation: delete the `EDGE_DECISION_LATENCY_MS` recording site in
+/// `PassMeter::measure` - both decision-latency reads stay at zero.
+#[test]
+fn the_decision_latency_reflex_objectives_are_measured_by_a_metered_pass() -> Result<()> {
+    assert_reflex_objective_measured("decision-latency-p99")?;
+    assert_reflex_objective_measured("decision-latency-p99.9")
+}
+
+/// Mutation: delete the `venue_ack_latency` call in `Cell`'s `confirm`.
+#[test]
+fn the_venue_round_trip_reflex_objective_is_measured_when_a_venue_answers_an_order() -> Result<()> {
+    assert_reflex_objective_measured("venue-round-trip-time-p99")
+}
+
+/// Mutation: delete the `book_age` recording loop in `Cell::work`.
+#[test]
+fn the_stale_book_reflex_objective_is_measured_from_the_age_of_the_book() -> Result<()> {
+    assert_reflex_objective_measured("stale-book-age-max")
+}
+
+/// Mutation: delete the `risk_gate_latency` call in `Cell::risk_admit`.
+#[test]
+fn the_risk_gate_reflex_objective_is_measured_when_the_gate_decides_an_order() -> Result<()> {
+    assert_reflex_objective_measured("risk-gate-latency-p99")
+}
+
+/// Mutation: delete the `feed_messages` call in `Cell::absorb_sequenced`.
+#[test]
+fn the_dropped_feed_reflex_objective_is_measured_from_the_messages_the_sequencer_released()
+-> Result<()> {
+    assert_reflex_objective_measured("dropped-feed-messages-zero")
+}

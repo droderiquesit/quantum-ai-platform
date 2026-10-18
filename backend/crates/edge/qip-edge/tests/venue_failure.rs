@@ -1738,3 +1738,51 @@ fn a_cell_reads_its_venue_session_row_from_how_many_venues_are_quarantined() -> 
     assert_eq!(session(&all, 13), Some(Freshness::Unavailable));
     Ok(())
 }
+
+/// R12-OBS-9159: a sequence gap the sequencer gives up on is counted as the
+/// messages it lost, so the reflex `dropped-feed-messages-zero` objective has
+/// something to be missed by. Sequences 5 and 6 never arrive, so exactly two
+/// messages are `dropped`; every message released in order is `delivered`.
+///
+/// The failure this prevents: the objective's source counted only what was
+/// released, so a feed that lost messages read as a feed that lost none.
+///
+/// Mutation: change the lost-range arithmetic in `Cell::absorb_sequenced` to
+/// `missing_to - missing_from` - the count reads one fewer than the two the
+/// gap held and the assertion fires. Mutation: delete the `feed_messages` call
+/// - the premise assertion on `delivered` fires.
+#[test]
+fn an_abandoned_sequence_gap_counts_the_messages_it_lost_as_dropped() -> Result<()> {
+    use qip_observability::metrics::{Metrics, labels, names};
+    use std::sync::Arc;
+
+    let (cell, mut gateway) = three_books()?;
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let mut cell = cell.with_metrics(Arc::clone(&metrics));
+    let count = |outcome: &str| {
+        metrics.snapshot().counter(
+            names::EDGE_FEED_MESSAGES,
+            &labels([("outcome", outcome), ("cell", CELL), ("region", REGION)]),
+        )
+    };
+
+    feed(&mut cell, XLON, "7\tobj-ACME\tB\t99\t450", t(11))?;
+    assert_eq!(
+        count("dropped"),
+        0,
+        "premise: a gap that might still fill lost nothing yet"
+    );
+
+    cell.feed_heartbeat(&venue(XPAR), t(12));
+    cell.work(t(12), &mut gateway)?;
+    assert!(
+        count("delivered") > 0,
+        "premise: the books were built from released messages"
+    );
+    assert_eq!(
+        count("dropped"),
+        2,
+        "the abandoned gap 5..=6 lost two messages and the series did not say so"
+    );
+    Ok(())
+}

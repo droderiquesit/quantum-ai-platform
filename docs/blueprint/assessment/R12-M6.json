@@ -1241,13 +1241,16 @@
   {
     "id": "R12-EXPAND-6056",
     "status": "PARTIAL",
-    "current": "ResearchLoop::new seeds an OntologyRegistry from SWEEP_ONTOLOGY and refuses to start without every type the sweep reads (check_ontology); each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology.",
+    "current": "The registry is built in qip-deepbrain main.rs by research::sweep_ontology_over from the coverage map the detector reads - the five types every detector reads, an Asset type per asset class the universe holds, and the coverage_gap Event type - and handed to ResearchLoop::with_ontology. Every sweep_over consults it: check_ontology stops the sweep if a detector's type is missing and check_coverage_registered stops it, naming the class, if the coverage map holds an asset class the registry does not. Each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/registries.rs OntologyRegistry::extend",
-      "backend/crates/apps/qip-deepbrain/src/research.rs extend_ontology, sweep_ontology, check_ontology",
-      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type"
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_ontology_over, with_ontology, check_coverage_registered, extend_ontology",
+      "backend/crates/apps/qip-deepbrain/src/main.rs sweep_ontology_over, with_ontology",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds"
     ],
-    "gap": "Nothing in the running binary calls extend_ontology: the only item the desk concludes is a fill-bias campaign, so no Ontology-class item ever finishes with an evaluation to cite. The registry is built inside ResearchLoop::new from the committed SWEEP_ONTOLOGY rather than in main.rs, and the coverage detector reads asset-class keys, not registry types.",
+    "gap": "Governed extension is not reached by the running binary (2026-10-18): nothing calls extend_ontology outside tests, because the only item the desk concludes is a fill-bias campaign, so no Ontology-class item (GapClass::Ontology, raised from Wanting::Type) ever finishes with a passing EvaluationRecord to cite. The registry is therefore seeded once at start and never versioned in a running process. Only the Asset and coverage-gap Event families are seeded from the coverage map; venue and geography coverage keys are not registered as types, and the Entity, Relationship, Product and CausalDriver families hold nothing the sweep reads.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1258,7 +1261,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": "Mutation: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the new test. Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology."
+    "notes": "Mutations (2026-10-18): deleting the check_coverage_registered call in sweep_over fails a_sweep_over_an_asset_class_the_ontology_does_not_name_is_refused_by_name; skipping the Asset registration loop in sweep_ontology_over fails the_ontology_a_node_builds_names_every_asset_class_the_coverage_map_holds and four sweep tests. Earlier: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the extension test. The expected ontology_types in a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted rose by two (the Equity Asset type and the coverage-gap Event type the seeded registry now holds). Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology."
   },
   {
     "id": "R12-EXPAND-6057",

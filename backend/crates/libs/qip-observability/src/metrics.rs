@@ -1381,6 +1381,20 @@ pub mod names {
     /// the `market-data-freshness` critical path is read from: a book older
     /// than the objective's threshold is a pass that decided on stale prices.
     pub const EDGE_BOOK_AGE_MS: &str = "qip_edge_book_age_ms";
+    /// Milliseconds from the cell's release of an order to the venue's first
+    /// report on it, by venue: the series the reflex `venue-round-trip-time-p99`
+    /// objective is read from. `qip_edge::telemetry::EDGE_VENUE_ACK_LATENCY_MILLIS`
+    /// is this constant, so the recorder and the reader cannot name two series.
+    pub const EDGE_VENUE_ACK_LATENCY_MS: &str = "qip_edge_venue_ack_latency_ms";
+    /// Milliseconds the cell's Risk Gate took to decide one order, recorded
+    /// around the gate's check wherever the cell consults it: the series the
+    /// reflex `risk-gate-latency-p99` objective is read from.
+    pub const EDGE_RISK_GATE_LATENCY_MS: &str = "qip_edge_risk_gate_latency_ms";
+    /// Feed messages the cell's sequencer accounted for, by `outcome`:
+    /// `delivered` (released in order) or `dropped` (sequences an abandoned
+    /// gap established were lost). The series the reflex
+    /// `dropped-feed-messages-zero` objective is read from.
+    pub const EDGE_FEED_MESSAGES: &str = "qip_edge_feed_messages_total";
 
     // Ledger metrics (ledgerd)
     pub const LEDGER_COMMITS: &str = "qip_ledger_commits_total";

@@ -9,7 +9,9 @@
 use qip_core::Timestamp;
 use qip_observability::Metrics;
 use qip_observability::aiops::{EntityGraph, EntityKey, Signal, SignalClass};
-use qip_observability::critical_paths::{critical_path_slos, evaluate, record, service_objectives};
+use qip_observability::critical_paths::{
+    critical_path_slos, evaluate, record, reflex_objectives, service_objectives,
+};
 use qip_observability::metrics::{labels, names};
 
 fn status_of<'a>(
@@ -62,16 +64,21 @@ fn recording_writes_observations_for_every_objective_and_a_budget_only_for_a_mea
     let source = Metrics::new("source");
     source.count(names::QUANTUM_JOBS, labels([("outcome", "failed")]));
     let statuses = evaluate(&source.snapshot());
-    // The eight critical paths and the service objectives beside them.
+    // The eight critical paths, the service objectives and the reflex
+    // objectives beside them.
     assert_eq!(
         statuses.len(),
-        critical_path_slos().len() + service_objectives().len()
+        critical_path_slos().len() + service_objectives().len() + reflex_objectives().len()
     );
 
     let sink = Metrics::new("sink");
     record(&sink, &statuses);
     let snapshot = sink.snapshot();
-    for path in critical_path_slos().into_iter().chain(service_objectives()) {
+    for path in critical_path_slos()
+        .into_iter()
+        .chain(service_objectives())
+        .chain(reflex_objectives())
+    {
         assert!(
             snapshot
                 .gauge(
@@ -119,4 +126,55 @@ fn an_entity_graph_with_retention_keeps_the_newest_signals_and_refuses_zero() {
     let values: Vec<f64> = graph.signals_for(&entity).iter().map(|s| s.value).collect();
     assert_eq!(values, vec![3.0, 4.0]);
     assert!(EntityGraph::with_retention(0).is_err());
+}
+
+/// R12-OBS-9159: every objective `default_slos` declares for the reflex is
+/// bound to a series, evaluated where the node records it, and carries the
+/// declaration's own threshold and target rather than a restated one.
+///
+/// The failure this prevents: six objectives declared and read by nothing, so
+/// the reflex was held to a target no code evaluated.
+///
+/// Mutation: rename the `risk-gate-latency-p99` binding in
+/// `reflex_objectives` - the declared name has no path and the first
+/// assertion fires.
+#[test]
+fn every_declared_reflex_objective_is_bound_to_a_series_the_node_records() {
+    use qip_observability::critical_paths::{EDGE_NODE_SERVICE, REFLEX_SERVICE};
+    use qip_observability::slo::default_slos;
+
+    let declared: Vec<_> = default_slos()
+        .into_iter()
+        .filter(|slo| slo.service == REFLEX_SERVICE)
+        .collect();
+    assert_eq!(
+        declared.len(),
+        6,
+        "premise: six reflex objectives are declared"
+    );
+    let bound = reflex_objectives();
+    for slo in &declared {
+        let path = bound
+            .iter()
+            .find(|path| path.slo.name == slo.name)
+            .unwrap_or_else(|| panic!("{} is declared and bound to no series", slo.name));
+        assert_eq!(path.slo.service, EDGE_NODE_SERVICE, "{}", slo.name);
+        assert!(
+            (path.slo.target - slo.target).abs() < f64::EPSILON,
+            "{} target moved: {} against {}",
+            slo.name,
+            path.slo.target,
+            slo.target
+        );
+        assert_eq!(
+            path.slo.latency_threshold_ms, slo.latency_threshold_ms,
+            "{}",
+            slo.name
+        );
+    }
+    assert_eq!(
+        bound.len(),
+        declared.len(),
+        "a binding names no declaration"
+    );
 }

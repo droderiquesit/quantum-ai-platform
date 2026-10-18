@@ -1607,13 +1607,17 @@
   },
   {
     "id": "R12-AMBIENT-3072",
-    "status": "PARTIAL",
-    "current": "ResearchLoop::sweep_over reads Platform::pre_position each sweep and raises one SignalClass::Capital signal (Pathway::CapitalPreparation) per recommended movement, activated into ResearchRound::capital_advice and an advisory; ResearchConfig::capital_sentinel=false raises none.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop::sweep_over reads Platform::pre_position each sweep and raises one SignalClass::Capital signal (Pathway::CapitalPreparation) per recommended movement, activated into ResearchRound::capital_advice and an advisory; ResearchConfig::capital_sentinel=false raises none, and it defaults to true. The demand history the plan forecasts from is fed beyond cash on the default cycle: a fill in an instrument the desk declared as a hedge (hedge_policies or hedge_candidates, the declarations the DECIDE survey proposes from) records DemandKind::Hedge beside Cash at the fill site, and the cross-margin read LEARN runs every cycle (review_cross_margin) records DemandKind::Collateral (per-venue maintenance, observed or not) and DemandKind::Inventory (per-venue gross carried) through record_obligation_demand. A venue requiring or carrying nothing records nothing.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/research.rs capital_signal",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off",
+      "backend/crates/runtime/qip-kernel/src/platform.rs is_declared_hedge_instrument, record_obligation_demand",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs a_hedge_fill_records_hedge_demand_and_an_ordinary_fill_does_not",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs the_cross_margin_read_records_collateral_and_inventory_demand_at_the_venue_it_read",
+      "backend/crates/runtime/qip-kernel/tests/collateral.rs a_book_that_traded_nowhere_records_no_collateral_or_inventory_demand"
     ],
-    "gap": "Only DemandKind::Cash is recorded where demand history is fed (platform.rs record_capital_demand at the fill site); collateral, inventory and hedge demand are never observed, and no kernel test shows a hedge fill records Hedge demand. Recording Hedge needs the fill to say it is a hedge, which the fill path does not carry.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1621,10 +1625,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-kernel --test collateral && cargo test -p qip-deepbrain --test research",
     "work_item": "",
     "size": "M",
-    "notes": "The router half is closed (see R12-AMBIENT-3065); the kernel half is not, and is why this stays PARTIAL."
+    "notes": "Mutations that fired (2026-10-18): capital sentinel forced off or on in sweep (the CapitalPreparation test fails at both); the record_obligation_demand call deleted, its maintenance filter inverted, is_declared_hedge_instrument forced false or true, and a fixed observation recorded unconditionally (each fails the matching collateral.rs test). Collateral and Inventory are observations of what the book stands in each cycle, not a forecast of need; Hedge is inferred from the instrument because the fill carries no purpose of its own."
   },
   {
     "id": "R12-AMBIENT-3073",
