@@ -355,3 +355,34 @@ fn a_component_key_refuses_an_empty_id_and_one_carrying_its_own_separator() -> R
     );
     Ok(())
 }
+
+/// R12-MODEL-6016: a world-model member's resolved forecast is charged to its
+/// own component, the side it took scored against what happened, and a
+/// forecast of exactly one half charges nothing. Its record is kept out of
+/// the freshness facts: counting it there let a federation's resolutions
+/// read the self-model fresh and lift the sizing bound its staleness holds.
+/// Mutations: scoring the raw probability as the side (no `says_true`
+/// fold) fails the hit count; removing the `sample_facts` filter lists the
+/// member.
+#[test]
+fn a_world_model_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_self_model()
+-> Result<()> {
+    let mut model = SelfModel::new();
+    let member = ComponentKey::new(ComponentKind::WorldModel, "markets.micro")?;
+    assert!(model.absorb_forecast(member.clone(), "p1", 0.2, false, at(1))?);
+    assert!(model.absorb_forecast(member.clone(), "p2", 0.8, false, at(2))?);
+    assert!(!model.absorb_forecast(member.clone(), "p3", 0.5, true, at(3))?);
+    assert!(
+        model
+            .absorb_forecast(member.clone(), "p4", 1.5, true, at(4))
+            .is_err()
+    );
+
+    let estimate = model.get(&member).expect("the member was charged");
+    // Premise: two forecasts took a side; the coin flip did not count.
+    assert_eq!(estimate.sample_count(), 2);
+    // 0.2 on a false outcome called it; 0.8 on a false outcome missed.
+    assert_eq!(estimate.hits(), 1);
+    assert_eq!(model.sample_facts().count(), 0);
+    Ok(())
+}

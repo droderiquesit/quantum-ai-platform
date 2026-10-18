@@ -39,6 +39,19 @@ pub enum Authority {
     NarrowReversible,
 }
 
+/// One way an observed effect departed from a policy's prediction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Drift {
+    /// The effect fell below the predicted interval.
+    BelowPredicted { effect: Decimal, low: Decimal },
+    /// The effect rose above it: a prediction wrong in the pleasing
+    /// direction is still a model that does not describe the world.
+    AbovePredicted { effect: Decimal, high: Decimal },
+    /// A side effect the policy did not predict.
+    UnpredictedSideEffect(String),
+}
+
 /// One action class's policy: what it predicts, and what it may do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActionPolicy {
@@ -137,17 +150,33 @@ impl ActionPolicy {
         Ok(())
     }
 
+    /// How an observed effect departs from what this policy predicted: one
+    /// [`Drift`] per departure, empty when it held. [`Self::observe`] drops
+    /// the policy to shadow exactly when this is non-empty, and
+    /// [`crate::engine::learn`] files the same list in a
+    /// [`crate::memory::FailureEpisode`] (R12-RES-7111).
+    pub fn drift(&self, effect: Decimal, side_effects: &[String]) -> Vec<Drift> {
+        let (low, high) = self.predicted_uplift;
+        let mut drift = Vec::new();
+        if effect < low {
+            drift.push(Drift::BelowPredicted { effect, low });
+        }
+        if effect > high {
+            drift.push(Drift::AbovePredicted { effect, high });
+        }
+        for side in side_effects {
+            if !self.predicted_side_effects.contains(side) {
+                drift.push(Drift::UnpredictedSideEffect(side.clone()));
+            }
+        }
+        drift
+    }
+
     /// AGENCY-054: hold the policy to what it predicted. An effect outside
     /// the predicted interval, on either side, or a side effect it did not
     /// predict, returns it to shadow. Returns the authority it now holds.
     pub fn observe(&mut self, effect: Decimal, side_effects: &[String]) -> Authority {
-        let (low, high) = self.predicted_uplift;
-        let drifted = effect < low
-            || effect > high
-            || side_effects
-                .iter()
-                .any(|s| !self.predicted_side_effects.contains(s));
-        if drifted {
+        if !self.drift(effect, side_effects).is_empty() {
             self.authority = Authority::Shadow;
         }
         self.authority

@@ -148,6 +148,15 @@ fn the_cloud_run_module_refuses_an_execution_plane_and_no_catalogue_workload_hos
         "the refusal no longer says why the execution plane is refused"
     );
 
+    // The plan-time proof this scan cannot give: a tftest that plans the
+    // refusal. Its presence is pinned here; `terraform test` runs it.
+    let tftest = read("infrastructure/terraform/modules/cloudrun/tests/plane.tftest.hcl");
+    assert!(
+        tftest.contains("plane = \"execution\"")
+            && tftest.contains("expect_failures = [var.plane]"),
+        "the plane tftest no longer plans the execution refusal"
+    );
+
     let catalogue = read("infrastructure/terraform/catalogue.tf");
     let code: String = catalogue
         .lines()

@@ -126,6 +126,19 @@ pub struct FidelityReport {
     /// The student's worst-case evaluation steps, charged against the
     /// strategy's latency budget.
     pub student_cost: usize,
+    /// Bytes of the student's serialised parameters: what a cell has to hold
+    /// in memory for it, and the resource budget's second axis beside steps.
+    #[serde(default)]
+    pub parameter_bytes: usize,
+    /// Bound inputs on which the student fails: a non-finite or refused
+    /// output, or one outside the teacher's probe output range widened by
+    /// that range's own span on each side. Probed at the box the probe set
+    /// spans: its all-minimum and all-maximum corners and, per feature, the
+    /// probe's mean row with that feature at its minimum and at its maximum.
+    /// A student that extrapolates wildly off the data it was fitted on has
+    /// these, however well it matched the teacher on the probe rows.
+    #[serde(default)]
+    pub failure_modes: usize,
 }
 
 impl FidelityReport {
@@ -133,7 +146,8 @@ impl FidelityReport {
         format!(
             "over {} probe row(s) the student reproduces {:.4} of the teacher's variation, ranks \
              at {:.4}, agrees with it on {:.2}% of decisions at a threshold of {:.4}, and differs \
-             by {:.5} on average and {:.5} at worst; it costs {} step(s)",
+             by {:.5} on average and {:.5} at worst; it costs {} step(s), holds {} parameter \
+             byte(s) and fails on {} bound input(s)",
             self.probe_samples,
             self.agreement_r2,
             self.rank_correlation,
@@ -141,7 +155,9 @@ impl FidelityReport {
             self.decision_threshold,
             self.mean_absolute_gap,
             self.maximum_absolute_gap,
-            self.student_cost
+            self.student_cost,
+            self.parameter_bytes,
+            self.failure_modes
         )
     }
 }
@@ -156,6 +172,12 @@ pub struct FidelityPolicy {
     /// Worst-case evaluation steps the hot path will accept.
     pub maximum_student_cost: usize,
     pub minimum_probe_samples: usize,
+    /// Serialised parameter bytes a cell will hold for one student.
+    pub maximum_parameter_bytes: usize,
+    /// Bound inputs on which the student may fail. Zero by default: a
+    /// reflex model that produces a non-finite or wild output at the edge of
+    /// its own inputs will produce it in a cell, where no one is checking.
+    pub maximum_failure_modes: usize,
 }
 
 impl Default for FidelityPolicy {
@@ -172,6 +194,8 @@ impl Default for FidelityPolicy {
             maximum_mean_gap: f64::INFINITY,
             maximum_student_cost: 64,
             minimum_probe_samples: 50,
+            maximum_parameter_bytes: 64 * 1024,
+            maximum_failure_modes: 0,
         }
     }
 }
@@ -216,6 +240,20 @@ impl FidelityPolicy {
             out.push(format!(
                 "the student costs {} step(s), above the {} the latency budget allows",
                 report.student_cost, self.maximum_student_cost
+            ));
+        }
+        if report.parameter_bytes > self.maximum_parameter_bytes {
+            out.push(format!(
+                "the student holds {} parameter byte(s), above the {} a cell's memory budget \
+                 allows",
+                report.parameter_bytes, self.maximum_parameter_bytes
+            ));
+        }
+        if report.failure_modes > self.maximum_failure_modes {
+            out.push(format!(
+                "the student fails on {} bound input(s) (non-finite, refused, or far outside \
+                 the teacher's range), above the {} tolerated",
+                report.failure_modes, self.maximum_failure_modes
             ));
         }
         out
@@ -354,12 +392,16 @@ pub fn distil(
         .map(|row| student.evaluate(row))
         .collect::<Result<Vec<f64>>>()?;
 
-    let fidelity = measure_fidelity(
+    let mut fidelity = measure_fidelity(
         &soft_targets,
         &student_outputs,
         decision_threshold,
         student.cost(),
     );
+    fidelity.parameter_bytes = serde_json::to_vec(student.form())
+        .map_err(|error| Error::schema(format!("the student cannot be serialised: {error}")))?
+        .len();
+    fidelity.failure_modes = failure_modes(&student, probe, &soft_targets);
 
     Ok(Distillation {
         student,
@@ -370,6 +412,48 @@ pub fn distil(
         fidelity,
         teacher_was_evaluated: teacher.fit().is_some(),
     })
+}
+
+/// How many bound inputs the student fails on. See
+/// [`FidelityReport::failure_modes`] for which inputs and what counts.
+fn failure_modes(student: &DistilledModel, probe: &TrainingDataset, teacher: &[f64]) -> usize {
+    let rows = probe.rows();
+    let Some(first) = rows.first() else {
+        return 0;
+    };
+    let arity = first.len();
+    let mut low = first.clone();
+    let mut high = first.clone();
+    let mut mean = vec![0.0; arity];
+    for row in rows {
+        for (column, value) in row.iter().enumerate() {
+            low[column] = low[column].min(*value);
+            high[column] = high[column].max(*value);
+            mean[column] += value / rows.len() as f64;
+        }
+    }
+    let (t_low, t_high) = teacher
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
+            (lo.min(*t), hi.max(*t))
+        });
+    let span = (t_high - t_low).max(0.0);
+    let (floor, ceiling) = (t_low - span, t_high + span);
+    let mut bounds = vec![low.clone(), high.clone()];
+    for column in 0..arity {
+        for edge in [low[column], high[column]] {
+            let mut row = mean.clone();
+            row[column] = edge;
+            bounds.push(row);
+        }
+    }
+    bounds
+        .iter()
+        .filter(|row| match student.evaluate(row) {
+            Ok(value) => !value.is_finite() || value < floor || value > ceiling,
+            Err(_) => true,
+        })
+        .count()
 }
 
 /// The gap, on the four axes the report carries.
@@ -425,6 +509,8 @@ fn measure_fidelity(
         },
         decision_threshold,
         student_cost,
+        parameter_bytes: 0,
+        failure_modes: 0,
     }
 }
 
