@@ -226,3 +226,59 @@ fn a_source_rejected_on_score_says_so_differently_from_one_rejected_on_law() -> 
     assert!(on_law.basis().contains("rejected on legality"));
     Ok(())
 }
+
+/// R12-EXPAND-6026. World-coverage expansion's artifact is a `SourceSpec`:
+/// the registry held the same facts in a view nothing else could read as a
+/// record. A registered source yields one, with the lineage the finder
+/// recorded (where it was found, and when), the licence it was decided on,
+/// what it costs and how fresh it says it is, validated by the contract.
+///
+/// Mutation: build `discovered_from` from the source id instead of the
+/// lineage in `RegisteredSource::source_spec` - the lineage assertion fails.
+/// Mutation: drop `v.validate()?` from `SourceSpec::decode` - the blank-lineage
+/// spec is accepted on read-back and the last assertion fails.
+#[test]
+fn a_registered_source_yields_a_validated_source_spec_carrying_its_lineage() -> Result<()> {
+    let mut finder = DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?);
+    let mut probe = probe_for_both();
+    let decisions = finder.assess(
+        vec![candidate(
+            "alpha",
+            URL_A,
+            licensed_for(&[Usage::Derive])?,
+            &["EU0001"],
+        )?],
+        &mut probe,
+        now(),
+    )?;
+    assert!(
+        decisions[0].is_registered(),
+        "premise: the source registers: {:?}",
+        decisions[0].outcome()
+    );
+    let registered = finder
+        .registered("alpha")
+        .ok_or_else(|| Error::not_found("alpha was not registered"))?;
+    let spec = registered.source_spec()?;
+    assert_eq!(spec.source_id, "alpha");
+    assert_eq!(
+        spec.discovered_from, "a curated directory of exchange data vendors",
+        "the lineage is the finder's own record, not a restatement of the id"
+    );
+    assert_eq!(spec.discovered_at, registered.lineage().discovered_at());
+    assert_eq!(spec.freshness, "minutely");
+    assert_eq!(spec.currency, "EUR");
+    assert!(spec.monthly_fee.is_zero());
+    assert_eq!(spec.permitted_usages, vec!["derive".to_string()]);
+
+    // A stored spec is re-validated when it is read back, and a blank
+    // lineage is refused there too.
+    let bytes = serde_json::to_vec(&spec).expect("a spec serialises");
+    assert_eq!(qip_contracts::SourceSpec::decode(&bytes)?, spec);
+    let mut blank = spec.clone();
+    blank.discovered_from = "  ".to_string();
+    let refused =
+        qip_contracts::SourceSpec::decode(&serde_json::to_vec(&blank).expect("a spec serialises"));
+    assert!(refused.is_err(), "a spec with no lineage was accepted");
+    Ok(())
+}

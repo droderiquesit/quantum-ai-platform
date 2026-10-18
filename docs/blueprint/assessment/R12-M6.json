@@ -119,12 +119,13 @@
   {
     "id": "R12-DATA-6006",
     "status": "PARTIAL",
-    "current": "qip-data-finder source_alpha computes incremental information gain and realised contribution with bounded history; no cost or delay term, and nothing outside the crate calls it.",
+    "current": "qip-data-finder source_alpha computes incremental information gain over every held series and realised contribution with bounded history, and the deep brain SourceAlphaDesk (qip-deepbrain/src/source_alpha.rs, driven from the node loop through EvolutionEngine::maybe_score_sources) scores each connector arm against the own stream on a cadence. The score is gross: no cost or delay term.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:28 duplicate vs informative source",
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71 bounded score history"
+      "backend/crates/services/qip-data-finder/src/source_alpha.rs realised_contribution, SourceAlphaHistory::score_over",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs SourceAlphaDesk::score",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs"
     ],
-    "gap": "Add net-of-cost and delay-adjusted attribution; call it from LEARN or the deep brain with real decision outcomes.",
+    "gap": "Net-of-cost and delay-adjusted attribution needs two inputs the desk does not have and one decision nobody has made. The desk knows an arm by source id only (observe_source), not its manifest, so it cannot read SourceCost; the manifest carries no publication_delay_ms (the REST connector config has a contractual publication_delay and the kernel calibrates observed delays per source in Platform::publication_delays); and converting an information coefficient into money or a discount factor needs a price of information (what a unit of IC is worth per month) that no ADR states. Choosing one would be inventing a number that moves source selection, so it is an owner decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -135,7 +136,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L22: no code changed. The row text said nothing outside the crate calls source_alpha; the deep brain desk is a caller, so that is corrected."
   },
   {
     "id": "R12-QUANT-6007",
@@ -578,12 +579,13 @@
   {
     "id": "R12-EXPAND-6026",
     "status": "PARTIAL",
-    "current": "qip-data-finder discovers and registers sources (integrated in qip-api and qip-deepbrain campaign); no SourceSpec/FeedPack artifact.",
+    "current": "qip_contracts::SourceSpec (lineage from the finder, licence, permitted usages, cost, freshness; validate/decode refuse a blank field and a negative fee) is produced by RegisteredSource::source_spec from the registry entry at registration, so the spec cannot disagree with the registry. A FeedPack type still does not exist.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/decision.rs:464 SourceRegistryEntry",
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs uses qip_data_finder"
+      "backend/crates/libs/qip-contracts/src/expansion.rs SourceSpec",
+      "backend/crates/services/qip-data-finder/src/decision.rs RegisteredSource::source_spec",
+      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs a_registered_source_yields_a_validated_source_spec_carrying_its_lineage"
     ],
-    "gap": "SourceSpec/FeedPack artifacts and continuous scout coverage beyond configured targets.",
+    "gap": "Nothing calls source_spec outside its test: the deep brain DiscoveryDesk does not journal the spec (a journal record needs a new event Topic, whose retention class is a decision for the owner of qip-events), and discovery itself runs only when QIP_DEEPBRAIN_DISCOVER_EVERY is above zero, which it is in no committed environment. FeedPack and scout coverage beyond configured targets are untouched.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -591,10 +593,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing SourceSpec / FeedPack)",
+    "verification": "cargo test -p qip-data-finder --test scoring_and_routing a_registered_source_yields_a_validated_source_spec_carrying_its_lineage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L22: contract, producer and test added; kept PARTIAL. Mutations that fired: read discovered_from from the source id; drop validate() from SourceSpec::decode."
   },
   {
     "id": "R12-EXPAND-6027",
