@@ -4102,7 +4102,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:444 resume_model_promotions",
       "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack"
     ],
-    "gap": "Provenance record per activated package.",
+    "gap": "Provenance record per activated package. A five-link ActivationRecord that refuses a missing link would refuse every promotion today: no source commit reaches the kernel (the artifact digest is over the fitted bytes, not a build), nothing signs a promoted model (ADR 0043, ADR 0110 signs the ModelPack only on the release path), and no approval event exists beyond the desk name and the card evaluation already on ModelPromotion. Needs the training pipeline to carry a commit and a data manifest reference and a per-person approval (ADR 0121) before the kernel can require them.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4116,7 +4116,7 @@
     "verification": "unit test on activation record",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; the closure as graded would block every promotion in qip-deepbrain or record invented links. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-RES-10181",
@@ -4619,7 +4619,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595-680",
       "backend/crates/services/qip-lifecycle/src/gates.rs"
     ],
-    "gap": "Replay and envelope-compatibility gates.",
+    "gap": "Replay and envelope-compatibility gates. No replay-evidence record or envelope-compatibility result is produced anywhere upstream of Platform::promote_model: qip-deepbrain rescoring held-out rows is a fit check, not a replay of journalled cycles, and no model output feeds RiskLimits, so there is no envelope for a candidate to be incompatible with. A kernel gate requiring either would refuse every promotion; the producers (a replay harness over the log and a risk-envelope probe) come first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4630,7 +4630,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; a gate with no producer fails closed for the whole learning loop. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CICD-10203",

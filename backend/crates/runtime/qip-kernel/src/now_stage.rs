@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use qip_contracts::world_model::ModelDisagreement;
+use qip_contracts::world_model::{ModelDisagreement, WorldModelStateFields};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
@@ -127,6 +127,12 @@ pub struct NowReview {
     pub ensemble: Vec<String>,
     /// Live variables per scope kind after the pass.
     pub variables_by_scope: BTreeMap<String, usize>,
+    /// The §27 `WorldModelState` of every partition this pass moved a belief
+    /// in, as the brain projects it (R12-CONTRACT-7075): intervals and
+    /// manifest lineage, not readings. Absent from records written before
+    /// the field existed, and from a pass that moved nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub world_states: Vec<WorldModelStateFields>,
 }
 
 impl EventBody for NowReview {
@@ -272,6 +278,26 @@ impl NowStage {
                 }
             }
         }
+        // Only partitions this pass moved: the state of one nothing touched is
+        // the state the log already holds, and journalling it again each pass
+        // would grow the log with no new fact. A partition with no live
+        // state refuses to project and is recorded as refused rather than
+        // dropped, so an empty projection is not read as a quiet one.
+        let moved: BTreeSet<_> = step
+            .deltas
+            .iter()
+            .map(|d| d.fields().partition.clone())
+            .collect();
+        let mut world_states = Vec::new();
+        for partition in &moved {
+            match self.brain.world_model_state(partition, now) {
+                Ok(state) => world_states.push(state.into_fields()),
+                Err(e) => refused.push((
+                    format!("world-model-state/{partition}"),
+                    e.message().to_string(),
+                )),
+            }
+        }
         NowReview {
             cycle: inputs.cycle,
             at: now,
@@ -291,6 +317,7 @@ impl NowStage {
                 .map(|(id, _)| id.to_string())
                 .collect(),
             variables_by_scope,
+            world_states,
         }
     }
 }

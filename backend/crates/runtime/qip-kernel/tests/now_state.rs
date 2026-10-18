@@ -10,6 +10,7 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a panic is the failure report
 
+use qip_contracts::world_model::WorldModelState;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, dec};
 use qip_events::{EventBody, Topic};
@@ -880,6 +881,54 @@ fn estimators_that_disagree_past_their_bound_are_journaled_as_an_open_model_disa
             review.ensemble.contains(&view.id),
             "a view {:?} names no estimator that ran",
             view.id
+        );
+    }
+}
+
+/// The NOW stage had `NowBrain::world_model_state` and no caller: no pass
+/// ever produced the §27 `WorldModelState` a second brain is meant to read,
+/// so the contract existed and nothing crossed it. A pass that moves beliefs
+/// now journals the state of each partition it moved, re-admissible through
+/// the contract, stamped with the pass's own clock and naming the partition
+/// it covers; a pass that moves nothing journals none.
+///
+/// Mutation: skip the `world_model_state` call in `NowStage::run` — the
+/// moved partition has no state in the review and the first assertion fails.
+#[test]
+fn a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it_moved() {
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    platform.observe(vec![bar("AAA", day(1), 130.0), bar("BBB", day(1), 100.1)]);
+    platform.run_cycle(day(1));
+
+    let review: NowReview = last(&platform, "now:");
+    assert!(
+        !review.deltas.is_empty(),
+        "premise: the pass moved at least one belief"
+    );
+    let moved: std::collections::BTreeSet<String> = review
+        .deltas
+        .iter()
+        .map(|d| d.fields().partition.to_string())
+        .collect();
+    assert!(
+        !review.world_states.is_empty(),
+        "a moved partition left no WorldModelState in the review: {:?}",
+        review.refused
+    );
+    let covered: std::collections::BTreeSet<String> = review
+        .world_states
+        .iter()
+        .map(|s| s.scope.clone())
+        .collect();
+    assert_eq!(covered, moved, "one state per moved partition, no more");
+    for fields in &review.world_states {
+        let state = WorldModelState::new(fields.clone()).unwrap();
+        assert_eq!(
+            state.fields().updated_at,
+            day(1),
+            "a state not stamped with the pass that moved it"
         );
     }
 }

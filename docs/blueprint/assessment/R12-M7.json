@@ -1437,7 +1437,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
     ],
-    "gap": "Not a single canonical type; the contract ModelPack has no production constructor.",
+    "gap": "Not a single canonical type; the contract ModelPack has no production constructor. qip_contracts::policy::ModelPack carries an ECDSA signature over its signing payload and a two-person Publication (ADR 0110, ADR 0121), which the kernel cannot supply: model_serving.rs builds its own unsigned ModelPack from the promotion records. Retiring the local struct needs the release path that signs and publishes (per-person credentials) to feed the kernel, or the contract split into an unsigned body and a signed envelope.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1448,7 +1448,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field test added; duplicate type remains."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field test added; duplicate type remains. 2026-10-18 lane L06: not implemented; building the contract type in the kernel would require fabricating a signature and two publishers. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CONTRACT-7065",
@@ -1614,7 +1614,7 @@
       "backend/crates/libs/qip-contracts/src/market_state.rs:39-70",
       "backend/crates/libs/qip-contracts/tests/market_state.rs"
     ],
-    "gap": "No production producer/consumer.",
+    "gap": "No production producer/consumer. The NOW stage holds instrument readings, not the MarketEvents a MarketStatePack is reconstructed over (qip-contracts market_state.rs computes its integrity flags from those events), so a pack built there would carry an empty event list and claim a clean tape nobody read; the producer belongs where the ingested tape or the edge book is held.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1625,7 +1625,7 @@
     "verification": "cargo test -p qip-contracts --test market_state",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CONTRACT-7073",
@@ -1673,25 +1673,25 @@
   {
     "id": "R12-CONTRACT-7075",
     "status": "PARTIAL",
-    "current": "WorldModelState is a Validated contract; qip-world-model now.rs builds one in world_model_state().",
+    "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/world_model.rs:110 type",
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run world_states",
+      "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it_moved",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:530 a_world_model_state_refuses_each_broken_invariant",
       "backend/crates/services/qip-world-model/src/now.rs::world_model_state"
     ],
-    "gap": "world_model_state() has no production caller; no seam between brains emits or consumes WorldModelState.",
+    "gap": "Produced and journalled, but no brain consumes or decodes WorldModelState: nothing reads NowReview.world_states back as the contract, so the seam between brains has an emitter and no receiver.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-kernel --test now_state",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: producer landed; mutation (projection result dropped instead of pushed) failed the new test with an empty world_states. Kept PARTIAL for the receiving side."
   },
   {
     "id": "R12-CONTRACT-7076",
@@ -2041,7 +2041,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant"
     ],
-    "gap": "No production seam constructs or consumes ControlPackAnnouncement (grep of ControlPackAnnouncementFields outside qip-contracts finds nothing).",
+    "gap": "No production seam constructs or consumes ControlPackAnnouncement. The contract requires a signer, an attestation digest, target regions and nodes, an activation window and an acknowledgement quorum; the promotion path holds none of them (nothing signs, and the target cells and window are the release workflow decision), so a kernel-built announcement would invent them. The announcement belongs to the release path that signs a ModelPack and chooses its targets.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2052,7 +2052,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ControlPackAnnouncement exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ControlPackAnnouncement exists and is tested; nothing in production constructs or decodes it. 2026-10-18 lane L06: not implemented; the kernel would have to fabricate signer, attestation, targets and quorum. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CONTRACT-7092",
