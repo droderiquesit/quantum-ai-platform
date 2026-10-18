@@ -919,25 +919,27 @@
   },
   {
     "id": "R12-EXPAND-6042",
-    "status": "PARTIAL",
-    "current": "TickCampaign is opened from the deep-brain sweep. TickCampaignDetector::conclude (campaigns.rs:421) produces a validated MicrostructureDelta for a venue-scoped campaign from its re-measured residuals, the delta_id being the campaign id and the residual kind taken from the trigger; no production caller yet.",
+    "status": "COMPLETE",
+    "current": "TickCampaign is opened from the deep-brain sweep. Since 2026-10-18 the sweep retains every venue-scoped fill-prediction campaign it opens (bounded at RETAINED) and, once at least MIN_REMEASURED fills at that venue and instrument have scored since it opened, calls TickCampaignDetector::conclude with the twin's calibrated fill bias as the modelled figure, the fills' mean trade error as the observed one, the calibration state as the model version and the opening-to-now window; the MicrostructureDelta (delta_id = campaign id) is put on the round and journaled as an AmbientRecord::MicrostructureDelta. A concluded campaign leaves the set.",
     "evidence": [
-      "backend/crates/services/qip-expansion/src/campaigns.rs:23 TickCampaign",
-      "backend/crates/services/qip-expansion/src/campaigns.rs:421 TickCampaignDetector::conclude",
-      "backend/crates/services/qip-expansion/tests/loop.rs:222 a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1330-1340 conclude, then retain this sweep's campaigns",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2062 conclude_campaigns",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:77,241 the MicrostructureDelta record",
+      "backend/crates/services/qip-expansion/src/campaigns.rs:424 TickCampaignDetector::conclude",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:638 a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta (mutation: drop the conclude_campaigns call; no delta and the test fails)"
     ],
-    "gap": "Producer exists but nothing on the default path calls it: apps/qip-deepbrain/src/research.rs keeps no open campaigns between sweeps, so it never knows a campaign's residual was re-measured; it needs to retain each opened TickCampaign (bounded) and, when a later sweep's fills re-measure that venue and instrument, call TickCampaignDetector::conclude and journal the delta.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test loop a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-18 lane L18: conclude landed with a mutated test (delta_id set to the cell, and the studied-instrument guard removed, each fail it); the research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-18 lane L18: conclude landed with a mutated test (delta_id set to the cell, and the studied-instrument guard removed, each fail it); the research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: closed on the fill-prediction trigger, the one whose re-measurement the sweep reads (scored fills). Slippage campaigns are not concluded: the twin states no modelled slippage to set against the measured one."
   },
   {
     "id": "R12-EXPAND-6043",
@@ -1190,7 +1192,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8958"
     ],
-    "gap": "Source-score and curriculum updates; cell episodes.",
+    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1203,7 +1205,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural."
   },
   {
     "id": "R12-EXPAND-6055",
