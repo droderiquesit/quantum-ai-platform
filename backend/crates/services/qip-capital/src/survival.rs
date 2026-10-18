@@ -224,6 +224,50 @@ impl CapitalSurvivalState {
         Ok(opportunity)
     }
 
+    /// How the waterfall funds each reserve tier, in priority order, from the
+    /// total capital: each tier receives the lesser of what it requires and
+    /// what the tiers above it left.
+    ///
+    /// [`Self::opportunity_capital`] is a sum and says only whether the
+    /// reserves fit. It cannot say *which* tier goes short when they do not,
+    /// and the module's promise that a refusal at one tier "stops release at
+    /// that tier and all below it" was a sentence with no code behind it: a
+    /// sum is the same in every order, so reordering the tiers could not fail
+    /// any test. This is the ordered accounting. When capital runs out
+    /// mid-waterfall the tier it runs out in is funded partly, every tier
+    /// below it receives zero, and opportunity capital is the zero it is in
+    /// [`Self::opportunity_capital`]'s refusal. It never errors: a shortfall
+    /// is the finding.
+    pub fn waterfall(&self) -> Vec<TierFunding> {
+        let mut remaining = self.total_capital;
+        SurvivalTier::PRIORITY
+            .into_iter()
+            .map(|tier| {
+                let required = self.required(tier);
+                let funded = required.min(remaining);
+                remaining -= funded;
+                TierFunding {
+                    tier,
+                    required,
+                    funded,
+                }
+            })
+            .collect()
+    }
+
+    fn required(&self, tier: SurvivalTier) -> Decimal {
+        match tier {
+            SurvivalTier::NavFloor => self.nav_floor,
+            SurvivalTier::ReservedCash => self.reserved_cash,
+            SurvivalTier::Margin => self.margin_required,
+            SurvivalTier::Collateral => self.collateral_posted,
+            SurvivalTier::Settlement => self.settlement_required,
+            SurvivalTier::FundingMaturity => self.funding_maturity_required,
+            SurvivalTier::HedgeCapacity => self.hedge_capacity,
+            SurvivalTier::StressedLiquidity => self.stressed_liquidity_reserve,
+        }
+    }
+
     /// Report the survival state: all tiers and what remains.
     ///
     /// Useful for auditing, diagnostics and understanding why opportunity
@@ -243,6 +287,43 @@ impl CapitalSurvivalState {
             opportunity_capital,
         })
     }
+}
+
+/// A reserve tier of the survival waterfall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurvivalTier {
+    NavFloor,
+    ReservedCash,
+    Margin,
+    Collateral,
+    Settlement,
+    FundingMaturity,
+    HedgeCapacity,
+    StressedLiquidity,
+}
+
+impl SurvivalTier {
+    /// Every tier in funding priority, highest first: the order of the
+    /// module documentation's list.
+    pub const PRIORITY: [Self; 8] = [
+        Self::NavFloor,
+        Self::ReservedCash,
+        Self::Margin,
+        Self::Collateral,
+        Self::Settlement,
+        Self::FundingMaturity,
+        Self::HedgeCapacity,
+        Self::StressedLiquidity,
+    ];
+}
+
+/// What the waterfall gave one tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TierFunding {
+    pub tier: SurvivalTier,
+    pub required: Decimal,
+    pub funded: Decimal,
 }
 
 /// A readable report of capital allocation across all survival tiers.

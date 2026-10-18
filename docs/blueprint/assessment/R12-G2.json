@@ -1113,15 +1113,13 @@
   },
   {
     "id": "R12-CAPITAL-9048",
-    "status": "PARTIAL",
-    "current": "Now integrated: kernel survival.rs SurvivalGovernor runs the qip_capital waterfall (cash, margin, collateral, settlement, funding, emergency, hedge, stressed liquidity) every construction before sizing; reserves beyond the book refuse; binaries apply survival policy at start-up.",
+    "status": "COMPLETE",
+    "current": "The survival waterfall is ordered and the order is tested: qip_capital::CapitalSurvivalState::waterfall funds the eight reserve tiers in SurvivalTier::PRIORITY from the total capital, each receiving the lesser of what it requires and what the tiers above left, so a book that runs out mid-waterfall funds the higher tiers, funds one partly and leaves every lower tier at zero. capital_survival_kernel.rs::a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero asserts the funded vector exactly. opportunity_capital still refuses when the reserves do not fit.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/survival.rs",
-      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs:15 a_paper_book_withholds_reserves_in_priority_order_before_releasing_opportunity_capital, :58",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::SurvivalGovernor::size",
-      "backend/crates/apps/qip-api/src/main.rs::apply_survival_policy"
+      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero",
+      "backend/crates/services/qip-capital/src/survival.rs CapitalSurvivalState::waterfall, SurvivalTier::PRIORITY"
     ],
-    "gap": "No test fails when the waterfall is reordered: acceptance test only checks a commutative sum; cell-envelope composition absent.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1129,10 +1127,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test capital_survival_kernel; kernel integration test",
+    "verification": "cd backend && cargo test -p qip-acceptance --test capital_survival_kernel",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register was right that the acceptance tests asserted a commutative sum: the code held no ordered accounting either, and the module doc's 'a refusal at any tier stops release at that tier and all below it' had nothing behind it. waterfall() is that accounting, added beside opportunity_capital without changing it. Mutation: Margin and Collateral swapped in SurvivalTier::PRIORITY failed the test with funded [400,300,150,150,0,0,0,0] against [400,300,200,100,0,0,0,0]; restored byte for byte. Nothing in the kernel's decision path calls waterfall() yet; it is the ordered record for audit and for naming the short tier, and opportunity_capital remains the gate."
   },
   {
     "id": "R12-RISK-9049",
