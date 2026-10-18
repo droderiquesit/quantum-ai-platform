@@ -621,7 +621,7 @@ pub fn run_with(
         }
         if let Some(desk) = loops.tick.as_deref_mut() {
             let world = platform.world();
-            match desk.maybe_round(world.graph(), cycles, now) {
+            match desk.maybe_round_with_fills(world.graph(), cycles, now, platform.fill_scores()) {
                 Ok(round) => outcome.tick = round,
                 Err(error) => outcome
                     .side_failures

@@ -302,14 +302,16 @@
   },
   {
     "id": "R12-TICK-6014",
-    "status": "PARTIAL",
-    "current": "score_filled records twin-vs-venue fill error (qip_venue_fill_error_bps) diagnostically; qip-expansion TickCampaignDetector (library only) can raise a campaign on slippage; no retraining dataset is built from these.",
+    "status": "COMPLETE",
+    "current": "score_filled records twin-vs-venue fill error (qip_venue_fill_error_bps) and Platform::fill_scores() keeps each FillScore with trade_error_bps. node::run_with hands those scores to TickDesk::maybe_round_with_fills; each round joins every fill with a twin error to the labelled instant it followed (qip_training::microstructure::join_fill_residuals, as-of the fill, same venue and instrument, never a later instant), carries the rows on TickRound::residual_examples with the unmatched count on the round line, and scores the fill model on the rows that fall in its holdout (TickRound::residual_benchmark). qip-expansion TickCampaignDetector is wired in research.rs.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled charts fill error",
-      "backend/crates/services/qip-expansion/src/campaigns.rs:63 TickCampaignDetector",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:826"
+      "backend/crates/services/qip-training/src/microstructure.rs:join_fill_residuals",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:round_with_fills",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:maybe_round_with_fills",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs:a_mispriced_fill_becomes_a_microstructure_training_row",
+      "backend/crates/services/qip-training/tests/microstructure.rs:a_fill_residual_joins_the_last_example_at_or_before_it_on_its_own_venue"
     ],
-    "gap": "Queue-error, missed/expired-opportunity reconciliation and feeding a microstructure retraining set.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -317,10 +319,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-deepbrain --test tick_desk a_mispriced_fill_becomes_a_microstructure_training_row; cargo test -p qip-training --test microstructure a_fill_residual",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Mutations: flipping the as-of comparison in join_fill_residuals failed the training test; passing no fills to the join in TickDesk::round_with_fills failed the deepbrain test. The node.rs call that passes platform.fill_scores() is not mutation-covered: no public way seeds a Platform with a scored fill in the run-loop test. The rows are evaluation data and a training-row set on the round; the fill and volatility models are still fitted on replay labels only, and queue-error and missed/expired-opportunity reconciliation produce no rows."
   },
   {
     "id": "R12-WORLD-6015",
