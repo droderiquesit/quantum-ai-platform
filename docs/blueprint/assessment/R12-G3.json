@@ -4182,12 +4182,14 @@
   {
     "id": "R12-TICK-10184",
     "status": "PARTIAL",
-    "current": "Replay re-drives run_pass from recorded tape/control/clock and reproduces sessions byte-for-byte (tests); source is local recordings, not Fabric/GCS.",
+    "current": "Venue-bytes replay exists and is deterministic: qip-orderbook::replay re-decodes, re-sequences and re-books a recorded ITCH session and reproduces every event, book, fill and flag, twice and from a checkpoint, against a committed digest (backend/crates/tests/qip-acceptance/tests/tick_replay.rs). The node-level replay the earlier text described does not exist: backend/crates/apps/qip-edge-node/src/replay.rs is a three-line module doc (ADR 0100 §8, SLICE-39) with no code, so nothing re-drives run_pass from recorded tape, control and clock inputs. The recorded inputs it would read exist: PassInputs {marker: PassMarker, applied} reach the fabric spool (event_fabric::inputs).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/replay.rs:1-3",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_reproduces_every_event_book_fill_and_flag",
+      "backend/crates/edge/qip-orderbook/src/replay.rs",
+      "backend/crates/apps/qip-edge-node/src/replay.rs:1-3 (module doc only)",
+      "backend/crates/libs/qip-contracts/src/replay.rs PassMarker"
     ],
-    "gap": "Replay from Fabric segments/GCS archive.",
+    "gap": "Build the node replay (ADR 0100 §8 SLICE-39): read PassInputs and control frames from spool or archived segments (qip_storage::segment::archive::ArchiveReader over a BlobStore), rebuild the cell from the marker's config and plan digests, re-drive run_pass over ManualClock and compare the reproduced journal; then source it from the GCS archive, which needs enable_cloud_storage. Decision and outcome history are not reconstructed by anything today.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4201,7 +4203,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: the earlier 'current' credited replay.rs with re-driving run_pass, but the file holds no code. The triage closure (Replay::from_archive) presupposes a Replay type that does not exist; building it is size L and was not attempted in this lane."
   },
   {
     "id": "R12-LEDGER-10185",
