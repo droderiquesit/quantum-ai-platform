@@ -485,6 +485,14 @@ impl SimulationRun {
                     bytes.extend_from_slice(&ask.raw().to_le_bytes());
                     bytes.extend_from_slice(&size.raw().to_le_bytes());
                 }
+                FlowAction::Cancelled { side, price, size } => {
+                    bytes.push(match side {
+                        Side::Buy => 4,
+                        Side::Sell => 5,
+                    });
+                    bytes.extend_from_slice(&price.raw().to_le_bytes());
+                    bytes.extend_from_slice(&size.raw().to_le_bytes());
+                }
             }
         }
         qip_core::sha256_hex(&bytes)
@@ -1548,6 +1556,9 @@ impl MarketSimulator {
                     book.rest(Side::Buy, bid, size, at)?;
                     book.rest(Side::Sell, ask, size, at)?;
                 }
+                // Cancelled before any order could reach it: the book an
+                // order fills against never holds it.
+                FlowAction::Cancelled { .. } => {}
             }
         }
         Ok(())
