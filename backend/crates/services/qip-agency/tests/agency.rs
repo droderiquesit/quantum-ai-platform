@@ -502,7 +502,10 @@ use qip_agency::engine::{
     ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn,
     learn_shadowed, run, run_with, widen,
 };
-use qip_agency::estimate::{Estimate, EstimatorKind, Experiment, correlation};
+use qip_agency::estimate::{
+    Estimate, EstimatorKind, Experiment, bayesian_causal, correlation, matched_control,
+    stage_assignment, staged_experiment,
+};
 use qip_agency::generate::StructuralDecl;
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
 use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory, Observed};
@@ -1820,6 +1823,164 @@ fn an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_n
         "an outcome for a cell never assigned"
     );
     assert!(experiment.analyse_horizons(&BTreeMap::new()).is_err());
+}
+
+// ---- R12-AGENCY-6102: matched, staged and Bayesian estimators ----------------
+
+#[test]
+fn matched_controls_recover_an_effect_a_naive_comparison_misses_and_refuse_a_treated_unit_with_no_match()
+ {
+    // Outcome = 2 x covariate + 3 if treated. The treated sit high on the
+    // covariate, so a plain difference in means credits them with the lift
+    // the covariate gave them.
+    let treated_x = [5.0, 6.0, 7.0];
+    let pool_x = [1.0, 2.0, 3.0, 4.0, 5.1, 6.1, 7.1];
+    let treated_y: Vec<f64> = treated_x.iter().map(|x| 2.0 * x + 3.0).collect();
+    let pool_y: Vec<f64> = pool_x.iter().map(|x| 2.0 * x).collect();
+    let rows = |xs: &[f64]| xs.iter().map(|x| vec![*x]).collect::<Vec<_>>();
+    let naive = treated_y.iter().sum::<f64>() / 3.0 - pool_y.iter().sum::<f64>() / 7.0;
+    assert!(
+        (naive - 3.0).abs() > 3.0,
+        "premise: the naive gap {naive} is mostly the covariate, not the effect of 3"
+    );
+
+    let matched =
+        matched_control(&rows(&treated_x), &treated_y, &rows(&pool_x), &pool_y, 0.2).unwrap();
+    assert_eq!(matched.kind(), EstimatorKind::MatchedControl);
+    // Each pair differs by 0.1 on the covariate, worth 0.2: 3 - 0.2.
+    assert!(
+        (matched.effect() - 2.8).abs() < 1e-9,
+        "{}",
+        matched.effect()
+    );
+    assert!(
+        matches!(matched.identification(), Identification::Observational { strategy } if strategy.contains("matching")),
+        "{:?}",
+        matched.identification()
+    );
+    // Without a unit near enough, the estimate is refused, not computed over
+    // the rest.
+    let far = matched_control(
+        &rows(&[5.0, 6.0, 40.0]),
+        &[13.0, 15.0, 83.0],
+        &rows(&pool_x),
+        &pool_y,
+        0.2,
+    );
+    assert!(
+        far.unwrap_err()
+            .to_string()
+            .contains("no unused control within")
+    );
+    assert!(
+        matched_control(
+            &rows(&treated_x),
+            &treated_y,
+            &rows(&pool_x[..2]),
+            &pool_y[..2],
+            0.2
+        )
+        .is_err()
+    );
+    assert!(matched_control(&rows(&treated_x), &treated_y, &rows(&pool_x), &pool_y, 0.0).is_err());
+    assert!(matched_control(&vec![vec![]; 3], &treated_y, &vec![vec![]; 7], &pool_y, 0.2).is_err());
+}
+
+#[test]
+fn a_staged_rollout_drawn_here_is_an_experiment_in_every_period_and_a_missing_period_or_unit_is_refused()
+ {
+    let units = cells();
+    let stage_of = stage_assignment("rollout-seed", &units, 3).unwrap();
+    let per_stage: Vec<usize> = (0..3)
+        .map(|s| stage_of.values().filter(|v| **v == s).count())
+        .collect();
+    assert_eq!(
+        per_stage,
+        [4, 4, 4],
+        "premise: twelve cells in three equal waves"
+    );
+    assert_ne!(
+        stage_of,
+        stage_assignment("another-seed", &units, 3).unwrap(),
+        "premise: the seed moves the waves"
+    );
+    let outcomes = |lift: f64| -> BTreeMap<usize, BTreeMap<String, f64>> {
+        (1..3)
+            .map(|period| {
+                let per_unit = units
+                    .iter()
+                    .map(|u| {
+                        let treated = stage_of[u] < period;
+                        (u.clone(), 1.0 + if treated { lift } else { 0.0 })
+                    })
+                    .collect();
+                (period, per_unit)
+            })
+            .collect()
+    };
+    let estimate = staged_experiment("rollout-seed", &units, 3, &outcomes(2.0)).unwrap();
+    assert_eq!(estimate.kind(), EstimatorKind::StagedExperiment);
+    assert_eq!(*estimate.identification(), Identification::Experiment);
+    assert!(
+        (estimate.effect() - 2.0).abs() < 1e-9,
+        "{}",
+        estimate.effect()
+    );
+
+    let mut no_second_period = outcomes(2.0);
+    no_second_period.remove(&2);
+    assert!(staged_experiment("rollout-seed", &units, 3, &no_second_period).is_err());
+    let mut dropped = outcomes(2.0);
+    dropped.get_mut(&1).unwrap().remove(&units[0]);
+    assert!(staged_experiment("rollout-seed", &units, 3, &dropped).is_err());
+    assert!(staged_experiment("", &units, 3, &outcomes(2.0)).is_err());
+    assert!(
+        stage_assignment("s", &units[..5], 3).is_err(),
+        "waves of one have no variance"
+    );
+    assert!(stage_assignment("s", &units, 1).is_err());
+}
+
+#[test]
+fn a_bayesian_causal_estimate_follows_the_data_under_a_wide_prior_and_the_prior_under_a_tight_one()
+{
+    // y = 1 + 3 d + 0.5 x with a small deterministic wobble; treated units
+    // have larger x, so x is a confounder the model adjusts for.
+    let n = 12;
+    let d: Vec<f64> = (0..n).map(|i| f64::from(i % 2 == 0)).collect();
+    let x: Vec<Vec<f64>> = (0..n)
+        .map(|i| vec![f64::from(i) + if i % 2 == 0 { 3.0 } else { 0.0 }])
+        .collect();
+    let y: Vec<f64> = (0..n as usize)
+        .map(|i| 1.0 + 3.0 * d[i] + 0.5 * x[i][0] + [0.05, -0.04, 0.02][i % 3])
+        .collect();
+    let wide = bayesian_causal(&d, &x, &y, 100.0).unwrap();
+    assert_eq!(wide.kind(), EstimatorKind::BayesianCausal);
+    assert!((wide.effect() - 3.0).abs() < 0.1, "{}", wide.effect());
+    assert!(wide.standard_error().unwrap() > 0.0);
+    assert!(
+        matches!(wide.identification(), Identification::Observational { strategy } if strategy.contains("Bayesian")),
+        "{:?}",
+        wide.identification()
+    );
+    let tight = bayesian_causal(&d, &x, &y, 1e-3).unwrap();
+    assert!(
+        tight.effect().abs() < 0.5,
+        "a prior of width 0.001 pulls the effect toward zero: {}",
+        tight.effect()
+    );
+    // Refused: a non-indicator, everyone treated, a blank prior, collinear
+    // covariates.
+    let mut odd = d.clone();
+    odd[0] = 2.0;
+    assert!(bayesian_causal(&odd, &x, &y, 1.0).is_err());
+    assert!(bayesian_causal(&vec![1.0; n as usize], &x, &y, 1.0).is_err());
+    assert!(bayesian_causal(&d, &x, &y, 0.0).is_err());
+    let copies: Vec<Vec<f64>> = d.iter().map(|v| vec![*v]).collect();
+    assert!(
+        bayesian_causal(&d, &copies, &y, 1.0).is_err(),
+        "the treatment as its own covariate"
+    );
 }
 
 // ---- R12-AGENCY-6108: for whom, and with what delay -------------------------

@@ -1463,7 +1463,7 @@
       "backend/crates/edge/qip-sequencing/tests/align.rs:187 identical_stamps_are_unordered_rather_than_simultaneous_and_the_bound_itself_is_not_an_order",
       "backend/crates/edge/qip-feature-dag/src/features.rs:583 aligned_tail (separate, uncertainty-free)"
     ],
-    "gap": "Use align in cross-venue features and research.",
+    "gap": "Nothing supplies the uncertainty alignment needs: qip_sequencing::align (align.rs:158) takes Placed stamps whose uncertainty comes from the clock discipline (DisciplinedTime), and nothing outside qip-sequencing calls the discipline, Placed or align. The feature DAG's InstrumentState keeps only (bucket, mid) per sample (state.rs:131), with no per-instrument clock uncertainty or arrival time, so replacing aligned_tail (features.rs:583) with align would order every pair exactly (zero uncertainty), which is the defect, or refuse every cross-venue feature. Needs the clock discipline threaded into MarketState per instrument first.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1476,7 +1476,7 @@
     "verification": "cargo test -p qip-sequencing --test align",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's test two_venues_inside_combined_uncertainty_are_not_ordered_by_a_cross_venue_feature could only pass with an uncertainty the test itself declares, proving the arithmetic of align and not the feed. Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2063",

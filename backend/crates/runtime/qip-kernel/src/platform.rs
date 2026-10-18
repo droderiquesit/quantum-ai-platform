@@ -1742,6 +1742,11 @@ const FABRIC_CORRELATION: &str = "capital-fabric-journal";
 /// strategy or order id can ever reach it.
 const LIQUIDITY_FIGURE: &str = "liquidity";
 
+/// The name the cross-margin read is filed under in `RiskState::unevaluated`
+/// when a venue statement exists and the review of it could not be computed.
+/// A source literal, for the reason `LIQUIDITY_FIGURE` is one.
+const MARGIN_FIGURE: &str = "margin";
+
 /// The exposure buckets one instrument record vouches for.
 ///
 /// Axis names are the ones the default limit set looks up — `sector` and
@@ -9928,6 +9933,12 @@ impl Platform {
     /// The survival policy every construction withholds under.
     pub fn survival_policy(&self) -> &crate::survival::SurvivalPolicy {
         self.governor.policy()
+    }
+
+    /// Free cash and the funding-maturity tier the survival waterfall last
+    /// withheld — the figures `LimitKind::MinFundingBuffer` is read from.
+    pub fn survival_funding_read(&self) -> Option<(Decimal, Decimal)> {
+        self.governor.funding_read()
     }
 
     /// The gross the survival kernel stands behind now — the figure
@@ -18291,6 +18302,7 @@ impl Platform {
         // pre-trade veto and the monitor read. See `crate::shared_cause` for
         // why the per-family level has no producer and no shipped cap.
         let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
+        let state = self.with_margin_and_funding(state, figures);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -18306,6 +18318,74 @@ impl Platform {
             },
             Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
         }
+    }
+
+    /// Margin utilisation and the funding buffer, for `LimitKind::MaxMarginUtilisation`
+    /// and `LimitKind::MinFundingBuffer` (R12-RISK-4098).
+    ///
+    /// Both existed as measurements — the cross-margin review raised a finding
+    /// and a stage problem on a call, and the survival waterfall withheld the
+    /// funding-maturity tier — and neither reached the gate, so an order could
+    /// deepen a call the platform had just reported or draw a book below the
+    /// commitments it owed. They are filed here, on the one state the gate and
+    /// the monitor both read, from the same review and the same sizing the
+    /// survival kernel already ran, never a second derivation.
+    ///
+    /// **Margin utilisation is over observed venues only.** Maintenance at a
+    /// venue nobody has a statement for is the cross-margin finding's to
+    /// report, and a desk is entitled to have handed in nothing; folding it in
+    /// here would refuse every order of every deployment that observes one
+    /// venue and not another. With no statement the figure stays absent. A
+    /// review that cannot be read when a statement exists is filed as
+    /// unevaluated, which refuses, because an obligation that could not be
+    /// measured is not an obligation of zero.
+    ///
+    /// **The funding buffer is filed only while a commitment stands**, from
+    /// the latest sizing or seed of the survival governor: equity less held capital less the
+    /// funding-maturity tier, over equity. Non-positive equity files negative
+    /// infinity, a floor breach, rather than an undefined ratio.
+    fn with_margin_and_funding(
+        &self,
+        state: RiskState,
+        figures: &impl AggregateFigures,
+    ) -> RiskState {
+        let mut state = state;
+        if !self.holdings_observed.is_empty() {
+            match crate::cross_margin::review(
+                &self.holdings_observed,
+                figures,
+                &MarginModel::default(),
+                SETTLEMENT_CURRENCY,
+            ) {
+                Ok(review) => {
+                    let required = review.maintenance_required - review.unobserved_maintenance();
+                    state.margin_utilisation = Some(if !required.is_positive() {
+                        0.0
+                    } else if review.cover_observed.is_positive() {
+                        required.to_f64() / review.cover_observed.to_f64()
+                    } else {
+                        f64::INFINITY
+                    });
+                }
+                Err(error) => {
+                    state = state.with_unevaluated(MARGIN_FIGURE, error.message());
+                }
+            }
+        }
+        if let Some((free_cash, maturing)) = self.governor.funding_read()
+            && maturing.is_positive()
+        {
+            let equity = self.capital.equity();
+            state.funding_buffer = Some(if !equity.is_positive() {
+                f64::NEG_INFINITY
+            } else {
+                match free_cash.checked_sub(maturing) {
+                    Some(left) => left.to_f64() / equity.to_f64(),
+                    None => f64::NEG_INFINITY,
+                }
+            });
+        }
+        state
     }
 
     /// The book as a liquidity ladder, or a refusal naming what stopped it.
