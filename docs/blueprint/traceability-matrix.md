@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 397 | 26.2% |
+| Blueprint completion (COMPLETE) | 398 | 26.2% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1216 | 80.1% |
 | Integrated (reached from a composition root) | 846 | 55.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 397 |
-| PARTIAL | 974 |
+| COMPLETE | 398 |
+| PARTIAL | 973 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -40,7 +40,7 @@ register (ADR 0099), and there is no second one.
 | [LEDGER](#ledger) | 50 | 14 | 28 | 5 | 3 | 0 | 41 | 32 | 0 |
 | [DATA](#data) | 95 | 20 | 65 | 10 | 0 | 0 | 83 | 69 | 1 |
 | [EVID](#evid) | 25 | 2 | 23 | 0 | 0 | 0 | 24 | 21 | 0 |
-| [TICK](#tick) | 97 | 13 | 81 | 3 | 0 | 0 | 93 | 82 | 1 |
+| [TICK](#tick) | 97 | 14 | 80 | 3 | 0 | 0 | 93 | 82 | 1 |
 | [WORLD](#world) | 69 | 23 | 41 | 5 | 0 | 0 | 62 | 57 | 0 |
 | [REASON](#reason) | 41 | 11 | 28 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 18 | 28 | 2 | 0 | 0 | 46 | 45 | 9 |
@@ -757,7 +757,7 @@ register (ADR 0099), and there is no second one.
 | R12-TICK-2088 | No impossible fills in replay | Both halves hold in the replay simulator. Queue: a resting limit order joins behind the size already at its price and fills only after it trades through (tick_replay.rs work_resting; test a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price), and qip-simulation-engine venue.rs keeps a price-time queue. Rate limits: ExecutionModel.message_budget makes ReplaySession refuse an order arriving into a full trailing window as throttled, never filling it, and the deep brain's tick desk replays under a 50-per-second budget. The edge tape and twin caps on fills remain as before. | COMPLETE |  | R12-TICK-2075 | P0 | cargo test -p qip-simulation-engine --test tick_replay && cargo test -p qip-edge-node --test tape |  |
 | R12-TICK-2089 | Clock corrections are lineage-tracked | CaptureStream records ClockCorrection and round-trips it through the lake in tests; no production path uses CaptureStream. | PARTIAL | Corrections carried on production stored events. | R12-TICK-2051, R12-TICK-2052 | P0 | cargo test -p qip-sequencing --test align |  |
 | R12-TICK-2090 | No hidden survivorship in historical universes | UniverseHistory keeps listing spans, symbol eras and venue outages with tests; corporate actions (delisting, rename) are modelled and journaled by the kernel. UniverseHistory has no caller outside its tests. | PARTIAL | Backtests and training must draw universes from UniverseHistory. |  | P0 | cargo test -p qip-financial --test history |  |
-| R12-TICK-2091 | Model artefacts record training-data entitlements and permitted use | ModelCard records training entitlements and permitted locations and refuses others; the tick desk ships its opportunity map only to permitted regions. | PARTIAL | authorise_location is called only for the opportunity map; promoted models and distillates shipped to cells are not location-checked. | R12-TICK-2056 | P0 | a qip-ai registry test refusing an out-of-entitlement deployment |  |
+| R12-TICK-2091 | Model artefacts record training-data entitlements and permitted use | ModelCard records training entitlements and permitted locations; the tick desk ships its opportunity map only to permitted regions; and since 2026-10-18 a promotion reads the card's permitted locations off the registry onto the journaled ModelPromotion (model_serving.rs:802), and Platform::model_manifest_for(location) withholds a restricted distillate from any location outside them with the authorise_location rule, refusing Denied when nothing else remains (:943-960). model_manifest(), which qip-api mesh.rs and qip-deepbrain learning.rs call to fill the trained_models slot, is model_manifest_for(None): a cell whose location is not declared is never named a licensed distillate. | COMPLETE |  | R12-TICK-2056 | P0 | cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_manifest_for_a_region_the_card_does_not_permit_is_refused |  |
 | R12-TICK-2092 | Tick models must prove value over simpler baselines | TickDesk::round refuses the model card through tick_desk::skill_gate when FillModel::beats_baseline is false, naming both Brier figures; with no card, OpportunityMap::authorise_for refuses every region, so an unskilled model ships no map. The round line still reports the comparison. | PARTIAL | The tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY is unset and no committed deployment sets it (with an entitlement grant), so the gate reaches no deployed binary. Setting it is a dev deployment value under infrastructure/environments/dev/**, which this lane may not edit. | R12-TICK-2068 | P1 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test tick_desk a_fill_model_that_does_not_beat_its_baseline_issues_no_card |  |
 | R12-TICK-3007 | Cognitive Core runs simulations | SIMULATE stage in Platform runs the simulation engine and stress scenarios. | COMPLETE |  |  | P1 | cargo test -p qip-kernel --test kernel |  |
 | R12-TICK-3096 | Continuously evolving tree of plausible futures | Each tick-desk round grows a synthetic future tree from a compact twin state, scores the previous tree against what happened since, reweights, splits and prunes. | PARTIAL | None for the requirement; not deployed (desk off unless configured). |  | P2 | new test to be written (see gap); cargo test -p <owning crate> |  |
