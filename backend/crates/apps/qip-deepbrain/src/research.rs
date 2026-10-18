@@ -68,7 +68,7 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
     coverage, incompetent_specialists, low_confidence, model_drift, model_error_rate,
-    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
+    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -1162,15 +1162,12 @@ impl ResearchLoop {
                 HIT_RATE_FLOOR,
             )?);
         }
-        let declines: Vec<Decline> = platform
+        let declines: Vec<(&str, bool, qip_twin::value::Simulated<Decimal>)> = platform
             .declined_scores()
             .iter()
-            .map(|d| Decline {
-                gate: d.gate.clone(),
-                regret: d.regret,
-            })
+            .map(|d| (d.gate.as_str(), d.regret, d.would_have_earned))
             .collect();
-        observations.extend(repeated_vetoes(&declines, MIN_REGRETS)?);
+        observations.extend(veto_observations(&declines)?);
         let refusals: Vec<Refusal> = platform
             .feasibility_refusals()
             .iter()
@@ -2594,6 +2591,42 @@ pub fn slippage_of(platform: &Platform) -> Vec<SlippageObservation> {
         .collect()
 }
 
+/// The repeated-veto gaps of a sweep's declined scores — `(gate, regret,
+/// would have earned)` — each priced at what its gate forwent
+/// (R12-EXPAND-6048): the summed positive counterfactual earnings of the
+/// gate's regretted declines, so a gate that vetoed a hundred profitable
+/// orders outranks one that vetoed a hundred worthless ones. Until
+/// 2026-10-18 the sweep called the unpriced detector and every veto gap
+/// stated an economic value of zero.
+///
+/// The earnings are the twin's counterfactual, crossed from `Decimal` to
+/// `f64` through `as_f64_for_statistics` and back for ranking only; a
+/// figure with no decimal form is refused rather than read as zero.
+pub fn veto_observations(
+    declines: &[(&str, bool, qip_twin::value::Simulated<Decimal>)],
+) -> Result<Vec<Observation>> {
+    let priced: Vec<(Decline, Decimal)> = declines
+        .iter()
+        .map(|(gate, regret, earned)| {
+            let value = earned.as_f64_for_statistics();
+            let value = Decimal::from_f64(value).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the decline at gate `{gate}` states earnings {value} with no decimal form; \
+                     correct the counterfactual before it is ranked"
+                ))
+            })?;
+            Ok((
+                Decline {
+                    gate: (*gate).to_string(),
+                    regret: *regret,
+                },
+                value,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    repeated_vetoes_priced(&priced, MIN_REGRETS)
+}
+
 /// The risk-review signals a limit check raises before any limit fires
 /// (R12-AMBIENT-3070): one per limit inside its bound but past its warning
 /// threshold, severity the share of the limit in use. A breach is not
@@ -2841,6 +2874,40 @@ mod tests {
         };
         assert_eq!(status("info-b"), Some(AcquisitionStatus::InProgress));
         assert_eq!(status("info-a"), Some(AcquisitionStatus::Halted));
+    }
+
+    /// A repeated-veto gap carries what its gate forwent (R12-EXPAND-6048):
+    /// three regretted declines that would have earned 100, 50 and a loss
+    /// price the gap at 150, and a gate with as many regrets that forwent
+    /// nothing prices at zero. Mutation: call the unpriced
+    /// `repeated_vetoes` in `veto_observations` — the first gap prices at
+    /// zero and the assertion fails.
+    #[test]
+    fn a_repeated_veto_gap_carries_the_earnings_its_gate_forwent() {
+        use qip_twin::value::Simulated;
+        let d = |v: i64| Simulated::of(Decimal::from_int(v));
+        let declines = [
+            ("tight-gate", true, d(100)),
+            ("tight-gate", true, d(50)),
+            ("tight-gate", true, d(-20)),
+            ("idle-gate", true, d(0)),
+            ("idle-gate", true, d(0)),
+            ("idle-gate", true, d(0)),
+        ];
+        let raised = veto_observations(&declines).expect("prices");
+        let value_of = |gate: &str| {
+            raised
+                .iter()
+                .find(|o| {
+                    o.evidence
+                        .iter()
+                        .any(|e| e.ends_with(&format!("gate:{gate}")))
+                })
+                .map(|o| o.economic_value)
+        };
+        assert_eq!(raised.len(), 2, "premise: both gates repeat: {raised:?}");
+        assert_eq!(value_of("tight-gate"), Some(Decimal::from_int(150)));
+        assert_eq!(value_of("idle-gate"), Some(Decimal::ZERO));
     }
 
     /// Every launched request becomes a scout job on the round, in rank
