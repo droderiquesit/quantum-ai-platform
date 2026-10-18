@@ -1451,14 +1451,21 @@
   },
   {
     "id": "R12-TICK-2063",
-    "status": "PARTIAL",
-    "current": "qip-feature-dag implements mid, spread, microprice, book pressure, realised volatility, EMA, order-flow imbalance, trade-sign autocorrelation and rolling correlation, evaluated inside the edge cell.",
+    "status": "COMPLETE",
+    "current": "qip-feature-dag implements every named family: spread (Spread), depth and imbalance (BookPressure), queue (TouchQueueDepth, bid and ask), flow (OrderFlowImbalance), toxicity (FlowToxicity, one-bucket VPIN over signed prints), volatility (RealisedVolatility), liquidity (SweepCost, basis points to take a quantity, undefined when the book cannot fill it), lead/lag (LeadLagCorrelation, lagged correlation of grid-aligned returns) and cross-venue (CrossVenueSpread, mid dislocation in basis points). Queue, toxicity and liquidity are in standard_suite, which qip-edge-node registers for every strategy subject; lead/lag and cross-venue are two-subject definitions registered per pair, like RollingCorrelation.",
     "evidence": [
-      "backend/crates/edge/qip-feature-dag/src/features.rs:77,214,265,391,450,517",
-      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs",
-      "backend/crates/edge/qip-edge/src/cell.rs:51-52 FeatureEngine in cell"
+      "backend/crates/edge/qip-feature-dag/src/features.rs:770 TouchQueueDepth",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:824 FlowToxicity",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:889 SweepCost",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:625 LeadLagCorrelation",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:699 CrossVenueSpread",
+      "backend/crates/edge/qip-feature-dag/src/features.rs:1059 standard_suite carries queue, toxicity, liquidity",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:956 queue_toxicity_and_liquidity_match_their_hand_computed_values",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:1032 a_follower_one_sample_behind_its_leader_has_a_lead_lag_correlation_of_one_and_a_cross_venue_spread_in_basis_points",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:1111 the_standard_suite_carries_the_queue_toxicity_and_liquidity_families",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:505 registers standard_suite per strategy subject"
     ],
-    "gap": "No queue, toxicity, liquidity or explicit lead/lag / cross-venue features.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1469,7 +1476,7 @@
     "verification": "cargo test -p qip-feature-dag --test feature_dag",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: five families added with hand-computed values. Mutations, each failing its assertion: toxicity numerator as buys only; bid queue reading the ask; sweep cost forced to zero; lead/lag ignoring the lag; cross-venue sign flipped; FlowToxicity removed from standard_suite. All restored, 26 passed; qip-edge and qip-edge-node suites (80 test binaries) still pass with the larger suite."
   },
   {
     "id": "R12-TICK-2064",
