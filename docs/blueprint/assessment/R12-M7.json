@@ -2457,14 +2457,18 @@
   },
   {
     "id": "R12-RES-7110",
-    "status": "PARTIAL",
-    "current": "ConductGate blocks on any failing check; profit-only justification refused; deceptive step makes plan infeasible; no retained failed-plan record or alternative search.",
+    "status": "COMPLETE",
+    "current": "A plan the act stage's guard withholds is retained as a BlockedPlan (the plan's steps, the guard's refusal naming each failed check, the steps the guard refuses even alone) and a truthful alternative is sought: the plan without the offending steps, cleared read-only by the guard, or the no-action baseline when nothing remaining clears. Nothing in it is sent or approved. The record is journaled as AgencyRecord::PlanBlocked and the shadow binary prints it.",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:61-410 each check independently blocks",
-      "backend/crates/libs/qip-contracts/tests/action.rs:155",
-      "backend/crates/services/qip-agency/tests/agency.rs:572"
+      "backend/crates/services/qip-agency/src/engine.rs::BlockedPlan, Alternative, blocked_plan (called from execute's guard-refusal arm)",
+      "backend/crates/services/qip-agency/src/plan.rs::without_steps",
+      "backend/crates/services/qip-agency/src/journal.rs::AgencyRecord::PlanBlocked, record_pass",
+      "backend/crates/apps/qip-cli/src/agency.rs (plan withheld and kept / truthful alternative lines)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_withheld_plan_is_kept_with_its_reasons_and_the_alternative_is_the_plan_without_the_step_that_lied",
+      "backend/crates/services/qip-agency/tests/journal.rs::a_withheld_plan_is_journaled_with_its_reasons_and_the_alternative_sought",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses"
     ],
-    "gap": "Retention of failed plan and alternative search.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2472,10 +2476,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: treating every step as clearing alone in blocked_plan (offending empty, alternative wrong); dropping the PlanBlocked write in record_pass (record absent on the log); returning blocked None from the refusal arm (the binary prints no line and journals no record). The alternative is a proposal: it carries no approval, and a later pass must clear its own gates to send it. The ambient intake path withholds a draft in AmbientIntake, not through engine::execute, and does not use this record."
   },
   {
     "id": "R12-RES-7111",

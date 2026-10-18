@@ -671,3 +671,83 @@ fn one_pass_folds_into_one_connected_lineage_and_a_dropped_approval_breaks_it() 
     assert!(err.message().contains("the execution"), "{err}");
     assert!(err.message().contains("no plan approval"), "{err}");
 }
+
+/// R12-RES-7110: a plan the guard withheld is on the log with the reasons
+/// and the alternative sought, not only as a `stopped` sentence.
+/// Mutation: in `journal::record_pass`, drop the `PlanBlocked` write; the
+/// record is then absent and this test fails at the first `expect`.
+#[test]
+fn a_withheld_plan_is_journaled_with_its_reasons_and_the_alternative_sought() {
+    let policy = narrow();
+    let mut guard = guard();
+    let mut lying = request(1);
+    lying
+        .pass
+        .as_mut()
+        .expect("premise: the request declares its pass")
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .content = "Quote 20 lots: a guaranteed fill on venue-a".into();
+    let registry = register("US");
+    let report = run_governed(
+        lying,
+        Governance {
+            policy: Some(&policy),
+            guard: Some(&mut guard),
+            eligibility: Some((&registry, Timestamp::from_secs(100))),
+        },
+        &mut Refusing::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Stopped(_)),
+        "premise: the guard withheld the plan: {:?}",
+        report.outcome
+    );
+    let mut log = EventLog::in_memory();
+    journal::record_pass(
+        &mut log,
+        PassEntry {
+            pass: 1,
+            provenance: &provenance(),
+            report: &report,
+            widening: None,
+            audit_from: 0,
+            goal_target: "spread under 5 bps",
+            acting_identity: "desk-agent",
+            learning: None,
+            at: Timestamp::from_secs(100),
+        },
+    )
+    .unwrap();
+    let blocked = journal::records(&log)
+        .unwrap()
+        .into_iter()
+        .find_map(|record| match record {
+            AgencyRecord::PlanBlocked {
+                steps,
+                reason,
+                offending,
+                alternative,
+                alternative_steps,
+                alternative_detail,
+                ..
+            } => Some((
+                steps,
+                reason,
+                offending,
+                alternative,
+                alternative_steps,
+                alternative_detail,
+            )),
+            _ => None,
+        })
+        .expect("the withheld plan is on the log");
+    assert_eq!(blocked.0.len(), 1);
+    assert!(blocked.1.contains("no_false_claims"), "{}", blocked.1);
+    assert_eq!(blocked.2, blocked.0, "the one step is the one that lied");
+    assert_eq!(blocked.3, "no_action");
+    assert!(blocked.4.is_empty());
+    assert!(!blocked.5.is_empty(), "no alternative says why");
+}
