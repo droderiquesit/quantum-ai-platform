@@ -715,16 +715,19 @@
   },
   {
     "id": "R12-MODEL-9031",
-    "status": "PARTIAL",
-    "current": "Tournament aggregates forecasts weighted by synthetic-credit reputation (forecast_market.rs) in the kernel cycle; ModelVote contract exists in qip-contracts control.rs but nothing emits it, and no ForecastConsensus type exists.",
+    "status": "COMPLETE",
+    "current": "TournamentStage::observe_reasoning, run by REASON in every cycle, journals one Validated qip_contracts::control::ModelVote per admitted entrant with standing (R12-CONTRACT-6112) and, for every question it opens, a new Validated ForecastConsensus (qip-contracts control.rs) carrying the pooled probability and each forecaster's share as Tournament::aggregate_weights returns it, normalised to one, with reputation_weighted stating whether the shares were earned or the equal split given where nobody has earned influence. The contract refuses unequal shares claimed as unearned and shares not summing to one.",
     "evidence": [
-      "backend/crates/services/qip-prediction/src/market.rs (external event markets, not model votes)",
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs",
-      "backend/crates/libs/qip-contracts/src/control.rs::ModelVote"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::consensus",
+      "backend/crates/libs/qip-contracts/src/control.rs::ForecastConsensusFields",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::aggregate_weights",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_consensus_is_journaled_for_every_question_and_turns_earned_once_a_forecaster_is_promoted",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::tests::an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs::a_forecast_consensus_refuses_each_broken_invariant"
     ],
-    "gap": "Emit ModelVote/ForecastConsensus; test that equal weighting fails.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -732,10 +735,10 @@
       "R12-MODEL-9030"
     ],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_consensus_is_journaled_for_every_question_and_turns_earned_once_a_forecaster_is_promoted && cargo +1.94.1 test -p qip-learning-engine --lib an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts && cargo +1.94.1 test -p qip-contracts --test control_contracts forecast_consensus",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06. Mutations, restored byte for byte: aggregate_weights returning weight one for everyone failed the learning-engine test (sharp and dull both 1.0); journaling every consensus as unearned failed the kernel test after the cycle-12 promotion; deleting the unearned-but-unequal refusal admitted that case in the contract test. Equal weighting is proven to fail at the seam the kernel calls (learning-engine test with two forecasters of different records); in the kernel cycle fixture only the detector forecasts after cycle 5, so the earned consensus there has one share."
   },
   {
     "id": "R12-REASON-9032",
