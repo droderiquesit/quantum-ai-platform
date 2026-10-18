@@ -746,6 +746,56 @@ impl CapabilityEntry {
         Ok(v)
     }
 }
+/// The artifact world-coverage expansion produces (section 23, R12-EXPAND-6026):
+/// one source the scouts found, with where it came from, what it may be used
+/// for, what it costs and how fresh it says it is. A record of a *decision
+/// already made* by the data finder - it grants nothing, and a spec with no
+/// lineage is refused, because a source that appeared from nowhere cannot be
+/// re-derived when someone asks why it is read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSpec {
+    pub source_id: String,
+    /// The discovery method: where the scout found it.
+    pub discovered_from: String,
+    pub discovered_at: qip_core::Timestamp,
+    /// The source this one was found to replace, if any.
+    pub replaces: Option<String>,
+    /// The licence identifier the registration was decided on, or the word
+    /// the licensing posture is in when no licence was read.
+    pub licence: String,
+    /// What the licence permits, as the usage names a gate checks.
+    pub permitted_usages: Vec<String>,
+    pub monthly_fee: Decimal,
+    pub currency: String,
+    /// How often the source says it updates.
+    pub freshness: String,
+}
+
+impl SourceSpec {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "SourceSpec";
+        text(R, "source_id", &self.source_id)?;
+        text(R, "discovered_from", &self.discovered_from)?;
+        text(R, "licence", &self.licence)?;
+        text(R, "currency", &self.currency)?;
+        text(R, "freshness", &self.freshness)?;
+        if self.monthly_fee.is_negative() {
+            return Err(Error::invalid(
+                "SourceSpec.monthly_fee must not be negative; a source that pays the platform is a rebate no vendor offers",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a SourceSpec: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
+    }
+}
+
 /// Brain Registry entry: records a specialist agent or model with all six attributes.
 /// Every brain has competency domains, tools, evaluations, calibration, authority and version lineage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

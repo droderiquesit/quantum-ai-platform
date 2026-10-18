@@ -600,7 +600,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, AMBIENT_ATTENTION",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): it emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only.",
+    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): the router emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only. Closing needs a decision, not a registration: either the router becomes an Organisation agent (it has no Desk input; it reads a research sweep) or coverage::Scope gains an ambient scope evidenced by findings qip-deepbrain composes from the sweep. The second changes the organisation test that asserts every Scope is covered by the standard organisation on a populated desk, so it needs an ADR. The grader's proposal to register a BrainSpec in now.rs::specialist_registry is already done (brains.rs holds ambient/attention).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -611,7 +611,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04: registry entry and the scope-drop test added (mutation: giving a NOW specialist the attention-routing domain keeps the scope after removal and the test fails). Kept PARTIAL: rostering it as an Organisation agent needs an Agent impl producing Findings."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-AGENCY-3028",
@@ -622,7 +622,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, CAUSAL_AGENCY",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it.",
+    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it. Same decision as R12-AMBIENT-3027: an Organisation agent has a Desk to read and the ambient agency reads a research sweep, so either the agency is wrapped as an agent whose finding is composed from AgencyRound (goal, candidates, gate verdicts) or coverage::Scope gains an ambient scope; the second changes the every-Scope-is-covered organisation test and needs an ADR. The BrainSpec registration the grader proposed already exists (brains.rs, ambient/causal-agency).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -633,7 +633,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04 (registry entry and scope-drop test). Kept PARTIAL for the same reason as R12-AMBIENT-3027."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-GOV-3029",
@@ -730,15 +730,16 @@
   },
   {
     "id": "R12-WORLD-3033",
-    "status": "PARTIAL",
-    "current": "Platform EpisodicMemory written by LEARN (remember_resolved) with market and world state; episodic digest issued.",
+    "status": "COMPLETE",
+    "current": "Platform EpisodicMemory is written by LEARN (remember_resolved) with market and world state, and now with what the platform did: EpisodeOutcome::fills lists the venue's fills (order id, quantity, price) on every remembered order whose attribution lineage cites the claim's hypothesis (Platform::fills_expressing). A thesis with no order, or whose orders did not fill, remembers none; an order whose lineage was evicted is not found and records no fill rather than a guessed one. The field is skipped when empty and defaulted on decode, so earlier episodes read unchanged.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:453 episodes: EpisodicMemory",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5506 issue_episodic_digest",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:207 an_episode_the_cycle_wrote_carries_the_market_and_world_state_measured_when_it_reasoned",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:281 a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected"
+      "backend/crates/libs/qip-ai/src/memory/episode.rs::EpisodeFill",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs::EpisodeOutcome::fills",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fills_expressing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::remember_resolved",
+      "runtime/qip-kernel/tests/episodic.rs::a_resolved_episode_remembers_the_fills_on_the_orders_that_expressed_its_claim"
     ],
-    "gap": "Episodes are per resolved thesis; 'what it did' (orders/fills) is not part of the episode record.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -746,10 +747,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test episodic",
+    "verification": "cd backend && cargo test -p qip-kernel --test episodic && cargo test -p qip-ai",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed, differently from the triage: the fills sit on EpisodeOutcome (what followed) rather than inside the Copy enum DecisionTaken, which every constructor and the sampler match on. Mutations: leaving the vector empty in remember_resolved -> fills.len() left 0 against the OMS's fill; matching the lineage's belief key against a hypothesis nothing cites -> same failure; both restored (qip-ai + qip-kernel: 1072 passed, 0 failed; clippy -D warnings clean). Limits: orders are found through the bounded attribution lineage, and fills only, not the order's placement record."
   },
   {
     "id": "R12-WORLD-3034",
@@ -888,26 +889,27 @@
   },
   {
     "id": "R12-WORLD-3040",
-    "status": "PARTIAL",
-    "current": "ScoredView records evidence fit, predictive performance, causal coherence and uncertainty in the cycle.",
+    "status": "COMPLETE",
+    "current": "Each instrument member's causal_coherence is 1 - |its probability - the causal graph's implied probability| from the live claims into that instrument (Platform::causal_views: each cause's latest return x the claim's signed transmission), and its evidence_fit is its own replayed residuals over the series' latest returns (1 - Brier, scaled by history length), per member. Where the graph holds no live claim into an instrument a member keeps the coherence it was declared under, and that is stated in the code.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:232 ScoredView",
-      "backend/crates/services/qip-world-model/tests/federation.rs:302 arbitration_records_all_four_dimensions_and_ranks_by_evidence_fit_when_only_that_differs",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs tape_reading, residual_fit, CAUSAL_GLOBAL, CausalView",
+      "backend/crates/runtime/qip-kernel/src/platform.rs causal_views, passed to the stage by understand_federation",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs two_members_on_one_tape_differ_in_coherence_when_one_contradicts_a_live_claim_and_in_fit",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs the_global_causal_model_is_a_member_that_reads_the_graphs_claims_into_the_instrument",
+      "backend/crates/runtime/qip-kernel/src/platform.rs the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission"
     ],
-    "gap": "In production causal_coherence is a hard-coded constant per member and evidence_fit is identical across instrument members, so two of four dimensions are not measured comparisons.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation && cargo test -p qip-kernel --lib the_causal_view_handed",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: restoring the constant coherence (Some(_) => prior) -> the momentum/reversion ordering no longer flips with the claim's sign ('0.5 0.5'); using transmission() for signed_transmission() in causal_views -> the platform test reads -0.0041 against -0.0101. The domain member's fit is still the history-length term."
   },
   {
     "id": "R12-WORLD-3041",
@@ -934,13 +936,16 @@
   },
   {
     "id": "R12-WORLD-3042",
-    "status": "PARTIAL",
-    "current": "World-model CausalGraph integrated (claims, retirement, propagation).",
+    "status": "COMPLETE",
+    "current": "markets.causal-graph.global.macro is a declared federation member (scope, 7-day lease, evidence lineage world:causal-graph) fed every pass on every instrument proposition from the world model's graph: its probability is the logistic of the graph-implied next return over the instrument's volatility, its fit and uncertainty from the claim count and mean confidence, and it states an even view with near-zero evidence where no live claim reaches the instrument. It is scored like the others when the proposition resolves.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs CausalGraph",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10385 stage_understand"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs tape_reading, residual_fit, CAUSAL_GLOBAL, CausalView",
+      "backend/crates/runtime/qip-kernel/src/platform.rs causal_views, passed to the stage by understand_federation",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs two_members_on_one_tape_differ_in_coherence_when_one_contradicts_a_live_claim_and_in_fit",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs the_global_causal_model_is_a_member_that_reads_the_graphs_claims_into_the_instrument",
+      "backend/crates/runtime/qip-kernel/src/platform.rs the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission"
     ],
-    "gap": "Not registered as a federation member with scope/expiry.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -948,10 +953,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --lib the_causal_view_handed",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: feeding the member a constant 0.5 -> the rising and falling claims read alike and the member test fails; dropping its declaration fails the population premise. The population is ten and an instrument proposition carries eight views."
   },
   {
     "id": "R12-WORLD-3043",
@@ -1020,7 +1025,7 @@
       "backend/crates/services/qip-world-model/src/lib.rs:19-40 module list",
       "backend/crates/services/qip-world-model/tests/liquidity.rs"
     ],
-    "gap": "Not federated members; integration varies by module.",
+    "gap": "Not started. The bar tape carries OHLCV and no buy/sell split, so an order-flow imbalance (qip_world_model::order_flow::FlowObservation) cannot be formed from it, and nothing in the kernel absorbs a FlowObservation or a price-impact observation; a microstructure member fed from bars would be the regional member again. Needs a producer of signed flow or trade-side data before the member has anything of its own to say.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1031,7 +1036,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-WORLD-3047",
@@ -1042,7 +1047,7 @@
       "backend/crates/services/qip-prediction/src/resolution.rs",
       "backend/crates/services/qip-prediction/tests/belief.rs"
     ],
-    "gap": "Not a federated world model.",
+    "gap": "Not started. The event-market plane (event_markets.rs) belongs to its own paper book and prices markets, not instruments: no belief ties a federation instrument proposition to a pending event resolution, so a member whose view is 'the belief tree's probability for the instrument's pending resolution' has no per-instrument source, and the plane opens only with a licensed source (none is in the catalogue).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1053,7 +1058,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-WORLD-3048",
@@ -1063,7 +1068,7 @@
       "backend/crates/services/qip-capital-fabric/src/forecast.rs:324 DemandForecaster",
       "backend/crates/runtime/qip-kernel/src/pre_positioning.rs"
     ],
-    "gap": "Not a federated world model.",
+    "gap": "Not started. DemandForecaster output and pre_positioning exposure are per currency and per funding need, not per instrument proposition, and 'realised funding use' as the resolution has no instrument-level event the stage can wait on; the member needs its own proposition (next-pass funding draw) and a resolver, which is new federation vocabulary.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1074,7 +1079,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-WORLD-3049",
@@ -1866,14 +1871,14 @@
   },
   {
     "id": "R12-WORLD-3083",
-    "status": "PARTIAL",
-    "current": "lattice::constrain flags narrowing and median-outside inconsistencies across adjacent horizons each cycle (LATTICE_INCONSISTENCIES_TOTAL); NOW latent return feeds lattice targets.",
+    "status": "COMPLETE",
+    "current": "Every cycle LatticeStage::run checks each target's freshly issued horizon chain with qip_world_model::lattice::constrain, journals the findings in LatticeReview::inconsistencies and Platform counts them on qip_lattice_inconsistencies_total{kind}. Flagging never repairs: the forecasts are journaled as issued. Over the calm test history the first cycle flags the hours-days median outside the weeks-months 80% interval for both instruments.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/horizons.rs:868 HorizonRegister",
-      "backend/crates/services/qip-lifecycle/src/horizon.rs:304 HorizonAssurance",
-      "backend/crates/services/qip-world-model/src/lattice.rs::constrain"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::run (constrain)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (LATTICE_INCONSISTENCIES_TOTAL count)",
+      "runtime/qip-kernel/tests/now_lattice.rs::a_forecast_outside_its_longer_neighbours_interval_is_flagged_in_the_review_and_on_the_counter"
     ],
-    "gap": "Flagged, not reconciled into any forecast; microstructure (microsecond) forecasts are never issued, so they constrain nothing.",
+    "gap": "",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1883,10 +1888,10 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations: skipping the constrain call -> 'premise: calm history leaves a short-horizon median outside the longer interval'; draining the platform's counter loop -> counter left 0 right 2; both restored (now_lattice: 10 passed). Not claimed: reconciliation of the flagged pair into the forecasts and the microsecond row stay WORLD-7197's gap; only the horizons due in a pass are compared, so a fresh short row against a still-current longer row is not checked until the longer one re-issues."
   },
   {
     "id": "R12-WORLD-3084",

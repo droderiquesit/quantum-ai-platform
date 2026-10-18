@@ -328,14 +328,13 @@
   {
     "id": "R12-DATA-2015",
     "status": "PARTIAL",
-    "current": "discovery_targets::targets_from ranks knowledge gaps and forecast-error spikes on uncovered entities; Platform::discovery_targets feeds it from LEARN-stage evaluations and DiscoveryDesk uses it to order candidates.",
+    "current": "discovery_targets::targets_from_strategies takes a StrategyCoverage input beside the knowledge gaps and forecast-error spikes: an instrument a running strategy trades on that no source covers becomes a target naming the strategy (TargetReason::StrategyGap), outranking a bare gap and below any spike; targets_from is the same call with no strategies. Platform::discovery_targets feeds it the factory candidates compiled subjects and counts a strategy instrument as covered by the same has_source_for test as the other two inputs.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/discovery_targets.rs:86 targets_from",
-      "backend/crates/runtime/qip-kernel/src/source_discovery.rs:123 discovery_targets",
-      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs:25 a_forecast_error_spike_on_an_entity_no_source_covers_yields_a_target_naming_it",
-      "backend/crates/apps/qip-deepbrain/src/discovery.rs:216 targets read each pass"
+      "backend/crates/services/qip-data-finder/src/discovery_targets.rs targets_from_strategies, StrategyCoverage, TargetReason::StrategyGap",
+      "backend/crates/runtime/qip-kernel/src/source_discovery.rs Platform::strategy_coverage, discovery_targets",
+      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs a_strategy_whose_instrument_no_source_covers_yields_a_target_naming_it"
     ],
-    "gap": "Strategy gaps are not an input (only entity coverage and thesis errors); disabled in every environment.",
+    "gap": "Two limits. The kernel wiring (strategy_coverage reading the strategy factory candidates) has no kernel-level test that registers a candidate and reads the target back, so deleting that feed would not fail a test. And discovery runs only when QIP_DEEPBRAIN_DISCOVER_EVERY is above zero, which it is in no committed environment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -343,10 +342,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test source_discovery",
+    "verification": "cargo test -p qip-data-finder --test discovery_targets; cargo test -p qip-kernel --test source_discovery",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "2026-10-18 L22: input, ranking and finder-level test added; kept PARTIAL. Mutations that fired: treat every strategy instrument as uncovered; skip the strategy loop. The kernel feed was built and compiled but not mutation-tested; that is the first remaining gap, stated rather than claimed."
   },
   {
     "id": "R12-DATA-2016",
@@ -519,13 +518,14 @@
   {
     "id": "R12-DATA-2023",
     "status": "PARTIAL",
-    "current": "LeadLedger measures per-source lead time and Platform observes every sensed record into it and reports a ranking; the finder's routing freshness score is age-versus-own-cadence, and the lead ranking does not feed routing.",
+    "current": "DataFinder::observe_leads takes the lead ledger ranking and the freshness term of SourceScores blends the age of the probe sample with a measured lead (share of comparisons led times mean lead over the source update interval, a minute for an irregular publisher); a source never compared keeps age alone. Platform::assess_sources hands the finder source_leads.ranking() before every assessment.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/freshness.rs:279 LeadLedger",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9149 source_leads.observe",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16798 ranking"
+      "backend/crates/services/qip-data-finder/src/finder.rs observe_leads, lead_timeliness and the freshness blend in the scoring step",
+      "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources calls observe_leads",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs a_leading_source_outscores_a_lagging_one_on_timeliness",
+      "backend/crates/runtime/qip-kernel/tests/platform_services.rs a_candidate_whose_releases_arrive_after_another_wires_scores_lower_on_timeliness"
     ],
-    "gap": "Use the measured lead in SourceScores so routing ranks on it.",
+    "gap": "assess_sources runs in the deep brain only on the DiscoveryDesk cadence, QIP_DEEPBRAIN_DISCOVER_EVERY, which is null (desk off) in every committed environment: infrastructure/terraform/catalogue.tf passes var.deepbrain_discover_every and no environments/*/terraform.tfvars sets it. Enabling discovery sends probes through the egress proxy to candidate hosts, an owner decision on the data-licensing and egress posture; protected path, so no patch is offered.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -533,10 +533,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test source_alpha",
+    "verification": "cargo test -p qip-data-finder --test source_alpha; cargo test -p qip-kernel --test platform_services a_candidate_whose_releases_arrive_after_another_wires_scores_lower_on_timeliness",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L22: wired and tested; kept PARTIAL because the only caller is the discovery cadence, which no committed environment enables. Mutations that fired: ignore the lead in the blend; score led_share as 1.0; delete the observe_leads call in assess_sources."
   },
   {
     "id": "R12-DATA-2024",
@@ -1844,14 +1844,14 @@
   },
   {
     "id": "R12-TICK-2078",
-    "status": "PARTIAL",
-    "current": "qip-arbitrage discovers 2..20-leg cycles deterministically with a configurable max; qip-mesh MAX_LEGS=20; venue-outage conditions exist in the simulator. No replay of legging, reservation, path decay, unwind or capital across regions.",
+    "status": "COMPLETE",
+    "current": "A MultiLegPlan can carry max_path_decay_bps (a legging window) and region_reservations (capital reserved to the plan per region). Before each leg after the first is sent, ReplaySession::refusal_before refuses the remaining legs when the adverse touch movement summed over the sent legs exceeds the window, or when the next leg's estimated notional (quantity at the touch read when the first leg arrived) would take its region's open capital past the reservation. The legs left open are flattened by the same unwind a failed fill gets, and MultiLegOutcome names refused_legs and the refusal. Open capital per region and path decay were already accumulated per leg.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/tests/leg_limit.rs:1-8 cycle of 2..20 legs refused whole beyond max",
-      "backend/crates/services/qip-mesh/src/peer.rs:57 MAX_LEGS",
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:140 VenueOutage"
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs refusal_before, unwind_open_legs, MultiLegPlan::max_path_decay_bps, region_reservations",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_plan_whose_path_decayed_past_its_window_refuses_the_remaining_legs_and_flattens_the_open_ones",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_leg_that_would_take_a_region_past_the_capital_reserved_to_it_is_refused"
     ],
-    "gap": "Build multi-leg replay harness.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1861,10 +1861,10 @@
       "R12-TICK-2067"
     ],
     "blocked_by": "",
-    "verification": "a qip-acceptance multi-leg replay suite",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Register text was half stale: the three-leg unwind (a_three_leg_plan_whose_second_venue_fails_unwinds_the_first_leg_and_charges_the_cost) already existed. Mutations, each fired and restored: the decay comparison replaced by false sends the third leg (decay test fails); the reservation comparison replaced by false sends the over-reserved leg (reservation test fails). Both tests assert their premise first: with no window or a covering reservation the same plan completes and the decay is above 1000 bp. qip-simulation-engine: every suite ok; qip-acceptance replay_queue_and_unwind ok. New plan fields are skipped when empty, so the checkpoint and input digests of existing plans do not move. The simulator is the product of this crate; no deployed process runs a MultiLegPlan."
   },
   {
     "id": "R12-TICK-2079",
@@ -2004,11 +2004,16 @@
   {
     "id": "R12-TICK-2085",
     "status": "PARTIAL",
-    "current": "FusedState::posteriors is the stated read surface for foundry and brains; produced by the tick desk.",
+    "current": "FusedState::posteriors is read: TickDesk keeps the last round's posteriors, node.rs hands them to EvolutionEngine::set_priors before each turn, and the engine sizes the subject's foundry round with StrategyFoundry::search_with_prior (count x (0.5 + posterior), refusing a non-probability). The neutral prior reproduces the plain search.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::FusedState"
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs search_with_prior, NEUTRAL_PRIOR",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs TickDesk::posteriors",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs set_priors and its use in maybe_turn",
+      "backend/crates/apps/qip-deepbrain/src/node.rs the set_priors hand-off",
+      "backend/crates/runtime/qip-kernel/tests/foundry.rs a_fused_posterior_changes_how_many_candidates_a_round_proposes_and_so_which_are_registered",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_fused_posterior_handed_to_the_engine_sizes_the_round_it_runs"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No foundry, Asset, Capital or Risk brain reads FusedState.",
+    "gap": "The tick desk is still off by default (QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it), so no deployed binary produces a posterior and every deployed round searches at the neutral size. The node.rs hand-off (TickDesk::posteriors -> set_priors) has no test of its own: deleting it fails nothing. Fusion posteriors are keyed by the watch graph's instrument names, which match the evolution subject only where the graph names instruments as the exchange does. No Asset, Capital or Risk brain type exists to read it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2018,10 +2023,10 @@
       "R12-TICK-2081"
     ],
     "blocked_by": "",
-    "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
+    "verification": "cargo test -p qip-kernel --test foundry && cargo test -p qip-deepbrain --lib evolution::tests::a_fused",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison."
   },
   {
     "id": "R12-TICK-2086",

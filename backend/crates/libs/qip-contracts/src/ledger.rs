@@ -353,6 +353,25 @@ pub struct LedgerEvent {
     settlement: Settlement,
     fee: FeeReport,
     postings: Vec<Posting>,
+    /// Absent from the encoding when not stated, so an event that never had
+    /// an owner re-encodes byte for byte as it was stored and the digests
+    /// that cover it do not move.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attribution: Option<Attribution>,
+}
+
+/// The links from a booked fill back to the decision that caused it, beyond
+/// the journal entry [`SourceEvent`] places it on (R12-CONTRACT-7069). Every
+/// link is named: a chain with a blank link reads as complete and cannot be
+/// followed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attribution {
+    pub fill_id: String,
+    pub order_id: String,
+    pub intent_id: String,
+    pub decision_id: String,
 }
 
 /// The deserialised shape, so an event read from a store or a stream meets
@@ -365,13 +384,26 @@ struct LedgerEventWire {
     settlement: Settlement,
     fee: FeeReport,
     postings: Vec<Posting>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    attribution: Option<Attribution>,
 }
 
 impl TryFrom<LedgerEventWire> for LedgerEvent {
     type Error = Error;
 
     fn try_from(wire: LedgerEventWire) -> Result<Self> {
-        Self::new(wire.source, wire.settlement, wire.fee, wire.postings)
+        let mut event = Self::new(wire.source, wire.settlement, wire.fee, wire.postings)?;
+        // An event written before ownership existed has neither; one that
+        // states either meets the same refusals as one built in code.
+        if let Some(owner) = wire.owner {
+            event = event.with_owner(owner)?;
+        }
+        if let Some(attribution) = wire.attribution {
+            event = event.with_attribution(attribution)?;
+        }
+        Ok(event)
     }
 }
 
@@ -530,7 +562,55 @@ impl LedgerEvent {
             settlement,
             fee,
             postings,
+            owner: None,
+            attribution: None,
         })
+    }
+
+    /// State whose capital this event moved: a desk or mandate id. Refused
+    /// when blank — an owner that reads as stated and names nobody is worse
+    /// than none — or when it holds a `:` or `/`, which would make an
+    /// owner-qualified account render ambiguously like any account name.
+    pub fn with_owner(mut self, owner: impl Into<String>) -> Result<Self> {
+        let owner = owner.into();
+        refuse_unnamed("owner", &owner)?;
+        if owner.contains(':') || owner.contains('/') {
+            return Err(Error::invalid(format!(
+                "owner `{owner}` contains `:` or `/`, which would make it ambiguous as text;                  rename the desk or mandate"
+            )));
+        }
+        self.owner = Some(owner);
+        Ok(self)
+    }
+
+    /// State the chain from the booked fill back to the decision. Refused when
+    /// any link is blank, and when its order is not the order the source event
+    /// names: two claims about the same order will disagree, and the louder
+    /// one will be wrong.
+    pub fn with_attribution(mut self, attribution: Attribution) -> Result<Self> {
+        refuse_unnamed("attribution fill id", &attribution.fill_id)?;
+        refuse_unnamed("attribution order id", &attribution.order_id)?;
+        refuse_unnamed("attribution intent id", &attribution.intent_id)?;
+        refuse_unnamed("attribution decision id", &attribution.decision_id)?;
+        if attribution.order_id != self.source.order_id {
+            return Err(Error::invalid(format!(
+                "the attribution chain names order `{}` but the source event names `{}`; \
+                 one fill has one order",
+                attribution.order_id, self.source.order_id
+            )));
+        }
+        self.attribution = Some(attribution);
+        Ok(self)
+    }
+
+    /// Whose capital this event moved, when it was stated.
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
+    }
+
+    /// The chain back to the deciding intent, when it was stated.
+    pub fn attribution(&self) -> Option<&Attribution> {
+        self.attribution.as_ref()
     }
 
     pub fn source(&self) -> &SourceEvent {

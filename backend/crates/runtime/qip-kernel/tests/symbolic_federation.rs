@@ -149,7 +149,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    assert_eq!(first.population.len(), 9, "{:?}", first.population);
+    assert_eq!(first.population.len(), 10, "{:?}", first.population);
     for family in REQUIRED_FAMILIES {
         assert!(
             !first.uncovered.contains(&family.to_string()),
@@ -166,7 +166,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
         .collect();
     assert_eq!(instrument.len(), 2, "one proposition per instrument");
     for a in &instrument {
-        assert_eq!(a.disagreement.views.len(), 7, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 8, "{a:?}");
         // Unscored members cannot be weighed, and the record says so rather
         // than averaging them.
         assert!(matches!(a.decision, Decision::RequestMoreInformation(_)));
@@ -466,7 +466,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     for a in &scored {
         // Every view kept, minority included, on all four dimensions, with
         // the composite present only because performance is (1130, 3040).
-        // Seven roots; a branch the stage opened on an earlier split
+        // Eight roots (seven tape members and the causal model); a branch the stage opened on an earlier split
         // (WORLD-1181) is an eighth voice and carries its parent.
         let roots = a
             .disagreement
@@ -474,7 +474,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
             .iter()
             .filter(|v| v.lineage.parents.is_empty())
             .count();
-        assert_eq!(roots, 7, "{a:?}");
+        assert_eq!(roots, 8, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
@@ -1060,5 +1060,95 @@ fn a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agree
             .iter()
             .all(|(_, multiplier)| *multiplier > 0.0 && *multiplier < 1.0)
     );
+    Ok(())
+}
+
+/// R12-QUANT-4040. The symbolic reasoner's constraint encoder produced a QUBO
+/// for the quantum path's solver port and nothing ever ran a quantum solver on
+/// one, so "the constraint problem is compared to classical solvers" was a
+/// sentence about a type signature.
+///
+/// The problem here is a selection the encoder admits - four 0/1 variables
+/// and one linear equality - and not `symbolic_stage::acting()`'s, which the
+/// encoder correctly refuses: its eligibility and halt facts are Boolean
+/// domains and its guards are conditions, not linear equalities. The quantum
+/// entrant is the in-tree statevector simulator behind `ProviderSolver`, the
+/// baseline is exhaustive search, and the decoded quantum answer must equal
+/// the symbolic engine's own proven minimiser.
+///
+/// Mutation: drop the penalty term for the equality in `Problem::to_qubo`
+/// (skip the `(sum - bound)^2` block) - the QUBO's minimum selects nothing or
+/// everything, the decode refuses it as violating the constraint, and the
+/// assertion that the quantum entrant decodes fails.
+#[test]
+fn the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum()
+-> Result<()> {
+    use qip_quantum::benchmark::SolverBenchmark;
+    use qip_quantum::provider::SimulatedProvider;
+    use qip_quantum::qaoa::QaoaSettings;
+    use qip_quantum::solver::{ClassicalSolver, ProviderSolver, SolverKind};
+    use qip_reasoning_engine::constraint::{Constraint, Form, Problem, Variable};
+    use qip_reasoning_engine::rules::{Op, Value};
+    use std::sync::Arc;
+
+    let bits = ["a", "b", "c", "d"];
+    let problem = Problem {
+        variables: bits
+            .iter()
+            .map(|name| Variable {
+                name: (*name).to_string(),
+                domain: vec![Value::Int(0), Value::Int(1)],
+            })
+            .collect(),
+        constraints: vec![Constraint {
+            id: "choose-exactly-two".into(),
+            form: Form::Linear {
+                terms: bits.iter().map(|name| (1, (*name).to_string())).collect(),
+                op: Op::Eq,
+                bound: 2,
+            },
+        }],
+    };
+    let objective: Vec<(i64, String)> = [3, 1, 4, 2]
+        .iter()
+        .zip(bits)
+        .map(|(cost, name)| (*cost, name.to_string()))
+        .collect();
+
+    let optimum = problem
+        .minimise(&objective)?
+        .expect("the selection has a solution");
+    assert_eq!(
+        optimum.objective, 3,
+        "premise: the cheapest two of 3, 1, 4, 2 cost 1 + 2"
+    );
+
+    let qubo = problem.to_qubo(&objective)?;
+    let report = SolverBenchmark::new(ClassicalSolver::exhaustive(20))
+        .with_solver(Arc::new(ProviderSolver::new(
+            Arc::new(SimulatedProvider::new(7)),
+            QaoaSettings {
+                layers: 2,
+                optimiser_iterations: 80,
+                shots: 0,
+            },
+        )))
+        .with_repeats(1)
+        .run(&qubo)?;
+
+    let quantum = report
+        .entrants
+        .iter()
+        .find(|record| record.kind == SolverKind::Quantum)
+        .expect("a quantum entrant ran on the constraint QUBO");
+    let solution = quantum
+        .usable_solution()
+        .expect("the quantum entrant produced a validated answer");
+    let decoded = problem.decode(&objective, solution.assignment())?;
+    assert_eq!(
+        decoded.objective, optimum.objective,
+        "the quantum answer decodes to a feasible assignment, but not the proven optimum"
+    );
+    assert_eq!(decoded.assignment, optimum.assignment);
     Ok(())
 }

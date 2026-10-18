@@ -183,7 +183,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
-use qip_risk::limits::{LimitSet, RiskState};
+use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
@@ -8505,7 +8505,7 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.governor.grant_decision();
+                let narrowing = self.grant_narrowing(now);
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -12124,6 +12124,18 @@ impl Platform {
                     );
                 }
             }
+            // The calibration objective, judged each cycle from the same card.
+            if let Some(breached) = crate::lattice_stage::calibration_slo_breached(
+                &card,
+                crate::lattice_stage::CALIBRATION_BRIER_BOUND,
+                crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
+            ) {
+                self.telemetry.metrics.gauge(
+                    crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
+                    labels([("horizon", horizon.as_str())]),
+                    if breached { 1.0 } else { 0.0 },
+                );
+            }
         }
         for inconsistency in &lattice.inconsistencies {
             self.telemetry.metrics.count(
@@ -12194,12 +12206,57 @@ impl Platform {
     /// the detail clause and the problems: each member assessment the
     /// federation refused, and a review the log refused, are findings the
     /// stage carries rather than silences.
+    /// What the causal graph's live claims into each instrument imply for its
+    /// next return (R12-WORLD-3040, -3042): each cause's latest return
+    /// carried over the claim's signed transmission, summed. An instrument no
+    /// live claim reaches is absent, and the federation's causal member says
+    /// it has nothing to go on rather than reading zero as "no move".
+    fn causal_views(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, crate::federation_stage::CausalView> {
+        let latest: BTreeMap<&String, f64> = self
+            .price_history
+            .iter()
+            .filter_map(|(subject, closes)| Self::returns_of(closes).last().map(|r| (subject, *r)))
+            .collect();
+        let world = self.world.read();
+        self.price_history
+            .keys()
+            .filter_map(|subject| {
+                let claims = world.causal().incoming(subject, now);
+                if claims.is_empty() {
+                    return None;
+                }
+                let lean: f64 = claims
+                    .iter()
+                    .filter_map(|edge| {
+                        latest
+                            .get(&edge.cause)
+                            .map(|moved| edge.signed_transmission() * moved)
+                    })
+                    .sum();
+                let confidence =
+                    claims.iter().map(|edge| edge.confidence).sum::<f64>() / claims.len() as f64;
+                Some((
+                    subject.clone(),
+                    crate::federation_stage::CausalView {
+                        lean,
+                        claims: claims.len(),
+                        confidence,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
         };
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
+        let causal_views = self.causal_views(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -12218,6 +12275,7 @@ impl Platform {
                 last_close: *last_close,
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
+                causal: causal_views.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -14287,6 +14345,7 @@ impl Platform {
                 realised_move_bps: outcome.realised_move_bps,
                 realised_pnl: outcome.realised_pnl,
                 expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
+                fills: self.fills_expressing(&outcome.hypothesis_id),
             });
             episode.known_at = now;
             if let Some(lesson) = self.write_research_memory(&episode, now) {
@@ -14296,6 +14355,33 @@ impl Platform {
             remembered += 1;
         }
         Ok((remembered, lessons))
+    }
+
+    /// The venue's fills on every remembered order that expressed
+    /// `hypothesis`, so an episode says what the platform did about its claim
+    /// and not only what it claimed. Matched through the attribution
+    /// lineage's belief key, which is stamped when the order is accepted; an
+    /// order whose lineage was evicted is not found, and the episode then
+    /// records no fill rather than a guessed one.
+    fn fills_expressing(&self, hypothesis: &str) -> Vec<qip_ai::memory::EpisodeFill> {
+        use qip_learning_engine::keyed_attribution::Dimension;
+        let orders: BTreeSet<String> = self
+            .attribution_lineage
+            .keys()
+            .into_iter()
+            .filter(|(_, keys)| keys.values(Dimension::Belief).contains(&hypothesis))
+            .map(|(order, _)| order)
+            .collect();
+        self.orders()
+            .fills()
+            .into_iter()
+            .filter(|fill| orders.contains(fill.order_id.as_str()))
+            .map(|fill| qip_ai::memory::EpisodeFill {
+                order_id: fill.order_id.to_string(),
+                quantity: fill.quantity,
+                price: fill.price,
+            })
+            .collect()
     }
 
     /// Write one resolved episode into the research organisation's memory,
@@ -14509,6 +14595,38 @@ impl Platform {
             BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
+    }
+
+    /// The contraction the next capital grant takes: the confidence
+    /// governor's, compounded with the centre's §6.2 sizing multiplier so a
+    /// grant narrows when the evidence the centre sizes on has gone stale
+    /// exactly as a construction does (R12-RISK-4113). Contraction only: the
+    /// multiplier is in `(0, 1]` by construction and the product is checked.
+    /// A freshness reading that cannot be taken refuses the grant rather than
+    /// signing it against a table nobody read.
+    pub(crate) fn grant_narrowing(
+        &self,
+        now: Timestamp,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let mut decision = self.governor.grant_decision()?;
+        let freshness = self.central_degradation(now)?.central_sizing_multiplier();
+        if freshness < Decimal::ONE {
+            decision.multiplier = decision.multiplier.checked_mul(freshness).ok_or_else(|| {
+                Error::numeric(
+                    "narrowing the capital grant by evidence freshness overflows".to_string(),
+                )
+            })?;
+            decision.contractions.push(crate::confidence::Contraction {
+                trigger: crate::confidence::Trigger::EvidenceFreshness,
+                subject: None,
+                multiplier: freshness,
+                reason: format!(
+                    "the evidence the centre sizes on is stale or unavailable (§6.2); the grant \
+                     is narrowed to {freshness}"
+                ),
+            });
+        }
+        Ok(decision)
     }
 
     /// Read the model registry for production models that have drifted past
@@ -18428,13 +18546,40 @@ impl Platform {
                 SETTLEMENT_CURRENCY,
             ) {
                 Ok(review) => {
-                    let required = review.maintenance_required - review.unobserved_maintenance();
-                    state.margin_utilisation = Some(if !required.is_positive() {
-                        0.0
-                    } else if review.cover_observed.is_positive() {
-                        required.to_f64() / review.cover_observed.to_f64()
-                    } else {
-                        f64::INFINITY
+                    // Each observed venue is its own isolated domain with
+                    // rehypothecation forbidden, so the figure is the worst
+                    // single venue: pooling cover let a surplus at one prime
+                    // hide a call at another. The same per-venue cover and
+                    // debit go to the limit as a basis, so it can charge the
+                    // order under check; this figure is the book as it stands.
+                    let model = MarginModel::default();
+                    let mut venues = BTreeMap::new();
+                    let mut worst = 0.0_f64;
+                    for coverage in &review.coverage {
+                        worst = worst.max(coverage.utilisation());
+                        // The coverage carries maintenance whole; the debit is
+                        // what is left once the rated gross is taken out, the
+                        // inverse of `cross_margin::requirement`.
+                        let gross = figures
+                            .axis_exposures()
+                            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+                            .and_then(|axis| axis.get(coverage.venue.as_str()))
+                            .copied()
+                            .filter(|gross| gross.is_positive())
+                            .unwrap_or(Decimal::ZERO);
+                        let debit = coverage.maintenance - gross * model.maintenance_rate;
+                        venues.insert(
+                            coverage.venue.as_str().to_string(),
+                            VenueMargin {
+                                cover: coverage.effective(),
+                                debit,
+                            },
+                        );
+                    }
+                    state.margin_utilisation = Some(worst);
+                    state.margin_basis = Some(MarginBasis {
+                        maintenance_rate: model.maintenance_rate,
+                        venues,
                     });
                 }
                 Err(error) => {
@@ -19614,6 +19759,10 @@ impl Platform {
         // covered when the pass began, and a candidate this call registers
         // must not erase the reason it was assessed.
         let targets = self.discovery_targets(now)?;
+        // The lead ledger's current ranking, so a source is scored on how far
+        // its facts have led the same fact elsewhere and not only on the age
+        // of the sample it was probed with (R12-DATA-2023).
+        self.data_finder.observe_leads(&self.source_leads.ranking());
         let decisions = self.data_finder.assess(candidates, probe, now)?;
         // Before the catalogue, and raised on failure: see
         // `source_lifecycle` for why a move the log does not hold must not
@@ -25195,6 +25344,60 @@ mod simulate_tests {
             .expect("an edge naming both ends is admitted");
     }
 
+    /// R12-WORLD-3042: the federation's causal member is fed only from a live
+    /// claim that reaches the instrument, and the figure is the cause's
+    /// latest move carried over the claim's signed transmission. Mutation:
+    /// drop the sign (`transmission()` for `signed_transmission()`) — the
+    /// substitution claim below then reads the wrong way round.
+    #[test]
+    fn the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission()
+     {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        feed_history(&mut platform, "MSFT", 80);
+        // Premise: with no claim in the graph no instrument has a causal view.
+        assert!(platform.causal_views(start()).is_empty());
+
+        platform
+            .world
+            .update(|world| {
+                world.claim_causal(
+                    qip_world_model::causal::CausalEdge::new(
+                        "MSFT",
+                        "AAPL",
+                        qip_world_model::causal::Mechanism::CompetitiveSubstitution,
+                        0.5,
+                        Duration::from_days(1),
+                        start(),
+                    )
+                    .expect("a strength in [0, 1] is admitted")
+                    .with_confidence(0.8)
+                    .expect("a confidence in [0, 1] is admitted"),
+                )
+            })
+            .expect("an edge naming both ends is admitted");
+        let views = platform.causal_views(start());
+        assert_eq!(views.len(), 1, "only the claimed effect has a view");
+        let view = views.get("AAPL").expect("AAPL is the claimed effect");
+        let moved = *Platform::returns_of(&platform.price_history["MSFT"])
+            .last()
+            .expect("MSFT has returns");
+        // Competitive substitution inverts the cause, at 0.5 * 0.8.
+        assert!(moved != 0.0, "the premise: the cause moved");
+        assert!(
+            (view.lean - (-0.4 * moved)).abs() < 1e-12,
+            "{view:?} {moved}"
+        );
+        assert_eq!(view.claims, 1);
+        assert!((view.confidence - 0.8).abs() < 1e-12);
+        // A claim not yet knowable is not read.
+        assert!(
+            platform
+                .causal_views(start().saturating_sub(Duration::from_days(1)))
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_shock_at_a_claimed_driver_reaches_a_position_the_factor_model_cannot_see() {
         // Blueprint §23.7's third row: "a shock at a driver, propagated
@@ -26222,6 +26425,82 @@ mod central_sizing_tests {
             multiplier(&platform),
             healthy,
             "the narrowing outlived the model"
+        );
+    }
+
+    /// R12-RISK-4113: a capital grant contracts when the evidence the centre
+    /// sizes on falls in freshness, and never widens past what the confidence
+    /// governor alone would sign. The platforms differ only in when their one
+    /// causal claim was recorded. Mutations: return the governor's decision
+    /// unchanged from `grant_narrowing` (the stale grant equals the fresh
+    /// one, and neither carries the contraction); multiply by the reciprocal
+    /// (the widening assertion fails).
+    #[test]
+    fn a_stale_causal_graph_narrows_the_next_capital_grant_below_a_fresh_one_and_neither_widens_it()
+    {
+        use crate::confidence::Trigger;
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let claim = |recorded_at: Timestamp| {
+            CausalEdge::new(
+                "ent-cause",
+                "ent-effect",
+                Mechanism::SupplyChain,
+                0.5,
+                Duration::from_days(1),
+                recorded_at,
+            )
+            .expect("a strength in [0, 1] is admitted")
+        };
+        let fresh = platform();
+        fresh
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))))
+            .expect("an edge naming both ends is admitted");
+        let stale = platform();
+        stale
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(365)))))
+            .expect("an edge naming both ends is admitted");
+
+        let governor_alone = fresh.governor.grant_decision().expect("the governor reads");
+        assert_eq!(
+            governor_alone.multiplier,
+            Decimal::ONE,
+            "premise: no measurement has contracted the governor's own grant"
+        );
+        let fresh_grant = fresh.grant_narrowing(now).expect("the grant reads");
+        let stale_grant = stale.grant_narrowing(now).expect("the grant reads");
+
+        assert!(
+            fresh_grant.multiplier < Decimal::ONE,
+            "belief and self-model are unavailable here, so even a fresh graph narrows"
+        );
+        assert!(
+            stale_grant.multiplier < fresh_grant.multiplier,
+            "a stale graph must narrow the grant below a fresh one: {} vs {}",
+            stale_grant.multiplier,
+            fresh_grant.multiplier
+        );
+        assert!(
+            stale_grant.multiplier <= governor_alone.multiplier,
+            "evidence freshness widened a grant"
+        );
+        for grant in [&fresh_grant, &stale_grant] {
+            assert!(
+                grant
+                    .contractions
+                    .iter()
+                    .any(|c| c.trigger == Trigger::EvidenceFreshness),
+                "the contraction is not named: {:?}",
+                grant.contractions
+            );
+        }
+        assert_eq!(
+            stale_grant.multiplier,
+            fresh_grant.multiplier * dec!("0.75"),
+            "the stale graph narrows by the row 2 factor and nothing else"
         );
     }
 
@@ -29559,6 +29838,7 @@ mod episodic_slot_tests {
                 realised_move_bps: 12.0,
                 realised_pnl: 250.0,
                 expected_move_bps: None,
+                fills: Vec::new(),
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,

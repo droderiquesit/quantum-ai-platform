@@ -986,12 +986,12 @@
   {
     "id": "R12-RISK-1043",
     "status": "PARTIAL",
-    "current": "Capital-fabric TransferIntent requires a stated purpose and passes a deterministic gate; transfers are journaled and simulated. No real money movement exists (paper only).",
+    "current": "A transfer reaches the fabric only as a FabricCommand::Gate carrying a TransferIntent, and Platform::decide_fabric (runtime/qip-kernel/src/platform.rs:8785) re-derives the corridor ruling the command states, runs the seven deterministic checks and journals the verdict. qip-api's FabricFeed applies an operator-declared command file through it; backend/crates/apps/qip-api/tests/fabric.rs proves from that composition-root seam that a transfer off the signed corridor set is vetoed under CorridorAuthority, that a generated transfer over any cap is vetoed whole and one under all caps is admitted at the amount asked (for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_...), and that a stated ruling the layer did not derive is refused. A veto is itself a record on the chain by design (a refusal is a decision), and no money moves: paper only. The capital engine's pre-positioning plan deliberately never becomes a TransferIntent (pre_positioning.rs module doc, ADR 0021).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/gate.rs:113 TransferIntent",
       "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:667 lane refused"
     ],
-    "gap": "Test from a composition root that a transfer exceeding the gate is refused before any journal entry.",
+    "gap": "No committed deployment declares a fabric command file (QIP_CAPITAL_FABRIC_PATH is wired through var.capital_fabric_file in catalogue.tf but that variable is null in every environment tfvars; dev carries it commented out at terraform.tfvars:426), so on every running root no TransferIntent is ever built and the gate is exercised only by the serving-desk tests. The grader's closure (build an intent per planned pre-positioning move in pre_position) was not implemented: a GateCommand carries three enforcement-point attestations that a human establishes out of band, and a machine minting them from its own plan would attest to itself. Closing needs an operator declaration mounted in a deployment (infrastructure/environments/** is a protected path) or an ADR changing ADR 0021's permitted half.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1002,7 +1002,7 @@
     "verification": "cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-edge; cargo test -p qip-capital-fabric",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
   },
   {
     "id": "R12-RISK-1044",
@@ -2706,12 +2706,15 @@
   },
   {
     "id": "R12-EXPAND-1118",
-    "status": "PARTIAL",
-    "current": "LEARN stage learns from cells (learn_from_cells).",
+    "status": "COMPLETE",
+    "current": "The LEARN stage learns from cells on every cycle: stage_learn -> review_strategies (Platform::review_strategies) takes CentralPlane::live_outcomes and calls Platform::learn_from_cells, which journals each retirement's disposition, or the refusal to guess one, under kernel/retirement in the same call that retired the strategy. qip-deepbrain, qip-api and qip-fastbrain drive the same Platform::run_cycle.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8524 learn_from_cells"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::learn_from_cells",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::review_strategies",
+      "runtime/qip-kernel/tests/central.rs::the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_journals_its_disposition",
+      "runtime/qip-kernel/tests/central.rs::an_automatic_retirement_schedules_every_lot_the_strategy_holds_for_unwinding_and_journals_it"
     ],
-    "gap": "Integrate reflex learning in deepbrain with a named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2719,10 +2722,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
+    "verification": "cd backend && cargo test -p qip-kernel --test central the_learn_stage_retires",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed by an existing test the grader did not find. The clause asks that a test assert the record; the kernel's central.rs test drives run_cycle alone (no learn_from_cells call), reads the kernel/retirement record back from the log and decodes it equal to the report's. Mutation: dropping the journal_record call for the Dispositioned arm in learn_from_cells -> 'one retirement, dispositioned once' left 0 right 1; restored and passing (1 passed). No deepbrain-local test was written: deepbrain adds no code between its run loop and Platform::run_cycle, so a copy of the kernel scaffolding there would assert the same call."
   },
   {
     "id": "R12-EXPAND-1119",
@@ -2910,13 +2913,14 @@
   },
   {
     "id": "R12-TICK-1128",
-    "status": "PARTIAL",
-    "current": "distil used by deepbrain learning desk; artefacts consumed by edge strategies.",
+    "status": "COMPLETE",
+    "current": "The replay digest now covers the distillation stage: a student is distilled (qip_training::distill::distil, the call the deep brain's learning desk makes every round) from features the recorded session's replayed book yields at every step (spread, touch imbalance; target microprice minus mid), and the digest hashes the student's serialised form plus its score at every step. The same bytes give the same digest twice, a student with one weight nudged gives another, and the digest is pinned.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:135",
-      "backend/crates/services/qip-training/tests/training.rs:942"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs a_mutated_distillation_stage_changes_the_digest_of_the_replay_it_learned_from",
+      "backend/crates/services/qip-training/src/distill.rs distil",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:135"
     ],
-    "gap": "Implement/integrate reflex-model distillation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2927,7 +2931,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutation, fired and restored: fitting the student to the observed labels instead of the teacher's soft targets (distill.rs relabelled = probe.clone()) moves the digest to b93351d1... and the test fails on the pinned constant. Premises asserted first: at least eight two-sided steps, features reproducible across two full runs, nudged weight changes digest. tick_replay: 4 passed, 0 failed. The register's 'reflex-model distillation' size L text was wider than its unmet clause; the clause is what this closes."
   },
   {
     "id": "R12-WORLD-1129",
@@ -4407,7 +4411,7 @@
       "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:112",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs"
     ],
-    "gap": "Belief/risk packs; deployment.",
+    "gap": "PolicyPayload slots are assembled in qip-api's mesh.rs, not in central/plane.rs, and risk_envelope is still Slot::unproduced there. Filling it needs a LimitSet -> qip_contracts::risk_envelope::RiskEnvelope mapping and a qip_edge::Cell apply seam that may only narrow the cell's limits; the edge side is the risk-and-execution domain, which asks for compliance_proof and security evidence and an explicit statement of the paper boundary, none of which this lane produced.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4418,7 +4422,7 @@
     "verification": "cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-REFLEX-1196",

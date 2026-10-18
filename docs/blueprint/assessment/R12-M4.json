@@ -158,13 +158,14 @@
   {
     "id": "R12-MODEL-4008",
     "status": "PARTIAL",
-    "current": "qip-twin prices counterfactual alternatives with the shared cost model; LEARN's score_filled measures twin-vs-venue fill error per fill into qip_venue_fill_error_bps. Nothing refits the twin from that error.",
+    "current": "The twin is recalibrated from the platform fills on the default path: Platform::score_filled (LEARN) feeds FillCalibration::observe one signed fill error per fill, FillCalibration::cost_model moves the twin half-spread by the per-venue bias, and the counterfactual alternatives are priced with the calibrated model. Proven in qip-twin by after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills and through the cycle by qip-kernel tests/learning.rs (the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue, a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue).",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs:48-71 Alternative",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
+      "backend/crates/services/qip-twin/src/calibration.rs FillCalibration::observe, cost_model",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fill_calibration field and the score_filled observe site",
+      "backend/crates/services/qip-twin/tests/futures.rs after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills",
       "backend/crates/runtime/qip-kernel/tests/learning.rs a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue"
     ],
-    "gap": "No calibration loop for queue/slippage/impact/latency/opportunity-decay parameters from telemetry or replay.",
+    "gap": "Same remainder as R12-TICK-2080: only the half-spread moves. Impact needs the fill participation passed from score_filled into FillCalibration (a platform.rs change in a file other lanes own) and a per-venue impact term; latency has no input because the simulated venue does not time acknowledgements; queue position and opportunity decay are not in the twin CostModel. Calibration against historical replay (as opposed to live paper fills) has no caller.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -172,10 +173,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "integration test: twin recalibrated from recorded fills",
+    "verification": "cargo test -p qip-twin --test futures; cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 L22: the row text said nothing refits the twin, which stopped being true when R12-TICK-2080 landed FillCalibration; text corrected, no code changed. A parallel CostModel::recalibrate_from_fills would duplicate FillCalibration, so it was not added."
   },
   {
     "id": "R12-MODEL-4009",
@@ -251,7 +252,7 @@
       "backend/crates/edge/qip-strategy/src/compile.rs strategy IR compiler",
       "backend/crates/services/qip-training/src/distill.rs:311 distil"
     ],
-    "gap": "Symbolic-predicate and representation compilation missing.",
+    "gap": "No predicate-to-strategy-IR compiler exists: the symbolic stage's validated rule packs (qip-reasoning-engine) are advisory data, and qip-strategy/compile.rs compiles the generator's candidates only. The compiler needs a defined mapping from Cond/Op/Value facts to the IR's Type and feature catalogue (which instruments' features a rule fact names) and a bounds contract, which is a design decision rather than a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -262,7 +263,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-MODEL-4013",
@@ -421,11 +422,14 @@
   {
     "id": "R12-MODEL-4020",
     "status": "PARTIAL",
-    "current": "The deep brain keeps a scoreboard by class and by Platform::regime_context and registers a challenger only where its precedent in the current regime beats the baseline; acceptance does not require cross-regime evidence.",
+    "current": "ModelCard records validated_regimes and training_bounds. ModelCard::decision_eligibility_in refuses a card used in a regime it was never validated in (when it names any). ModelRegistry::require_for_decision_in is the refusing call, and ineligible_in_regime is the listing. The deep brain's learning desk stamps every card it registers with the regime the round classified (Platform::regime_context) and each feature's min and max over the fitted-and-judged rows, and each round lists a promoted model in another regime as ineligible with 'never scored in <regime>'. A card with no recorded regime stays unrestricted, so cards that predate the field keep working. No decision-time caller passes a regime yet.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:244-260 choose_class per regime"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, regime_gap, ModelRegistry::require_for_decision_in, ineligible_in_regime",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope and the ineligible_in_regime call in learn()",
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs a_model_validated_in_one_regime_is_refused_in_another",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_model_fitted_in_one_regime_is_listed_ineligible_in_another"
     ],
-    "gap": "No cross-regime validation gate and no restriction of a model to its validated regimes.",
+    "gap": "The refusal is reported in the learning round and available at ModelRegistry::require_for_decision_in, but the decision-time admissions (qip_compliance ModelRiskRegister::admit via require_for_decision, the cost-router reputation filter) still call the regime-free decision_eligibility and carry no regime to pass. Nothing in a cell's pass reads validated_regimes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -433,10 +437,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: regime_gap returning None admits the calm-only card in the stressed regime (2 qip-ai tests fail); dropping the record_validation_scope call leaves the card with no recorded regime and the deepbrain round lists nothing (assertion left: []). Kept PARTIAL: the decision-time admissions are the remaining half."
   },
   {
     "id": "R12-MODEL-4021",
@@ -863,12 +867,13 @@
   {
     "id": "R12-QUANT-4040",
     "status": "PARTIAL",
-    "current": "qip-reasoning-engine's constraint Problem::to_qubo encodes 0/1 problems and is checked against classical minimise; no quantum solver is run on it.",
+    "current": "The constraint encoder Problem::to_qubo and its proven classical minimiser Problem::minimise are benchmarked against a quantum entrant: qip-kernel tests/symbolic_federation.rs runs a constraint QUBO through SolverBenchmark with the in-tree SimulatedProvider (QAOA statevector) beside the exhaustive baseline and checks the quantum answer decodes to the symbolic engine optimum. Foundry::platform records SymbolicCombinatorialSearch NotBuilt with a reason that now says what exists and why nothing routes it.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:249-312 classical baseline and to_qubo",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs QUBO vs minimise"
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum",
+      "backend/crates/services/qip-reasoning-engine/src/constraint.rs to_qubo, minimise, decode",
+      "backend/crates/libs/qip-quantum/src/foundry.rs Foundry::platform symbolic reason"
     ],
-    "gap": "No quantum dispatch or benchmark for this family.",
+    "gap": "No problem the cycle poses is QUBO-admissible: symbolic_stage::acting() (the only constraint Problem in the kernel) has Boolean single-value domains and Or-conditions, which to_qubo refuses by name, so the grader closure that solves acting() through a Benchmark cannot be done as written. The family stays NotBuilt on purpose: model_serving promotes a Registered family, so registering one with no production caller would assert a quantum benefit path that nothing runs. Closing needs the symbolic stage to pose a 0/1 linear-equality problem each cycle and route it through ComputeRouter, with the benchmark result journaled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -876,10 +881,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum; cargo test -p qip-quantum --test foundry",
     "work_item": "",
     "size": "M",
-    "notes": "Foundry::platform records SymbolicCombinatorialSearch as 'not built: no encoding, baseline or benchmark exists in-tree'; the code contradicts that — an encoding and its classical baseline exist in qip-reasoning-engine."
+    "notes": "2026-10-18 L22: test and reason added; kept PARTIAL. Mutation: remove the equality penalty block from Problem::to_qubo - the quantum answer no longer decodes and the test fails; restored byte for byte."
   },
   {
     "id": "R12-QUANT-4041",
@@ -1828,14 +1833,14 @@
   {
     "id": "R12-CAPITAL-4084",
     "status": "PARTIAL",
-    "current": "Corridor holds six caps with a signed, delayed lifecycle; gate.rs checks a TransferIntent (seven checks) against it; the kernel reads corridor funding standing but no kernel path builds or gates a TransferIntent, and no transfer executes.",
+    "current": "A transfer reaches the fabric only as a FabricCommand::Gate carrying a TransferIntent, and Platform::decide_fabric (runtime/qip-kernel/src/platform.rs:8785) re-derives the corridor ruling the command states, runs the seven deterministic checks and journals the verdict. qip-api's FabricFeed applies an operator-declared command file through it; backend/crates/apps/qip-api/tests/fabric.rs proves from that composition-root seam that a transfer off the signed corridor set is vetoed under CorridorAuthority, that a generated transfer over any cap is vetoed whole and one under all caps is admitted at the amount asked (for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_...), and that a stated ruling the layer did not derive is refused. A veto is itself a record on the chain by design (a refusal is a decision), and no money moves: paper only. The capital engine's pre-positioning plan deliberately never becomes a TransferIntent (pre_positioning.rs module doc, ADR 0021).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:357 Corridor",
       "backend/crates/services/qip-capital-fabric/src/gate.rs:113,697 TransferIntent / checks_passed",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8399 corridor_funding",
       "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs"
     ],
-    "gap": "Route every paper transfer decision through the gate in the kernel; actual movement BLOCKED by ADR 0003/0021.",
+    "gap": "No committed deployment declares a fabric command file (QIP_CAPITAL_FABRIC_PATH is wired through var.capital_fabric_file in catalogue.tf but that variable is null in every environment tfvars; dev carries it commented out at terraform.tfvars:426), so on every running root no TransferIntent is ever built and the gate is exercised only by the serving-desk tests. The grader's closure (build an intent per planned pre-positioning move in pre_position) was not implemented: a GateCommand carries three enforcement-point attestations that a human establishes out of band, and a machine minting them from its own plan would attest to itself. Closing needs an operator declaration mounted in a deployment (infrastructure/environments/** is a protected path) or an ADR changing ADR 0021's permitted half.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1846,7 +1851,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
   },
   {
     "id": "R12-CAPITAL-4085",
@@ -2076,7 +2081,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:15898 shared_cause::observe",
       "backend/crates/libs/qip-risk/tests/shared_cause.rs"
     ],
-    "gap": "Learned/AI risk discovery.",
+    "gap": "Not reached in this session. The closure asks for one test asserting CentralPlane.crowded and shared_cause findings in a single cycle's report; tests/central.rs has crowded tests (lines 642, 6565) and none over shared_cause, so the combined fixture still has to be built.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2087,7 +2092,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4095",
@@ -2158,13 +2163,15 @@
   {
     "id": "R12-RISK-4098",
     "status": "COMPLETE",
-    "current": "LimitKind::MaxMarginUtilisation (maintenance required over post-haircut observed cover) and LimitKind::MinFundingBuffer (equity left after held capital and the survival waterfall's funding-maturity tier) exist beside MaxLeverage/MaxConcentration/MinCashBuffer. Platform::risk_state_from fills both through with_margin_and_funding from cross_margin::review and the SurvivalGovernor's funding read, so submit_order refuses an order that raises gross while utilisation is past 1.0 or the buffer under its floor, and never refuses one that sheds gross. Both ship in LimitSet::conservative_default and are dormant on a book with no venue statement or no commitment (the figure stays absent and records nothing).",
+    "current": "LimitKind::MaxMarginUtilisation (maintenance required over post-haircut cover at the worst single observed venue, each venue being an isolated domain, recomputed by the limit from the projected counterparty axis so the order under check is charged) and LimitKind::MinFundingBuffer (equity left after held capital and the survival waterfall's funding-maturity tier) exist beside MaxLeverage/MaxConcentration/MinCashBuffer. Platform::risk_state_from fills both through with_margin_and_funding from cross_margin::review and the SurvivalGovernor's funding read, so submit_order refuses an order that raises gross while utilisation is past 1.0 or the buffer under its floor, and never refuses one that sheds gross. Both ship in LimitSet::conservative_default and are dormant on a book with no venue statement or no commitment (the figure stays absent and records nothing).",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:246 MaxMarginUtilisation, :258 MinFundingBuffer, RiskState::margin_utilisation/funding_buffer, evaluate arms and the sheds_gross exemption",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18202 with_margin_and_funding (called from risk_state_from)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn with_margin_and_funding (called from risk_state_from; cited by symbol because the line moves)",
       "backend/crates/runtime/qip-kernel/src/survival.rs:760 SurvivalGovernor::funding_read, set by size and seed",
       "backend/crates/runtime/qip-kernel/tests/margin_funding_limits.rs",
-      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs a_book_inside_its_margin_utilisation_limit_passes .. a_book_below_the_funding_floor_is_vetoed"
+      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs a_book_inside_its_margin_utilisation_limit_passes .. a_book_below_the_funding_floor_is_vetoed",
+      "backend/crates/runtime/qip-kernel/tests/margin_funding_limits.rs::spare_cover_at_another_prime_does_not_hide_a_margin_call_at_the_desk_venue, the_order_that_takes_a_covered_book_into_a_margin_call_is_refused_itself",
+      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs::a_call_at_one_isolated_venue_breaches_the_margin_rule_whatever_other_venues_hold, the_margin_rule_charges_the_projected_gross_of_the_order_under_check"
     ],
     "gap": "",
     "implemented": true,
@@ -2177,17 +2184,18 @@
     "verification": "cd backend && cargo test -p qip-risk --test limit_fixtures && cargo test -p qip-kernel --test margin_funding_limits",
     "work_item": "",
     "size": "M",
-    "notes": "Dormant by construction on every committed deployment: no venue statement is handed in and no private commitment is declared, so neither figure is filed and neither rule records anything; each fires as soon as a statement or commitment exists. Margin utilisation is over observed venues only (unread venues stay the cross-margin finding's). Both figures describe the book before the order, so the rules refuse risk-raising orders after a call or shortfall exists, not the order that opens it. Mutations that fired: margin figure left unset, sheds_gross exemption dropped, funding tier not subtracted, unobserved maintenance folded into utilisation, MinFundingBuffer removed from is_minimum."
+    "notes": "Dormant by construction on every committed deployment: no venue statement is handed in and no private commitment is declared, so neither figure is filed and neither rule records anything; each fires as soon as a statement or commitment exists. Margin utilisation is over observed venues only (unread venues stay the cross-margin finding's). The funding buffer describes the book before the order, so that rule refuses risk-raising orders after a shortfall exists, not the order that opens it; the margin rule charges the order's own gross before comparing. Mutations that fired: margin figure left unset, sheds_gross exemption dropped, funding tier not subtracted, unobserved maintenance folded into utilisation, MinFundingBuffer removed from is_minimum. Corrected 2026-10-18 (review of #236, findings 1-3, 9): the figure was one ratio pooled over every observed venue and read before the order; it is now the worst single venue and recomputed from the projected counterparty axis (RiskState::margin_basis). The line citation is replaced by the symbol."
   },
   {
     "id": "R12-RISK-4099",
     "status": "PARTIAL",
-    "current": "ModelCard::decision_eligibility refuses on drift, failed or stale evaluation; ModelRiskRegister in qip-compliance; deep brain tracks drifted features. Adversarial inputs and regime mismatch not covered.",
+    "current": "ModelCard::decision_eligibility_in now refuses, beyond drift, failed or stale evaluation, an input that is not a finite number, one outside the (min, max) the fit saw for that feature (ModelCard.training_bounds, built with with_training_bounds, which refuses an inverted or non-finite range and a feature the card does not consume), a bounded feature with no input, and a regime the card was never validated in. The deep brain stamps every registered card with the bounds and regime, and each learning round checks the newest feature row against its standing models of the subject and lists any that fail.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:336-361",
-      "backend/crates/libs/qip-compliance/src/model_risk.rs"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, with_training_bounds",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope, and the latest-row check feeding ineligible_in_regime in learn()",
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through"
     ],
-    "gap": "Adversarial-input and regime-mismatch checks.",
+    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2195,10 +2203,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020."
   },
   {
     "id": "R12-RISK-4100",
@@ -2311,14 +2319,17 @@
   },
   {
     "id": "R12-RISK-4105",
-    "status": "PARTIAL",
-    "current": "Each DECIDE runs the Hedge Brain (platform.rs:14906 -> run_hedge_brain, :16605-16640), whose ExposureSurvey reads drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail (backend/crates/runtime/qip-kernel/src/hedge.rs:179-230). Greeks are delta only, with gamma and vega reported unmeasured; correlation is one mean pairwise figure.",
+    "status": "COMPLETE",
+    "current": "Each DECIDE runs the Hedge Brain (Platform::run_hedge_brain -> hedge::plan), whose ExposureSurvey reads drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail. Gamma and vega are a measured Some(0.0) when every held position is a catalogued linear instrument (hedge::is_linear: stock, preferred, receipt, ETF, index, future, forward, FX spot/forward, commodity spot/future) and None, named in unmeasured(), when the book holds anything else or an instrument absent from the catalogue. Correlation is reported as the mean and as the strongest held pairs (ExposureSurvey::pair_correlations, at most 16, by absolute value with name tie-break).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/hedge.rs:179-230",
-      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reads_every_listed_axis_and_names_what_it_cannot_measure",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14906"
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::book_option_greeks",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::is_linear",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::correlations",
+      "runtime/qip-kernel/src/hedge.rs::tests::a_linear_book_has_a_measured_zero_gamma_and_vega_and_anything_else_has_none",
+      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reports_each_correlated_pair_and_not_only_their_mean",
+      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reads_every_listed_axis_and_names_what_it_cannot_measure"
     ],
-    "gap": "Measure the book's gamma and vega (and per-pair correlation exposure) rather than reporting them unmeasured.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2326,10 +2337,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib hedge::",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Lane commit efb437af states gamma/vega unmeasured; confirmed."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations that fired: forcing the linear branch off -> the measured-zero assertion fails; admitting Option in is_linear -> the not-known-linear loop fails; replacing the catalogue-type test with true -> the hedge-fund holding reads measured and the test fails; reversing the pair sort and clearing the pairs each fail the pair test; all restored (qip-kernel: 957 passed, 0 failed). Limit stated: the catalogue carries no per-position option sensitivities, so a book that holds an option reports gamma and vega unmeasured, not computed; the committed universe holds only common stock, so every running root measures them as zero."
   },
   {
     "id": "R12-RISK-4106",
@@ -2481,7 +2492,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_split_panel_shrinks_the_size_of_the_thesis_it_split_on",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving dissent through the cycle into the sizing budget and the next grant, mutation-verified; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: split-panel dissent driven through REASON into SurvivalGovernor::size and Platform::issue_capital is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2492,20 +2503,20 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4113",
-    "status": "PARTIAL",
-    "current": "DegradationState::sizing_multiplier compounds stale causal-graph and belief rows at the edge and, with the self-model row, at the centre; both sizes narrow and never widen. Capital envelopes do not contract.",
+    "status": "COMPLETE",
+    "current": "DegradationState::central_sizing_multiplier now narrows the next capital grant as well as the construction: Platform::issue_capital takes Platform::grant_narrowing (platform.rs), the confidence governor's grant decision compounded with the centre's freshness multiplier (causal graph, belief state and self-model rows) and records the contraction as Trigger::EvidenceFreshness in the grant entry's detail. The multiplier is in (0,1] and the product is checked, so a grant narrows and never widens. A reading that cannot be taken refuses the grant.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/degradation.rs:776-788",
-      "backend/crates/edge/qip-edge/src/cell.rs:4773-4784",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12801",
-      "backend/crates/libs/qip-contracts/tests/contracts.rs:1478 a_causal_graph_beyond_its_horizon_reads_stale_and_narrows_central_sizing",
-      "backend/crates/edge/qip-edge/tests/telemetry.rs:334"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::grant_narrowing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::issue_capital",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs::Trigger::EvidenceFreshness",
+      "runtime/qip-kernel/src/platform.rs::central_sizing_tests::a_stale_causal_graph_narrows_the_next_capital_grant_below_a_fresh_one_and_neither_widens_it",
+      "runtime/qip-kernel/tests/central.rs::decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant"
     ],
-    "gap": "Grant (envelope) contraction on freshness.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2513,10 +2524,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib a_stale_causal_graph_narrows && cargo test -p qip-kernel --test central",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed. Behaviour change to state plainly: a platform whose causal graph, beliefs and self-model have never been produced now signs 0.1875 of the allocation (central_sizing_multiplier: belief 0.5 x self-model 0.5 x graph 0.75), as its construction budget already narrowed; a grant widens only as those rows read fresh. Mutations: disabling the freshness branch in grant_narrowing -> the fresh-graph premise fails; restoring issue_capital to the governor's decision alone -> central.rs 'only the evidence-freshness contraction bites' fails; both restored (qip-kernel 965 passed, 0 failed; qip-acceptance security, vertical_slice_ship, api_boundary pass). qip-api's own test binaries were not run: the container disk filled while building them."
   },
   {
     "id": "R12-RISK-4114",
@@ -2553,7 +2564,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_regime_never_graded_in_shrinks_the_size",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving a regime mismatch into the sizing budget and the next grant; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: the regime-mismatch narrowing of size and the next grant is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2564,7 +2575,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4116",

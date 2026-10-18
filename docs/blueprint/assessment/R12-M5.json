@@ -627,25 +627,26 @@
   },
   {
     "id": "R12-LEDGER-5028",
-    "status": "PARTIAL",
-    "current": "Cell journal records PolicyApplied with payload sequence (backend/crates/libs/qip-contracts/src/reflex.rs:265) so versions in force are recoverable from the chain; plan admission checks model digest against trained_models manifest (backend/crates/edge/qip-edge/src/cell.rs:3318). OrderSent/Filled decisions do not carry version ids themselves (reflex.rs:148-207); OpportunityEpoch carries model_versions (backend/crates/services/qip-mesh/src/peer.rs:189) but is unintegrated.",
+    "status": "COMPLETE",
+    "current": "The journal now names every version an order was sent under. PolicyApplied records the payload sequence (which carries the risk envelope and feasibility slots); PlanAdmitted, new, records each admitted strategy's deployment digest and each inline model's own digest, written in Cell::install and again when Cell::classify changes the digest; StrategyWithdrawn ends a plan; OrderSent records the grants it drew on. qip_edge::replay::versions_in_force reads the entries in sequence and names, at each OrderSent, the policy sequence, the plans and models in force and the grants.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/reflex.rs:265 PolicyApplied",
-      "backend/crates/edge/qip-edge/src/cell.rs:3318 check_models_promoted",
-      "backend/crates/services/qip-mesh/src/peer.rs:189 model_versions"
+      "backend/crates/libs/qip-contracts/src/reflex.rs:444 Decision::PlanAdmitted",
+      "backend/crates/edge/qip-edge/src/cell.rs:3592 install journals the admission; :3684 classify re-journals; :3746 plan_admitted names plan and model digests",
+      "backend/crates/edge/qip-edge/src/replay.rs:41 versions_in_force",
+      "backend/crates/edge/qip-edge/tests/replay.rs:125 deploying_a_plan_with_a_model_journals_the_plan_digest_and_the_model_digest; :184 the_versions_in_force_at_each_order_are_named_from_the_journal_alone; :261 an_order_before_any_policy_or_plan_is_named_with_no_version_rather_than_a_guess"
     ],
-    "gap": "Stamp each decision (or each pass) with plan digest, model digests, grant and risk-limit versions; test reconstructing versions per order from the journal.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new qip-edge test: replay journal, assert versions per OrderSent",
+    "verification": "cargo test -p qip-edge --test replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. Mutations: not journaling the admission in install fails the deploy test (0 admissions, expected 1); dropping the PolicyApplied arm of the reader fails the reader test (None, expected Some(7)); not removing a plan on StrategyWithdrawn fails it at the last order (alpha still in force). Limits of the claim: risk limits are named by the policy sequence, not restated, and CapitalRenewed still records approver and expiry only; the reader is a library function with no binary calling it, so replay is by an auditor's tooling, not a node subcommand."
   },
   {
     "id": "R12-REFLEX-5029",
@@ -1263,15 +1264,14 @@
   {
     "id": "R12-MESH-5055",
     "status": "PARTIAL",
-    "current": "The net edge deducts a path-wide funding line (size × funding_rate_annual_f64 × holding period; EdgeAssumptions default 0.05, netedge.rs:105-136, :191-252). It also deducts a per-edge 'measured borrow' Funding line summed from EdgeCosts.borrow_rate_annual over the holding period (netedge.rs:56-58, :344-373). The edge node copies per-conversion borrow from the signed whitelist's WhitelistedCosts (apps/qip-edge-node/src/arbitrage.rs:212-237; libs/qip-contracts/src/policy.rs:603-632). No producer anywhere constructs WhitelistedCosts (grep finds only the struct), so every production conversion is priced at zero borrow. The cell's own funding/borrow state (edge/qip-edge/src/cell.rs:1596-1607, funding.rs) is not fed to the desk.",
+    "current": "A stated borrow_rate_annual now travels from ArbitragePolicy (WhitelistedMarket.costs) onto both conversions of the book and the cell charges it over the holding period (qip-edge-node arbitrage.rs, qip-arbitrage netedge); the centre no longer ships a zero borrow where an operator states one. The carry assumption is still the path-wide constant.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/netedge.rs:344",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:242",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:218",
-      "backend/crates/libs/qip-contracts/src/policy.rs:621",
-      "edge/qip-arbitrage/tests/edge_costs.rs::a_measured_borrow_rate_is_charged_over_the_holding_period"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs WhitelistedMarket.costs, ArbitragePolicy::validate_costs, whitelist_for",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:241 the cell prices the stated costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs net falls by each stated figure"
     ],
-    "gap": "Feed measured funding/borrow per edge: a centre producer of WhitelistedCosts, or wiring the cell's funding state into EdgeCosts. Replace the constant path-wide 5% assumption with a measured carry.",
+    "gap": "The borrow rate is stated, not measured: the centre holds no funding state, qip-edge's funding.rs is not fed into EdgeCosts at the desk refresh, and the path-wide 5% carry is still a constant assumption. No committed deployment states a borrow rate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1279,21 +1279,22 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --lib central::whitelist && cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The test asserts the borrow line equals the hand-computed figure and that net falls. It does not assert net falls by exactly that figure, which the verification asks for. The deduction arithmetic is real; its input is never measured."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: whitelist_for shipping costs: None -> the carried-costs assertion fails."
   },
   {
     "id": "R12-MESH-5056",
     "status": "PARTIAL",
-    "current": "EdgeCosts (tax_duty_fraction, logistics_fraction, ...) on every conversion, charged as named net-edge deductions with tests; node installer maps payload WhitelistedCosts. The centre's whitelist builder ships costs: None, and an unset ArbitragePolicy emits an empty whitelist.",
+    "current": "The centre can now ship per-conversion duty, logistics, settlement-risk and fill figures: WhitelistedMarket.costs is validated against the cell's own ranges and carried by whitelist_for on both conversions of the book; the cell prices them and the net edge falls by exactly each figure (qip-arbitrage edge_costs.rs).",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:374",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs::EdgeCosts",
-      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs::whitelist_for"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs WhitelistedMarket.costs, ArbitragePolicy::validate_costs, whitelist_for",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:241 the cell prices the stated costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs net falls by each stated figure"
     ],
-    "gap": "No producer states tax/duty or logistics costs in production; arbitrage desk off unless operator policy set.",
+    "gap": "No committed deployment states any costs: CentralConfig::arbitrage is unset or states none in every committed environment, so each production edge still ships costs: None. The figures are an operator's statement, not a measurement, and tax/duty needs a jurisdictional source this repository does not hold.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1301,10 +1302,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --lib central::whitelist && cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: whitelist_for shipping costs: None -> the carried-costs assertion fails."
   },
   {
     "id": "R12-MESH-5057",
@@ -2069,16 +2070,13 @@
   {
     "id": "R12-COMMERCE-5090",
     "status": "PARTIAL",
-    "current": "qip_financial::commerce_resale::UnitAttributes::new refuses a unit record missing any of twelve named attributes (commerce_resale.rs:25-80). The kernel's CommerceResearch builds that record once per received unit (commerce_research.rs:687-690 calling unit_attributes at :799-860) inside the cycle (breadth.rs:318, :363), installed from qip-deepbrain main.rs:321 via QIP_DEEPBRAIN_BREADTH_PLAN (opt-in; breadth.rs:26/31). The live per-unit state (condition, location, state) is in the event-sourced Ledger (commerce.rs:643-738). But the twelve-attribute record is a receipt-time snapshot of strings: condition is hard-coded \"new\" and inventory_state \"held\" (commerce_research.rs:808-811) and self.attributes is only ever inserted (:687), never updated on sale, move or return; payment_chargeback_risk is always Absent (commerce_research.rs:844-850).",
+    "current": "Each unit received by the commerce research plane carries all twelve attributes, and its condition, location and inventory state are now read from the commerce Ledger record at receipt and refreshed after every sale and return (CommerceResearch::refresh_attributes), so a sold unit reads sold and a returned one open_box instead of the literals new/held written once at receipt. Payment and chargeback risk remains explicitly Absent with its reason.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/commerce_resale.rs:25-80",
-      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:687-690",
-      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:799-860",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:321",
-      "qip-financial/tests/commerce_resale.rs::a_unit_record_missing_any_of_the_twelve_attributes_is_refused_naming_it_and_a_full_one_is_kept",
-      "qip-kernel/tests/breadth.rs::commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle"
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs unit_attributes (ledger-derived), refresh_attributes, condition_name, state_name",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_tracked_state_follows_the_ledger_after_it_is_sold",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle"
     ],
-    "gap": "Keep the attribute record current with the ledger (inventory_state/condition/location after Sold, Moved, Returned events) or derive it from the ledger; model payment/chargeback risk rather than marking it Absent; a deployment that sets the breadth plan (none does).",
+    "gap": "Chargeback risk is still never computed: the plan terms (fees, returns, customs, storage, logistics) carry no payment-network or merchant settlement term to derive a rate from, so a number would be invented; the attribute stays Absent with a reason. The plane also runs only under QIP_DEEPBRAIN_BREADTH_PLAN, which no committed environment sets (grep of infrastructure finds none).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2086,10 +2084,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test commerce --test commerce_resale --test commerce_purchase",
+    "verification": "cargo test -p qip-kernel --test breadth",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The kernel test only asserts each attribute name is present (breadth.rs:578-581); it would pass with a stale or wrong value. The feed is SyntheticCommerceFeed only."
+    "notes": "2026-10-18 L22: stale-record half closed, chargeback half kept PARTIAL. Mutation: delete the refresh_attributes call after take_return_owed - a sold unit still reads held and the test fails; restored byte for byte. The record is also moved at the unit_attributes call site now: it fails closed when the ledger does not hold the unit rather than inventing one."
   },
   {
     "id": "R12-COMMERCE-5091",
@@ -2267,7 +2265,7 @@
       "qip-kernel/src/asset_class_registry.rs::tests::an_fx_forward_is_spot_carried_along_both_curves",
       "qip-kernel/src/asset_class_registry.rs::tests::withdrawing_a_class_makes_its_instruments_refused_by_the_same_admission"
     ],
-    "gap": "An FX forward instrument priced by covered_interest_forward on the production valuation path and traded on paper; funding and currency conversion reached from the cycle (multi-currency FxRates, bank conversions); a test trading an FX forward.",
+    "gap": "Not reached in this session. covered_interest_forward is read nowhere in production per the grader (asset_class_registry.rs defines it), the kernel builds FxRates with USD only, and qip_capital::bank::convert has no kernel or app caller; pricing a tenor-bearing ForeignExchange instrument also needs a tenor and the two currencies' rates from somewhere the universe record has not been shown to carry.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2278,7 +2276,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here."
+    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-COVERAGE-5099",
@@ -2329,7 +2327,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:584"
     ],
-    "gap": "Shipping/storage economics linked to commodity valuation.",
+    "gap": "Not reached in this session. The Commodity record is a TermStructure label (asset_class_registry.rs) and qip_financial::physical models landed cost for commerce legs (customs, spoilage, marketplace fees); whether any of those fields is storage-and-freight carry on a futures curve is a modelling decision to make before the wiring.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2340,7 +2338,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-COVERAGE-5102",

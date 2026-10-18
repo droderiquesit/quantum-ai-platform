@@ -426,6 +426,10 @@ pub struct TickDesk {
     outputs: Arc<dyn BlobStore>,
     rounds: u64,
     tree: Option<FutureTree>,
+    /// The strongest fused posterior per instrument from the last round
+    /// (`FusedState::posteriors`), which the evolution engine reads as a
+    /// search prior (R12-TICK-2085).
+    posteriors: BTreeMap<String, f64>,
 }
 
 impl TickDesk {
@@ -440,11 +444,17 @@ impl TickDesk {
             outputs,
             rounds: 0,
             tree: None,
+            posteriors: BTreeMap::new(),
         }
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
         &self.config
+    }
+
+    /// What the last round's fused events believe about each instrument.
+    pub const fn posteriors(&self) -> &BTreeMap<String, f64> {
+        &self.posteriors
     }
 
     /// The synthetic future tree the last round grew.
@@ -742,6 +752,7 @@ impl TickDesk {
             max_events: 1_024,
         };
         let fused = fuse(graph, &traces, now, &fusion_config)?;
+        self.posteriors = fused.posteriors();
         round.fused_events = fused.events.len();
         round.mismatches = fused.mismatches().len();
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;

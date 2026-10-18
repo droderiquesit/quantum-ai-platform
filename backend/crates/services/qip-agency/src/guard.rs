@@ -489,6 +489,14 @@ impl ActionGuard {
             .iter()
             .map(|c| (c.step.tool.as_str(), c.channel.as_str(), c.cost_units))
             .collect();
+        // The caller is the goal's acting identity. A tool declares who may
+        // invoke it, and a plan that names a tool its identity may not call
+        // is refused before the first step, not after the rate and budget
+        // have been looked at.
+        for step in &cleared {
+            self.registry
+                .permits_caller(&step.step.tool, &goal.acting_identity)?;
+        }
         self.registry.admits_all(pass.rate_window, &actions)?;
         let mut admitted = Vec::with_capacity(cleared.len());
         for (index, (staged, face)) in cleared.into_iter().zip(&faces).enumerate() {

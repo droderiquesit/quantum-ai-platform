@@ -534,6 +534,9 @@ pub fn run_with(
         // between cycles for the same reason the archive writes there: a
         // round's backtests are work the cycle's budget never promised.
         if let Some(engine) = evolution.as_deref_mut() {
+            if let Some(desk) = loops.tick.as_deref() {
+                engine.set_priors(desk.posteriors().clone());
+            }
             outcome.evolution = engine.maybe_turn(platform, cycles, now)?;
             // After the search, on its own cadence. A model fitted from this
             // cycle's bars and a strategy searched over them describe the same

@@ -282,6 +282,29 @@ fn dataset_name(subject: &ObjectId) -> String {
 /// because a model fitted across two instruments has no single window its
 /// drift could honestly be measured against, and guessing one is precisely the
 /// failure this function exists to stop.
+/// Write what a fit was validated on onto its card: the regime the round
+/// classified, and the range each feature took in the rows it was fitted and
+/// judged on (the holdout tail is validation evidence too).
+/// Both are read by `ModelRegistry::ineligible_in_regime`, so a standing model
+/// is flagged in a regime it was never scored in and on inputs it would have
+/// to extrapolate to answer.
+fn record_validation_scope(
+    card: &mut ModelCard,
+    regime: &str,
+    fitted_on: &TrainingDataset,
+) -> Result<()> {
+    card.validated_regimes.insert(regime.to_string());
+    let mut bounds = BTreeMap::new();
+    for (index, name) in fitted_on.feature_names().iter().enumerate() {
+        let column = fitted_on.rows().iter().map(|row| row[index]);
+        let low = column.clone().fold(f64::INFINITY, f64::min);
+        let high = column.fold(f64::NEG_INFINITY, f64::max);
+        bounds.insert(name.clone(), (low, high));
+    }
+    *card = card.clone().with_training_bounds(bounds)?;
+    Ok(())
+}
+
 fn card_subject(card: &ModelCard) -> Option<&str> {
     let mut found: Option<&str> = None;
     for dataset in &card.training_datasets {
@@ -1126,6 +1149,14 @@ impl LearningDesk {
         }
         self.stats.rounds += 1;
         let columns = feature_columns(bars);
+        // The newest feature row stands for the inputs the standing models
+        // would be asked about next: a model is judged in the regime this
+        // round classified and on a window it was not fitted to extrapolate
+        // across (R12-MODEL-4020, R12-RISK-4099).
+        let latest: BTreeMap<String, f64> = columns
+            .iter()
+            .filter_map(|(name, column)| column.last().map(|value| (name.clone(), *value)))
+            .collect();
         // Every comparison below is scoped to this instrument. A model fitted
         // on another one is left alone this round, not measured against these
         // bars; it is measured when its own subject next comes round.
@@ -1280,7 +1311,9 @@ impl LearningDesk {
 
         let ineligible = self
             .registry
-            .ineligible(now)
+            .ineligible_in_regime(now, regime, |card| {
+                (card_subject(card) == Some(on_subject)).then_some(&latest)
+            })
             .into_iter()
             .map(|(card, reason)| format!("{}: {reason}", card.reference()))
             .collect();
@@ -1513,6 +1546,7 @@ impl LearningDesk {
         let lineage = FeatureLineage::of(bars, now);
         if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
             lineage.record_on(card);
+            record_validation_scope(card, regime, &dataset)?;
         }
         let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         // Skill is judged by the evaluator from the predictions each class
@@ -1530,11 +1564,7 @@ impl LearningDesk {
                 .skilled)
         };
         let baseline_skilled = judged(&baseline)?;
-        let challenger_skilled = challenger
-            .as_ref()
-            .ok()
-            .map(|teacher| judged(teacher))
-            .transpose()?;
+        let challenger_skilled = challenger.as_ref().ok().map(judged).transpose()?;
         self.classes.observe(Outcome::binary(
             BASELINE_CLASS.as_str(),
             regime,
@@ -1573,6 +1603,7 @@ impl LearningDesk {
                 )?;
                 if let Some(card) = self.registry.get_mut(&registration.reference) {
                     lineage.record_on(card);
+                    record_validation_scope(card, regime, &dataset)?;
                 }
                 registration
             }
@@ -2751,6 +2782,78 @@ mod tests {
             "the model was refused for some other reason: {}",
             refusal.message()
         );
+        Ok(())
+    }
+
+    /// R12-MODEL-4020, R12-RISK-4099. A card the desk registers records the
+    /// regime it was judged in and the range each feature took in its fitting
+    /// rows, and a round in another regime lists the promoted model as
+    /// ineligible there while the regime it was validated in does not.
+    ///
+    /// Mutation: dropping the `record_validation_scope` call after
+    /// `lineage.record_on` for the baseline leaves the card with no recorded
+    /// regime, so the stressed round lists nothing and the last assertion
+    /// fails.
+    #[test]
+    fn a_model_fitted_in_one_regime_is_listed_ineligible_in_another() -> Result<()> {
+        const STRESSED: &str = "reversal/stressed";
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        if desk.registry_mut().promote(&reference, at()).is_err() {
+            return Err(Error::invalid(
+                "the fit did not clear the skill bar, so this test cannot reach a promoted card",
+            ));
+        }
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the registered card"))?;
+        assert_eq!(
+            card.validated_regimes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![REGIME]
+        );
+        assert_eq!(
+            card.training_bounds.keys().cloned().collect::<Vec<_>>(),
+            card.features
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            "every feature the card consumes has a recorded range"
+        );
+        assert!(card.training_bounds.values().all(|(low, high)| low <= high));
+
+        // Premise: the same window in the regime it was validated in leaves
+        // the promoted model eligible, so the stressed listing is the regime.
+        let same = desk
+            .maybe_learn(&subject(), &bars, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        assert!(
+            !same
+                .ineligible
+                .iter()
+                .any(|line| line.starts_with(&reference)),
+            "premise: {:?}",
+            same.ineligible
+        );
+        let stressed = desk
+            .maybe_learn(&subject(), &bars, STRESSED, 3, at())?
+            .ok_or_else(|| Error::not_found("a round"))?;
+        let line = stressed
+            .ineligible
+            .iter()
+            .find(|line| line.starts_with(&reference))
+            .ok_or_else(|| Error::invalid(format!("not listed: {:?}", stressed.ineligible)))?;
+        assert!(line.contains("never scored in reversal/stressed"), "{line}");
         Ok(())
     }
 

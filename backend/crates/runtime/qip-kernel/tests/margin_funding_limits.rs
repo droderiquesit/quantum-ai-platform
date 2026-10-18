@@ -208,6 +208,81 @@ fn a_venue_nobody_handed_a_statement_for_is_not_counted_against_the_margin_rule(
     Ok(())
 }
 
+/// Mutations that make it fail: in `Platform::with_margin_and_funding`
+/// divide `review.maintenance_required` by `review.cover_observed` again (the
+/// pooled ratio reads 0.05 and the buy is admitted); in `qip-risk`'s
+/// `MarginBasis::worst_utilisation` take the sum of covers instead of each
+/// venue's own.
+#[test]
+fn spare_cover_at_another_prime_does_not_hide_a_margin_call_at_the_desk_venue() -> Result<()> {
+    let (mut platform, venue) = traded(margin_limits())?;
+    platform.observe_statement(venue.clone(), "USD", dec!("1"), dec!("1"), start())?;
+    platform.observe_statement(
+        VenueId::new("some-other-prime"),
+        "USD",
+        dec!("1000000"),
+        dec!("1"),
+        start(),
+    )?;
+    // Premise: the cross-margin review itself lists the desk venue in a call,
+    // so the refusal below is the gate agreeing with a finding already made.
+    let review = qip_kernel::cross_margin::review(
+        platform.holdings_observed(),
+        platform.risk_figures(),
+        &qip_capital::margin::MarginModel::default(),
+        qip_core::Currency::parse("USD")?,
+    )?;
+    assert_eq!(
+        review.calls,
+        vec![venue],
+        "premise: the desk venue is in a call"
+    );
+    // Premise: pooled, the figure would sit far under the bound.
+    let pooled = (review.maintenance_required - review.unobserved_maintenance()).to_f64()
+        / review.cover_observed.to_f64();
+    assert!(pooled < 0.1, "premise: pooled utilisation was {pooled}");
+
+    let refused = order(&mut platform, Side::Buy, dec!("100"))
+        .expect_err("a buy into a venue in a call was admitted on another prime's surplus");
+    assert!(
+        refused.message().contains("margin-utilisation"),
+        "the refusal did not name the margin rule: {}",
+        refused.message()
+    );
+    Ok(())
+}
+
+/// Mutations that make it fail: in `MarginBasis::worst_utilisation` read
+/// gross from the unprojected state (pass `None` for the counterparty axis in
+/// the limit's arm and the 2000-share buy is admitted); drop the
+/// `margin_basis` filing in `with_margin_and_funding`.
+#[test]
+fn the_order_that_takes_a_covered_book_into_a_margin_call_is_refused_itself() -> Result<()> {
+    let (mut platform, venue) = traded(margin_limits())?;
+    // 2000 ACME at 100 is 200k gross, 50k maintenance at the default 0.25
+    // rate; 55k of cover leaves the book inside the bound before any order.
+    platform.observe_statement(venue, "USD", dec!("55000"), dec!("1"), start())?;
+    let before = platform
+        .risk_state_from(platform.risk_figures())
+        .margin_utilisation
+        .expect("a statement was handed in, so the figure is filed");
+    assert!(
+        before > 0.0 && before < 1.0,
+        "premise: the book stands inside the bound before the order, at {before}"
+    );
+    // A small buy stays inside the cover once charged.
+    order(&mut platform, Side::Buy, dec!("100"))?;
+    // One that doubles the gross takes maintenance to 100k against 55k.
+    let refused = order(&mut platform, Side::Buy, dec!("2000"))
+        .expect_err("an order that creates the margin call was admitted");
+    assert!(
+        refused.message().contains("margin-utilisation"),
+        "the refusal did not name the margin rule: {}",
+        refused.message()
+    );
+    Ok(())
+}
+
 fn funding_desk(floor: f64) -> Result<Platform> {
     let mut universe = Universe::new();
     universe.insert(listed()?)?;

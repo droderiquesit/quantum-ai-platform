@@ -229,6 +229,19 @@ pub struct MultiLegPlan {
     /// legging window in which the earlier legs are open and the later ones
     /// not yet sent.
     pub leg_interval: Duration,
+    /// The adverse touch movement, summed over the legs already sent, past
+    /// which the legs not yet sent are refused and the open ones flattened
+    /// (R12-TICK-2078). `None` is a plan with no stated window, which pays
+    /// whatever the path costs and reports it in
+    /// [`MultiLegOutcome::path_decay_bps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_path_decay_bps: Option<f64>,
+    /// Capital reserved to the plan per region, in notional. A leg whose
+    /// estimated notional (its quantity at the touch the plan was decided
+    /// against) would take a region past its reservation is refused with every
+    /// leg after it. A region with no entry is unreserved and unbounded.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub region_reservations: BTreeMap<String, Decimal>,
 }
 
 impl MultiLegPlan {
@@ -245,6 +258,31 @@ impl MultiLegPlan {
                 "multi-leg plan {} has a negative leg interval",
                 self.id
             )));
+        }
+        if self
+            .max_path_decay_bps
+            .is_some_and(|m| !m.is_finite() || m < 0.0)
+        {
+            return Err(Error::invalid(format!(
+                "multi-leg plan {} has a decay window that is not a finite non-negative \
+                 number of basis points",
+                self.id
+            )));
+        }
+        for (region, reserved) in &self.region_reservations {
+            if !reserved.is_positive() {
+                return Err(Error::invalid(format!(
+                    "multi-leg plan {} reserves no positive capital in {region}",
+                    self.id
+                )));
+            }
+            if !self.legs.iter().any(|leg| &leg.region == region) {
+                return Err(Error::invalid(format!(
+                    "multi-leg plan {} reserves capital in {region}, which none of its legs \
+                     uses",
+                    self.id
+                )));
+            }
         }
         for leg in &self.legs {
             if !leg.quantity.is_positive() || leg.limit.is_some_and(|l| !l.is_positive()) {
@@ -349,6 +387,14 @@ pub struct MultiLegOutcome {
     pub path_decay_bps: f64,
     /// Peak gross notional the plan held open, per region.
     pub capital_by_region: BTreeMap<String, Decimal>,
+    /// The legs never sent because the plan's decay window or a region's
+    /// reservation refused them, in leg order. Empty for a plan that ran, or
+    /// failed on a fill, as it was written.
+    #[serde(default)]
+    pub refused_legs: Vec<usize>,
+    /// Why they were refused, in a sentence an operator can act on.
+    #[serde(default)]
+    pub refusal: Option<String>,
 }
 
 /// A span of history the replay could not vouch for.
@@ -429,6 +475,10 @@ struct PlanState {
     path_decay_bps: f64,
     unwinds_outstanding: usize,
     done: bool,
+    #[serde(default)]
+    refused_legs: Vec<usize>,
+    #[serde(default)]
+    refusal: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -641,6 +691,8 @@ impl ReplaySession {
                 path_decay_bps: 0.0,
                 unwinds_outstanding: 0,
                 done: false,
+                refused_legs: Vec::new(),
+                refusal: None,
             });
         }
         Ok(session)
@@ -936,6 +988,8 @@ impl ReplaySession {
             unhedged,
             path_decay_bps: state.path_decay_bps,
             capital_by_region: state.peak_capital.clone(),
+            refused_legs: state.refused_legs.clone(),
+            refusal: state.refusal.clone(),
         })
     }
 
@@ -1323,69 +1377,122 @@ impl ReplaySession {
                 }
                 let last = leg + 1 == self.plans[plan].plan.legs.len();
                 if complete && !last {
-                    let decided = arrived.saturating_add(self.plans[plan].plan.leg_interval);
-                    let order = Self::leg_order(&self.plans[plan].plan, leg + 1, decided);
-                    self.pending.push(Pending {
-                        order,
-                        arrival: decided.saturating_add(latency),
-                        origin: Origin::Leg { plan, leg: leg + 1 },
-                        immediate: true,
-                    });
+                    if let Some(reason) = self.refusal_before(plan, leg + 1) {
+                        // The remaining legs are not sent: what is open is
+                        // flattened exactly as for a leg that failed to fill,
+                        // and the refusal is named on the outcome.
+                        let state = &mut self.plans[plan];
+                        state.refused_legs = (leg + 1..state.plan.legs.len()).collect();
+                        state.refusal = Some(reason);
+                        state.failed_leg = Some(leg + 1);
+                        self.unwind_open_legs(plan, arrived)?;
+                    } else {
+                        let decided = arrived.saturating_add(self.plans[plan].plan.leg_interval);
+                        let order = Self::leg_order(&self.plans[plan].plan, leg + 1, decided);
+                        self.pending.push(Pending {
+                            order,
+                            arrival: decided.saturating_add(latency),
+                            origin: Origin::Leg { plan, leg: leg + 1 },
+                            immediate: true,
+                        });
+                    }
                 } else if complete {
                     self.plans[plan].done = true;
                 } else {
                     // The leg did not fill in full: everything the plan
                     // holds open is flattened at market, decided now.
-                    let state = &mut self.plans[plan];
-                    state.failed_leg = Some(leg);
-                    let mut held: BTreeMap<String, (OrderSide, Decimal)> = BTreeMap::new();
-                    for execution in &state.legs {
-                        if !execution.filled.is_positive() {
-                            continue;
-                        }
-                        let entry = held
-                            .entry(execution.instrument.clone())
-                            .or_insert((execution.side, Decimal::ZERO));
-                        let signed = match execution.side {
-                            OrderSide::Buy => execution.filled,
-                            OrderSide::Sell => -execution.filled,
-                        };
-                        let net = match entry.0 {
-                            OrderSide::Buy => entry.1,
-                            OrderSide::Sell => -entry.1,
-                        };
-                        let net = checked(net.checked_add(signed), "held quantity")?;
-                        *entry = if net.is_negative() {
-                            (OrderSide::Sell, -net)
-                        } else {
-                            (OrderSide::Buy, net)
-                        };
-                    }
-                    let id = state.plan.id.clone();
-                    let mut unwinds = Vec::new();
-                    for (instrument, (side, quantity)) in held {
-                        if !quantity.is_positive() {
-                            continue;
-                        }
-                        unwinds.push(Pending {
-                            order: ReplayOrder {
-                                id: format!("{id}#unwind-{instrument}"),
-                                instrument,
-                                side: side.opposite(),
-                                quantity,
-                                limit: None,
-                                decided_at: arrived,
-                            },
-                            arrival: arrived.saturating_add(latency),
-                            origin: Origin::Unwind { plan },
-                            immediate: true,
-                        });
-                    }
-                    state.unwinds_outstanding = unwinds.len();
-                    state.done = unwinds.is_empty();
-                    self.pending.extend(unwinds);
+                    self.plans[plan].failed_leg = Some(leg);
+                    self.unwind_open_legs(plan, arrived)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Why leg `next` of `plan` must not be sent, if it must not: the plan's
+    /// decay window is spent, or the leg would take its region past the
+    /// capital reserved to it.
+    fn refusal_before(&self, plan: usize, next: usize) -> Option<String> {
+        let state = &self.plans[plan];
+        if let Some(window) = state.plan.max_path_decay_bps
+            && state.path_decay_bps > window
+        {
+            return Some(format!(
+                "the touch moved {:.2} bp against plan {} across its first {next} leg(s), past \
+                 its {window:.2} bp window; legs {next}.. are not sent",
+                state.path_decay_bps, state.plan.id
+            ));
+        }
+        let spec = &state.plan.legs[next];
+        let reserved = state.plan.region_reservations.get(&spec.region)?;
+        let touch = state.touch_at_decision.get(&next)?;
+        let estimate = touch.checked_mul(spec.quantity)?;
+        let open = state
+            .open_capital
+            .get(&spec.region)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        let projected = open.checked_add(estimate)?;
+        (projected > *reserved).then(|| {
+            format!(
+                "leg {next} of plan {} would hold {projected} in {}, past the {reserved} \
+                 reserved there; legs {next}.. are not sent",
+                state.plan.id, spec.region
+            )
+        })
+    }
+
+    /// Flatten every leg `plan` holds open, at market, decided at `arrived`.
+    fn unwind_open_legs(&mut self, plan: usize, arrived: Timestamp) -> Result<()> {
+        {
+            let latency = self.model.latency;
+            let state = &mut self.plans[plan];
+            let mut held: BTreeMap<String, (OrderSide, Decimal)> = BTreeMap::new();
+            for execution in &state.legs {
+                if !execution.filled.is_positive() {
+                    continue;
+                }
+                let entry = held
+                    .entry(execution.instrument.clone())
+                    .or_insert((execution.side, Decimal::ZERO));
+                let signed = match execution.side {
+                    OrderSide::Buy => execution.filled,
+                    OrderSide::Sell => -execution.filled,
+                };
+                let net = match entry.0 {
+                    OrderSide::Buy => entry.1,
+                    OrderSide::Sell => -entry.1,
+                };
+                let net = checked(net.checked_add(signed), "held quantity")?;
+                *entry = if net.is_negative() {
+                    (OrderSide::Sell, -net)
+                } else {
+                    (OrderSide::Buy, net)
+                };
+            }
+            let id = state.plan.id.clone();
+            let mut unwinds = Vec::new();
+            for (instrument, (side, quantity)) in held {
+                if !quantity.is_positive() {
+                    continue;
+                }
+                unwinds.push(Pending {
+                    order: ReplayOrder {
+                        id: format!("{id}#unwind-{instrument}"),
+                        instrument,
+                        side: side.opposite(),
+                        quantity,
+                        limit: None,
+                        decided_at: arrived,
+                    },
+                    arrival: arrived.saturating_add(latency),
+                    origin: Origin::Unwind { plan },
+                    immediate: true,
+                });
+            }
+            state.unwinds_outstanding = unwinds.len();
+            state.done = unwinds.is_empty();
+            self.pending.extend(unwinds);
         }
         Ok(())
     }

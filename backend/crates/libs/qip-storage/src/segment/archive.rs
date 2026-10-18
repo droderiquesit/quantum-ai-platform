@@ -660,6 +660,26 @@ impl ArchiveReader {
     /// like [`Self::read`], never returns bytes that have not re-proved the
     /// manifest's content hash.
     pub fn read_indexed(&self, stream: &str, partition: u32, offset: u64) -> Result<Option<Batch>> {
+        Ok(self
+            .read_indexed_with_extent(stream, partition, offset)?
+            .map(|(batch, _)| batch))
+    }
+
+    /// [`Self::read_indexed`], plus the last offset of the archived segment
+    /// the batch was read from.
+    ///
+    /// A broker rebuilding its disk from the archive needs the extent to
+    /// seal its new segments where the archive's were sealed. Segments it
+    /// rolled by size alone would be re-archived under different index keys,
+    /// leaving the old keys in place beside them, and the "largest start at
+    /// or below the offset" rule would then land on a stale, shorter
+    /// manifest for offsets the archive really holds.
+    pub fn read_indexed_with_extent(
+        &self,
+        stream: &str,
+        partition: u32,
+        offset: u64,
+    ) -> Result<Option<(Batch, u64)>> {
         {
             let cached = self.last_indexed.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((manifest, bytes)) = cached.as_ref()
@@ -668,7 +688,8 @@ impl ArchiveReader {
                 && offset >= manifest.base_offset
                 && offset <= manifest.last_offset
             {
-                return indexed_batch_at(manifest, bytes, offset).map(Some);
+                return indexed_batch_at(manifest, bytes, offset)
+                    .map(|batch| Some((batch, manifest.last_offset)));
             }
         }
         let prefix = manifest_index_prefix(stream, partition)?;
@@ -715,9 +736,10 @@ impl ArchiveReader {
         })?;
         manifest.verify(&bytes)?;
         let batch = indexed_batch_at(&manifest, &bytes, offset)?;
+        let last_offset = manifest.last_offset;
         *self.last_indexed.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((manifest, Arc::new(bytes)));
-        Ok(Some(batch))
+        Ok(Some((batch, last_offset)))
     }
 
     /// Read the batch at `offset`, from the archive if the segment holding
