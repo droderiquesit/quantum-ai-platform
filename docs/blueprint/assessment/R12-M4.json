@@ -1879,7 +1879,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases"
     ],
-    "gap": "Platform::observe_ledger_obligations has no production caller, so in every binary collateral and ledger settlement read zero; no single test drives over-commit, ignored obligation and hard-limit breach on one plan.",
+    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1893,7 +1893,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap's 'no leverage ceiling is applied' is out of date (limits.rs:1802). Margin is now derived (cross-margin review). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-4087",
@@ -1908,7 +1908,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/services/qip-capital/src/obligations.rs::LedgerObligations"
     ],
-    "gap": "No binary calls observe_ledger_obligations, so collateral/ledger settlement are zero in production; emergency reserve is a policy fraction, not a ledger account.",
+    "gap": "Same missing caller as R12-CAPITAL-4086 (no binary observes the ledger, so collateral and ledger settlement read zero in production); the emergency reserve is still a policy fraction (SurvivalPolicy::emergency_reserve_fraction), not a ledger account.",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1919,7 +1919,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Two claims disagree: survival.rs:358-364 sets settlement to zero because 'the simulated venue books cash at the fill', while the same platform declares the desk's venue on a T+1 settlement calendar for pre-positioning (platform.rs:4713-4718). Old note 'free cash and emergency reserves have no field' is no longer true. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-4088",
@@ -2095,7 +2095,7 @@
       "backend/crates/libs/qip-risk/src/limits.rs:149 MaxAxisWeight",
       "backend/crates/runtime/qip-kernel/src/platform.rs:20113 gapped fill test"
     ],
-    "gap": "Basis and Greeks exposures and limits.",
+    "gap": "Book-level basis and Greeks exposures have no measurement to limit: BookGreeks carries delta (the book's net signed notional, already limited by MaxNetExposure) with gamma and vega None, because the risk aggregate holds signed notionals and no option sensitivities, and no book basis figure exists (basis_volatility is a per-hedge-candidate input, not a book measurement). A MaxNetDelta limit would duplicate MaxNetExposure and a MaxBasisExposure fed from ExposureSurvey could not fire. Needs per-instrument sensitivities on catalogue records and a hedge-pair basis in the aggregate before a limit can read them.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2106,7 +2106,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the grader's closure (limits filled from ExposureSurvey Greeks/basis) names figures the survey does not hold; adding the limits first is the MaxExpectedShortfall defect. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-4096",
@@ -2117,7 +2117,7 @@
       "backend/crates/services/qip-capital/src/margin.rs",
       "backend/crates/libs/qip-contracts/src/feasibility.rs:31 GATE_DEPTH"
     ],
-    "gap": "Borrow/quote availability.",
+    "gap": "No borrow or quote availability datum exists anywhere in the tree: TransactionCostModel.short_borrow_bps_annual is a price, not availability, and no catalogue field says whether an instrument can be borrowed. Needs a borrow-availability source evaluated by qip-data-finder for licensing posture, a catalogue/wire field with no default (an unknown must not read as borrowable), and a RiskState map the kernel fills; quote presence needs the book-side quote read at the gate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2128,7 +2128,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-4097",
@@ -2154,13 +2154,16 @@
   },
   {
     "id": "R12-RISK-4098",
-    "status": "PARTIAL",
-    "current": "MaxLeverage, MaxConcentration/MaxAxisWeight, MinCashBuffer limits; collateral graph findings. Funding buffers not limited.",
+    "status": "COMPLETE",
+    "current": "LimitKind::MaxMarginUtilisation (maintenance required over post-haircut observed cover) and LimitKind::MinFundingBuffer (equity left after held capital and the survival waterfall's funding-maturity tier) exist beside MaxLeverage/MaxConcentration/MinCashBuffer. Platform::risk_state_from fills both through with_margin_and_funding from cross_margin::review and the SurvivalGovernor's funding read, so submit_order refuses an order that raises gross while utilisation is past 1.0 or the buffer under its floor, and never refuses one that sheds gross. Both ship in LimitSet::conservative_default and are dormant on a book with no venue statement or no commitment (the figure stays absent and records nothing).",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/limits.rs:126,130,187",
-      "backend/crates/runtime/qip-kernel/src/cross_margin.rs:228"
+      "backend/crates/libs/qip-risk/src/limits.rs:246 MaxMarginUtilisation, :258 MinFundingBuffer, RiskState::margin_utilisation/funding_buffer, evaluate arms and the sheds_gross exemption",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18202 with_margin_and_funding (called from risk_state_from)",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:760 SurvivalGovernor::funding_read, set by size and seed",
+      "backend/crates/runtime/qip-kernel/tests/margin_funding_limits.rs",
+      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs a_book_inside_its_margin_utilisation_limit_passes .. a_book_below_the_funding_floor_is_vetoed"
     ],
-    "gap": "Funding-buffer limit; margin as a limit.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2168,10 +2171,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-risk --test limit_fixtures && cargo test -p qip-kernel --test margin_funding_limits",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Dormant by construction on every committed deployment: no venue statement is handed in and no private commitment is declared, so neither figure is filed and neither rule records anything; each fires as soon as a statement or commitment exists. Margin utilisation is over observed venues only (unread venues stay the cross-margin finding's). Both figures describe the book before the order, so the rules refuse risk-raising orders after a call or shortfall exists, not the order that opens it. Mutations that fired: margin figure left unset, sheds_gross exemption dropped, funding tier not subtracted, unobserved maintenance folded into utilisation, MinFundingBuffer removed from is_minimum."
   },
   {
     "id": "R12-RISK-4099",

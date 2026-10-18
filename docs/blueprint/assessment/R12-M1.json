@@ -3651,7 +3651,7 @@
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:36",
       "backend/crates/services/qip-lifecycle/src/demotion.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Scale of thousands is measured for generation and trial counting only (evolution.rs the_same_challenger_wins_a_small_search_and_loses_a_large_one generates 5,000 candidates and counts 5,000 trials); promotion and demotion of 1,000+ strategies through the lifecycle ledger, and a bound on that ledger's working set (LifecycleLedger keeps every strategy's entries in a BTreeMap with no cap), are unmeasured.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3662,7 +3662,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL."
   },
   {
     "id": "R12-ASSET-1160",

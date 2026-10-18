@@ -194,7 +194,7 @@
       "backend/crates/runtime/qip-kernel/tests/serving.rs:649",
       "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:734 retirement terminal, re-proposal required"
     ],
-    "gap": "Strategy rollback to a last known-good version is absent.",
+    "gap": "Strategy rollback is a design decision, not an addition: the lifecycle ledger keys strategies by StrategyId and records stage moves only, so no strategy version or passing digest exists to restore (the model path restores a registered digest, which strategies do not have); and retirement is terminal by test (lifecycle.rs:734), so un-retiring one is a change to a standing decision that needs an ADR. A restore to any rung that holds capital would also have to go through AuthorisedPromotion's dual approval, never around it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -205,7 +205,7 @@
     "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: a rollback_strategy that re-admitted a retired strategy at a rung without the promotion path would weaken the one-path-to-capital property qip-evolution and the ledger are built around. Kept PARTIAL."
   },
   {
     "id": "R12-EXPAND-6010",

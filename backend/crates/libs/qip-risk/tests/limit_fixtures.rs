@@ -31,6 +31,8 @@
 //! | `MaxVenueExposure` | `a_venue_inside_its_exposure_limit_passes` | `a_venue_beyond_its_exposure_limit_is_vetoed` |
 //! | `MaxVenueNotionalRate` | `a_venue_inside_its_notional_rate_passes` | `a_venue_beyond_its_notional_rate_is_vetoed` |
 //! | `MaxSurvivalGross` | `a_book_inside_its_survival_ceiling_passes` | `a_book_beyond_its_survival_ceiling_is_vetoed` |
+//! | `MaxMarginUtilisation` | `a_book_inside_its_margin_utilisation_limit_passes` | `a_book_beyond_its_margin_utilisation_limit_is_vetoed` |
+//! | `MinFundingBuffer` | `a_book_above_the_funding_floor_passes` | `a_book_below_the_funding_floor_is_vetoed` |
 //!
 //! The two venue rules carry a third fixture,
 //! `a_venue_with_no_exposure_figure_is_vetoed_by_both_venue_rules`, because
@@ -102,6 +104,11 @@ fn state() -> RiskState {
         // survival rule judges the gross as it stands.
         survival_gross_ceiling: Some(Decimal::from_int(1_200_000)),
         gross_before_order: None,
+        // Maintenance is 60% of the cover the desk's statements show, and
+        // 30% of equity is left once held capital and unfunded commitments
+        // are taken out.
+        margin_utilisation: Some(0.6),
+        funding_buffer: Some(0.30),
     }
 }
 
@@ -704,6 +711,98 @@ fn an_order_that_sheds_gross_is_never_refused_by_the_survival_rule() {
     );
 }
 
+// --- MaxMarginUtilisation ---------------------------------------------------
+
+#[test]
+fn a_book_inside_its_margin_utilisation_limit_passes() {
+    let at = |limit: f64| LimitKind::MaxMarginUtilisation { limit };
+    passes(at(1.0), at(0.5), &state());
+}
+
+#[test]
+fn a_book_beyond_its_margin_utilisation_limit_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxMarginUtilisation { limit };
+    let breach = vetoes(at(0.5), at(1.0), &state());
+    assert!((breach.observed - 0.6).abs() < 1e-9);
+}
+
+#[test]
+fn a_venue_observed_with_maintenance_due_and_no_cover_is_vetoed_whatever_the_bound() {
+    // `review` reports no cover against a positive requirement as an
+    // infinite ratio; a bound no finite ratio could breach must still refuse.
+    let generous = LimitKind::MaxMarginUtilisation { limit: 1_000.0 };
+    assert!(
+        !check(generous.clone(), &state()).is_blocked(),
+        "premise: at 0.6 utilisation the generous bound passes"
+    );
+    let uncovered = RiskState {
+        margin_utilisation: Some(f64::INFINITY),
+        ..state()
+    };
+    assert!(check(generous, &uncovered).is_blocked());
+}
+
+#[test]
+fn a_book_with_no_observed_venue_records_nothing_against_the_margin_rule() {
+    // A desk is entitled to have handed in no statement, and an account
+    // nobody observed is not an account observed empty: the rule records
+    // nothing, and the unread venues are the cross-margin finding's to name.
+    let rule = LimitKind::MaxMarginUtilisation { limit: 0.1 };
+    assert!(
+        check(rule.clone(), &state()).is_blocked(),
+        "premise: with a figure of 0.6 a 0.1 bound binds"
+    );
+    let unobserved = RiskState {
+        margin_utilisation: None,
+        ..state()
+    };
+    assert!(!check(rule, &unobserved).is_blocked());
+}
+
+#[test]
+fn an_order_that_does_not_raise_gross_is_never_refused_by_the_margin_or_funding_rules() {
+    // The figures describe the book before the order. A rule that refused the
+    // sale that cures a call or restores a buffer would hold the book in it.
+    let margin = LimitKind::MaxMarginUtilisation { limit: 0.1 };
+    let funding = LimitKind::MinFundingBuffer { limit: 0.9 };
+    let adding = RiskState {
+        gross_before_order: Some(Decimal::from_int(850_000)),
+        ..state()
+    };
+    for rule in [margin.clone(), funding.clone()] {
+        assert!(
+            check(rule, &adding).is_blocked(),
+            "premise: an order raising gross past a breached figure is refused"
+        );
+    }
+    let shedding = RiskState {
+        gross_before_order: Some(Decimal::from_int(950_000)),
+        ..state()
+    };
+    for rule in [margin, funding] {
+        assert!(
+            !check(rule.clone(), &shedding).is_blocked(),
+            "{}: an order that lowers gross must pass",
+            rule.label()
+        );
+    }
+}
+
+// --- MinFundingBuffer -------------------------------------------------------
+
+#[test]
+fn a_book_above_the_funding_floor_passes() {
+    let at = |limit: f64| LimitKind::MinFundingBuffer { limit };
+    passes(at(0.10), at(0.50), &state());
+}
+
+#[test]
+fn a_book_below_the_funding_floor_is_vetoed() {
+    let at = |limit: f64| LimitKind::MinFundingBuffer { limit };
+    let breach = vetoes(at(0.50), at(0.10), &state());
+    assert!((breach.observed - 0.30).abs() < 1e-9);
+}
+
 #[test]
 fn every_limit_kind_has_both_fixtures() {
     // One value of every arm. The `match` below is exhaustive with no
@@ -755,8 +854,10 @@ fn every_limit_kind_has_both_fixtures() {
             limit: 1.0,
         },
         LimitKind::MaxSurvivalGross { limit: 1.0 },
+        LimitKind::MaxMarginUtilisation { limit: 1.0 },
+        LimitKind::MinFundingBuffer { limit: 0.1 },
     ];
-    let fixtures: [(&str, &str); 20] = [
+    let fixtures: [(&str, &str); 22] = [
         (
             "an_order_inside_the_notional_limit_passes",
             "an_order_beyond_the_notional_limit_is_vetoed",
@@ -837,6 +938,14 @@ fn every_limit_kind_has_both_fixtures() {
             "a_book_inside_its_survival_ceiling_passes",
             "a_book_beyond_its_survival_ceiling_is_vetoed",
         ),
+        (
+            "a_book_inside_its_margin_utilisation_limit_passes",
+            "a_book_beyond_its_margin_utilisation_limit_is_vetoed",
+        ),
+        (
+            "a_book_above_the_funding_floor_passes",
+            "a_book_below_the_funding_floor_is_vetoed",
+        ),
     ];
     let source = include_str!("limit_fixtures.rs");
     for (kind, (pass, veto)) in kinds.iter().zip(fixtures) {
@@ -861,6 +970,8 @@ fn every_limit_kind_has_both_fixtures() {
             LimitKind::MaxVenueExposure { .. } => "MaxVenueExposure",
             LimitKind::MaxVenueNotionalRate { .. } => "MaxVenueNotionalRate",
             LimitKind::MaxSurvivalGross { .. } => "MaxSurvivalGross",
+            LimitKind::MaxMarginUtilisation { .. } => "MaxMarginUtilisation",
+            LimitKind::MinFundingBuffer { .. } => "MinFundingBuffer",
         };
         // Each named fixture exists as a test in this file, and the table
         // row names both. Matched on the whole declaration so a fixture

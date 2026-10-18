@@ -1528,7 +1528,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
     ],
-    "gap": "No production seam constructs or consumes OpportunityToken (grep of OpportunityTokenFields outside qip-contracts finds nothing).",
+    "gap": "The Lane 1 frame carries no contract body: qip_peer::PeerMessage::Token holds only an OpportunityEpoch (qip-peer lib.rs:457), and qip-mesh has no seam that raises a multi-leg opportunity (the arbitrage desk that does is in qip-arbitrage and qip-edge-node). Carrying the contract OpportunityToken as the frame body is a wire change to the peer protocol under ADR 0116 (and MESH-013 forbids reflex crates from naming qip-peer), plus a construction site in the desk that knows legs, size, edge and reservations.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1539,7 +1539,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding OpportunityToken exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields (legs, size, reservations, unwind policy). Kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -2217,7 +2217,7 @@
       "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
     ],
-    "gap": "Custody-availability input to sizing.",
+    "gap": "No custody-availability signal exists to feed sizing: qip-capital-fabric's custody table (custody.rs) records who may move capital and under which agreement, not whether a custodian is reachable, and nothing in the tree marks custody down. Platform::survival_figures already withholds unsettled sale proceeds from sizing (unsettled_sale_proceeds), so settled-only sizing holds for the one settlement the platform models; a custody-down mode needs a source for the outage (an operator-asserted state through an authenticated route, or a custodian health read) and a decision on who may assert it before a gate input can be added.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2228,7 +2228,7 @@
     "verification": "capital-fabric integration test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL."
   },
   {
     "id": "R12-RES-7100",

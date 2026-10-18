@@ -2675,7 +2675,7 @@
       "backend/crates/services/qip-world-model/src/lattice.rs",
       "backend/crates/runtime/qip-kernel/src/lattice_stage.rs"
     ],
-    "gap": "Not every material prediction site constructs one: qip-capital-fabric/src/forecast.rs and qip-financial valuation keep their own Forecast types.",
+    "gap": "The two named producers cannot construct the contract without inventing figures: qip_capital_fabric::forecast::DemandForecast carries location, kind, as_of, horizon, an interval and an observation count, and qip_financial's valuation forecasts are cashflow series (CashflowForecast); neither computes the contract's epistemic/aleatoric split, tail mass, regime confidence, model disagreement or expected impact, and Forecast refuses a record that cannot state them. A TryFrom would have to fill those with constants, which is a number nobody computed. Needs each producer to measure (or explicitly declare unmeasurable) the split first.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2686,7 +2686,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": "UncertaintyType is an either/or label, not a decomposition. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding Forecast exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TryFrom conversions were not written because every field they would have to default is one the contract exists to refuse an unstated value for. Kept PARTIAL. Prior notes retained: the typed contract is produced by qip-world-model lattice.rs and federation.rs and read by the kernel's lattice stage."
   },
   {
     "id": "R12-OBS-3118",

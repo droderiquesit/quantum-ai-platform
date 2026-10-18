@@ -3120,7 +3120,7 @@
       "backend/crates/libs/qip-agents/src/budget.rs",
       "backend/crates/libs/qip-agents/src/runtime.rs:468"
     ],
-    "gap": "Benchmarks and training quotas.",
+    "gap": "Queue quotas exist and are tested (QueueQuotas in qip-training job.rs, enforced by LocalTrainingProvider::submit and the Vertex provider) but no composition root constructs a training provider with quotas, so no running process bounds a queue; and no benefit-per-dollar or per-latency benchmark exists (ComputeLedger records cost and latency per decision, the reputation book scores accuracy per condition, and nothing joins them).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3131,7 +3131,7 @@
     "verification": "cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TrainingSpec::concurrency_quota duplicates QueueQuotas, which already refuses a submit into a full queue (training.rs:1677). The open work is a deepbrain-side provider that declares quotas, and a benefit signal the router can divide by cost. Kept PARTIAL."
   },
   {
     "id": "R12-FINOPS-10140",
