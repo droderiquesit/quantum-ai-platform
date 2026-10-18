@@ -1187,10 +1187,13 @@ fn the_agents_endpoint_lists_the_whole_organisation() -> Result<()> {
     let body = String::from_utf8(get(&api, "/api/v1/agents", Some("viewer-token")).body).unwrap();
     assert!(body.contains("macro-analyst"), "{body}");
     assert!(body.contains("risk-control"), "{body}");
+    // Counted from the roster, not a literal: the literal said nineteen and
+    // went stale the day the poisoning detector was rostered.
+    let roster = qip_investment_agents::manifests::roster(qip_core::Timestamp::from_secs(0));
     assert_eq!(
         body.matches("\"id\":").count(),
-        19,
-        "all nineteen agents are listed"
+        roster.len(),
+        "every rostered agent is listed"
     );
     Ok(())
 }
