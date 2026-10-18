@@ -1577,13 +1577,17 @@
   {
     "id": "R12-MESH-5069",
     "status": "PARTIAL",
-    "current": "Latency deduction (netedge.rs:20-24) and residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (peer.rs:167-192). Coordination latency between regions is not an input.",
+    "current": "Latency deduction (netedge.rs latency_deduction) is now priced over the round trip plus EdgeAssumptions::coordination_latency, the cross-region wait for a peer region to agree the epoch, and its basis names both; residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (qip-mesh peer.rs). The only production construction of EdgeAssumptions, qip-edge-node's desk_from_whitelist_with, uses the default, whose coordination latency is zero: the node's desk trades cycles inside its own cell.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:20",
       "backend/crates/edge/qip-arbitrage/src/plan.rs",
-      "backend/crates/services/qip-mesh/src/peer.rs:426"
+      "backend/crates/services/qip-mesh/src/peer.rs:426",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:116 EdgeAssumptions::coordination_latency",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:410 latency priced over round trip + coordination",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs:447 raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:317 EdgeAssumptions::default() (zero coordination)"
     ],
-    "gap": "Cross-region coordination latency as a priced input.",
+    "gap": "Coordination latency is a priced input and proven to refuse a cycle, but nothing sets it: no cross-region cycle is assembled anywhere, and the edge-node desk prices its own-cell cycles with zero. Closing needs the cross-region cycle builder (or the whitelist cycle entry in qip-contracts policy.rs, lane L11's territory) to carry the measured peer round trip from qip-mesh into EdgeAssumptions::coordination_latency.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1591,10 +1595,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-arbitrage --test edge_costs raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Lane L24 2026-10-18: coordination latency added to the net-edge calculator (serde default zero for records written before it). Mutation: pricing the latency deduction over the round trip alone fails the test at the first step (50 ms did not lower the net edge). Kept PARTIAL: no running path supplies a non-zero value."
   },
   {
     "id": "R12-MESH-5070",
