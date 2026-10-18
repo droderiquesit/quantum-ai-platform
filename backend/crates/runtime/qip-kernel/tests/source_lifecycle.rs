@@ -39,7 +39,14 @@ fn later() -> Timestamp {
 }
 
 fn platform() -> Result<Platform> {
-    let config = PlatformConfig::default();
+    // A named desk, not the shipped default: the default owner is the
+    // process's own name, and `assess_sources` refuses to catalogue under it
+    // (see `a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused`).
+    platform_owned_by("market-data")
+}
+
+fn platform_owned_by(owner: &str) -> Result<Platform> {
+    let config = PlatformConfig::default().with_owner(owner);
     let (context, _clock) = Context::deterministic(start(), config.seed);
     Platform::new(
         config,
@@ -285,5 +292,57 @@ fn a_source_policy_quarantines_or_retires_is_no_longer_offered_by_the_mesh_catal
         readable(&platform, "rising", later()),
         "a promoted source stopped being offered"
     );
+    Ok(())
+}
+
+#[test]
+fn a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused() -> Result<()> {
+    // R12-DATA-2020. The catalogue entry a registration produces must be
+    // owned by somebody who can be asked about the source later. The shipped
+    // default owner is `qip-platform` — the process's own name — and until
+    // this seam went through `NamedOperator` every production deployment
+    // catalogued under it, so the owner field recorded nobody.
+    let mut named_probe = probe();
+    let mut named = platform_owned_by("market-data")?;
+    let assessment = named.assess_sources(candidates()?, &mut named_probe, start())?;
+    assert!(
+        assessment.registered() > 0,
+        "the premise: the fixture registers at least one source"
+    );
+    assert!(
+        assessment.catalogue_problems.is_empty(),
+        "{:?}",
+        assessment.catalogue_problems
+    );
+    assert!(!assessment.catalogued.is_empty());
+    for dataset in &assessment.catalogued {
+        assert_eq!(named.catalog().require(dataset)?.owner, "market-data");
+    }
+
+    // The same candidates under the shipped default: the registrations are
+    // kept (the finder's registry is not the catalogue), and no entry reaches
+    // the mesh. Each refusal names the source and says what to configure.
+    let mut default_probe = probe();
+    let mut defaulted = platform_owned_by("qip-platform")?;
+    let assessment = defaulted.assess_sources(candidates()?, &mut default_probe, start())?;
+    assert_eq!(
+        assessment.registered(),
+        defaulted.registered_sources().len(),
+        "the registrations themselves are not lost"
+    );
+    assert!(assessment.catalogued.is_empty(), "{:?}", assessment.catalogued);
+    assert!(defaulted.catalog().is_empty());
+    assert_eq!(
+        assessment.catalogue_problems.len(),
+        assessment.registered(),
+        "one recorded refusal per registration: {:?}",
+        assessment.catalogue_problems
+    );
+    for problem in &assessment.catalogue_problems {
+        assert!(
+            problem.contains("`qip-platform` names a process") && problem.contains("configure"),
+            "a refusal that does not say what to fix: {problem}"
+        );
+    }
     Ok(())
 }
