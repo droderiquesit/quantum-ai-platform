@@ -257,10 +257,11 @@
     "current": "Connector polls run an evidence check before release, forward evidence into the world model's fabric (Platform::absorb_evidence) in production, and derive a knowledge-delta pack the deep brain can store.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:45 every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence has no production caller",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence"
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs:499 drain_evidence into Platform::absorb_evidence (the production caller the earlier evidence line said was missing)",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs:575 an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing"
     ],
-    "gap": "No memory/episode update from acquired facts; typed facts do not update world-model state beyond the evidence fabric; no test that bypassing a gate fails.",
+    "gap": "No memory/episode update from acquired facts; typed facts do not update world-model state beyond the evidence fabric. (The gate-bypass test now exists: a claim on an impossible timeline forwarded under a forged admissible verdict is held inadmissible at zero weight by the world fabric's own re-check.)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -270,10 +271,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_runtime",
+    "verification": "cargo test -p qip-market-ingestion --test connector_runtime && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L23: bypass test added in the kernel's evidence_intake suite (absorb_evidence lives in qip-kernel, not qip-market-ingestion as the closure proposed); mutation fired - the fabric's admissibility ignoring its own temporal check held the forgery admissible (inadmissible left 0, right 1)."
   },
   {
     "id": "R12-DATA-2013",
