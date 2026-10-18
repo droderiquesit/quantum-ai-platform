@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 449 | 29.6% |
+| Blueprint completion (COMPLETE) | 450 | 29.6% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1224 | 80.6% |
 | Integrated (reached from a composition root) | 855 | 56.3% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 449 |
-| PARTIAL | 922 |
+| COMPLETE | 450 |
+| PARTIAL | 921 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -50,7 +50,7 @@ register (ADR 0099), and there is no second one.
 | [EXPAND](#expand) | 68 | 25 | 41 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
-| [GOV](#gov) | 26 | 11 | 10 | 3 | 2 | 0 | 21 | 21 | 2 |
+| [GOV](#gov) | 26 | 12 | 9 | 3 | 2 | 0 | 21 | 21 | 2 |
 | [SEC](#sec) | 57 | 20 | 33 | 4 | 0 | 0 | 50 | 41 | 0 |
 | [OBS](#obs) | 50 | 19 | 25 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
@@ -1306,7 +1306,7 @@ register (ADR 0099), and there is no second one.
 |---|---|---|---|---|---|---|---|---|
 | R12-GOV-9067 | Planner agent cannot merge or deploy | scripts/agent-policy.json:37-44 registers planner roles (chief-orchestrator, product-manager, solution-architect) with empty or docs-only may_edit. dispatch_refused_for_agents lists deploy.yml, infra.yml, fleet.yml, image.yml, vendor.yml and branch-cleanup.yml. deploy.yml:113-127 runs `agent-guard.mjs dispatch` on github.actor and triggering_actor before authenticating, and the other refused workflows carry the same step (infra.yml:171, fleet.yml:71, image.yml:182, vendor.yml:68). agent-boundary.yml judges every PR against role paths and protected paths. The node tests run in ci.yml:475 (scripts/agent-guard.test.mjs: 'a planner role cannot land code', 'an agent identity may not start a deploying workflow and a person may'). | PARTIAL | Nothing refuses an agent merge: merge is a GitHub operation no workflow gates, and agent-boundary.yml says making the check required is a branch-protection setting this repository cannot create. Agent identity is detected only by commit/actor markers (agent-guard.mjs:30-33), not by role-scoped credentials. |  | P1 | inspection / cargo test -p qip-acceptance |  |
 | R12-GOV-9075 | Learning agent proposals still pass promotion gates | No learning agent turning incidents into proposals exists; strategy promotion is gated in qip-lifecycle but that is not this role. | MISSING | Build the role. |  | P2 | inspection / cargo test -p qip-acceptance |  |
-| R12-GOV-9079 | Architecture memory indexed for agents | Blueprint sources are held to the README's SHA-256 both ways; the other checks are existence-only: an ADR README, ADRs 0001-0003, 3 binary names in catalogue.tf, any .md file in docs/ops. | PARTIAL | No check that every ADR has an index row; 5 of 8 binaries unchecked; runbooks not enumerated; contracts and SLOs not indexed. |  | P2 | cargo test -p qip-acceptance --test architecture_memory_index |  |
+| R12-GOV-9079 | Architecture memory indexed for agents | The architecture memory index is complete and a missing entry fails: every docs/adr/0NNN-*.md file has exactly one index row in docs/adr/README.md and every row names a file (every_numbered_adr_has_exactly_one_index_row_and_every_row_names_a_file); all eight crates under backend/crates/apps are placed at a declared home in Terraform or named as not deployed, with a section in the per-binary runbook (every_binary_under_apps_is_catalogued_where_it_is_deployed_or_named_as_not_deployed); and every page under docs/ops and docs/ops/runbooks is linked from docs/ops/README.md, which gained an index for that purpose (every_operations_page_is_listed_in_the_ops_index). | COMPLETE |  |  | P2 | cd backend && cargo test -p qip-acceptance --test architecture_memory_index |  |
 | R12-GOV-9080 | Agents cite the rule they change when proposing an exception | The PR template carries '**Rule changed:** none'; ci.yml's rule-citation job runs scripts/rule-citation.mjs on PR events against changed paths and refuses a rule-file change not named; behaviour tested by scripts/rule-citation.test.mjs, wiring by the acceptance test. | COMPLETE | None for the requirement; not deployed. |  | P2 | cargo test -p qip-acceptance --test cicd_governance |  |
 | R12-GOV-10004 | Organization Policy enforces non-bypassable guardrails | Four project-scoped org policies in main.tf under project_key_policies_enabled: iam.disableServiceAccountKeyCreation, iam.disableServiceAccountKeyUpload, compute.vmExternalIpAccess (deny_all) and compute.requireShieldedVm, each asserted inside its own resource body by an acceptance test. ADR 0118's folder root (infrastructure/foundation/main.tf) enforces key creation/upload, storage.uniformBucketLevelAccess, compute.skipDefaultNetworkCreation and compute.vmExternalIpAccess at folder scope, which a project owner cannot override; dev sets project_key_policies_enabled = false because it sits in that folder. | PARTIAL | gcp.resourceLocations is declared at neither scope: it needs an allowed-locations value nobody has decided (the archive bucket is multi-region US while var.region is a single region, so no value derives from existing variables). compute.requireShieldedVm exists only at project scope, where a project owner can remove it; the folder copy is the owner's foundation root. Patch for the location variable is in notes. |  | P0 | cd backend && cargo test -p qip-acceptance --test infrastructure organization_policy |  |
 | R12-GOV-10005 | Cloud Asset Inventory records asset and change history | No cloud_asset resource in Terraform. | MISSING | Declare an asset feed/export for each project. |  | P2 | terraform plan shows google_cloud_asset_project_feed |  |
