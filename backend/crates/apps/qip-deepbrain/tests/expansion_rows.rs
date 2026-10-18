@@ -850,6 +850,48 @@ fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its
     );
 }
 
+/// A run of the expansion engine consults the source, ontology, tool and
+/// brain registries and its record names them (R12-EXPAND-1115): the loop
+/// as `main.rs` builds it holds every ontology type its detectors read, and
+/// each sweep's record carries what each registry held when it ran — the
+/// licensed sources the desk handed it, the types, the tools and the
+/// brains. Mutation: drop the `round.registries = ..` assignment in
+/// `sweep_over` — every count reads zero and the first assertion fails.
+#[test]
+fn a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted() {
+    let platform = platform_over(Universe::new());
+    let mut research = deployed(coverage("Equity", &["obj-A"]));
+    for (family, name, _) in qip_deepbrain::research::SWEEP_ONTOLOGY {
+        assert!(
+            research.ontology().get_latest(family, name).is_some(),
+            "premise: {family:?}.{name} is registered"
+        );
+    }
+    let licensed = BTreeSet::from(["src-a".to_string(), "src-b".to_string()]);
+    let round = research
+        .sweep(
+            &platform,
+            t0(),
+            &licensed,
+            &BTreeSet::from(["US".to_string()]),
+        )
+        .unwrap();
+    let held = &round.registries;
+    assert_eq!(
+        held.ontology_types,
+        qip_deepbrain::research::SWEEP_ONTOLOGY.len(),
+        "{held:?}"
+    );
+    assert_eq!(held.sources, 2, "{held:?}");
+    assert_eq!(
+        held.tools,
+        qip_deepbrain::research::tool_count(&registered_tools().unwrap()),
+        "{held:?}"
+    );
+    assert_eq!(held.brains, research.brains().len(), "{held:?}");
+    assert!(held.tools > 0 && held.brains > 0, "{held:?}");
+}
+
 /// R12-EXPAND-6046: the models the learning round found drifted reach the
 /// sweep as exactly one `ModelDrift` signal per model, and a sweep with no
 /// new drift raises none, so a drift measured once is not re-reported for

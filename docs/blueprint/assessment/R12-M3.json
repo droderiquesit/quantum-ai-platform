@@ -316,11 +316,13 @@
     "status": "PARTIAL",
     "current": "Manifest exists in the roster, but Organisation::standard constructs no agent for it; qip-prediction holds event trees and valuation.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/manifests.rs:299 event_prediction_analyst manifest",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:249-325 no EventPrediction agent in the 18",
-      "backend/crates/services/qip-prediction/src/belief.rs:190 Branch / development tree"
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs:332 event_prediction_analyst, on manifests::roster",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents constructs no agent for it",
+      "backend/crates/runtime/qip-kernel/src/event_markets.rs event markets, outcome distributions and fair values held by the kernel only",
+      "backend/crates/services/qip-prediction/src/belief.rs:230 outcome_distribution",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "Implement and register the event-prediction agent; wire qip-prediction belief trees into it.",
+    "gap": "No EventPredictionAnalyst exists, and no desk facility carries event markets: the books, OutcomeDistribution and fair_values live only in the kernel's event_markets module. Closing needs a desk facility (an Upstream the kernel writes in DISCOVER/SIMULATE, as it does for world and market) plus the agent reading it; the agent alone would report no data in every binary.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -331,7 +333,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Roster lists 19 manifests while the organisation builds 18 agents; the event-prediction manifest has no implementation."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. An agent built against an empty facility would be a scope covered in tests only."
   },
   {
     "id": "R12-REASON-3016",
@@ -380,10 +382,12 @@
     "status": "PARTIAL",
     "current": "Platform private_forecast and capital-call handling exist.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12417 private_forecast",
-      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs"
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents: no private-markets agent",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14112 private_forecast, kernel-side",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "Not organised as a specialist brain; no agent.",
+    "gap": "No private-markets agent. Commitments and capital calls exist only in the kernel, and illiquid marks would come from the desk book, which is fixed at assembly. Needs a desk facility the kernel writes commitments and calls into, and a fed book, before an agent can cover illiquid valuation, commitments and capital calls.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -394,17 +398,18 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
   },
   {
     "id": "R12-ASSET-3019",
     "status": "PARTIAL",
     "current": "PortfolioConstruction agent in production; horizons and hedges handled in kernel.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/construction.rs:37 PortfolioConstruction",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:231-328 Organisation::standard builds 18 agents"
+      "backend/crates/agents/qip-investment-agents/src/construction.rs:75 PortfolioConstruction reads approved_conviction from the feature store and reports no data without it",
+      "grep -rn '\"approved_conviction\"' over runtime, apps and services finds no writer outside tests",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "Divestment and causal-driver allocation not specialist-owned.",
+    "gap": "PortfolioConstruction is constructed but reports no data in every running binary: nothing in production writes the approved_conviction feature it sizes from. Divestment also needs the live book, which the desk fixes at assembly. Needs the kernel to record approved convictions on the world model in REASON and to feed the book, then divestment and causal-driver allocation findings in the agent.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -415,17 +420,18 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The previous text called the agent \"in production\"; it is constructed there and has never produced a finding."
   },
   {
     "id": "R12-CAPITAL-3020",
     "status": "PARTIAL",
     "current": "Capital fabric and pre-positioning wired into DECIDE/LEARN; no specialist agent.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:1-25",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18931 forecast_capital_demand"
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents: no capital specialist",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:21671 forecast_capital_demand, kernel-side",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "No capital specialist in the organisation.",
+    "gap": "No capital specialist. Its inputs — cash, gross, leverage, funding, grants — are on the desk's book and risk facilities, which production fixes at assembly (empty book at initial equity), so an agent added now would report the assembly-time book forever. Needs the kernel to feed book and risk as Upstreams (the RiskView patch in lane L16's report) before an agent here can cover its scope.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -436,7 +442,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
   },
   {
     "id": "R12-RISK-3021",
@@ -515,11 +521,12 @@
     "status": "PARTIAL",
     "current": "MetaIntelligence market allocates research attention and keeps a reputation book in deepbrain.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:337 SelfModel",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:85 is_contested",
-      "backend/crates/services/qip-cost-router/src/reputation.rs:306 ReputationBook (no kernel caller)"
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs roster: no meta brain manifest",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:306 dispatch runs each agent on the brief alone; no agent sees the panel's findings",
+      "backend/crates/services/qip-learning-engine/src/self_model.rs:337 SelfModel, kernel-side",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new: book, risk and research memory are values fixed at assembly; only world (Upstream<WorldModel>) and market (Upstream<MarketView>) are fed"
     ],
-    "gap": "Not a specialist in the production organisation; reputation keyed regime \"all\"; no disagreement resolution.",
+    "gap": "No meta manifest or agent. Resolving disagreement needs the panel's findings, which Organisation::dispatch never shows an agent (each runs on the brief alone), so it needs a second dispatch phase run after the panel when report.is_contested(). Per-regime reliability needs SelfModel or a fed ResearchMemory on the desk; the desk's memory is ResearchMemory::new() fixed at assembly.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -530,7 +537,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. "
   },
   {
     "id": "R12-WORLD-3025",
@@ -558,13 +565,13 @@
   {
     "id": "R12-REASON-3026",
     "status": "PARTIAL",
-    "current": "Reasoners (rules, temporal, network, constraint, lifecycle) exist and are tested; none is called by the kernel.",
+    "current": "Reasoners (rules, temporal, network, constraint, lifecycle) exist and are tested, and the kernel runs them in REASON (reason_symbolically). No agent in the organisation wraps them.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs:82-745"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13574 reason_symbolically: the kernel runs the reasoners in REASON",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents: no symbolic agent",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1777 anchor requiring qip-investment-agents -> qip-reasoning-engine to stay a dev-only edge"
     ],
-    "gap": "No production caller; no brain/agent wraps them.",
+    "gap": "No symbolic agent. qip-investment-agents cannot ship against qip-reasoning-engine: an acceptance anchor (architecture.rs:1777) requires that edge to stay dev-only. Needs an injected seam — a trait in this crate the kernel implements over its symbolic stage, passed into the organisation — so closing it needs a platform.rs call-site change.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -575,7 +582,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The stale \"none is called by the kernel\" text is corrected."
   },
   {
     "id": "R12-AMBIENT-3027",
@@ -1102,15 +1109,16 @@
   },
   {
     "id": "R12-WORLD-3051",
-    "status": "PARTIAL",
-    "current": "Stress-world and standing-aside members exist in the federation and produce state; rare-regime branches and alternate-future models absent.",
+    "status": "COMPLETE",
+    "current": "The federation registers, beside the stress-world and standing-aside members, a rare-regime member (markets.rare-regime.global.macro, Scenario: the share of rises on the day after the tape's own tail moves, the largest 5% of absolute moves) and an alternate-future member (markets.alternate-future.global.macro, Counterfactual: the stress world's inverse). Both are fed on every instrument proposition in UNDERSTAND each pass, renewed only for state produced, scored by Brier at resolution, and required by the population check.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1 runs in UNDERSTAND; advisory",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:67 STRESS_SCENARIO; :68 STANDING_ASIDE"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:76 RARE_REGIME, :80 ALTERNATE_FUTURE",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:403 after_tail_moves",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1166 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state (requires both)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1243 the_rare_regime_member_reads_the_day_after_tail_moves_and_the_alternate_future_inverts_the_stress_world",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review (population 9, seven views per instrument)"
     ],
-    "gap": "Rare-regime and alternate-future members.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1118,22 +1126,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now federated; coverage partial."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: rare-regime member fed the whole tape's share of rises -> its view is not 1.0 and the test fails; alternate-future member removed -> the population test fails naming it as absent and the view test fails 'produced no view'. FutureTree alternates stay tick-desk only."
   },
   {
     "id": "R12-WORLD-3052",
-    "status": "PARTIAL",
-    "current": "A self/system member models halt state and authority; latency and data/model health are not modelled.",
+    "status": "COMPLETE",
+    "current": "The self/system member reads, beside halt state, authority, expired manifests and thin subjects, the previous cycle's slowest stage on the platform clock (SystemView.slowest_stage, recorded by FederationStage::observe_cycle after each report) and the count of central capabilities the degradation table holds non-fresh (SystemView.degraded_capabilities from Platform::central_degradation). A stage past SELF_STAGE_LATENCY_BUDGET or a stale capability raises its halt forecast; unreadable health widens its uncertainty. Both inputs are journaled on the review.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1 runs in UNDERSTAND; advisory",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:872 a_population_differing_on_all_five_axes_is_built_and_every_fed_member_produces_state",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:129 every_cycle_journals_one_federation_review",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:69 SELF_SYSTEM"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:138 slowest_stage, :143 degraded_capabilities",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:866 the member's state reads both",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10748 observe_cycle after each cycle, :12053 SystemView filled",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1208 a_slow_stage_or_a_stale_capability_moves_the_self_system_members_state",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:800 the_self_system_member_is_fed_the_previous_cycles_stage_latency_and_the_degradation_table"
     ],
-    "gap": "Latency and data/model health in the self/system member.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1141,10 +1150,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model",
+    "verification": "cargo test -p qip-kernel --lib federation_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Authority added; latency still absent."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutations fired: the two inputs ignored in the halt forecast -> 'slow 0.05 vs healthy 0.05'; platform never calling observe_cycle -> the integration test fails 'the second pass did not read the first cycle's stage latency'."
   },
   {
     "id": "R12-REASON-3053",
