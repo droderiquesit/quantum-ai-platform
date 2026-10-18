@@ -730,15 +730,16 @@
   },
   {
     "id": "R12-WORLD-3033",
-    "status": "PARTIAL",
-    "current": "Platform EpisodicMemory written by LEARN (remember_resolved) with market and world state; episodic digest issued.",
+    "status": "COMPLETE",
+    "current": "Platform EpisodicMemory is written by LEARN (remember_resolved) with market and world state, and now with what the platform did: EpisodeOutcome::fills lists the venue's fills (order id, quantity, price) on every remembered order whose attribution lineage cites the claim's hypothesis (Platform::fills_expressing). A thesis with no order, or whose orders did not fill, remembers none; an order whose lineage was evicted is not found and records no fill rather than a guessed one. The field is skipped when empty and defaulted on decode, so earlier episodes read unchanged.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:453 episodes: EpisodicMemory",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5506 issue_episodic_digest",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:207 an_episode_the_cycle_wrote_carries_the_market_and_world_state_measured_when_it_reasoned",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:281 a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected"
+      "backend/crates/libs/qip-ai/src/memory/episode.rs::EpisodeFill",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs::EpisodeOutcome::fills",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fills_expressing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::remember_resolved",
+      "runtime/qip-kernel/tests/episodic.rs::a_resolved_episode_remembers_the_fills_on_the_orders_that_expressed_its_claim"
     ],
-    "gap": "Episodes are per resolved thesis; 'what it did' (orders/fills) is not part of the episode record.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -746,10 +747,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test episodic",
+    "verification": "cd backend && cargo test -p qip-kernel --test episodic && cargo test -p qip-ai",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: closed, differently from the triage: the fills sit on EpisodeOutcome (what followed) rather than inside the Copy enum DecisionTaken, which every constructor and the sampler match on. Mutations: leaving the vector empty in remember_resolved -> fills.len() left 0 against the OMS's fill; matching the lineage's belief key against a hypothesis nothing cites -> same failure; both restored (qip-ai + qip-kernel: 1072 passed, 0 failed; clippy -D warnings clean). Limits: orders are found through the bounded attribution lineage, and fills only, not the order's placement record."
   },
   {
     "id": "R12-WORLD-3034",

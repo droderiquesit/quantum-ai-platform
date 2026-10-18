@@ -412,6 +412,21 @@ pub struct EpisodeOutcome {
     /// expectation of no move, and is why this is an option and not a zero.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub expected_move_bps: Option<f64>,
+    /// What the platform did about the claim: the venue's fills on the orders
+    /// that expressed it, in fill order. Empty for a claim that never reached
+    /// an order or whose orders did not fill, which is a statement that
+    /// nothing was done and not that the record was not kept; absent from
+    /// episodes written before the fills were recorded.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fills: Vec<EpisodeFill>,
+}
+
+/// One fill on an order that expressed the claim.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EpisodeFill {
+    pub order_id: String,
+    pub quantity: qip_core::Decimal,
+    pub price: qip_core::Decimal,
 }
 
 impl EpisodeOutcome {
