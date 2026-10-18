@@ -54,7 +54,7 @@ use crate::causal::SimulationResult;
 use crate::engine::{Learning, LearningOutcome, Outcome, Report};
 use crate::estimate::EstimatorKind;
 use crate::guard::Voice;
-use crate::memory::ActionOutcome;
+use crate::memory::{ActionOutcome, FailureEpisode};
 use qip_contracts::action::{ExecutionRecord, GoalApproval, Method, PlanApproval, ToolAudit};
 use qip_contracts::action_intent::ActionIntent;
 use qip_core::lineage::Lineage;
@@ -159,6 +159,10 @@ pub enum AgencyRecord {
         predicted_side_effects: Vec<String>,
         authority_before: Authority,
         authority_after: Authority,
+        /// The failure episode the drift filed, with its stop and roll-back
+        /// (R12-RES-7111). Absent on a record written before episodes were.
+        #[serde(default)]
+        failure: Option<Box<FailureEpisode>>,
     },
     /// Nothing was learned from this pass, and why.
     LearningWithheld {
@@ -444,6 +448,7 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
                 predicted_side_effects: learned.predicted_side_effects.iter().cloned().collect(),
                 authority_before: learned.before,
                 authority_after: learned.after,
+                failure: learned.failure.clone().map(Box::new),
             },
             at,
         )?,

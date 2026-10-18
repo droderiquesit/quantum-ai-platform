@@ -719,14 +719,16 @@
   },
   {
     "id": "R12-REFLEX-5032",
-    "status": "PARTIAL",
-    "current": "qip_edge::Journal (backend/crates/edge/qip-edge/src/journal.rs:49, record :180) hash-chained (seal_v2); StoreMirror persists via qip-storage (backend/crates/apps/qip-edge-node/src/main.rs:519).",
+    "status": "COMPLETE",
+    "current": "qip_edge::Journal (backend/crates/edge/qip-edge/src/journal.rs) is append-only and hash-chained (seal_v2); StoreMirror persists it through qip-storage. The node's composition root builds the cell with CellConfig::with_journal_trimmed_on_ship and with_journal_wire (backend/crates/apps/qip-edge-node/src/main.rs:559-560), and DecisionLoop::new refuses a cell whose journal does not trim on ship (backend/crates/apps/qip-edge-node/src/scheduler.rs:309), so the in-memory journal is bounded on the default path.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/journal.rs:180 record",
-      "backend/crates/edge/qip-edge/tests/journal_v2.rs:194",
-      "backend/crates/apps/qip-edge-node/src/main.rs:519 StoreMirror::open"
+      "backend/crates/edge/qip-edge/src/journal.rs record/seal_v2",
+      "backend/crates/edge/qip-edge/tests/journal_v2.rs",
+      "backend/crates/apps/qip-edge-node/src/main.rs:559 with_journal_trimmed_on_ship",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:309 trims_on_ship refusal",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_decision_loop_refuses_a_cell_that_keeps_shipped_journal_entries"
     ],
-    "gap": "Deployed node does not trim on ship (no with_journal_trimmed_on_ship in assemble, backend/crates/apps/qip-edge-node/src/lib.rs:140-200), so the in-memory journal grows unbounded for a session; no deployment.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -734,10 +736,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test journal_v2",
+    "verification": "cargo test -p qip-edge --test journal_v2; cargo test -p qip-edge-node --test decision_loop a_decision_loop_refuses_a_cell_that_keeps_shipped_journal_entries",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the earlier gap ('no with_journal_trimmed_on_ship in assemble') was stale, main.rs arms the trim and the loop refuses a cell without it. Added the proving test; mutation: making the trims_on_ship check at scheduler.rs:309 unreachable made it fail with 'a decision loop accepted a cell that keeps shipped journal entries', restored byte for byte."
   },
   {
     "id": "R12-REFLEX-5033",
@@ -1145,14 +1147,13 @@
   },
   {
     "id": "R12-MESH-5050",
-    "status": "PARTIAL",
-    "current": "The peer turn runs last in DecisionLoop::turn, after the journal flush and the centre's mesh delta (apps/qip-edge-node/src/scheduler.rs:504-548), and uses only try_recv/try_send (peer.rs:15-25, :267-290). A failing peer turn is counted and the loop continues (scheduler.rs:536-547). decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal drives the real loop with an unreachable peer and asserts short turns, running passes, and journal batches reaching the store. Reached from main (main.rs:1092-1103).",
+    "status": "COMPLETE",
+    "current": "The decision loop reaches peers only through qip_peer_link::boundary::ReflexPort (ADR 0116), whose methods never wait, and applies the centre's control through MeshWorker inside DecisionLoop::turn (apply_mesh, backend/crates/apps/qip-edge-node/src/scheduler.rs:662), independent of peer health. decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal drives the real loop with every peer refusing: turns stay short, the journal ships to the store, and a policy the centre's inbox accepts reaches the cell through the worker and DecisionLoop::turn (sequence 1 to 2) while the peer wire still reports zero sent.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/scheduler.rs:504",
-      "backend/crates/apps/qip-edge-node/src/scheduler.rs:533",
-      "apps/qip-edge-node/tests/decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal"
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:662 apply_mesh",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal"
     ],
-    "gap": "Prove the control/policy half through the loop: deliver a policy via the centre's downlink (apply_mesh/apply_wires inside DecisionLoop::turn) while peers are down. The test's policy half calls decisions.cell_mut().apply_policy(...) directly (decision_loop.rs:655-669), which bypasses the loop. A mutation that gated policy distribution on peer health would not fail it.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1162,10 +1163,10 @@
       "R12-MESH-5046"
     ],
     "blocked_by": "",
-    "verification": "node test with peer transport down asserting journal ships",
+    "verification": "cargo test -p qip-edge-node --test decision_loop an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The journal half meets the stated mutation (gate the flush on mesh health and the test fails). The policy half is close to tautological. The endpoint's receive/frame/expire work also still runs on the decision thread, which is what ADR 0116 calls a MESH-013 failure. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). After ADR 0116 the outage property rests on ReflexPort having no blocking method."
+    "notes": "Re-graded 2026-10-18 by lane L09. The gap ('the policy half calls cell_mut().apply_policy directly') was stale: the test now admits the policy frame to the centre's MeshInbox and waits for the loop to apply it. Mutation: returning early from apply_mesh when the peer port reports send failures made the test fail with 'the centre's policy did not reach the cell through the loop while the peer mesh was down'; restored byte for byte. The journal half's mutation (gate the flush on mesh health) was recorded by the 2026-10-11 audit."
   },
   {
     "id": "R12-MESH-5051",
