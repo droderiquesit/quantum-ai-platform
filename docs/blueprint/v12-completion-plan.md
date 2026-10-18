@@ -27,7 +27,7 @@ Recounted **2026-10-18** with `python3 -I` over `docs/blueprint/assessment/*.jso
 COMPLETE 249, PARTIAL 1122, MISSING 114, BLOCKED 31, INCORRECT 1,
 NEEDS-VALIDATION 1 (= 1518). On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
 MISSING 159: eleven independent graders read 980 rows (ran nothing), 88
-were proposed COMPLETE, eleven were held back (ten TICK rows reachable only
+were proposed COMPLETE, eleven were held back (nine TICK rows reachable only
 with `QIP_DEEPBRAIN_TICK_EVERY` set, which needs a licensing decision;
 OBS-3118, whose alert policy is gated off; AMBIENT-1055, fenced partly by a
 source scan), and the other 77 were promoted after every named test passed in
