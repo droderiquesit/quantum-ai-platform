@@ -12,6 +12,7 @@
 //! defaults and the refusals are asserted directly instead of by setting
 //! variables in a process that other tests share.
 
+use qip_brokers::Secret;
 use qip_core::Duration;
 use qip_core::error::{Error, Result};
 use qip_storage::settings::StorageSettings;
@@ -126,7 +127,15 @@ pub struct LiveFeedSettings {
     /// deployment may supply it in a file rather than in the environment — a
     /// key in the environment is a key in `/proc/<pid>/environ`, every child
     /// process, and every crash dump.
-    pub api_key: String,
+    ///
+    /// A [`Secret`] and not a `String`, because this struct and the
+    /// [`FastBrainConfig`] holding it derive `Debug`. Until 2026-10-18 the key
+    /// sat here in clear, so a `{config:?}` in a start-up banner or an
+    /// `assert!` message — one line nobody re-reads — would have printed the
+    /// vendor credential. `Secret` redacts both `Debug` and `Display`, refuses
+    /// `Serialize`, and gives the bytes out only through `expose_str`, which
+    /// `feed.rs` calls once, where the request header is built.
+    pub api_key: Secret,
     /// Header the credential travels in, since vendors disagree.
     pub api_key_header: String,
 }
@@ -414,13 +423,13 @@ fn live_feed(vars: &BTreeMap<String, String>) -> Result<Option<LiveFeedSettings>
         path: require(PATH)?,
         symbols,
         venue: require(VENUE)?,
-        api_key: api_key.ok_or_else(|| {
+        api_key: Secret::new(api_key.ok_or_else(|| {
             Error::invalid(format!(
                 "a live market-data feed is configured and no credential was resolved. Set {KEY}, \
                  or {KEY}{} to the path the Secret Manager CSI driver projects it to.",
                 qip_core::secret::FILE_SUFFIX
             ))
-        })?,
+        })?),
         api_key_header: require(HEADER)?,
     }))
 }
@@ -747,6 +756,38 @@ mod live_feed_tests {
         assert_eq!(live.venue, "XNAS");
         assert_eq!(live.api_key_header, "x-api-key");
         assert!(live.base_url.starts_with("http://"));
+    }
+
+    #[test]
+    fn the_resolved_credential_is_redacted_from_the_config_s_debug_rendering() {
+        // `FastBrainConfig` derives `Debug` and is one `{config:?}` — in a
+        // start-up banner, an `assert!` message, an error path — away from
+        // being printed whole. Until 2026-10-18 `LiveFeedSettings::api_key`
+        // was a plain `String`, so that line would have carried the vendor
+        // credential into stdout. The premise comes first: the key really is
+        // in the parsed config, because a redaction test over a key that was
+        // never resolved passes for ever and guards nothing.
+        let key = full()
+            .into_iter()
+            .find(|(name, _)| *name == "QIP_MARKET_DATA_KEY")
+            .map(|(_, value)| value)
+            .expect("the fixture names the key");
+        let config = FastBrainConfig::parse(&map(&full())).expect("a complete vendor parses");
+        let live = config.live_feed.as_ref().expect("the vendor was resolved");
+        assert_eq!(
+            live.api_key.expose_str().expect("the fixture key is text"),
+            key
+        );
+
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains(key),
+            "the config's Debug rendering carries the credential: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "the config's Debug rendering does not show the key as redacted: {rendered}"
+        );
     }
 
     #[test]

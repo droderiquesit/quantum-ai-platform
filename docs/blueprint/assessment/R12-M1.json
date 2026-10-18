@@ -2970,28 +2970,30 @@
   },
   {
     "id": "R12-WORLD-1130",
-    "status": "PARTIAL",
-    "current": "Federation arbitrates in the cycle; ScoredView carries per-model probability, calibration-derived performance, uncertainty; Disagreement set journaled.",
+    "status": "COMPLETE",
+    "current": "Federation::arbitrate fills ScoredView::lineage (ViewLineage: parents, trigger, branch depth from the member node) for every live view, so the journaled Disagreement carries each models lineage; a root reads depth 0, a branch one deeper than its parent, a merge one below its deepest parent naming both.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:173 Lineage",
-      "backend/crates/services/qip-world-model/src/federation.rs:641 arbitrate",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
-      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
+      "backend/crates/services/qip-world-model/src/federation.rs::ScoredView::lineage",
+      "backend/crates/services/qip-world-model/src/federation.rs::ViewLineage",
+      "backend/crates/services/qip-world-model/src/federation.rs::Federation::branch_depths",
+      "backend/crates/services/qip-world-model/src/federation.rs::Federation::arbitrate (fills lineage)",
+      "backend/crates/services/qip-world-model/tests/federation.rs::arbitration_carries_each_views_lineage_matching_the_node_it_came_from",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run (journals the Disagreement)"
     ],
-    "gap": "Arbitration carries no per-model lineage (Lineage lives on nodes, not in the arbitration record).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-WORLD-1003"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation arbitration_carries_each_views_lineage_matching_the_node_it_came_from",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 (lane L14): lineage moved onto the arbitration record. Mutation: filling an empty lineage (no parents, depth 0) failed the test at parents [] vs [root]."
   },
   {
     "id": "R12-REASON-1131",
@@ -3514,13 +3516,17 @@
   },
   {
     "id": "R12-WORLD-1155",
-    "status": "PARTIAL",
-    "current": "World graph NodeKind and relationships used by kernel; entity types tested; coverage of all listed entity kinds not shown.",
+    "status": "COMPLETE",
+    "current": "NodeKind::Entity carries a typed EntityKind (qip_entity_resolution::entity::EntityKind, re-exported from graph.rs) whose variants include Company, Person, SupplyChain, Country, Product, Venue, Contract, Weather, Logistics and Market; assets are NodeKind::FinancialObject. Node::entity requires the kind at the write seam and WorldGraph::entities_of_kind queries by it. tests/entity_types.rs constructs one fixture of each of the eleven named kinds, reads each back typed, queries each kind to exactly its fixture, and proves the as-of exclusion on both time dimensions. The kernel writes typed entity nodes via Node::entity (platform.rs) and the world absorb seam types news mentions (world.rs).",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/graph.rs:58 NodeKind",
-      "backend/crates/services/qip-world-model/tests/entity_types.rs"
+      "backend/crates/services/qip-world-model/src/graph.rs::EntityKind (re-export) and NodeKind",
+      "backend/crates/services/qip-world-model/src/graph.rs::Node::entity",
+      "backend/crates/services/qip-world-model/src/graph.rs::WorldGraph::entities_of_kind",
+      "backend/crates/services/qip-entity-resolution/src/entity.rs::EntityKind",
+      "backend/crates/services/qip-world-model/tests/entity_types.rs::one_fixture_of_each_of_the_eleven_named_entity_types_is_a_typed_node_and_an_earlier_as_of_query_excludes_what_came_later",
+      "backend/crates/services/qip-world-model/tests/entity_types.rs::an_entity_with_no_kind_and_an_event_with_no_instant_are_refused_at_the_write_seam"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3528,10 +3534,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test entity_types",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L14) after reading and running the code: the grader closure proposed adding an EntityKind that already exists and a test that already covers all eleven kinds. Mutation run on the existing test: making entities_of_kind ignore its kind failed at a query for Company does not return exactly the companies fixture. Honest limit: production absorb seams currently write Company and Country kinds; the other kinds are reachable through Node::entity but no feed yet produces them."
   },
   {
     "id": "R12-WORLD-1156",

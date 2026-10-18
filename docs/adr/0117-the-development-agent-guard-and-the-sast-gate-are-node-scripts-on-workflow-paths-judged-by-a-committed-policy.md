@@ -247,3 +247,50 @@ Not covered by this amendment: the 23 Rust findings the round-4 merges
 added beyond the Amendment 1 baseline. They are fixed in code (test
 messages that formatted signing-derived values no longer do), never
 admitted by raising the baseline.
+
+## Amendment 3 (2026-10-18): the analyser is told what a name does not tell it
+
+ci run 991 on `main` (f3e2fef7) failed its `sast / Analyze (rust)` job on 33
+`rust/cleartext-logging` findings beyond the Amendment 1 baseline. Reproduced
+with the same bundle (CodeQL 2.27.2, `codeql/rust-queries` 0.1.44), every one
+traced to five source expressions and every one printed something harmless:
+order ids, refusal strings, counts, a start-up banner. The analyser classifies a
+call as sensitive from its *name* (`venue_account`, `from_secret`,
+`workload_certificate`, `credential.secret`, a variable `api_key`), carries the
+taint of `f()?` to the whole return value of the enclosing function, and then
+treats every field read of a tainted struct as tainted; so one
+`from_secret(..)?` inside `CentralPlane::assemble` marks every `Platform` and
+every assertion that prints a field of one. Two of its sink rows are wrong on
+their face: inserting into a `Vec` or a `VecDeque` is modelled as logging.
+
+**Decision.** The repository carries a CodeQL model pack,
+`.github/codeql/qip-models` (`qip/rust-models`), whose `barrierModel` rows say,
+one function at a time, that a value the analyser flagged by name carries no
+secret bytes in any printable form; `codeql-analysis.yml` hands it to
+`codeql database run-queries` through `CODEQL_ACTION_EXTRA_OPTIONS`
+(`--additional-packs`, `--model-packs`), for the Rust matrix entry only. Each
+row's claim and the file that holds it are in the pack's `README.md`, and a row
+may never sit on a value that does carry secret bytes: the one row whose claim
+was false until this amendment — `live_feed`, because `LiveFeedSettings`
+carried the vendor key as a plain `String` inside a `Debug` struct — was made
+true first, by moving the key into `qip_brokers::Secret`, with a test that the
+whole config's `Debug` rendering does not contain it.
+
+**Why not the alternatives.** Renaming the functions would dodge the scanner
+and say nothing; raising the baseline is what Amendment 1 forbids; rewriting
+`?` as `match` leaves the taint where it was; deleting the `{:?}` from 29 test
+assertions treats the sinks as the problem when the sources are. A model pack
+is the mechanism CodeQL provides for exactly this statement, and it is
+reviewed: `.github/**` is a protected path.
+
+**What it costs.** The pack is loaded through an environment variable the
+action reads but does not document on docs.github.com; the action's `packs`
+input accepts registry packs only. `sast` runs on pushes to `main`, so the
+merge carrying the wiring is its first exercise. If the pack fails to load the
+job is red, and if the option is ignored the 33 findings return and the gate is
+red — neither worse than the failure this amendment answers.
+
+**What would make this wrong.** A row whose claim stops being true (a
+`Display` on `SigningKey`, a plain-`String` credential back in a config
+struct), or a row added for a value that is a secret. The README names the file
+each claim rests on so a reviewer of that file can find the row.

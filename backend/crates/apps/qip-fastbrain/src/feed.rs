@@ -191,7 +191,9 @@ impl Feed {
         let config = RestFeedConfig {
             base_url: Some(settings.base_url.clone()),
             path: settings.path.clone(),
-            api_key: Some(settings.api_key.clone()),
+            // The one place the credential leaves its redacting wrapper: the
+            // adapter writes it into the request header and nowhere else.
+            api_key: Some(settings.api_key.expose_str()?.to_string()),
             api_key_header: settings.api_key_header.clone(),
             licensing: LicensingClass::Licensed,
             ..RestFeedConfig::default()
@@ -973,7 +975,7 @@ mod source_choice_tests {
             // `check-secrets.sh`'s credential pattern and makes the scan
             // report a finding on every run, which is how a scanner stops
             // being read.
-            api_key: "not-a-key".into(),
+            api_key: qip_brokers::Secret::new("not-a-key"),
             api_key_header: "x-api-key".into(),
         }
     }
@@ -1078,7 +1080,7 @@ mod connector_feed_tests {
             path: "/v1/market-data".to_string(),
             symbols: vec!["ACME".to_string()],
             venue: "XLON".to_string(),
-            api_key: "a-key".to_string(),
+            api_key: qip_brokers::Secret::new("a-key"),
             api_key_header: "x-api-key".to_string(),
         }
     }

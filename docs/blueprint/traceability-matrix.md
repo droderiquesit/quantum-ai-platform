@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 270 | 17.8% |
+| Blueprint completion (COMPLETE) | 273 | 18.0% |
 | Implemented (behaviour exists in code) | 1324 | 87.2% |
 | Tested (a named test demonstrates it) | 1197 | 78.9% |
-| Integrated (reached from a composition root) | 797 | 52.5% |
-| Deployable (provisionable from committed config) | 179 | 11.8% |
+| Integrated (reached from a composition root) | 798 | 52.6% |
+| Deployable (provisionable from committed config) | 181 | 11.9% |
 | End-to-end demonstrated | 0 | 0.0% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 270 |
-| PARTIAL | 1101 |
+| COMPLETE | 273 |
+| PARTIAL | 1098 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -41,8 +41,8 @@ register (ADR 0099), and there is no second one.
 | [DATA](#data) | 95 | 18 | 67 | 10 | 0 | 0 | 83 | 69 | 0 |
 | [EVID](#evid) | 25 | 0 | 25 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 9 | 85 | 3 | 0 | 0 | 93 | 82 | 0 |
-| [WORLD](#world) | 69 | 17 | 47 | 5 | 0 | 0 | 60 | 53 | 0 |
-| [REASON](#reason) | 41 | 5 | 34 | 2 | 0 | 0 | 39 | 39 | 0 |
+| [WORLD](#world) | 69 | 19 | 45 | 5 | 0 | 0 | 60 | 53 | 0 |
+| [REASON](#reason) | 41 | 6 | 33 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 6 | 40 | 2 | 0 | 0 | 45 | 41 | 0 |
 | [AGENCY](#agency) | 69 | 28 | 34 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 15 | 62 | 3 | 1 | 0 | 76 | 69 | 0 |
@@ -803,8 +803,8 @@ register (ADR 0099), and there is no second one.
 | R12-WORLD-1016 | Represent uncertainty and contradiction explicitly | Reasoning engine beliefs carry probability and contradiction resolution types; world-model tests cover contradictions; self-model exists in qip-learning-engine. Episodic/semantic memories are not shown to carry uncertainty. | PARTIAL | Uniform uncertainty/contradiction fields across all five model kinds, integrated in the cycle. |  | P1 | cargo test -p qip-world-model --test contradictions |  |
 | R12-WORLD-1023 | Disagreement between world models represented explicitly | UNDERSTAND runs a seven-member federation (markets/self/on-chain domains, regional, micro/meso/macro horizons, Scenario stress-world, Counterfactual standing-aside) each cycle; every Arbitration carries a Disagreement with all ScoredViews and spread, journaled and replay-checked. | COMPLETE | None for the requirement; not deployed. | R12-WORLD-1003 | P2 | cargo test -p qip-world-model --test federation |  |
 | R12-WORLD-1129 | World Model Federation of many concurrent models | FederationStage registers seven members with distinct scopes and feeds them each UNDERSTAND pass; kernel test asserts a population of seven live members journaled per cycle. | COMPLETE | None for the requirement; not deployed. | R12-WORLD-1003 | P2 | cargo test -p qip-world-model --test federation |  |
-| R12-WORLD-1130 | Arbitration layer preserves disagreement, confidence and lineage | Federation arbitrates in the cycle; ScoredView carries per-model probability, calibration-derived performance, uncertainty; Disagreement set journaled. | PARTIAL | Arbitration carries no per-model lineage (Lineage lives on nodes, not in the arbitration record). | R12-WORLD-1003 | P2 | cargo test -p qip-world-model --test federation |  |
-| R12-WORLD-1155 | World model capability scope | World graph NodeKind and relationships used by kernel; entity types tested; coverage of all listed entity kinds not shown. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
+| R12-WORLD-1130 | Arbitration layer preserves disagreement, confidence and lineage | Federation::arbitrate fills ScoredView::lineage (ViewLineage: parents, trigger, branch depth from the member node) for every live view, so the journaled Disagreement carries each models lineage; a root reads depth 0, a branch one deeper than its parent, a merge one below its deepest parent naming both. | COMPLETE |  | R12-WORLD-1003 | P2 | cd backend && cargo +1.94.1 test -p qip-world-model --test federation arbitration_carries_each_views_lineage_matching_the_node_it_came_from |  |
+| R12-WORLD-1155 | World model capability scope | NodeKind::Entity carries a typed EntityKind (qip_entity_resolution::entity::EntityKind, re-exported from graph.rs) whose variants include Company, Person, SupplyChain, Country, Product, Venue, Contract, Weather, Logistics and Market; assets are NodeKind::FinancialObject. Node::entity requires the kind at the write seam and WorldGraph::entities_of_kind queries by it. tests/entity_types.rs constructs one fixture of each of the eleven named kinds, reads each back typed, queries each kind to exactly its fixture, and proves the as-of exclusion on both time dimensions. The kernel writes typed entity nodes via Node::entity (platform.rs) and the world absorb seam types news mentions (world.rs). | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-world-model --test entity_types |  |
 | R12-WORLD-1156 | Financial AGI core capability scope | Eight-stage cycle with agents, hypotheses, counterfactual scoring (score_declined) and self-model; planning/tool use only in shadow agency. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
 | R12-WORLD-1178 | World Model Federation capability scope | Federation supports branch/merge/renew/expiry/calibration; not integrated. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
 | R12-WORLD-1181 | World-model arbitration & epistemic control capability scope | Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information. | PARTIAL | Decisions are recorded only: no branch or merge is executed, and contradiction detection is not a distinct mechanism. |  | P2 | inspection + crate tests per scope item |  |
@@ -879,7 +879,7 @@ register (ADR 0099), and there is no second one.
 | R12-REASON-3053 | Reasoning as a society of interoperable reasoners | REASON runs rules, timeline, Bayesian network, constraint, lifecycle, abduction and intervention per hypothesis and journals the derivation, but only after review decided; nothing feeds back into hypothesis formation. | PARTIAL | Compose at least one symbolic verdict into hypothesis formation, as the verification requires. |  | P1 | cargo test -p qip-reasoning-engine --test reasoners |  |
 | R12-REASON-3054 | Knowledge-graph and ontology reasoning | The lifecycle judge runs on the hypothesis status lifecycle in the cycle; no knowledge-graph/ontology reasoning over financial or physical lifecycles is reached. | PARTIAL | KG/ontology reasoning over entities and financial/physical lifecycles in production. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
 | R12-REASON-3055 | Temporal and event logic | Timeline orders anomaly/hypothesis/deadline, refuses effect-before-cause and records whether the deadline passed; no settlement-calendar reasoning. | PARTIAL | Settlement calendars and state-transition reasoning beyond hypothesis status. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
-| R12-REASON-3056 | Causal graph reasoning | CausalGraph::intervene runs on every hypothesis subject in REASON and its affected set and paths are journaled. | PARTIAL | Causal graph counterfactual explanations are not implemented in REASON; intervene results are not asserted by a test. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
+| R12-REASON-3056 | Causal graph reasoning | CausalGraph::counterfactual (qip-world-model inference.rs, not causal.rs) is now called in REASON: symbolic_stage::derive explains the surprise counterfactually for each abduced cause seen to move (best first, at most COUNTERFACTUALS_KEPT), recording what the subject would have done had the cause stayed flat, the total effect and the path count on InterventionSummary::counterfactuals, journaled with every SymbolicDerivation and decodable from older records (serde default). | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation && cargo +1.94.1 test -p qip-world-model --test inference |  |
 | R12-REASON-3057 | Rule and policy engines | The kernel loads a versioned rule pack (eligibility plus paper-boundary and kill-switch invariants) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict. | PARTIAL | Only an eligibility plus paper/kill-switch rule pack is wired; accounting, market-structure and contract rules are not. |  | P1 | cargo test -p qip-reasoning-engine --test reasoners |  |
 | R12-REASON-3058 | Constraint reasoning | Constraint solver (CSP/SAT/bounded linear integer, minimise, QUBO export) returns an assignment or a minimal unsatisfiable conflict; runs per hypothesis as the acting problem. | PARTIAL | Only CSP/SAT/bounded-linear-integer and QUBO export exist; SMT, MILP and graph solvers are absent. |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
 | R12-REASON-3059 | Probabilistic symbolic reasoning | Bayesian network posterior computed per hypothesis from declared tables and panel evidence, journaled. | COMPLETE |  |  | P2 | cargo test -p qip-reasoning-engine --test reasoners |  |
