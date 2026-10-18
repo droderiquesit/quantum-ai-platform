@@ -114,6 +114,7 @@ fn observation(trigger: GapTrigger, wanting: Vec<Wanting>) -> Observation {
         evidence: vec!["ev-1".to_string()],
         severity: 0.7,
         economic_value: dec(500),
+        risk_value: dec(200),
     }
 }
 

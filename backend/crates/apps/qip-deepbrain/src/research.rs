@@ -1089,6 +1089,13 @@ impl ResearchLoop {
                     // on the anomaly mapper's [0, 100] scale.
                     economic_value: Decimal::from_f64(proposal.residual * 100.0)
                         .unwrap_or(Decimal::ZERO),
+                    // The same residual is also what the book carries while
+                    // the class goes unmodelled: an error the desk sizes
+                    // against. Equal to the economic figure here because one
+                    // measurement states both; the anomaly mapper is where
+                    // the two part.
+                    risk_value: Decimal::from_f64(proposal.residual * 100.0)
+                        .unwrap_or(Decimal::ZERO),
                 });
             }
         }
@@ -1583,6 +1590,17 @@ impl ResearchLoop {
             // A surprise states a deviation, not money; a stated zero launches
             // no acquisition, and the specialist's tools are what answer it.
             economic_value: Decimal::ZERO,
+            // A deviation is, however, exposure: the surprise's own size on
+            // the anomaly mapper's [0, 100] scale, so a large unexplained
+            // surprise ranks as dangerous to leave open even though nothing
+            // prices what closing it would earn. f64 to Decimal here, from
+            // the basis-point severity the signal carries.
+            risk_value: Decimal::from_f64(
+                f64::from(signal.severity_bp())
+                    / f64::from(qip_contracts::ambient::MAX_SEVERITY_BP)
+                    * 100.0,
+            )
+            .unwrap_or(Decimal::ZERO),
         };
         let raised = raise(observation)?;
         let question = qip_expansion::desk::question_for(&raised);
@@ -2318,6 +2336,9 @@ fn poisoning_observation(finding: &PoisoningFinding) -> Observation {
         severity: poisoning_severity(finding.class),
         // The detector measures a pattern, not money; stated zero.
         economic_value: Decimal::ZERO,
+        // Nor a position's exposure: a poisoned source is held out of the
+        // evidence fabric before it can move a book.
+        risk_value: Decimal::ZERO,
     }
 }
 
