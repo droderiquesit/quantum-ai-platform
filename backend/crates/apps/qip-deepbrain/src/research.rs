@@ -87,7 +87,9 @@ use qip_reasoning_engine::compiler::{
     PackageSigner, ReflexRule, SignedReflexPackage, Verification,
 };
 use qip_risk::limits::LimitCheck;
+use qip_simulation_engine::scenario::{FactorShock, Scenario};
 use qip_storage::BlobStore;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -565,7 +567,57 @@ pub struct ResearchRound {
     /// where one ran (R12-EXPAND-1117), so the sweep record shows the model
     /// evolution its research followed.
     pub evolution: Option<EvolutionTrace>,
+    /// One conditional scenario per risk or assumption signal this sweep
+    /// routed whose subject the platform holds a tape for
+    /// (R12-AMBIENT-1005/3064): the measured move that raised the signal,
+    /// stated as a shock to stress against, generated with nobody asking.
+    pub scenarios: Vec<ConditionalScenario>,
+    /// Every assumption the loop holds and how it stands after this sweep
+    /// (R12-AMBIENT-1143), in key order: written every sweep, so an
+    /// assumption last challenged three sweeps ago reads as holding for
+    /// three sweeps rather than as nothing.
+    pub assumptions: Vec<AssumptionState>,
 }
+
+/// A stress scenario conditioned on one signal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionalScenario {
+    pub signal_id: String,
+    pub scenario: Scenario,
+}
+
+/// One assumption's health: when it was last challenged, how often, and how
+/// many sweeps it has held since.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssumptionState {
+    /// The research question the challenge raised — the assumption named by
+    /// what it would take to repair it.
+    pub assumption: String,
+    /// The trigger of the latest challenge (`low_confidence`,
+    /// `model_drift`, `unsupported_request`).
+    pub trigger: String,
+    pub first_challenged: Timestamp,
+    pub last_challenged: Timestamp,
+    pub challenges: u32,
+    /// Sweeps since the last challenge; zero on the sweep that raised it.
+    pub sweeps_since: u32,
+}
+
+impl AssumptionState {
+    /// `challenged` on the sweep a challenge arrived, `holding` after.
+    pub const fn state(&self) -> &'static str {
+        if self.sweeps_since == 0 {
+            "challenged"
+        } else {
+            "holding"
+        }
+    }
+}
+
+/// Assumption health by state (`challenged`, `holding`), per sweep.
+pub const AMBIENT_ASSUMPTIONS: &str = "qip_ambient_assumptions";
+/// Conditional scenarios generated, per sweep.
+pub const AMBIENT_SCENARIOS: &str = "qip_ambient_scenarios_total";
 
 /// What the evolution desk did in the cycle before a sweep, as the sweep
 /// record carries it: enough to see a challenger minted or a champion
@@ -677,6 +729,9 @@ pub struct ResearchLoop {
     /// The Brain Registry entry of every specialist a NOW surprise can wake,
     /// by specialist (R12-CONTRACT-7086). Checked complete at construction.
     brains: BTreeMap<&'static str, qip_contracts::BrainSpec>,
+    /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
+    /// longest unchallenged leaves first when a new one arrives at the cap.
+    assumptions: BTreeMap<String, AssumptionState>,
 }
 
 impl std::fmt::Debug for ResearchLoop {
@@ -779,6 +834,7 @@ impl ResearchLoop {
             capabilities: VecDeque::new(),
             packages: VecDeque::new(),
             brains,
+            assumptions: BTreeMap::new(),
             config,
         })
     }
@@ -1195,6 +1251,12 @@ impl ResearchLoop {
                 basis_points(raised.signal.severity)?,
             );
         }
+        let challenged: Vec<(String, &'static str)> = raised_now
+            .iter()
+            .filter(|r| signal_class(r.trigger) == SignalClass::Assumption)
+            .map(|r| (qip_expansion::desk::question_for(r), trigger_str(r.trigger)))
+            .collect();
+        self.hold_assumptions(&challenged, now, &metrics, &mut round);
         for raised in raised_now {
             let signal = self.emit(&raised, now)?;
             routable.push((Some(raised), signal));
@@ -1293,6 +1355,9 @@ impl ResearchLoop {
                 }
             }
         }
+
+        // --- conditional scenarios: what the signal's move would do again --
+        self.conditional_scenarios(platform, &metrics, &mut round)?;
 
         // --- curiosity: rank every candidate, then launch ------------------
         self.launch_ranked(&metrics, &mut round)?;
@@ -1604,6 +1669,121 @@ impl ResearchLoop {
             .entry(&question)
             .is_some()
             .then_some(question))
+    }
+
+    /// Fold this sweep's assumption challenges into the held table and put
+    /// the whole table on the round (R12-AMBIENT-1143).
+    fn hold_assumptions(
+        &mut self,
+        challenged: &[(String, &'static str)],
+        now: Timestamp,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) {
+        for state in self.assumptions.values_mut() {
+            state.sweeps_since = state.sweeps_since.saturating_add(1);
+        }
+        for (assumption, trigger) in challenged {
+            if !self.assumptions.contains_key(assumption) && self.assumptions.len() >= RETAINED {
+                // The longest-held entry leaves; ties by key, so a replay
+                // evicts the same one.
+                if let Some(oldest) = self
+                    .assumptions
+                    .iter()
+                    .max_by(|a, b| a.1.sweeps_since.cmp(&b.1.sweeps_since).then(b.0.cmp(a.0)))
+                    .map(|(k, _)| k.clone())
+                {
+                    self.assumptions.remove(&oldest);
+                }
+            }
+            let state = self
+                .assumptions
+                .entry(assumption.clone())
+                .or_insert_with(|| AssumptionState {
+                    assumption: assumption.clone(),
+                    trigger: (*trigger).to_string(),
+                    first_challenged: now,
+                    last_challenged: now,
+                    challenges: 0,
+                    sweeps_since: 0,
+                });
+            state.trigger = (*trigger).to_string();
+            state.last_challenged = now;
+            state.challenges = state.challenges.saturating_add(1);
+            state.sweeps_since = 0;
+        }
+        round.assumptions = self.assumptions.values().cloned().collect();
+        for state in ["challenged", "holding"] {
+            let count = round
+                .assumptions
+                .iter()
+                .filter(|a| a.state() == state)
+                .count();
+            metrics.gauge(
+                AMBIENT_ASSUMPTIONS,
+                labels([("state", state)]),
+                count as f64,
+            );
+        }
+    }
+
+    /// One conditional scenario per risk or assumption signal routed this
+    /// sweep (R12-AMBIENT-1005): for each affected subject the platform
+    /// holds a tape for, the latest measured move, stated as a one-day
+    /// shock — "if the move that raised this signal happens again". The
+    /// number is measured, not chosen; a signal on nothing priced gets no
+    /// scenario rather than an invented one.
+    fn conditional_scenarios(
+        &mut self,
+        platform: &Platform,
+        metrics: &Metrics,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let history = platform.price_history();
+        let mut generated = Vec::new();
+        for signal in &round.signals {
+            if !matches!(signal.class(), SignalClass::Risk | SignalClass::Assumption) {
+                continue;
+            }
+            let shocks: Vec<FactorShock> = signal
+                .affected_entities()
+                .iter()
+                .filter_map(|subject| {
+                    let prices = history.get(subject)?;
+                    let [.., previous, last] = prices.as_slice() else {
+                        return None;
+                    };
+                    let moved = last / previous - 1.0;
+                    (moved.is_finite() && moved != 0.0)
+                        .then(|| FactorShock::new(format!("price:{subject}"), moved, 1.0))
+                })
+                .collect();
+            if shocks.is_empty() {
+                continue;
+            }
+            let scenario = Scenario {
+                name: format!("conditional:{}", signal.id()),
+                description: format!(
+                    "hypothetical, conditioned on ambient signal {} ({:?}, {} bp): the latest \
+                     measured move of each affected subject, repeated over one day",
+                    signal.id(),
+                    signal.class(),
+                    signal.severity_bp()
+                ),
+                shocks,
+                stressed_correlation: None,
+                liquidity_multiplier: 1.0,
+                historical: false,
+            };
+            scenario.validate()?;
+            generated.push(ConditionalScenario {
+                signal_id: signal.id().to_string(),
+                scenario,
+            });
+        }
+        metrics.increment(AMBIENT_SCENARIOS, labels([]), generated.len() as u64);
+        round.scenarios = generated;
+        Ok(())
     }
 
     fn retain_request(&mut self, request: InfoRequest) {

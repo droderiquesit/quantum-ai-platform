@@ -250,6 +250,43 @@ impl PortfolioProblem {
                 )));
             }
         }
+        // Transaction cost is part of the objective every candidate, quantum
+        // ones included, is re-scored on (R12-QUANT-4057). These refusals keep
+        // it from being dropped silently: `objective_at` reads a missing
+        // holding as zero, so a short vector would price a sale as a
+        // purchase, and holdings declared beside a zero penalty would make
+        // every rebalance read as free.
+        if !self.turnover_penalty.is_finite() || self.turnover_penalty < 0.0 {
+            return Err(Error::invalid(format!(
+                "a turnover penalty of {} is not a non-negative finite cost; a negative one \
+                 rewards churning the book",
+                self.turnover_penalty
+            )));
+        }
+        if self.current_weights.len() != n {
+            return Err(Error::invalid(format!(
+                "{} current holding(s) for {n} assets; turnover is priced per asset, so give \
+                 one holding per asset, zero where nothing is held",
+                self.current_weights.len()
+            )));
+        }
+        if self
+            .current_weights
+            .iter()
+            .any(|weight| !weight.is_finite())
+        {
+            return Err(Error::invalid(
+                "a current holding is not finite, so the turnover it implies cannot be priced",
+            ));
+        }
+        if self.turnover_penalty == 0.0 && self.current_weights.iter().any(|weight| *weight != 0.0)
+        {
+            return Err(Error::invalid(
+                "current holdings are declared with a zero turnover penalty, so moving away from \
+                 them reads as free and an allocation that ignores transaction cost would be \
+                 scored as if it did not; give the cost per unit of turnover",
+            ));
+        }
         if let Some(cardinality) = self.cardinality {
             if cardinality == 0 {
                 return Err(Error::invalid("a cardinality limit of zero holds nothing"));
@@ -368,6 +405,15 @@ impl PortfolioProblem {
         }
         Ok(program)
     }
+
+    /// The name a Quantum Foundry declaration must give for this encoder.
+    ///
+    /// [`crate::router::ComputeRouter::with_quantum`] compares a registered
+    /// portfolio family's declared encoding against this, because the
+    /// quantum arm reaches a provider through [`Self::to_qubo`] and nothing
+    /// else: a family declaring another encoder would be admitted on the
+    /// strength of a description of code the router never runs.
+    pub const QUBO_ENCODER: &'static str = "PortfolioProblem::to_qubo";
 
     /// Express as a QUBO for an annealer or QAOA.
     ///

@@ -703,3 +703,226 @@ fn a_driver_the_understand_stage_established_from_the_tape_is_stressed_through_t
     );
     Ok(())
 }
+
+// --- each survival world the paper book fails, through the DECIDE governor --
+
+/// R12-RISK-4117..4120, 4123, 4124: one survival world the paper book a real
+/// cycle stressed fails, carried alone into the survival governor the DECIDE
+/// stage sizes through, withholds a stressed-liquidity reserve named for that
+/// world and releases less capital than the same book unstressed.
+///
+/// The cycle tests above prove the worlds reach the stress report and that the
+/// worst one withholds; the per-world response was proven only on a hand-built
+/// book (`survival.rs::tests`). This ties each world as the cycle priced it for
+/// this book to its response, so a world dropped from
+/// `tail::survival_worlds` fails the lookup rather than passing on a sibling's
+/// reserve. The world is isolated because the governor withholds for the
+/// worst world in the report: kept beside the others, a world that is not the
+/// worst would change nothing this test could attribute to it.
+fn a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(name: &str) -> Result<()> {
+    use qip_kernel::survival::{LedgerFigures, SurvivalGovernor};
+
+    let mut platform = platform()?;
+    platform.observe(observations("AAA", 120, 0.0));
+    platform.observe(observations("BBB", 120, 0.31));
+    buy(&mut platform, "AAA", dec!("40000"), start())?;
+    buy(&mut platform, "BBB", dec!("40000"), start())?;
+    let at = start().saturating_add(Duration::from_days(1));
+    platform.run_cycle(at);
+    let stress = platform
+        .stress_report()
+        .expect("premise: an open book with history is stressed")
+        .clone();
+    let world = stress
+        .tail_worlds
+        .iter()
+        .find(|world| world.scenario == name)
+        .unwrap_or_else(|| panic!("the paper book was never stressed in the {name} world"))
+        .clone();
+    // A tolerance below every world this book is priced in, so each one is a
+    // failure to survive; a world the book survived would prove nothing.
+    let tolerance = 0.002;
+    assert!(
+        world.loss_fraction.is_finite() && world.loss_fraction > tolerance,
+        "premise: the paper book must fail {name} at {tolerance}; it lost {}",
+        world.loss_fraction
+    );
+    let mut alone = stress.clone();
+    alone.scenarios.clear();
+    alone.adversarial = None;
+    alone.causal.clear();
+    alone.tail_worlds.retain(|world| world.scenario == name);
+    assert_eq!(alone.tail_worlds.len(), 1, "premise: {name} is isolated");
+
+    let figures = LedgerFigures {
+        equity: dec!("10000000"),
+        held: Decimal::ZERO,
+        obligations: Decimal::ZERO,
+        deployable: dec!("10000000"),
+        gross: dec!("8000000"),
+        ..LedgerFigures::default()
+    };
+    let mut governor = SurvivalGovernor::default();
+    let unstressed = governor.size(figures, None, tolerance, &[], at)?;
+    let stressed = governor.size(figures, Some(&alone), tolerance, &[], at)?;
+    let tail = stressed
+        .tail
+        .as_ref()
+        .unwrap_or_else(|| panic!("{name} produced no tail response"));
+    assert_eq!(tail.scenario, name, "the reserve is named for the world");
+    assert!(!tail.survives(), "{name} withheld nothing");
+    assert_eq!(
+        stressed.survival.stressed_liquidity_reserve, tail.reserve,
+        "the waterfall withholds the reserve {name} demanded"
+    );
+    assert!(
+        stressed.released < unstressed.released,
+        "failing {name} must release less capital: {} against {}",
+        stressed.released,
+        unstressed.released
+    );
+    assert!(stressed.gross_ceiling < unstressed.gross_ceiling);
+    assert!(
+        stressed
+            .narrowing()
+            .iter()
+            .any(|line| line.contains(&format!(" in {name} against "))),
+        "DECIDE's detail names {name}: {:?}",
+        stressed.narrowing()
+    );
+    Ok(())
+}
+
+/// R12-RISK-4117. Mutation: delete the freeze `out.push(world(..))` in
+/// `tail::survival_worlds` — the lookup panics.
+#[test]
+fn a_paper_book_failing_the_liquidity_freeze_world_withholds_a_reserve_named_for_it() -> Result<()>
+{
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::LIQUIDITY_FREEZE_DEPTH,
+    )
+}
+
+/// R12-RISK-4118. Mutation: delete the venue-outage push.
+#[test]
+fn a_paper_book_failing_the_venue_outage_world_withholds_a_reserve_named_for_it() -> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(qip_kernel::tail::VENUE_OUTAGE)
+}
+
+/// R12-RISK-4119. Mutation: delete the gap-move push.
+#[test]
+fn a_paper_book_failing_the_gap_move_world_withholds_a_reserve_named_for_it() -> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(qip_kernel::tail::GAP_MOVE)
+}
+
+/// R12-RISK-4120. Mutation: delete `out.push(correlation_inversion(..))`.
+#[test]
+fn a_paper_book_failing_the_correlation_inversion_world_withholds_a_reserve_named_for_it()
+-> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::CORRELATION_INVERSION,
+    )
+}
+
+/// R12-RISK-4123. Mutation: delete the data-poisoning push.
+#[test]
+fn a_paper_book_failing_the_data_poisoning_world_withholds_a_reserve_named_for_it() -> Result<()> {
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::DATA_POISONING,
+    )
+}
+
+/// R12-RISK-4124. Mutation: delete the multi-market-shock push.
+#[test]
+fn a_paper_book_failing_the_multi_market_shock_world_withholds_a_reserve_named_for_it() -> Result<()>
+{
+    a_paper_book_failing_one_world_withholds_a_reserve_named_for_it(
+        qip_kernel::tail::MULTI_MARKET_SHOCK,
+    )
+}
+
+// --- a distribution shift the cycle measured narrows the sizing budget -----
+
+/// R12-RISK-4114: an instrument whose recent returns left the distribution its
+/// own history set, observed through the cycle — `feature_statistics::measure`
+/// over the platform's price history, handed to the confidence governor by
+/// `observe_distribution` in SENSE's statistics pass — narrows the budget the
+/// survival governor releases for a construction holding it, and leaves a
+/// construction over a calm instrument untouched.
+///
+/// The grant half had a kernel test (`central.rs`) and the sizing half only a
+/// unit test that wrote the score into the governor's map by hand, so the seam
+/// from the cycle's measurement to a narrowed size was unproven.
+///
+/// Mutation: make the out-of-distribution arm in `ConfidenceSignals::decide`
+/// unreachable — the shifted construction is released whole and the
+/// narrowing assertion fails.
+#[test]
+fn a_distribution_shift_the_cycle_measured_narrows_the_sizing_budget() -> Result<()> {
+    use qip_cost_router::MarketRegime;
+    use qip_kernel::confidence::{ThesisView, Trigger};
+    use qip_kernel::survival::{LedgerFigures, SurvivalGovernor};
+
+    // 300 daily returns each: AAA calm for half its history and wild for the
+    // other half, BBB one regime throughout.
+    let count = 300;
+    let mut shifted = noise(7, count / 2, 0.002);
+    shifted.extend(noise(11, count / 2, 0.05));
+    let calm = noise(13, count, 0.01);
+    let mut platform = platform()?;
+    platform.observe(bars_from_returns("AAA", &shifted, count));
+    platform.observe(bars_from_returns("BBB", &calm, count));
+    let at = start().saturating_add(Duration::from_days(1));
+    platform.run_cycle(at);
+
+    let view = |symbol: &str| ThesisView {
+        hypothesis_id: format!("hyp-{symbol}"),
+        object_id: object(symbol).to_string(),
+        regime: MarketRegime::Trending,
+    };
+    let signals = platform.confidence_signals().clone();
+    let calm_decision = signals.decide(&[view("BBB")])?;
+    assert_eq!(
+        calm_decision.multiplier,
+        Decimal::ONE,
+        "premise: a construction over the calm instrument is not narrowed: {calm_decision:?}"
+    );
+    let shifted_decision = signals.decide(&[view("AAA")])?;
+    assert!(
+        shifted_decision
+            .contractions
+            .iter()
+            .any(|c| c.trigger == Trigger::OutOfDistribution
+                && c.subject.as_deref() == Some(object("AAA").as_str())),
+        "the cycle measured no shift on AAA: {shifted_decision:?}"
+    );
+
+    let figures = LedgerFigures {
+        equity: dec!("10000000"),
+        held: Decimal::ZERO,
+        obligations: Decimal::ZERO,
+        deployable: dec!("10000000"),
+        gross: Decimal::ZERO,
+        ..LedgerFigures::default()
+    };
+    let mut governor = SurvivalGovernor::default();
+    *governor.signals_mut() = signals;
+    let calm_budget = governor.size(figures, None, 0.20, &[view("BBB")], at)?;
+    let shifted_budget = governor.size(figures, None, 0.20, &[view("AAA")], at)?;
+    assert_eq!(
+        calm_budget.released, figures.deployable,
+        "premise: nothing else narrows this construction"
+    );
+    assert!(
+        shifted_budget.released < calm_budget.released,
+        "a distribution shift must narrow the sizing budget: {} against {}",
+        shifted_budget.released,
+        calm_budget.released
+    );
+    assert_eq!(
+        shifted_budget.released,
+        figures.deployable * shifted_decision.multiplier,
+        "the narrowing is the governor's out-of-distribution schedule and nothing else"
+    );
+    Ok(())
+}

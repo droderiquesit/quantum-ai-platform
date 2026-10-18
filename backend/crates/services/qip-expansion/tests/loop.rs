@@ -141,6 +141,131 @@ fn an_asset_class_with_no_history_is_raised_as_unsupported_and_a_covered_one_is_
     assert!((raised[0].severity - 1.0).abs() < 1e-12);
 }
 
+/// R12-EXPAND-6065: coverage is measured per venue and geography too, not
+/// only per asset class. Two equities share the asset class, so the class is
+/// half covered and above a 0.4 floor; one trades on a venue with no history
+/// at all. The failure prevented: that venue hid inside a class that looked
+/// covered on average, and no work was ever raised for it.
+///
+/// Mutation: in `coverage_universe`, drop the `CoverageDimension::Venue`
+/// row, and the venue gap disappears.
+#[test]
+fn a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension() {
+    use qip_core::{Decimal, ObjectId, Timestamp};
+    use qip_expansion::detectors::coverage_universe;
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+
+    let t0 = Timestamp::from_secs(1_800_000_000);
+    let mut universe = Universe::new();
+    for (id, venue) in [("obj-A", "XNYS"), ("obj-B", "XLON")] {
+        let object = FinancialObject::builder(
+            ObjectId::from_string(id.to_string()),
+            id,
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue(venue)
+        .geography("US")
+        .price(Decimal::from_int(100))
+        .provenance(Provenance::synthetic("test", t0))
+        .build(t0)
+        .unwrap_or_else(|e| panic!("{e}"));
+        universe.insert(object).unwrap_or_else(|e| panic!("{e}"));
+    }
+    let map = coverage_universe(&universe);
+    assert!(
+        map.contains_key("venue:XLON"),
+        "premise: venues are keys: {map:?}"
+    );
+    let covered = set(&["obj-A"]);
+
+    let raised = coverage(&map, &covered, 0.4).unwrap_or_else(|e| panic!("{e}"));
+    let [gap] = raised.as_slice() else {
+        panic!("expected exactly one coverage gap, found {raised:?}");
+    };
+    assert_eq!(
+        gap.observation,
+        "venue `XLON` is unsupported: none of its 1 instrument(s) has history"
+    );
+    assert!(
+        gap.evidence.iter().any(|e| e == "universe:venue:XLON"),
+        "{:?}",
+        gap.evidence
+    );
+    assert_eq!(class_of(gap), GapClass::Data);
+}
+
+/// A key naming a dimension the detector does not measure is refused, not
+/// read as an asset class called `language:en`. Mutation: return
+/// `AssetClass` for an unknown prefix and the refusal disappears.
+#[test]
+fn a_coverage_key_naming_an_unmeasured_dimension_is_refused() {
+    let universe = BTreeMap::from([("language:en".to_string(), set(&["A"]))]);
+    match coverage(&universe, &set(&[]), 0.5) {
+        Err(e) => assert!(e.to_string().contains("`language:en`"), "{e}"),
+        Ok(raised) => panic!("an unmeasured dimension raised {raised:?}"),
+    }
+}
+
+/// R12-EXPAND-6042: a campaign that re-measured its venue leaves a record a
+/// learner can read, not only the counter that it opened. The failure
+/// prevented: the replay's finding went nowhere, and a residual nobody can
+/// weight or trace is noise that looks like signal.
+///
+/// Mutation: in `TickCampaignDetector::conclude`, set `delta_id` to the
+/// cell's name instead of the campaign's id, and the lineage assertion fails.
+#[test]
+fn a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign() {
+    use qip_contracts::microstructure_delta::ResidualKind;
+    use qip_core::Timestamp;
+    use qip_expansion::campaigns::Remeasured;
+
+    let mut detector = TickCampaignDetector::new().unwrap_or_else(|e| panic!("{e}"));
+    let campaign = detector
+        .observe_slippage(Decimal::from_raw(20_000_000), Some("XNYS"), set(&["obj-A"]))
+        .unwrap_or_else(|| panic!("premise: a 2% residual opens a campaign"));
+    let remeasured = |instrument: &str| Remeasured {
+        instrument: instrument.to_string(),
+        modelled: Decimal::from_int(5),
+        observed: Decimal::from_int(7),
+        samples: 40,
+    };
+    let window = (Timestamp::from_secs(1_000), Timestamp::from_secs(2_000));
+
+    let delta = TickCampaignDetector::conclude(
+        &campaign,
+        "cell-newyork-1",
+        "twin-v3",
+        window,
+        vec![remeasured("obj-A")],
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(delta.delta_id, campaign.campaign_id);
+    assert_eq!(delta.venue.as_str(), "XNYS");
+    let [residual] = delta.residuals.as_slice() else {
+        panic!("expected one residual, found {:?}", delta.residuals);
+    };
+    assert_eq!(residual.kind, ResidualKind::Slippage);
+    assert_eq!(residual.error(), Decimal::from_int(2));
+    assert_eq!(residual.samples, 40);
+
+    // A residual for an instrument the campaign never studied is refused.
+    match TickCampaignDetector::conclude(
+        &campaign,
+        "cell-newyork-1",
+        "twin-v3",
+        window,
+        vec![remeasured("obj-Z")],
+    ) {
+        Err(e) => assert!(e.to_string().contains("`obj-Z`"), "{e}"),
+        Ok(d) => panic!("a residual the campaign never measured was attributed to it: {d:?}"),
+    }
+}
+
 // --- failure-, opportunity- and anomaly-driven curriculum -------------------
 
 #[test]
@@ -348,9 +473,12 @@ fn a_residual_above_threshold_between_replay_and_live_opens_a_curriculum_item() 
     };
     let question = question_for(&raised);
 
-    // The tool is registered so the admission is decided by the item, not by
-    // a missing tool; that path has its own test below.
-    let mut desk = desk_with(&[("tick-replay", ToolKind::Simulator)]);
+    // The tools are registered so the admission is decided by the item, not
+    // by a missing tool; that path has its own test below.
+    let mut desk = desk_with(&[
+        ("tick-replay", ToolKind::Simulator),
+        ("venue-adapter", ToolKind::VenueAdapter),
+    ]);
     assert!(desk.queue().is_empty(), "premise: an empty desk");
     assert_eq!(
         desk.offer(raised, &set(&[]), &set(&["US"])),
@@ -657,7 +785,10 @@ fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
 fn quantum_research_reaches_capability_only_through_every_environment_and_criterion() {
     let us = set(&["US"]);
     let started = |raised: &qip_expansion::gap::RaisedGap| {
-        let mut desk = desk_with(&[("quantum-backend", ToolKind::QuantumBackend)]);
+        let mut desk = desk_with(&[
+            ("quantum-backend", ToolKind::QuantumBackend),
+            ("classical-solver", ToolKind::Solver),
+        ]);
         let admission = desk.offer(raised.clone(), &set(&[]), &us);
         assert!(
             !matches!(admission, Admission::Refused { .. }),

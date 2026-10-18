@@ -15,6 +15,7 @@
 
 use crate::mesh::MeshHealth;
 use qip_observability::metrics::{Labels, Metrics, names};
+use qip_peer_link::boundary::PeerStatus;
 use qip_transport::breaker::BreakerState;
 use std::sync::Arc;
 
@@ -59,6 +60,47 @@ pub fn respond(request: &[u8], metrics: &Metrics, health_body: &str) -> (&'stati
         );
     }
     ("application/json", health_body.to_string())
+}
+
+/// The peer link's measured latency (MESH-007), written into the registry
+/// the scrape serves.
+///
+/// A gauge of the shortest fresh round trip across peers, in milliseconds,
+/// and absent while no peer has a fresh sample: a link that has measured
+/// nothing must not chart as a peer at zero distance. `cell` and `region`
+/// are the only labels, fixed for the process; there is no per-peer label
+/// because the figure is the nearest peer's.
+#[derive(Debug)]
+pub struct PeerSeries {
+    metrics: Arc<Metrics>,
+    base: Labels,
+}
+
+impl PeerSeries {
+    pub fn new(metrics: Arc<Metrics>, cell: &str, region: &str) -> Self {
+        let mut base = Labels::new();
+        base.insert("cell".to_string(), cell.to_string());
+        base.insert("region".to_string(), region.to_string());
+        metrics.describe(
+            names::EDGE_PEER_ROUND_TRIP_MS,
+            "the shortest fresh peer clock round trip in milliseconds, net of the peer's holding time",
+        );
+        Self { metrics, base }
+    }
+
+    /// Record what the link last measured. `clock_round_trip_ns` is read
+    /// only while `clocks_measured` says a sample exists; the nanosecond
+    /// count crosses to `f64` milliseconds here, where the statistic lives.
+    pub fn observe(&self, status: &PeerStatus) {
+        if status.clocks_measured == 0 {
+            return;
+        }
+        self.metrics.gauge(
+            names::EDGE_PEER_ROUND_TRIP_MS,
+            self.base.clone(),
+            status.clock_round_trip_ns as f64 / 1_000_000.0,
+        );
+    }
 }
 
 /// The mesh link's counters, rendered as deltas.

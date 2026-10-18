@@ -636,7 +636,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings",
       "backend/crates/runtime/qip-kernel/src/compute_routing.rs::ComputeSettings"
     ],
-    "gap": "ProviderSolver and IbmQuantumSolver remain public synchronous solve_qubo paths, not refused; only the absence of a caller keeps them off the cycle.",
+    "gap": "IbmQuantumSolver's QuboSolver::solve already refuses unconditionally (solver.rs:911, Error::unavailable; transport_present is hard-coded false), so the open seam is ProviderSolver::solve (solver.rs:1010), which calls QuantumProvider::solve_qubo inline for any provider, a hosted QPU included. It cannot simply be refused: qip-quantum/tests/hosted.rs::a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline benchmarks a connected HostedProvider through it and proves the device answer is re-scored against the classical baseline. Closing needs a benchmark entrant built from a QuantumGateway-collected QaoaResult (submit, poll, then enter the result), the hosted test moved onto it, and ProviderSolver refusing a provider whose capabilities().simulated is false with Error::denied naming QuantumGateway::submit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -647,7 +647,7 @@
     "verification": "test: router with a slow/hosted provider returns the classical decision without blocking",
     "work_item": "",
     "size": "M",
-    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S)."
   },
   {
     "id": "R12-QUANT-4030",
@@ -962,14 +962,16 @@
   },
   {
     "id": "R12-QUANT-4045",
-    "status": "PARTIAL",
-    "current": "Selection uses objective improvement above the margin with feasibility; failure or loss leaves the classical answer. Cost and latency are not part of the comparison in ComputeRouter (time_budget is declared but not compared per run); qip-contracts RoutingDecision has a cost threshold but is not used by the kernel.",
+    "status": "COMPLETE",
+    "current": "A quantum answer is re-scored on the cycle's real objective and adopted only above the margin; it is admitted only within cost (per-job cap, value-versus-cost, cumulative budget, all at dispatch, so an over-budget job never produces an answer) and latency (an answer past quantum_patience_cycles is abandoned and discarded unread; a substrate whose mean latency passes its ceiling stops being tried). A failed, losing, late or over-budget path leaves the classical result in force.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:329-385 selection",
-      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:683 a_failed_quantum_attempt_leaves_the_classical_answer_standing",
-      "backend/crates/libs/qip-contracts/src/quantum.rs:208-310 RoutingDecision with cost (acceptance tests only)"
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1794 a_quantum_answer_that_wins_on_objective_but_exceeds_the_latency_budget_is_not_used",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs:452 a_job_whose_expected_gain_is_not_worth_its_price_is_declined_and_the_comparison_is_journaled",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs a_failed_quantum_attempt_leaves_the_classical_answer_standing",
+      "backend/crates/libs/qip-quantum/src/gateway.rs QuantumGateway::poll abandonment"
     ],
-    "gap": "Include measured cost and latency in the router's admission of a quantum answer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -977,10 +979,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test optimization a_quantum_answer_that_wins_on_objective_but_exceeds_the_latency_budget",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L19. Mutation: making QuantumGateway::poll never abandon (polls >= u32::MAX) leaves the late job pending past its patience and the test fires; the cost half is mutation-verified by the 9046 and 4051 tests. qip-contracts RoutingDecision is still not the kernel's type (see R12-QUANT-4063)."
   },
   {
     "id": "R12-QUANT-4046",
@@ -1008,40 +1010,44 @@
   },
   {
     "id": "R12-QUANT-4047",
-    "status": "PARTIAL",
-    "current": "RoutingLearning records per-substrate wins, verification, latency, cost, repeatability and calibration Brier, resumed from the journal at start-up; dispatch stops below a measured win-rate floor. Reachable in qip-deepbrain dev/test.",
+    "status": "COMPLETE",
+    "current": "RoutingLearning records per-substrate wins, verification, latency, cost and calibration (now with the direction of a miscalibration), resumed from the journal at start-up. ComputeRouter::estimate stops a substrate below the win-rate floor and, once quality_minimum_trials trials exist, below a repeatability floor, above a mean-latency ceiling (a share of patience, so it can fire), or when the router's own estimates score a Brier above the ceiling while running above what the substrate delivered.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:309 tally per problem size; :420 record(won)",
-      "backend/crates/services/qip-optimization-engine/src/compute.rs:293 InformationValue win_probability",
-      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
-      "backend/crates/services/qip-optimization-engine/src/learning.rs::RoutingLearning",
-      "backend/crates/runtime/qip-kernel/src/compute_routing.rs::resume"
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1656 measured_shortfall",
+      "backend/crates/services/qip-optimization-engine/src/learning.rs::SubstrateRecord::overconfidence",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs:543 a_substrate_that_wins_but_answers_rarely_late_or_against_its_estimate_stops_being_tried",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs a_replayed_router_holds_the_live_routers_learning_and_a_losing_substrate_stays_stopped",
+      "backend/crates/runtime/qip-kernel/src/compute_routing.rs:185 resume",
+      "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings"
     ],
-    "gap": "Only win rate and a fixed per-job cost cap gate dispatch; latency, repeatability and calibration are recorded on InformationValue but never change routing.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-QUANT-4053"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test learning",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L19. Mutations, one per gate in measured_shortfall (repeatability < 0.0, latency > f64::MAX, overconfidence > 1.0): each makes its case submit and the test fires. Integrated: qip-deepbrain attaches the arm from the dev/test catalogue (with_compute_settings); nothing is deployed."
   },
   {
     "id": "R12-QUANT-4048",
-    "status": "PARTIAL",
-    "current": "TaskClass has the eight variants and compile() refuses a task with no class; the class is declared by the caller (router hardcodes CombinatorialOptimisation), not inferred by the compiler.",
+    "status": "COMPLETE",
+    "current": "TaskClass has the eight variants; TaskStructure declares the shape of a task's answer and TaskStructure::classify infers the class from it, refusing a structure that fits no class (unclassified) or several (contradictory). TaskSpec::compile classifies from the structure and refuses a declared class the structure contradicts. The router no longer asserts a class: every DECIDE compile declares its answer as a choice minimising an objective and the compiler infers combinatorial optimisation.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/compute.rs:41 TaskClass (8 variants); :202 class required",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:994 class: Some(TaskClass::CombinatorialOptimisation)",
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:162 TaskStructure",
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:189 classify",
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:278 compile classifies and checks a declared class",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1779 router declares structure, not class",
+      "backend/crates/services/qip-optimization-engine/tests/compute.rs:128 the_compiler_infers_each_class_from_the_answers_structure_and_refuses_a_contradiction",
       "backend/crates/services/qip-optimization-engine/tests/compute.rs:27 a_task_missing_any_declared_property_is_refused_by_name_rather_than_defaulted"
     ],
-    "gap": "Compiler-side classification; any task class other than portfolio reaching it in production.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1049,10 +1055,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test compute",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Closed 2026-10-18 by lane L19. Mutations: mapping graph_structured to CombinatorialOptimisation, widening [class] to [class, ..], and dropping the declared-versus-inferred check each make the test fire. Runs on every ComputeRouter::solve, classical deployments included; only the portfolio-allocation workload reaches the compiler in production."
   },
   {
     "id": "R12-QUANT-4049",
@@ -1102,26 +1108,27 @@
   },
   {
     "id": "R12-QUANT-4051",
-    "status": "PARTIAL",
-    "current": "Each dispatch records an InformationValue (win probability, expected gain, cost) and declines below the win-rate floor, over the cost cap, or against an exact baseline; reachable in qip-deepbrain with dev/test settings.",
+    "status": "COMPLETE",
+    "current": "Each dispatch estimate records win probability, expected gain, the value of that gain (expected_value_micros = expected_gain x RoutingPolicy::value_per_unit_gain_micros), the cost and the spend already billed, and ComputeRouter::estimate declines the dispatch when the expected value is below the cost, journaling the comparison on InformationValue. Both candidate substrates (the asynchronous QPU arm, whose job runs on the gateway worker beside the cycle, and the synchronous quantum-inspired rung) are dispatched only through this estimate. Value 0 by default: only a free job is worth sending until an operator prices an improvement.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/compute.rs:293 InformationValue.cleared",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:742 estimate recorded",
-      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
-      "backend/crates/services/qip-optimization-engine/src/router.rs::ComputeRouter::estimate"
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:326 InformationValue.expected_value_micros",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:422 value_per_unit_gain_micros",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1616 value below cost declines",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs:452 a_job_whose_expected_gain_is_not_worth_its_price_is_declined_and_the_comparison_is_journaled",
+      "backend/crates/runtime/qip-kernel/src/compute_routing.rs:185 resume"
     ],
-    "gap": "Cost is a fixed cap, not weighed against expected gain, so value does not 'justify the cost'; no parallel multi-substrate dispatch.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test learning a_job_whose_expected_gain_is_not_worth_its_price",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L19. Mutation: deleting the expected_value_micros < cost_micros arm sends the job and the declined assertion fires. Runs wherever the quantum arm is attached (qip-deepbrain dev/test catalogue); nothing is deployed."
   },
   {
     "id": "R12-QUANT-4052",
@@ -1229,12 +1236,15 @@
   {
     "id": "R12-QUANT-4057",
     "status": "PARTIAL",
-    "current": "For the one integrated workload (portfolio allocation) the router refuses a quantum answer that violates any constraint and the objective carries an optional turnover penalty; collateral/funding/placement search has no quantum path.",
+    "current": "For portfolio allocation, every quantum candidate is re-scored on the real problem, whose objective carries the transaction cost (turnover_penalty over current holdings; qip-portfolio-engine construction sets it from the mandate's turnover_cost_bps, 15 by default), and refused if infeasible or not better than the classical baseline after that cost. PortfolioProblem::validate now refuses a negative or non-finite penalty, a holdings vector of the wrong length, and holdings declared with a zero penalty. Collateral, funding and capital-placement search have no quantum path.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:329-340 infeasible quantum refused",
-      "backend/crates/services/qip-optimization-engine/src/problem.rs:203 with_turnover_penalty"
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1317 infeasible quantum refused",
+      "backend/crates/services/qip-optimization-engine/src/problem.rs:261 turnover penalty validated",
+      "backend/crates/services/qip-optimization-engine/src/problem.rs:285 holdings without a cost refused",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:371 production sets the penalty",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1908 a_quantum_allocation_that_wins_only_by_ignoring_transaction_cost_is_refused"
     ],
-    "gap": "Transaction-cost model in the check; collateral/funding/placement families.",
+    "gap": "Collateral, funding and capital-placement search: no quantum path exists for those families, so their check against capital invariants and transaction cost is unbuilt. The portfolio half is closed and mutation-verified.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1244,10 +1254,10 @@
       "R12-QUANT-4034"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test optimization a_quantum_allocation_that_wins_only_by_ignoring_transaction_cost",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L19. Mutations: dropping the turnover term from objective_at adopts the candidate against the costed problem; deleting the zero-penalty refusal admits uncosted holdings; both fire."
   },
   {
     "id": "R12-QUANT-4058",
@@ -1353,7 +1363,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:192-235 JobClass",
       "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway"
     ],
-    "gap": "Kernel/router use their own types, not the qip-contracts quantum contract; contract shape not exercised in production.",
+    "gap": "ComputeRouter takes PortfolioProblem and returns its own RoutingDecision; nothing in production builds a qip_contracts::quantum::DecisionRequest or SolverResult. The kernel seam meant to journal contract decisions, Platform::route_quantum_decisions in qip-kernel platform.rs, is a stub returning Vec::new(). Closing needs a router-side conversion (the QUBO the arm submits as a DecisionRequest, each run as a SolverResult) and that stub replaced by a call journaling it; the stub is lane L01's file.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1366,7 +1376,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change."
   },
   {
     "id": "R12-QUANT-4064",
@@ -1657,24 +1667,28 @@
   },
   {
     "id": "R12-GOV-4077",
-    "status": "PARTIAL",
-    "current": "FinancingPermissions refuses any regulated function without a recorded (entity, counterparty, jurisdiction) permission and funding.rs uses it; neither is reached from the kernel or an app. No regulated function runs, so the fail-closed default holds trivially.",
+    "status": "COMPLETE",
+    "current": "No regulated financing function runs, and the one seam that draws on a financing source, qip_capital::funding::plan_funding, takes &FinancingPermissions and asks FinancingPermissions::require before counting a source; the empty registry refuses every FinancingFunction. A structural acceptance suite now fails if any production source outside qip-capital's treasury.rs and funding.rs names FundingSource::Financing or FinancingFunction::, so a second financing seam cannot be added without routing through the gate.",
     "evidence": [
       "backend/crates/services/qip-capital/src/treasury.rs:408 FinancingPermissions",
+      "backend/crates/services/qip-capital/src/funding.rs:130 plan_funding takes the registry and calls require",
+      "backend/crates/tests/qip-acceptance/tests/financing_permissions.rs:80 no_production_source_outside_the_gate_names_a_financing_source_or_function",
+      "backend/crates/tests/qip-acceptance/tests/financing_permissions.rs:129 the_one_financing_seam_takes_the_permissions_and_asks_them_before_drawing",
+      "backend/crates/tests/qip-acceptance/tests/financing_permissions.rs:148 an_empty_permission_registry_refuses_every_regulated_financing_source",
       "backend/crates/services/qip-capital/tests/funding.rs:60"
     ],
-    "gap": "Wire permissions into every financing seam before any exists.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-acceptance --test financing_permissions",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: closed as a structural invariant; no regulated function exists to wire, so 'every financing seam' is enforced by making any new one fail CI. Mutations: a qip-kernel src file naming FundingSource::Financing fails the walk; making plan_funding skip the require check fails the seam and empty-registry tests (a financing source funded with no permission). Restored, 3/3 pass. compliance_proof 8/8, security 29/29, paper_boundary 5/5 pass; no risk, execution, broker or capital source changed."
   },
   {
     "id": "R12-CAPITAL-4078",
@@ -2497,23 +2511,25 @@
     "status": "PARTIAL",
     "current": "Feature statistics feed observe_distribution every cycle (platform.rs:10842-10845); decide narrows the size of a thesis on an OOD instrument and decide_for_grant takes the worst OOD over every instrument (confidence.rs:435-452). The grant half has a kernel test (tests/central.rs); the sizing half only a unit test (confidence.rs::tests::an_out_of_distribution_instrument_shrinks_the_size). The grant half never executes in a shipped binary: Platform::issue_capital is reached only from qip-api's capital-grant route, which first calls Principal::authentication_instant, and Principal::presence always returns Unattested (backend/crates/apps/qip-api/src/auth.rs:169-217; routes.rs:1902-1912), so every grant is refused before CentralPlane::issue_narrowed (platform.rs:7835-7846) is asked; no cell ever holds a narrowed grant until ADR 0065/0076's per-person credential exists.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10842-10845",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:11680",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:337",
       "backend/crates/runtime/qip-kernel/src/confidence.rs:435-452",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_distribution_shift_the_cycle_measured_narrows_the_sizing_budget",
       "runtime/qip-kernel/tests/central.rs::decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant",
       "runtime/qip-kernel/src/confidence.rs::tests::an_out_of_distribution_instrument_shrinks_the_size"
     ],
-    "gap": "A kernel test that an OOD score narrows the sizing budget; ADR 0121 so the narrowed grant is issued in a deployed binary.",
+    "gap": "ADR 0121 (per-person credential) so Platform::issue_capital is reached past Principal::presence and the narrowed grant is issued in a deployed binary; the sizing half is now proven through the cycle.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_distribution_shift_the_cycle_measured_narrows_the_sizing_budget",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL. Lane L06, 2026-10-18: the sizing half closed by stress.rs::a_distribution_shift_the_cycle_measured_narrows_the_sizing_budget, which feeds a real price-history shift through run_cycle (feature_statistics::measure then observe_distribution at platform.rs:11680) and asserts the survival governor releases deployable times the OOD multiplier for a construction on the shifted instrument and the whole balance for a calm one. Two mutations each failed it: the OOD arm of ConfidenceSignals::decide made unreachable (confidence.rs:337), and the cycle call to observe_distribution replaced with a no-op; both restored byte for byte, 14 passed. Kept PARTIAL for the grant half only."
   },
   {
     "id": "R12-RISK-4115",
@@ -2566,18 +2582,17 @@
   },
   {
     "id": "R12-RISK-4117",
-    "status": "PARTIAL",
-    "current": "A cycle test asserts LIQUIDITY_FREEZE_DEPTH reaches the paper book's StressReport priced; the governor withholds a stressed reserve for the worst world, and a unit test proves a reserve named for each failed world.",
+    "status": "COMPLETE",
+    "current": "tail::survival_worlds prices the LIQUIDITY_FREEZE_DEPTH world in stress_the_book from run_cycle; stress.rs::a_paper_book_failing_the_liquidity_freeze_world_withholds_a_reserve_named_for_it takes that world exactly as a real cycle priced it for the paper book, carries it alone into SurvivalGovernor::size (the governor DECIDE sizes through, platform.rs:14501) and asserts a stressed-liquidity reserve named for it equal to the waterfall tier, a smaller release and gross ceiling than the same book unstressed, and a DECIDE narrowing line naming the world.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:358",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
-      "backend/crates/runtime/qip-kernel/src/survival.rs:430",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::every_named_survival_world_is_generated_with_the_loss_its_assumptions_state",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate (asserts only counterparty-failure and model-failure reach a cycle's StressReport, :403-416)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:405",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14501",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:558",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:722",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_liquidity_freeze_world_withholds_a_reserve_named_for_it",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
     ],
-    "gap": "No test ties the paper book's freeze world to its response: the cycle tests check presence and a worst-world reserve, the per-world response test uses a hand-built book.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2585,25 +2600,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_paper_book_failing_the_liquidity_freeze_world_withholds_a_reserve_named_for_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06: mutation replacing this world's out.push in tail::survival_worlds (tail.rs:405) with a discard failed the test at the world lookup; restored byte for byte, 13 passed. Caveat that does not change the grade: the ledger figures are hand-built, as in decayed_calibration_shrinks_allocation_through_the_gate, and in a cycle only the worst world in the report drives the reserve, so the world is isolated to attribute the response to it."
   },
   {
     "id": "R12-RISK-4118",
-    "status": "PARTIAL",
-    "current": "tail::survival_worlds priced in stress_the_book from run_cycle (qip-fastbrain path); stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces asserts the world is in the cycle's report; SurvivalGovernor withholds a reserve for the worst world; survival.rs per-world reserve test on a constructed book.",
+    "status": "COMPLETE",
+    "current": "tail::survival_worlds prices the VENUE_OUTAGE world in stress_the_book from run_cycle; stress.rs::a_paper_book_failing_the_venue_outage_world_withholds_a_reserve_named_for_it takes that world exactly as a real cycle priced it for the paper book, carries it alone into SurvivalGovernor::size (the governor DECIDE sizes through, platform.rs:14501) and asserts a stressed-liquidity reserve named for it equal to the waterfall tier, a smaller release and gross ceiling than the same book unstressed, and a DECIDE narrowing line naming the world.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:358",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
-      "backend/crates/runtime/qip-kernel/src/survival.rs:430",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::every_named_survival_world_is_generated_with_the_loss_its_assumptions_state",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate (asserts only counterparty-failure and model-failure reach a cycle's StressReport, :403-416)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:429",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14501",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:558",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:722",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_venue_outage_world_withholds_a_reserve_named_for_it",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
     ],
-    "gap": "Cycle test now proves the world reaches the paper book's StressReport with positive loss; the capital response is asserted only on a constructed book (survival.rs) or the cycle's worst world with hand-built ledger figures, not this world through DECIDE on the paper book.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2611,25 +2625,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_paper_book_failing_the_venue_outage_world_withholds_a_reserve_named_for_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06: mutation replacing this world's out.push in tail::survival_worlds (tail.rs:429) with a discard failed the test at the world lookup; restored byte for byte, 13 passed. Caveat that does not change the grade: the ledger figures are hand-built, as in decayed_calibration_shrinks_allocation_through_the_gate, and in a cycle only the worst world in the report drives the reserve, so the world is isolated to attribute the response to it."
   },
   {
     "id": "R12-RISK-4119",
-    "status": "PARTIAL",
-    "current": "tail::survival_worlds priced in stress_the_book from run_cycle (qip-fastbrain path); stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces asserts the world is in the cycle's report; SurvivalGovernor withholds a reserve for the worst world; survival.rs per-world reserve test on a constructed book.",
+    "status": "COMPLETE",
+    "current": "tail::survival_worlds prices the GAP_MOVE world in stress_the_book from run_cycle; stress.rs::a_paper_book_failing_the_gap_move_world_withholds_a_reserve_named_for_it takes that world exactly as a real cycle priced it for the paper book, carries it alone into SurvivalGovernor::size (the governor DECIDE sizes through, platform.rs:14501) and asserts a stressed-liquidity reserve named for it equal to the waterfall tier, a smaller release and gross ceiling than the same book unstressed, and a DECIDE narrowing line naming the world.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:358",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
-      "backend/crates/runtime/qip-kernel/src/survival.rs:430",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::every_named_survival_world_is_generated_with_the_loss_its_assumptions_state",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate (asserts only counterparty-failure and model-failure reach a cycle's StressReport, :403-416)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:457",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14501",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:558",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:722",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_gap_move_world_withholds_a_reserve_named_for_it",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
     ],
-    "gap": "Cycle test now proves the world reaches the paper book's StressReport with positive loss; the capital response is asserted only on a constructed book (survival.rs) or the cycle's worst world with hand-built ledger figures, not this world through DECIDE on the paper book.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2637,25 +2650,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_paper_book_failing_the_gap_move_world_withholds_a_reserve_named_for_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06: mutation replacing this world's out.push in tail::survival_worlds (tail.rs:457) with a discard failed the test at the world lookup; restored byte for byte, 13 passed. Caveat that does not change the grade: the ledger figures are hand-built, as in decayed_calibration_shrinks_allocation_through_the_gate, and in a cycle only the worst world in the report drives the reserve, so the world is isolated to attribute the response to it."
   },
   {
     "id": "R12-RISK-4120",
-    "status": "PARTIAL",
-    "current": "tail::survival_worlds priced in stress_the_book from run_cycle (qip-fastbrain path); stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces asserts the world is in the cycle's report; SurvivalGovernor withholds a reserve for the worst world; survival.rs per-world reserve test on a constructed book.",
+    "status": "COMPLETE",
+    "current": "tail::survival_worlds prices the CORRELATION_INVERSION world in stress_the_book from run_cycle; stress.rs::a_paper_book_failing_the_correlation_inversion_world_withholds_a_reserve_named_for_it takes that world exactly as a real cycle priced it for the paper book, carries it alone into SurvivalGovernor::size (the governor DECIDE sizes through, platform.rs:14501) and asserts a stressed-liquidity reserve named for it equal to the waterfall tier, a smaller release and gross ceiling than the same book unstressed, and a DECIDE narrowing line naming the world.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:358",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
-      "backend/crates/runtime/qip-kernel/src/survival.rs:430",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::every_named_survival_world_is_generated_with_the_loss_its_assumptions_state",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate (asserts only counterparty-failure and model-failure reach a cycle's StressReport, :403-416)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:470",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14501",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:558",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:722",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_correlation_inversion_world_withholds_a_reserve_named_for_it",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
     ],
-    "gap": "Cycle test now proves the world reaches the paper book's StressReport with positive loss; the capital response is asserted only on a constructed book (survival.rs) or the cycle's worst world with hand-built ledger figures, not this world through DECIDE on the paper book.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2663,10 +2675,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_paper_book_failing_the_correlation_inversion_world_withholds_a_reserve_named_for_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06: mutation replacing this world's out.push in tail::survival_worlds (tail.rs:470) with a discard failed the test at the world lookup; restored byte for byte, 13 passed. Caveat that does not change the grade: the ledger figures are hand-built, as in decayed_calibration_shrinks_allocation_through_the_gate, and in a cycle only the worst world in the report drives the reserve, so the world is isolated to attribute the response to it."
   },
   {
     "id": "R12-RISK-4121",
@@ -2716,18 +2728,17 @@
   },
   {
     "id": "R12-RISK-4123",
-    "status": "PARTIAL",
-    "current": "tail::survival_worlds priced in stress_the_book from run_cycle (qip-fastbrain path); stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces asserts the world is in the cycle's report; SurvivalGovernor withholds a reserve for the worst world; survival.rs per-world reserve test on a constructed book.",
+    "status": "COMPLETE",
+    "current": "tail::survival_worlds prices the DATA_POISONING world in stress_the_book from run_cycle; stress.rs::a_paper_book_failing_the_data_poisoning_world_withholds_a_reserve_named_for_it takes that world exactly as a real cycle priced it for the paper book, carries it alone into SurvivalGovernor::size (the governor DECIDE sizes through, platform.rs:14501) and asserts a stressed-liquidity reserve named for it equal to the waterfall tier, a smaller release and gross ceiling than the same book unstressed, and a DECIDE narrowing line naming the world.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:358",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
-      "backend/crates/runtime/qip-kernel/src/survival.rs:430",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::every_named_survival_world_is_generated_with_the_loss_its_assumptions_state",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate (asserts only counterparty-failure and model-failure reach a cycle's StressReport, :403-416)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:489",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14501",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:558",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:722",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_data_poisoning_world_withholds_a_reserve_named_for_it",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
     ],
-    "gap": "Cycle test now proves the world reaches the paper book's StressReport with positive loss; the capital response is asserted only on a constructed book (survival.rs) or the cycle's worst world with hand-built ledger figures, not this world through DECIDE on the paper book.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2735,25 +2746,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_paper_book_failing_the_data_poisoning_world_withholds_a_reserve_named_for_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06: mutation replacing this world's out.push in tail::survival_worlds (tail.rs:489) with a discard failed the test at the world lookup; restored byte for byte, 13 passed. Caveat that does not change the grade: the ledger figures are hand-built, as in decayed_calibration_shrinks_allocation_through_the_gate, and in a cycle only the worst world in the report drives the reserve, so the world is isolated to attribute the response to it."
   },
   {
     "id": "R12-RISK-4124",
-    "status": "PARTIAL",
-    "current": "tail::survival_worlds priced in stress_the_book from run_cycle (qip-fastbrain path); stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces asserts the world is in the cycle's report; SurvivalGovernor withholds a reserve for the worst world; survival.rs per-world reserve test on a constructed book.",
+    "status": "COMPLETE",
+    "current": "tail::survival_worlds prices the MULTI_MARKET_SHOCK world in stress_the_book from run_cycle; stress.rs::a_paper_book_failing_the_multi_market_shock_world_withholds_a_reserve_named_for_it takes that world exactly as a real cycle priced it for the paper book, carries it alone into SurvivalGovernor::size (the governor DECIDE sizes through, platform.rs:14501) and asserts a stressed-liquidity reserve named for it equal to the waterfall tier, a smaller release and gross ceiling than the same book unstressed, and a DECIDE narrowing line naming the world.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:358",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14502",
-      "backend/crates/runtime/qip-kernel/src/survival.rs:430",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::tests::every_survival_world_the_book_fails_withholds_a_reserve_named_for_it",
-      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::every_named_survival_world_is_generated_with_the_loss_its_assumptions_state",
-      "backend/crates/runtime/qip-kernel/tests/stress.rs::decayed_calibration_shrinks_allocation_through_the_gate (asserts only counterparty-failure and model-failure reach a cycle's StressReport, :403-416)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs:501",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:14501",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:558",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs:722",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_paper_book_failing_the_multi_market_shock_world_withholds_a_reserve_named_for_it",
       "backend/crates/runtime/qip-kernel/tests/stress.rs::the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces"
     ],
-    "gap": "Cycle test now proves the world reaches the paper book's StressReport with positive loss; the capital response is asserted only on a constructed book (survival.rs) or the cycle's worst world with hand-built ledger figures, not this world through DECIDE on the paper book.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2761,9 +2771,9 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_paper_book_failing_the_multi_market_shock_world_withholds_a_reserve_named_for_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Mechanism is real and wired; 4121/4122 were graded COMPLETE on a cycle-level presence assertion that these worlds lack, so they stay one step lower. Graded lower, per the brief, because the wiring from SIMULATE is untested. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06: mutation replacing this world's out.push in tail::survival_worlds (tail.rs:501) with a discard failed the test at the world lookup; restored byte for byte, 13 passed. Caveat that does not change the grade: the ledger figures are hand-built, as in decayed_calibration_shrinks_allocation_through_the_gate, and in a cycle only the worst world in the report drives the reserve, so the world is isolated to attribute the response to it."
   }
 ]
