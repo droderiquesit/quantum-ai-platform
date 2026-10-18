@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 445 | 29.3% |
+| Blueprint completion (COMPLETE) | 447 | 29.4% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1224 | 80.6% |
 | Integrated (reached from a composition root) | 855 | 56.3% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 445 |
-| PARTIAL | 926 |
+| COMPLETE | 447 |
+| PARTIAL | 924 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -43,14 +43,14 @@ register (ADR 0099), and there is no second one.
 | [TICK](#tick) | 97 | 17 | 77 | 3 | 0 | 0 | 93 | 82 | 1 |
 | [WORLD](#world) | 69 | 25 | 39 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 13 | 26 | 2 | 0 | 0 | 39 | 39 | 0 |
-| [AMBIENT](#ambient) | 48 | 19 | 27 | 2 | 0 | 0 | 46 | 45 | 9 |
+| [AMBIENT](#ambient) | 48 | 20 | 26 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 34 | 28 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 21 | 56 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 24 | 28 | 26 | 0 | 0 | 52 | 51 | 0 |
 | [EXPAND](#expand) | 68 | 25 | 41 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
-| [GOV](#gov) | 26 | 10 | 11 | 3 | 2 | 0 | 21 | 21 | 2 |
+| [GOV](#gov) | 26 | 11 | 10 | 3 | 2 | 0 | 21 | 21 | 2 |
 | [SEC](#sec) | 57 | 20 | 33 | 4 | 0 | 0 | 50 | 41 | 0 |
 | [OBS](#obs) | 50 | 19 | 25 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
@@ -910,7 +910,7 @@ register (ADR 0099), and there is no second one.
 | R12-AMBIENT-1005 | Ambient model mesh runs continuously and wakes specialists | node::run_with runs ResearchLoop every cycle without a request: it forecasts (NowEstimator), finds weak signals and contradictions, wakes specialists, and since 2026-10-18 generates scenarios — every risk or assumption signal routed whose subject the platform holds a tape for yields a qip-simulation-engine Scenario (hypothetical, validated) stating that subject's latest measured move as a one-day shock — journaled as an AmbientRecord::Scenario caused by its signal's record beside the AmbientSignal/AttentionEvent records. | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist |  |
 | R12-AMBIENT-1026 | Always-on models activate specialists without a prompt | The deep-brain research loop forecasts (NowEstimator), simulates (fill-bias campaign bootstrap), raises assumption and weak-signal gaps, and routes them; an AttentionEvent wakes a named registered specialist and is journaled. | COMPLETE | None for the requirement; not deployed. | R12-AMBIENT-1005 | P2 | cargo test -p qip-contracts --test ambient |  |
 | R12-AMBIENT-1040 | Source watchers keep cursors, fingerprints and knowledge deltas | backend/crates/services/qip-data-finder/src/refetch.rs:294 SourceWatcher keeps per-source cursors and per-extent fingerprints, persisting through qip_core::kv | PARTIAL | SourceWatcher has no caller outside tests. The seam the triage proposed for it, the deep brain's re-fetch pass (EvolutionEngine::maybe_refetch), is itself off by default: connectors::refetch_every returns 0 when QIP_DEEPBRAIN_REFETCH_EVERY is unset (connectors.rs:212-214), no committed deployment sets it, and the pass also needs a catalogued connector. Wiring the watcher there would not make it run on a default path; it needs an owner to set the re-fetch cadence and a connector in a committed deployment (owner switch), or a watcher seam that runs by default. | R12-AMBIENT-1005 | P2 | new watcher test in qip-deepbrain |  |
-| R12-AMBIENT-1055 | Continuous operation never increases ambient authority | Ambient producers now run by default in deepbrain (research sweep signals); their only path onward is AmbientIntake::submit(Promoted) built by promote(), then the guard, then an outbox draft. Advisory payload is private; order-path crates name no ambient type. | PARTIAL | Acceptance fence is partly a source-text scan; deterministic-controls clause is vacuous (no order path from drafts). | R12-AMBIENT-1005 | P0 | cargo test -p qip-acceptance --test ambient_attention |  |
+| R12-AMBIENT-1055 | Continuous operation never increases ambient authority | An ambient output reaches nothing that acts except through promote(), and the fence is structural: the payload of Advisory is private, promote() is the one door, and the one consumer of the promoted value is qip-agency's AmbientIntake::submit. architecture.rs::no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act requires every order-path crate (execution engine, brokers, risk engine, portfolio engine, capital, kernel, the edge crates and the edge node) to be unable to reach qip-agency through the compiled dependency graph, and requires the deep brain to reach it so the absence means something. The source-text scan in ambient_attention.rs stays for the type names, which a graph over a shared crate cannot see. | COMPLETE |  | R12-AMBIENT-1005 | P0 | cd backend && cargo test -p qip-acceptance --test architecture --test ambient_attention |  |
 | R12-AMBIENT-1139 | Ambient mesh maintains forecasts | No always-running ambient process maintains forecasts; kernel forecasts are computed per cycle on request. | MISSING | An ambient loop in deepbrain. | R12-AMBIENT-1005 | P2 | cargo test -p qip-contracts --test ambient |  |
 | R12-AMBIENT-1140 | Ambient mesh maintains surprise scores | qip-deepbrain main.rs builds ResearchLoop and AmbientJournal; node::run_with sweeps every cycle (default 1) and journals each routed signal. NOW surprises become severity-scored surprise signals on the hash-chained ambient journal; QIP_DEEPBRAIN_RESEARCH_EVERY=0 journals nothing. | COMPLETE | None for the requirement; not deployed. | R12-AMBIENT-1005 | P2 | cargo test -p qip-contracts --test ambient |  |
 | R12-AMBIENT-1141 | Ambient mesh maintains anomaly/opportunity scans | The deep-brain research sweep (ResearchLoop::sweep_over, run every cycle by default from node::run_with) feeds flagged subjects to PersistenceTracker; a discrepancy persisting PERSIST_SWEEPS (3) sweeps raises GapTrigger::MissedOpportunity, research::signal_class maps it to SignalClass::Opportunity, and AmbientJournal::record journals it on the hash-chained ambient journal alongside the anomaly scans. | COMPLETE | None for the requirement; not deployed. | R12-AMBIENT-1005 | P2 | cargo test -p qip-deepbrain --test ambient_journal |  |
@@ -1312,7 +1312,7 @@ register (ADR 0099), and there is no second one.
 | R12-GOV-10005 | Cloud Asset Inventory records asset and change history | No cloud_asset resource in Terraform. | MISSING | Declare an asset feed/export for each project. |  | P2 | terraform plan shows google_cloud_asset_project_feed |  |
 | R12-GOV-10109 | Validated results reach the hot path only as signed packages | Cells apply only payloads verified down the signed path and nothing but the cell's own verification can mint a verified policy, halt or grant; the edge node links no cognitive crate; and a promoted distillate reaches the manifest only when a verified release pack names its artifact, with qip-api admitting an empty pack set (every distillate withheld) when QIP_MODEL_PACKS_PATH is unset. The check is met and model packages travel the same signed path. | COMPLETE |  | R12-REFLEX-10085 | P0 | cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-kernel --test release_packs; cargo test -p qip-acceptance --test arch_001_independent_reflex |  |
 | R12-GOV-10149 | prod: live bounded execution with strict isolation and signed artifacts | prod exists as a project with paper ceiling; Terraform and composition roots refuse live ceilings; prod promoted by nobody. | BLOCKED | Live execution in prod. |  | P0 | n/a |  |
-| R12-GOV-1017 | Autonomous operation only inside bounded authority | AutonomyLevel::deployable refuses live ceilings at start-up in all three central composition roots; Terraform refuses them at plan; acceptance tests scan every binary that reads the ceiling. | PARTIAL | Cite or add per-activity authority bounds (research budget, promotion rule, allocation envelope) with tests. |  | P0 | cargo test -p qip-acceptance --test paper_boundary |  |
+| R12-GOV-1017 | Autonomous operation only inside bounded authority | Discovery, research, training, promotion, deployment and allocation each run inside a bound that refuses, and one suite drives four of them side by side: the research budget ledger refuses the call past its budget, a candidate with no evidence is not promoted and a capital-holding rung needs a dual approval, a verified capital envelope refuses an order that does not fit whole, a foreign cell, an expired grant and an unverified signature, and no live autonomy ceiling is deployable. bounded_authority.rs holds all four. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-acceptance --test bounded_authority |  |
 | R12-GOV-1042 | AI may originate but act only inside a pre-authorized envelope | Edge cells trade only under verified, unexpired signed capital envelopes; the downlink refuses to build without a key. Central autonomy is bounded by the ceiling. Not deployed. | PARTIAL | Deployment of an envelope-bounded cell. |  | P0 | cargo test -p qip-edge --test cell --test envelope_expiry |  |
 | R12-GOV-3029 | Communications & Conduct Brain gates external communications | ConductGate's seven checks (truthfulness/provenance, identity/disclosure, channel policy, audience, jurisdiction, market conduct and the rest) are built inside ActionGuard and every communication draft passes them in ActionGuard::preflight before any adapter call; no adapter is ever called without a guard, and each check alone withholds the plan. The check (a draft failing any single check is blocked; removing a check lets a failing draft through) is met on the only acting path (qip-cli agency, shadow; under ADR 0114 every shipped adapter refuses, so no external channel exists yet). | COMPLETE |  |  | P0 | cargo test -p qip-agency --test agency each_guard_check_alone_withholds_the_plan_before_any_adapter_call; cargo test -p qip-agency --test conduct_brain |  |
 | R12-GOV-3030 | Post-publication monitoring of external communications | No post-publication monitoring in code. | MISSING | Entire capability. |  | P2 | new test in qip-agency |  |

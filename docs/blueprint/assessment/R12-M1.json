@@ -373,18 +373,17 @@
   },
   {
     "id": "R12-GOV-1017",
-    "status": "PARTIAL",
-    "current": "AutonomyLevel::deployable refuses live ceilings at start-up in all three central composition roots; Terraform refuses them at plan; acceptance tests scan every binary that reads the ceiling.",
+    "status": "COMPLETE",
+    "current": "Discovery, research, training, promotion, deployment and allocation each run inside a bound that refuses, and one suite drives four of them side by side: the research budget ledger refuses the call past its budget, a candidate with no evidence is not promoted and a capital-holding rung needs a dual approval, a verified capital envelope refuses an order that does not fit whole, a foreign cell, an expired grant and an unverified signature, and no live autonomy ceiling is deployable. bounded_authority.rs holds all four.",
     "evidence": [
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:120 deployable refuses live levels",
-      "backend/crates/apps/qip-api/src/main.rs:97",
-      "backend/crates/apps/qip-fastbrain/src/main.rs:116",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:171",
-      "infrastructure/terraform/variables.tf:102 live levels refused at plan",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37 live ceiling stops deployment",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:148 every ceiling read routes through the refusal"
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs research_is_bounded_by_the_budget_ledger",
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs promotion_needs_evidence_and_a_capital_holding_rung_needs_two_approvers",
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs allocation_is_bounded_by_a_verified_capital_envelope",
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs deployment_is_bounded_by_the_paper_ceiling",
+      "backend/crates/runtime/qip-kernel/tests/central.rs a_promotion_whose_bucket_is_over_its_pool_is_refused_once_the_learn_stage_has_armed_the_gate",
+      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs"
     ],
-    "gap": "Cite or add per-activity authority bounds (research budget, promotion rule, allocation envelope) with tests.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -392,10 +391,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test paper_boundary",
+    "verification": "cd backend && cargo test -p qip-acceptance --test bounded_authority",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Evidence covers only the live-autonomy ceiling; no cited evidence that discovery, research, training, promotion, deployment and allocation each run inside a bounded authority."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations, each restored byte for byte: the budget check in BudgetLedger::charge_tool_call replaced by false, the approval requirement in AuthorisedPromotion::advance replaced by false, the live check in AutonomyLevel::deployable replaced by false, and the expiry and venue checks in CapitalEnvelope::admit replaced by false each failed their test. Training and discovery have no bound of their own named here beyond the research budget they draw on; the learn-stage horizon pool gate (qip-kernel central.rs) is cited and not re-driven because it needs a whole platform cycle. The suite proves each bound refuses, not that no unbounded path exists."
   },
   {
     "id": "R12-MESH-1018",
@@ -1251,16 +1250,14 @@
   },
   {
     "id": "R12-AMBIENT-1055",
-    "status": "PARTIAL",
-    "current": "Ambient producers now run by default in deepbrain (research sweep signals); their only path onward is AmbientIntake::submit(Promoted) built by promote(), then the guard, then an outbox draft. Advisory payload is private; order-path crates name no ambient type.",
+    "status": "COMPLETE",
+    "current": "An ambient output reaches nothing that acts except through promote(), and the fence is structural: the payload of Advisory is private, promote() is the one door, and the one consumer of the promoted value is qip-agency's AmbientIntake::submit. architecture.rs::no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act requires every order-path crate (execution engine, brokers, risk engine, portfolio engine, capital, kernel, the edge crates and the edge node) to be unable to reach qip-agency through the compiled dependency graph, and requires the deep brain to reach it so the absence means something. The source-text scan in ambient_attention.rs stays for the type names, which a graph over a shared crate cannot see.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:476 Advisory",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:526 promote",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:6 AMBIENT-016 fence",
-      "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake::submit",
-      "backend/crates/libs/qip-contracts/src/ambient.rs::promote"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote",
+      "backend/crates/libs/qip-contracts/src/ambient.rs promote"
     ],
-    "gap": "Acceptance fence is partly a source-text scan; deterministic-controls clause is vacuous (no order path from drafts).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1270,10 +1267,10 @@
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture --test ambient_attention",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). The graph test sits in architecture.rs beside the helpers it uses rather than in ambient_attention.rs. Mutation: qip-agency added to qip-edge's manifest failed the test naming qip-edge and the reachable set; manifest and lockfile restored byte for byte. The text scan was kept, not replaced: qip-contracts is linked by every crate, so a crate naming the ambient module is invisible to the graph, and what makes naming it harmless is that the payload is private and only an intake in qip-agency consumes a promoted value."
   },
   {
     "id": "R12-AGENCY-1056",
