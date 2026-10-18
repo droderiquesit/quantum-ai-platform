@@ -1457,13 +1457,15 @@
   {
     "id": "R12-QUANT-10068",
     "status": "PARTIAL",
-    "current": "qip-quantum always computes a classical baseline (tests), hosted results remain candidates; trust zones permit only optimisation to reach IBM. No QPU budget ledger tested; egress not applied.",
+    "current": "Every quantum path computes a classical baseline and hosted results remain candidates; the quantum arm is now a budgeted dependency: a cumulative spend ceiling (RoutingPolicy::quantum_spend_budget_micros) is enforced in ComputeRouter::estimate against a ledger rebuilt from the journal on restart, beside the per-job cap. Trust zones permit only optimisation to reach IBM. Egress is not applied and HostedProvider has no production caller.",
     "evidence": [
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 the_benchmark_computes_a_classical_baseline_even_when_a_quantum_solver_is_available",
       "backend/crates/libs/qip-quantum/tests/hosted.rs:631 a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1623 cumulative ceiling in estimate",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it"
     ],
-    "gap": "QPU spend budget enforcement and deployment.",
+    "gap": "IBM access itself: HostedProvider has no production caller and the egress proxy is not applied, so the budgeted gateway has never been in front of a real device. The spend budget is enforced and tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1471,10 +1473,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum",
+    "verification": "cargo test -p qip-optimization-engine --test optimization the_quantum_arm_stops_at_its_cumulative_spend_ceiling; cargo test -p qip-quantum",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L19: the budget half is closed (see R12-QUANT-9046); the remaining half is deploy-dependent and owner-gated."
   },
   {
     "id": "R12-FABRIC-10069",
@@ -1496,16 +1498,15 @@
   },
   {
     "id": "R12-FABRIC-10070",
-    "status": "PARTIAL",
-    "current": "Terraform's only topic is Secret Manager's rotation notice (peripheral) and tests enforce that; no client crate. But qip-streaming still declares TransportKind::PubSub (an inert port that always errors) in its registry's ALL list, whose module doc names Pub/Sub as the target ingestion-to-centre transport.",
+    "status": "COMPLETE",
+    "current": "qip-streaming carries no Pub/Sub transport: TransportKind has Local, Durable and Mesh only (ALL is three), src/pubsub.rs and PubSubBinding/PubSubTransport are deleted, and the name `pubsub` is refused as unknown by TransportKind::parse and by TransportConfig deserialisation. An acceptance scan refuses the identifier `PubSub` anywhere in qip-streaming/src. Terraform's only topics remain the rotation notice and the asset-change feed, guarded by blueprint_arch.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:64 terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
-      "infrastructure/terraform/modules/secrets/main.tf:78 google_pubsub_topic rotation (peripheral)",
-      "backend/crates/services/qip-streaming/src/registry.rs:69-80 TransportKind::PubSub",
-      "backend/crates/services/qip-streaming/src/pubsub.rs:1-10"
+      "backend/crates/services/qip-streaming/src/registry.rs TransportKind (Local, Durable, Mesh; ALL: [Self; 3])",
+      "backend/crates/services/qip-streaming/tests/registry.rs a_managed_pub_sub_transport_cannot_be_configured_by_name_or_by_document",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs qip_streaming_source_names_no_pub_sub_transport",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice"
     ],
-    "gap": "Remove the PubSub transport kind from qip-streaming's registry so it cannot be configured as an internal path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1513,10 +1514,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test blueprint_arch --test event_fabric_bridge_boundary",
+    "verification": "cargo test -p qip-streaming --test registry && cargo test -p qip-acceptance --test event_fabric_bridge_boundary --test blueprint_arch",
     "work_item": "",
     "size": "S",
-    "notes": "qip-streaming/src/pubsub.rs states the target architecture puts Pub/Sub between ingestion and the centre, contradicting §19.1."
+    "notes": "Lane L21 2026-10-18. Mutations: appending `pub struct PubSubBinding;` to registry.rs fails qip_streaming_source_names_no_pub_sub_transport naming the file; making parse map \"pubsub\" to Mesh fails the registry test (\"the name `pubsub` was accepted: Mesh\"). The routing test that used the refusing port as a never-called durable side now uses a local refusing publisher."
   },
   {
     "id": "R12-FABRIC-10071",
@@ -1675,28 +1676,28 @@
   {
     "id": "R12-FABRIC-10078",
     "status": "PARTIAL",
-    "current": "qip-ledgerd now runs a real fabric consumer (required fabric URL) that resumes from its store's offset; SDK group commit/resume tested.",
+    "current": "qip-ledgerd runs one PartitionWorker per partition against the broker's consumer group (join/commit through GroupCoordinator, seated by qip-streaming's event_fabric::Service, which qip-fabricd composes). It resumes from its store's cursor, committed in the same write as each posting, and commits the group checkpoint after each applied batch; a test proves that after a restart the group checkpoint names exactly the batch the store's cursor resumes past.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/group.rs",
-      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs:1-12",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 placeholder consumer",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::resume_offset",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:615 PartitionWorker::step group commit",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCoordinator seat",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:854 after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Only qip-ledgerd consumes; it resumes from its own store offset, not a broker consumer-group checkpoint; GroupCoordinator has no binary caller.",
+    "gap": "Only one warm service consumes the fabric: qip-ledgerd is the sole production caller of the event_fabric Consumer (grep 'Consumer::new' outside tests finds qip-transport's definition and qip-ledgerd only). The statement names warm services in the plural; no second warm consumer (for example a read model in qip-api) pulls a partition.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming",
+    "verification": "cargo test -p qip-ledgerd --test fabric",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L15: the previous gap (no broker checkpoint, GroupCoordinator with no binary caller) was stale. Added after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past; mutation: committing batch.base_offset.saturating_sub(1) in step times the test out waiting for the checkpoint to reach the store's batch. Kept PARTIAL for the plural only."
   },
   {
     "id": "R12-DATA-10079",
@@ -2533,16 +2534,17 @@
   },
   {
     "id": "R12-CICD-10115",
-    "status": "PARTIAL",
-    "current": "scripts/fleet dispatches scoped tasks to workers with tests; no incident/expansion-gap trigger.",
+    "status": "COMPLETE",
+    "current": "scripts/fleet/dispatch.mjs::goalFromInput turns an aiops finding (an Anomaly: series, window, score) or a non-COMPLETE assessment gap row into a findings-only scout packet that worker.mjs::validatePacket admits, with the acceptance commands (the row's verification, or grep and git log for the series) in its acceptance text. `node scripts/fleet/dispatch.mjs goal --from <file>` prints the packet and the commands and starts nothing. Reserved-source evidence paths are withheld and named, not sent.",
     "evidence": [
-      "scripts/fleet/dispatch.mjs",
+      "scripts/fleet/dispatch.mjs:goalFromInput",
+      "scripts/fleet/dispatch.mjs:goal",
       "scripts/fleet/dispatch.test.mjs"
     ],
-    "gap": "Triggers from incidents and expansion gaps.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2550,7 +2552,7 @@
     "verification": "node --test scripts/fleet/dispatch.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation run 2026-10-18: renaming the assessment-gap branch's kind in goalFromInput fails the gap-row and the no-gap-source tests; commenting out the goal subcommand dispatch fails the subcommand test. Nothing calls it from a scheduler: a person or a lane runs it on a finding file, which is what 'creates a goal' means for a desktop dispatcher (ADR 0102)."
   },
   {
     "id": "R12-CICD-10116",
@@ -2836,14 +2838,15 @@
   },
   {
     "id": "R12-RES-10128",
-    "status": "PARTIAL",
-    "current": "Ledger restart replays accumulated P1 records idempotently (checkpoint held, balances equal clean refold); the worker retries a refusing store forever in apply_until_committed.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd's PartitionWorker, the worker the binary runs, retries a refusing store in apply_until_committed without moving the store cursor or the broker group checkpoint; once writes are accepted the same fills are booked once and the balances equal a clean refold. A store lost outright (a fresh empty store under the same consumer group, whose checkpoint is past every fill) rebuilds from the retained P1 partition to the same balances, because the store's cursor, not the group's, is what resumes.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::PartitionWorker::apply_until_committed",
-      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 (LedgerSink, not used by ledgerd)"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::apply_until_committed (retry, never skip)",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:965 a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "No test makes the store/Spanner refuse writes under a running worker; the retry-forever test targets qip-streaming's LedgerSink, which qip-ledgerd does not use.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2854,10 +2857,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming; cargo test -p qip-ledgerd",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement is about the store being lost; only process-down/restart is tested through the real consumer."
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The store refuses through a LedgerBackend wrapper in the test (the container runs as root, so an unwritable directory refuses nothing); the worker, store and broker are the production types. Mutation: answering a store error in apply_until_committed with Ok(Disposition::Advanced) instead of retrying fails the test at the 'group checkpoint holds' assertion. Spanner-specific loss is the same worker over SpannerBackend and is not separately driven."
   },
   {
     "id": "R12-RES-10129",
@@ -3106,14 +3109,17 @@
   },
   {
     "id": "R12-FINOPS-10140",
-    "status": "PARTIAL",
-    "current": "model-gateway.mjs requires a per-run max-calls budget and enforces daily/monthly/build/tool budgets when set (tested); daily/monthly are optional (unset means unlimited).",
+    "status": "COMPLETE",
+    "current": "scripts/model-gateway.mjs refuses to configure (exit 78, nothing sent) unless ALGORIK_WORKER_MAX_CALLS, ALGORIK_WORKER_DAILY_CALLS, ALGORIK_WORKER_MONTHLY_CALLS, ALGORIK_WORKER_BUILD_CALLS and ALGORIK_WORKER_TOOL_CALLS are all positive numbers; an unset budget is the same refusal as zero. Each budget is enforced from the ledger and a spent one refuses the call with an audit line (refused:daily-budget, refused:monthly-budget). The fleet worker passes all four explicitly; its cross-task day stays bounded in dollars by its ceiling refusal (ADR 0102).",
     "evidence": [
-      "scripts/model-gateway.mjs:258-280",
-      "scripts/model-gateway.test.mjs:469",
-      ".github/workflows/ci.yml:474 runs gateway tests"
+      "scripts/model-gateway.mjs:270 daily/monthly/build/tool budgets mandatory",
+      "scripts/model-gateway.mjs:623 spent daily budget refuses and audits",
+      "scripts/model-gateway.test.mjs:449 without a daily, a monthly, a build and a tool budget the gateway is not configured, and the first call against it is never sent",
+      "scripts/model-gateway.test.mjs:512 a spent daily budget refuses further calls",
+      "scripts/fleet/worker.mjs:732 worker passes the four budgets",
+      ".github/workflows/ci.yml:656 runs gateway tests"
     ],
-    "gap": "Make daily/monthly budgets mandatory.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3121,10 +3127,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "node --test scripts/model-gateway.test.mjs",
+    "verification": "node --test scripts/model-gateway.test.mjs scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: budgets made mandatory. Mutations: restoring the optional 'dailyCallBudget &&' guard makes ALGORIK_WORKER_DAILY_CALLS unset draw no problem and the test fails; the same on toolBudget fails at ALGORIK_WORKER_TOOL_CALLS unset. Restored, 77/77 pass across the two files. Throttling independently of production runtime: the gateway is a dev/research tool with its own ledger and is not on any platform binary's path."
   },
   {
     "id": "R12-FINOPS-10141",

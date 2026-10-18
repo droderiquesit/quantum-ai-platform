@@ -209,14 +209,16 @@
   },
   {
     "id": "R12-EXPAND-6010",
-    "status": "PARTIAL",
-    "current": "Kernel ResearchLedger clusters failed theses; deepbrain unexplained_residuals raises items from fill-twin residuals.",
+    "status": "COMPLETE",
+    "current": "Both prompt sources run on default paths. The kernel's LEARN stage feeds every graded thesis to the ResearchLedger, which raises one research prompt per cluster of failed theses of one class; the deep brain's default sweep (ResearchLoop::sweep_over, every cycle unless QIP_DEEPBRAIN_RESEARCH_EVERY=0) feeds each fill's twin error to qip_expansion::detectors::unexplained_residuals, which raises one UnexplainedPnl gap per subject (venue) whose mean absolute residual exceeds RESIDUAL_BPS, however many fills missed. Residuals are fill-twin residuals; the requirement names unexplained residuals without naming their kind.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/research.rs:73 observe",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8958-8962 LEARN feeds research ledger",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:99 cluster raises one prompt closing onto a task"
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn, self.research.observe(&evaluations, now)",
+      "backend/crates/services/qip-expansion/src/detectors.rs unexplained_residuals",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over, unexplained_residuals(&residuals, RESIDUAL_BPS)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cluster_of_failed_theses_raises_one_research_prompt_that_closes_onto_a_named_task",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::one_fill_residual_past_its_threshold_raises_exactly_one_unexplained_pnl_gap"
     ],
-    "gap": "Residuals are fill residuals only, not P&L/model; no binary-path test asserting exactly one prompt per residual.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -224,10 +226,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning a_cluster_of_failed_theses && cargo +1.94.1 test -p qip-deepbrain --test expansion_rows one_fill_residual",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L04. Both halves mutation-verified this session: replacing the stage_learn research.observe call with Ok(()) fails the kernel cluster test at 'exactly one prompt for one cluster' (left 0); flipping mean > threshold_bps to < in unexplained_residuals fails the new node test at the count assertion (left 0). Two fills at one venue past the threshold queue one residual-derived item, counted by lineage rule detector:unexplained_residual, and a venue inside the threshold queues none."
   },
   {
     "id": "R12-EXPAND-6011",
@@ -913,12 +915,13 @@
   {
     "id": "R12-EXPAND-6042",
     "status": "PARTIAL",
-    "current": "TickCampaign now called from deepbrain sweep.",
+    "current": "TickCampaign is opened from the deep-brain sweep. TickCampaignDetector::conclude (campaigns.rs:421) produces a validated MicrostructureDelta for a venue-scoped campaign from its re-measured residuals, the delta_id being the campaign id and the residual kind taken from the trigger; no production caller yet.",
     "evidence": [
       "backend/crates/services/qip-expansion/src/campaigns.rs:23 TickCampaign",
-      "backend/crates/services/qip-expansion/src/campaigns.rs:127 observe_slippage"
+      "backend/crates/services/qip-expansion/src/campaigns.rs:421 TickCampaignDetector::conclude",
+      "backend/crates/services/qip-expansion/tests/loop.rs:222 a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign"
     ],
-    "gap": "MicrostructureDelta contract has no producer.",
+    "gap": "Producer exists but nothing on the default path calls it: apps/qip-deepbrain/src/research.rs keeps no open campaigns between sweeps, so it never knows a campaign's residual was re-measured; it needs to retain each opened TickCampaign (bounded) and, when a later sweep's fills re-measure that venue and instrument, call TickCampaignDetector::conclude and journal the delta.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -926,10 +929,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing TickCampaign / MicrostructureDelta)",
+    "verification": "cargo test -p qip-expansion --test loop a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-18 lane L18: conclude landed with a mutated test (delta_id set to the cell, and the studied-instrument guard removed, each fail it); the research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged."
   },
   {
     "id": "R12-EXPAND-6043",
@@ -1407,11 +1410,13 @@
   {
     "id": "R12-EXPAND-6065",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/detectors.rs:356 coverage over asset classes from the universe (backend/crates/apps/qip-deepbrain/src/main.rs:219)",
+    "current": "backend/crates/services/qip-expansion/src/detectors.rs:503 coverage measures three CoverageDimensions (asset class, venue, geography) over the map coverage_universe (detectors.rs:474) builds from the universe; the deployed deep brain builds that map at backend/crates/apps/qip-deepbrain/src/main.rs:232 and the sweep raises one Observation per weak dimension value.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/tests/research.rs:103 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:103 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router",
+      "backend/crates/services/qip-expansion/tests/loop.rs:153 a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
+      "backend/crates/services/qip-expansion/tests/loop.rs:206 a_coverage_key_naming_an_unmeasured_dimension_is_refused"
     ],
-    "gap": "Coverage only over asset classes; geographies, languages, venues and causal drivers are not measured.",
+    "gap": "Languages and causal drivers are not measured: nothing in the tree records a document language per source or a causal-driver inventory to measure coverage against, so CoverageDimension deliberately has no arm for either.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1419,10 +1424,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion --test loop a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. One of five coverage dimensions integrated."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: venue and geography added on the deployed path (three of five dimensions); mutations dropping the Venue row from coverage_universe and reading an unknown key prefix as an asset class each fail their test. Status unchanged until languages and causal drivers have a measured source."
   },
   {
     "id": "R12-EXPAND-6066",
@@ -1432,7 +1437,7 @@
       "backend/crates/services/qip-expansion/tests/loop.rs:147 a_gate_whose_declines_repeatedly_would_have_earned_becomes_one_learning_objective",
       "backend/crates/services/qip-expansion/tests/loop.rs:173 a_venue_refusing_one_constraint_repeatedly_becomes_an_execution_gap"
     ],
-    "gap": "Adverse selection, failed arbitrage sagas and reconciliation breaks raise no learning objective.",
+    "gap": "Adverse selection, failed arbitrage sagas and reconciliation breaks raise no learning objective, and the closure's inputs do not exist to read: CentralPlane::record_halt (qip-kernel central/plane.rs) only counts qip_central_reconciliation_breaks_total and keeps no break history the deep brain could sweep, and no Platform accessor exposes saga outcomes (qip-execution-engine multileg.rs sagas are not composed into the kernel). Closing it needs a bounded break/saga history on the kernel first (outside qip-expansion), then the two detectors and a research.rs call.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1443,7 +1448,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Partially covered sources."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Partially covered sources. 2026-10-18 lane L18: gap corrected after reading the kernel; no detector added, because a detector with no producer would read as coverage."
   },
   {
     "id": "R12-EXPAND-6067",

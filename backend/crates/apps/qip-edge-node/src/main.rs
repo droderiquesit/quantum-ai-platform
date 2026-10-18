@@ -95,6 +95,7 @@ use qip_edge_node::strategies::{
     MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
     parse_pricing,
 };
+use qip_edge_node::telemetry::PeerSeries;
 use qip_edge_node::trust::{TRUST_BUNDLE_VARIABLE, choose_root};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
 use qip_edge_node::{NodeAssembly, assemble_with_risk};
@@ -1184,7 +1185,11 @@ fn run() -> Result<()> {
                 settings.security.describe(),
                 settings.clock_bound.as_millis()
             );
-            decisions = decisions.with_peers(port);
+            decisions = decisions.with_peers(port).with_peer_series(PeerSeries::new(
+                Arc::clone(metrics),
+                &config.cell_id,
+                &config.region,
+            ));
         }
         None => println!(
             "qip-edge-node: no peer mesh ({LISTEN_VARIABLE} and {PEERS_VARIABLE} unset): this \
