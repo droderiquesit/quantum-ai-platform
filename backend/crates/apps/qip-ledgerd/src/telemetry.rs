@@ -1,6 +1,7 @@
 //! Observability and metrics emission for the ledger.
 //! See ADR 0100 § 1 for this module's role.
 
+use qip_observability::critical_paths;
 use qip_observability::metrics::{Labels, Metrics, names};
 use std::sync::Arc;
 
@@ -127,7 +128,34 @@ impl LedgerTelemetry {
         let labels = Labels::new();
         self.metrics.count(names::LEDGER_STORE_RETRIES, labels);
     }
+
+    /// Evaluate the ledger's own critical-path objectives against this
+    /// process's registry and record `qip_slo_budget_consumed` and
+    /// `qip_slo_observations` for each.
+    ///
+    /// The deep brain evaluates every objective, but against its own
+    /// registry, which never holds a ledger series; before this the
+    /// `ledger-commit` objective read unmeasured everywhere it was
+    /// evaluated, however the ledger was doing. Only objectives whose
+    /// service is `ledger` are evaluated here, so this process never writes
+    /// an unmeasured status for a path another process measures.
+    pub fn evaluate_objectives(&self) {
+        let snapshot = self.metrics.snapshot();
+        let statuses: Vec<_> = critical_paths::critical_path_slos()
+            .iter()
+            .filter(|path| path.slo.service == LEDGER_SERVICE)
+            .map(|path| {
+                let (good, total) = path.counts(&snapshot);
+                path.evaluate(good, total)
+            })
+            .collect();
+        critical_paths::record(&self.metrics, &statuses);
+    }
 }
+
+/// The service name the critical-path catalogue gives the ledger's
+/// objectives.
+pub const LEDGER_SERVICE: &str = "ledger";
 
 #[cfg(test)]
 mod tests {
