@@ -4181,11 +4181,13 @@
   {
     "id": "R12-FINOPS-9188",
     "status": "PARTIAL",
-    "current": "qip-training has a retraining cadence; no queue, quota or Spot scheduling.",
+    "current": "Job specs are queue-, quota- and Spot-aware: TrainingSpec.scheduling names the queue a job is charged to, its capacity (OnDemand or Spot) and priority; a critical job on Spot is refused by TrainingSpec::validate, which LocalTrainer::fit and both providers call, so the deep brain's in-process fits validate it on every round. LocalTrainingProvider and VertexAiProvider take QueueQuotas and refuse a submit into a full or undeclared queue. No production path submits through a provider: the deep brain fits in process and Vertex is disabled.",
     "evidence": [
-      "backend/crates/services/qip-training/src/cadence.rs"
+      "backend/crates/services/qip-training/src/job.rs JobScheduling, QueueQuotas, LocalTrainingProvider::with_quotas",
+      "backend/crates/services/qip-training/tests/training.rs a_job_spec_carries_its_queue_and_capacity_and_a_critical_spot_job_or_a_full_queue_is_refused",
+      "backend/crates/services/qip-training/tests/vertex.rs a_submit_beyond_its_queue_quota_is_refused_before_any_request"
     ],
-    "gap": "Scheduler.",
+    "gap": "Quota-aware scheduling has no production caller: no binary submits through a TrainingProvider (the deep brain fits with LocalTrainer in process; Vertex is disabled), so no queue quota is declared in any deployment and no job is ever placed on Spot.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4193,10 +4195,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-training --test training --test vertex",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations: removing the Spot-and-critical refusal lets LocalTrainer fit a critical Spot job; counting only Running jobs against the local quota admits a second queued job. Closing needs a production scheduler that submits through a provider with declared quotas."
   },
   {
     "id": "R12-FINOPS-9189",
