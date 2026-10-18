@@ -264,6 +264,15 @@ fn run() -> Result<()> {
     // The survival policy, before anything is served (R12-CAPITAL-4089): the
     // hedge capacity and emergency reserve every construction withholds, and
     // the survival ceiling the Risk Gate reads re-derived under them at once.
+    // The Brain Registry (R12-EXPAND-6058), over the organisation this
+    // platform just convened rather than a list kept here: an agent on the
+    // roster without a valid entry stops the process before anything runs.
+    let brains = qip_deepbrain::brains::standard(platform.organisation().roster())?;
+    println!(
+        "  brain registry:   {} brain(s), {} competency domain(s) on record",
+        brains.len(),
+        brains.scopes().len()
+    );
     let survival_banner = apply_survival_policy(&mut platform)?;
     println!("  survival:         {survival_banner}");
     // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
