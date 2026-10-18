@@ -131,6 +131,16 @@ pub struct ReleaseReport {
     pub failed: BTreeMap<(String, u32), String>,
 }
 
+/// What [`Broker::rebuild_from_archive`] replayed, per local partition it
+/// found empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RebuildReport {
+    /// Batches replayed into each partition, which is also the offset the
+    /// partition now continues at. A partition the archive holds nothing for
+    /// is absent rather than zero.
+    pub replayed: BTreeMap<(String, u32), u64>,
+}
+
 /// The one key this broker's metadata store holds. A `DurableStore` rooted
 /// at its own directory, separate from every partition's data (FABRIC-065):
 /// the leader epoch is a fact about the broker process, not about any one
@@ -1594,6 +1604,84 @@ impl Broker {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Rebuild every empty local partition from the archive (RES-9170): the
+    /// broker's disk was lost or replaced, the archive was not, and a
+    /// partition that restarted at offset zero beside an archive holding
+    /// offsets 0..N would hand those offsets to new records, which the next
+    /// archive pass would then write over the manifests of the old ones.
+    ///
+    /// Each batch is read through the archive's manifest index, which
+    /// re-proves its content hash, and appended with the stamp it was archived
+    /// with, so its offset, epoch and chain link are exactly the original's
+    /// and the first offset this broker then assigns continues the chain.
+    /// Replay stops at the first offset the archive does not hold. That is
+    /// the end of what was archived: records past `archived_through` were
+    /// never safe to release (ADR 0100 §3), so their producers still hold
+    /// them and re-send. A partition that already holds any local batch is
+    /// left alone, and so is a managed one, whose log the database holds and
+    /// [`Self::tend_leases`] follows.
+    ///
+    /// Refuses to run without an archive reader. Call it before the broker
+    /// serves, since it assumes nothing has been produced to the partitions
+    /// it rebuilds.
+    pub fn rebuild_from_archive(&self) -> Result<RebuildReport> {
+        let reader = self.archive.as_ref().ok_or_else(|| {
+            Error::invalid(
+                "rebuild_from_archive was called on a broker with no archive reader; there is \
+                 nothing to rebuild from",
+            )
+        })?;
+        let managed: std::collections::BTreeSet<(String, u32)> =
+            self.managed_partitions().into_iter().collect();
+        let mut report = RebuildReport::default();
+        for (stream, partition_count) in self.declared_streams() {
+            for partition in 0..partition_count {
+                if managed.contains(&(stream.clone(), partition)) {
+                    continue;
+                }
+                let state = self.partition_state(&stream, partition)?;
+                if state.log.high_water() != 0 {
+                    continue;
+                }
+                let mut offset = 0u64;
+                while let Some(batch) = reader.read_indexed(&stream, partition, offset)? {
+                    if batch.base_offset != offset {
+                        return Err(Error::invalid(format!(
+                            "{stream}:{partition}: the archive answered offset {offset} with a \
+                             batch stamped for offset {}; refusing to rebuild from it",
+                            batch.base_offset
+                        )));
+                    }
+                    let assigned = state.log.append(&batch)?;
+                    if assigned != offset {
+                        return Err(Error::io(format!(
+                            "{stream}:{partition}: replaying archived offset {offset} was \
+                             assigned offset {assigned}; the rebuilt log has diverged"
+                        )));
+                    }
+                    offset += 1;
+                }
+                if offset == 0 {
+                    continue;
+                }
+                // Fold what was replayed into the producer table and the
+                // chain tail, which `partition_state` computed from an empty
+                // log: without them a producer restarting against the rebuilt
+                // partition is told its sequence is zero and its next batch
+                // chains to nothing.
+                self.recover_producers(&stream, partition, &state.log)?;
+                let tail = recover_last_batch_hash(&state.log)?;
+                state
+                    .cursor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .last_batch_hash = tail;
+                report.replayed.insert((stream.clone(), partition), offset);
+            }
+        }
+        Ok(report)
     }
 
     /// Delete the local copy of every archived, indexed sealed segment that
