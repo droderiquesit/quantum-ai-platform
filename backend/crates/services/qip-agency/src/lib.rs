@@ -20,6 +20,14 @@
 //! pass at narrow-reversible authority is attempted, recorded and refused,
 //! and nothing is sent.
 //!
+//! The second composition root is `qip-deepbrain`'s run loop: every ambient
+//! signal the research sweep routes and the attention router activates is
+//! offered to [`ambient_intake::AmbientIntake`], the one door from the
+//! ambient mesh to the agency (R12-AGENCY-7029): promotion, then the same
+//! guard, then the drafting adapter of [`outbox`], whose only effect is an
+//! append to an internal outbox (ADR 0114 Amendment 1). Nothing external is
+//! reachable through it.
+//!
 //! Inside the crate, [`engine::execute`] is the only adapter caller and it
 //! stands [`guard::ActionGuard`] in front of every call: the conduct gate,
 //! the tool registry, the approval chain and the justification check.
@@ -35,6 +43,7 @@
 //! each used to exist twice, once here and once there.
 
 pub mod affordance;
+pub mod ambient_intake;
 pub mod attribution;
 pub mod autonomy;
 pub mod causal;
@@ -48,6 +57,7 @@ pub mod guard;
 pub mod journal;
 pub mod knowledge;
 pub mod memory;
+pub mod outbox;
 pub mod plan;
 pub mod tools;
 

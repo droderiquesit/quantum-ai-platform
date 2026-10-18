@@ -78,6 +78,11 @@ pub use openobserve::{
     DrainHandle, ExportPass, OpenObserveConfig, SignalOutcome, export_once, record,
 };
 pub use routes::{Api, ROUTES, Route};
+
+/// The ledger chain qip-api's desk books its fills on, and the producer id it
+/// ships them under. Its own, not the fast brain's `desk`: two processes on
+/// one chain fork the ledger and fence each other's producers.
+pub const DESK_CHAIN: &str = "desk-api";
 pub use stream::{EventSource, EventStream, SseEvent, StreamKind, StreamLimits};
 pub use tracing::TracingHandler;
 pub use trust::{ENVELOPE_KEY_VARIABLE, KeyProvenance, harden_central};

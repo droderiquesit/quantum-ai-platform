@@ -929,6 +929,10 @@ fn run() -> Result<()> {
         WriterConfig::new(&config.cell_id, started, WRITER_POLL, WRITER_GROUP)?,
     )?;
     let session = spool_writer.session();
+    // Before the first pass: the cell numbers orders from one at every start,
+    // so the id of a decision chain is scoped by the session this writer just
+    // committed, and the writer derives the same id for every record of it.
+    cell.set_chain_epoch(session)?;
     // The writer's placement is settled on its own thread before it takes
     // a handoff, and reported back here before anything is served: pinned
     // when a core is named, and a node that cannot have the core it was
@@ -1077,6 +1081,7 @@ fn run() -> Result<()> {
             );
             sinks.push(Box::new(fabric.sink(
                 &config.cell_id,
+                &config.region,
                 Arc::clone(&clock),
                 &link,
             )?));

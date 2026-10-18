@@ -1,3 +1,17 @@
+> **Conflict flagged 2026-10-17.** The waiver of per-action approval below
+> conflicts with `.claude/rules/02-change-management.md` ("Approval for one
+> action is not approval for the next") and `.claude/rules/00-enterprise-governance.md`.
+> The rules files outrank this document. The paper-trading boundary, any cloud
+> apply, and any spending still need explicit owner approval in the conversation.
+> The waiver text is left unedited.
+>
+> **Project id unresolved.** `CLOUD_PROJECT` below says `algorik-dev`;
+> `infrastructure/environments/dev/terraform.tfvars` sets `project_id` to
+> `algorik-qip-dev`; `DECISIONS.md` (2026-10-04) records a newer project
+> `algorik-platform-dev` and says the tfvars still name the old one. Three
+> names, and which is authoritative is the owner's to say, so the table is not
+> changed.
+
 # HERMES MISSION: Build the Platform to Completion
 
 A durable mission order. First thing read on every start and restart. Nothing in

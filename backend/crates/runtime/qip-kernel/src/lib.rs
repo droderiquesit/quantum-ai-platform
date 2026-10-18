@@ -37,6 +37,7 @@ pub mod asset_class_registry;
 pub mod attribution;
 pub mod blueprint_objectives;
 pub mod breadth;
+pub mod bus_bridge;
 pub mod capacity_review;
 pub mod causal_review;
 pub mod central;
@@ -48,6 +49,8 @@ pub mod counterfactual_trial;
 pub mod cross_margin;
 pub mod cycle;
 pub mod decision_record;
+pub mod desk_fabric;
+pub mod desk_ledger;
 pub mod event_markets;
 pub mod evidence_intake;
 pub mod exploration;
@@ -90,6 +93,7 @@ pub mod venue_review;
 pub use asset_class_registry::{
     AssetClassRecord, AssetClassRegistry, ValuationEngine, covered_interest_forward,
 };
+pub use bus_bridge::{PlatformBridge, SensedInput};
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};

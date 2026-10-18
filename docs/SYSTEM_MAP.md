@@ -225,7 +225,7 @@ are **not** adopted by this map (HERMES_MISSION.md s2.4).
 |---|---|---|---|
 | Language | Rust toolchain | `1.94.1` with rustfmt, clippy, profile minimal | `backend/rust-toolchain.toml` |
 | Language | Edition, resolver, MSRV | edition `2024`, resolver `3`, `rust-version = "1.89"` | `backend/Cargo.toml` |
-| Workspace | Crates | 60 members listed in `[workspace] members` (16 libs, 8 edge, 24 services, 1 agents, 1 quant, 1 runtime, 1 tests, 8 apps) | `backend/Cargo.toml` |
+| Workspace | Crates | 66 directories under `backend/crates/*/*` on 2026-10-17; the breakdown by group is not restated (recount: `ls -d backend/crates/*/* | wc -l`, and `ls backend/crates/<group> | wc -l` per group; `[workspace] members` is the authority) | `backend/Cargo.toml` |
 | Lints | `unsafe_code = "forbid"`; clippy `todo`, `unimplemented`, `panic_in_result_fn` = deny; `float_cmp` warn | | `backend/Cargo.toml` `[workspace.lints]` |
 | Lints | **No `unwrap_used` or `expect_used` lint exists** anywhere in `backend/` (search found zero), and `backend/clippy.toml` sets only `too-many-arguments-threshold = 12` | | so the CLAUDE.md rule "no unwrap() outside tests" has no automated gate (RP-18) |
 | Dependencies | `serde`, `serde_json` (feature `float_roundtrip`) | requirement `1`; locked `serde 1.0.229`, `serde_json 1.0.151` | `backend/Cargo.toml`, `backend/Cargo.lock` |

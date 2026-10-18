@@ -275,6 +275,18 @@ impl Record {
     /// Build a record from `event`, encoding its payload under `encoding`.
     pub fn from_any_event(event: &AnyEvent, encoding: PayloadCodec) -> Result<Self> {
         let payload = encode_payload(event, encoding)?;
+        // The header carries the instant the payload will decode to, not the
+        // in-memory one: `Timestamp` serialises as RFC 3339 at millisecond
+        // precision, so a nanosecond-precise `occurred_at` decodes to a
+        // different value than it was built with. Stamping the unrounded one
+        // made every sub-millisecond record a record whose header and payload
+        // disagreed, which `FabricEnvelope::open` rightly refuses — it showed
+        // as the real edge node's first spooled batch being refused by its own
+        // drain.
+        let source_timestamp_ns = serde_json::to_value(event.occurred_at)
+            .and_then(serde_json::from_value::<qip_core::Timestamp>)
+            .map_err(|e| Error::invalid(format!("source timestamp does not round-trip: {e}")))?
+            .as_nanos();
         Ok(Self {
             event_id: event.event_id.as_str().to_string(),
             trace_id: event
@@ -282,7 +294,7 @@ impl Record {
                 .trace_id
                 .as_ref()
                 .map(|trace_id| trace_id.as_str().to_string()),
-            source_timestamp_ns: event.occurred_at.as_nanos(),
+            source_timestamp_ns,
             payload,
         })
     }

@@ -1,0 +1,32 @@
+[package]
+name = "qip-desk-ship"
+description = "Ships a desk's ledger records to qip-ledgerd over the event fabric, acknowledged only after the fabric has them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Moved out of qip-fastbrain so every composition root that books desk fills
+# (the fast brain, qip-api, the deep brain) ships them with the same code: an
+# application cannot depend on another application. Runtime rather than libs
+# because it opens sockets through qip-transport and holds a worker thread,
+# and because it drains a `qip_kernel::Platform`.
+[dependencies]
+qip-contracts.workspace = true
+qip-core.workspace = true
+qip-events.workspace = true
+qip-kernel.workspace = true
+qip-observability.workspace = true
+# The workload certificate a mutually authenticated fabric link presents
+# (ADR 0112), the same issuer the edge node and the fast brain use.
+qip-storage.workspace = true
+qip-transport.workspace = true
+
+[dev-dependencies]
+# `Side`, for the unit tests that build a booked fill by hand.
+qip-execution-engine.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

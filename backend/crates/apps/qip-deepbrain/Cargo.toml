@@ -28,6 +28,9 @@ qip-investment-agents.workspace = true
 qip-risk.workspace = true
 qip-risk-engine.workspace = true
 qip-kernel.workspace = true
+# Ships this process's desk fills to qip-ledgerd, on the deep brain's own
+# desk chain (`node::DESK_CHAIN`).
+qip-desk-ship.workspace = true
 # The evolution loop: the grammar and trial ledger, the harness that scores a
 # generated candidate on observed bars, and the evidence types the factory's
 # gate reads. All workspace-internal; the app is the composition root where
@@ -43,6 +46,9 @@ qip-quant.workspace = true
 qip-numerics.workspace = true
 qip-lifecycle.workspace = true
 qip-contracts.workspace = true
+# The ambient mesh's one door to the agency (R12-AGENCY-7029): promotion, the
+# action guard and a drafting-only outbox. Workspace-internal.
+qip-agency.workspace = true
 # Source discovery (§7.4-§7.6.2): ASSESS, REGISTER and SCORE, all
 # workspace-internal. `Platform::assess_sources` already wraps
 # `DataFinder::assess`; this root is where the candidate catalogue and the

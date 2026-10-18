@@ -298,6 +298,11 @@ pub enum Topic {
     /// lane is never dropped under overload — irreplaceable, because it is
     /// the only record of that run reaching P1.
     ReflexChainSpan,
+    /// A non-fill ledger operation (`qip_contracts::ledger_operation`):
+    /// treasury, custody, collateral, transfers, tax and the rest, on the P1
+    /// outcomes lane beside the fills (ADR 0123). Irreplaceable for the reason
+    /// a fill is: a funding lost here is cash the ledger never holds.
+    LedgerOperationRecorded,
     /// An explicit gap the producer declares — a P2 window shed under
     /// overload, or a recorded-inputs backlog overflow (ADR 0100 §4: "a shed
     /// window is an explicit `Gap` record the broker accepts") — carrying
@@ -312,7 +317,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 88] = [
+    pub const ALL: [Self; 89] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -400,6 +405,7 @@ impl Topic {
         Self::MarketEventApplied,
         Self::ReflexOutcomeRecorded,
         Self::ReflexChainSpan,
+        Self::LedgerOperationRecorded,
         Self::EventFabricGap,
     ];
 
@@ -494,6 +500,7 @@ impl Topic {
             Self::MarketEventApplied => "reflex.market_event_applied",
             Self::ReflexOutcomeRecorded => "reflex.outcome_recorded",
             Self::ReflexChainSpan => "reflex.chain_span",
+            Self::LedgerOperationRecorded => "ledger.operation_recorded",
             Self::EventFabricGap => "reflex.fabric_gap",
         }
     }
@@ -600,6 +607,7 @@ impl Topic {
             | Self::MarketEventApplied
             | Self::ReflexOutcomeRecorded
             | Self::ReflexChainSpan
+            | Self::LedgerOperationRecorded
             | Self::EventFabricGap => TopicGroup::System,
         }
     }
@@ -748,12 +756,13 @@ impl Topic {
             Self::ReflexPassMarked | Self::ReflexJournalRecorded | Self::MarketEventApplied => {
                 RetentionClass::EventAnchored
             }
-            // A reflex outcome, a P1 continuity span and a declared gap:
-            // facts only the fabric's own producer has, on the P1 lane ADR
-            // 0100 §5 says is never dropped. Permanently.
-            Self::ReflexOutcomeRecorded | Self::ReflexChainSpan | Self::EventFabricGap => {
-                RetentionClass::Irreplaceable
-            }
+            // A reflex outcome, a P1 continuity span, a declared gap and a
+            // ledger operation (ADR 0123): facts only their producer has, on
+            // the P1 lane ADR 0100 §5 says is never dropped. Permanently.
+            Self::ReflexOutcomeRecorded
+            | Self::ReflexChainSpan
+            | Self::LedgerOperationRecorded
+            | Self::EventFabricGap => RetentionClass::Irreplaceable,
         }
     }
 
@@ -800,6 +809,7 @@ impl Topic {
             | Self::SettlementRecorded
             | Self::ReflexOutcomeRecorded
             | Self::ReflexChainSpan
+            | Self::LedgerOperationRecorded
             | Self::EventFabricGap => Some(QosClass::P1Outcomes),
 
             // P2MarketJournal: reflex journal entries, throttled

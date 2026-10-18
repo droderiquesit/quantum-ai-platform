@@ -23,11 +23,46 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 
-const PATIENCE: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long the cycle may take before the test calls it stuck. A cycle is
+/// about two seconds of protocol on an idle machine (a first connect that
+/// finds no listener backs off for a second, clocks are probed every 250 ms,
+/// and the epoch takes a few round trips), and the wait polls, so a generous
+/// bound costs nothing when the cycle completes. It was 15 s, which a
+/// saturated full-workspace run, with hundreds of test threads sharing the
+/// cores, can plausibly exceed without anything being wrong; a cycle that
+/// really is stuck stays stuck for a minute as surely as for fifteen seconds.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How many times to pick a fresh pair of ports before giving up.
+const PORT_ATTEMPTS: usize = 10;
 
 fn free_port() -> SocketAddr {
     let probe = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     probe.local_addr().expect("its address")
+}
+
+/// Both nodes, listening on ports no one else holds.
+///
+/// `free_port` binds port 0 and lets go, so the port is free only until
+/// something else takes it: in a workspace run that is hundreds of test
+/// processes binding and connecting on loopback at once, and a node that finds
+/// its port taken stops with an error that has nothing to do with the saga. The
+/// listener is bound inside `spawn`, so a collision is visible there as an
+/// `Err`; retrying on a fresh pair turns a race into a delay. Anything that is
+/// still failing after `PORT_ATTEMPTS` pairs is reported with its cause.
+fn nodes() -> Result<(ReflexPort, ReflexPort)> {
+    let mut last = None;
+    for _ in 0..PORT_ATTEMPTS {
+        let (americas_at, europe_at) = (free_port(), free_port());
+        match (
+            port("americas", americas_at, "europe", europe_at),
+            port("europe", europe_at, "americas", americas_at),
+        ) {
+            (Ok(americas), Ok(europe)) => return Ok((americas, europe)),
+            (americas, europe) => last = americas.err().or(europe.err()),
+        }
+    }
+    Err(last.expect("an attempt failed, so it left an error"))
 }
 
 fn port(node: &str, at: SocketAddr, peer: &str, peer_at: SocketAddr) -> Result<ReflexPort> {
@@ -133,9 +168,7 @@ fn run_until(
 #[test]
 fn two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its_unwind()
 -> Result<()> {
-    let (americas_at, europe_at) = (free_port(), free_port());
-    let americas = port("americas", americas_at, "europe", europe_at)?;
-    let europe = port("europe", europe_at, "americas", americas_at)?;
+    let (americas, europe) = nodes()?;
     let usa = Book {
         venue: "XNYS",
         bid: dec!("99"),
@@ -189,9 +222,7 @@ fn two_nodes_publishing_only_through_their_ports_run_a_cross_region_cycle_to_its
 #[test]
 fn a_leg_whose_unwind_bound_does_not_cover_the_cells_exit_is_declined_and_no_leg_is_sent()
 -> Result<()> {
-    let (americas_at, europe_at) = (free_port(), free_port());
-    let americas = port("americas", americas_at, "europe", europe_at)?;
-    let europe = port("europe", europe_at, "americas", americas_at)?;
+    let (americas, europe) = nodes()?;
     let usa = Book {
         venue: "XNYS",
         bid: dec!("99"),

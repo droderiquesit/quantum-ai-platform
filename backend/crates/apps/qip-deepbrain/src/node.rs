@@ -130,6 +130,9 @@ pub struct StepOutcome {
     /// What the research loop's sweep did, on the cycles where one ran
     /// (`research.rs`). A fourth cadence beside the three above.
     pub research: Option<crate::research::ResearchRound>,
+    /// What routing the sweep's activated attention events through the
+    /// agency's door did (`ambient_agency.rs`).
+    pub agency: Option<crate::ambient_agency::AgencyRound>,
     /// What the operations loop observed of this iteration (`operations.rs`).
     pub operations: Option<crate::operations::OperationsRound>,
     /// What the tick desk's round did, on the cycles where one ran
@@ -218,6 +221,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         refetch: None,
         source_alpha: None,
         research: None,
+        agency: None,
         operations: None,
         tick: None,
         side_failures: Vec::new(),
@@ -349,7 +353,26 @@ pub struct Loops<'a> {
     /// journaled (`ambient_journal.rs`). A sweep whose record cannot be
     /// written is a side failure on the cycle line, never a stopped node.
     pub ambient: Option<&'a mut crate::ambient_journal::AmbientJournal>,
+    /// The ambient mesh's door to the agency (`ambient_agency.rs`,
+    /// R12-AGENCY-7029): each activated attention event is promoted, guarded
+    /// and drafted to an internal outbox. A sweep it cannot route is a side
+    /// failure on the cycle line, never a stopped node.
+    pub agency: Option<&'a mut crate::ambient_agency::AmbientAgency>,
+    /// Ships the desk's ledger records to qip-ledgerd after each cycle, on
+    /// the deep brain's own chain ([`DESK_CHAIN`]), and flushes what is
+    /// pending at shutdown. A delivery that fails is retried by the shipper,
+    /// never a stopped node; a shipper whose bookkeeping fails is a side
+    /// failure on the cycle line.
+    pub desk: Option<&'a mut qip_desk_ship::DeskShipper>,
 }
+
+/// The ledger chain the deep brain's desk books its fills on, and the producer
+/// id it ships them under. Its own, not the fast brain's `desk`: two
+/// processes on one chain fork the ledger and fence each other's producers.
+pub const DESK_CHAIN: &str = "desk-deep";
+
+/// How long the shutdown flush may wait for the desk's last batch.
+const DESK_FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// [`run_with`] and no research or operations loop.
 #[allow(clippy::too_many_arguments)]
@@ -451,6 +474,13 @@ pub fn run_with(
 
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
+        if let Some(shipper) = loops.desk.as_deref_mut()
+            && let Err(error) = shipper.ship(platform)
+        {
+            outcome
+                .side_failures
+                .push(format!("desk shipper: {}", error.message()));
+        }
         if let Some(Err(error)) = revised {
             outcome
                 .side_failures
@@ -532,6 +562,20 @@ pub fn run_with(
                 outcome
                     .side_failures
                     .push(format!("ambient journal: {}", error.message()));
+            }
+            if let (Some(round), Some(agency)) =
+                (outcome.research.as_ref(), loops.agency.as_deref_mut())
+            {
+                let shared = loops
+                    .ambient
+                    .as_deref()
+                    .and_then(|journal| journal.last_correlation().cloned());
+                match agency.route(cycles, round, shared.as_ref(), now) {
+                    Ok(routed) => outcome.agency = Some(routed),
+                    Err(error) => outcome
+                        .side_failures
+                        .push(format!("ambient agency: {}", error.message())),
+                }
             }
         }
         if let Some(desk) = loops.tick.as_deref_mut() {
@@ -632,6 +676,17 @@ pub fn run_with(
     };
 
     set_status(status, NodeStatus::stopping);
+    // What is pending goes now, within a budget: an unreachable fabric costs
+    // the budget and no more, and what it does not reach is re-queued from
+    // the event log by the next start.
+    if let Some(shipper) = loops.desk.as_deref_mut()
+        && let Err(error) = shipper.flush(platform, DESK_FLUSH_BUDGET)
+    {
+        eprintln!(
+            "qip-deepbrain: the desk shipper's final flush failed: {}",
+            error.message()
+        );
+    }
 
     Ok(RunSummary {
         stopped_because: reason,

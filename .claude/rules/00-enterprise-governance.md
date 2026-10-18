@@ -39,7 +39,9 @@ and argued in `docs/adr/0109` (accepted 2026-10-11, superseding the
 serde/serde_json-only rule of ADR 0002 and 0009). Every package in the
 lockfile, transitive ones included, needs a line naming the ADR that admitted
 it and why. Prefer an audited crate; pin it exactly; enable only the features
-used. The same applies to the frontend's
+used. The lockfile holds more than `serde` and `serde_json`:
+`./scripts/check-dependencies.sh` printed "42 third-party package(s), all
+permitted" on 2026-10-17 (recount, do not quote). The same applies to the frontend's
 `package.json`: every addition is reviewed, and a transitive dependency tree is
 part of the change.
 

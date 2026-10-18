@@ -386,6 +386,18 @@ fn refuse_unnamed(what: &str, name: &str) -> Result<()> {
 }
 
 impl LedgerEvent {
+    /// The id of the decision chain this posting belongs to, derived from its
+    /// source exactly as the cell and the spool writer derive it
+    /// ([`crate::reflex::chain_correlation`]). Not stored, so an event read
+    /// back from a store names the same chain it did when it was written.
+    pub fn chain_correlation(&self) -> qip_core::CorrelationId {
+        crate::reflex::chain_correlation(
+            &self.source.cell,
+            self.source.session,
+            &self.source.order_id,
+        )
+    }
+
     /// Build an event, refusing anything the ledger must not hold.
     ///
     /// Refused, never adjusted:
@@ -596,6 +608,99 @@ mod tests {
     fn venue() -> Account {
         Account::Venue {
             venue: "sim".to_string(),
+        }
+    }
+
+    fn balanced() -> Vec<Posting> {
+        vec![
+            leg(trading(), Direction::Debit, "USD", "10.5"),
+            leg(venue(), Direction::Credit, "USD", "10.5"),
+        ]
+    }
+
+    fn build(source: SourceEvent, postings: Vec<Posting>) -> Result<LedgerEvent> {
+        LedgerEvent::new(
+            source,
+            Settlement::Simulated,
+            FeeReport::Unreported,
+            postings,
+        )
+    }
+
+    /// LEDGER-5002's other two refusals, which had no test: an empty or
+    /// one-legged entry is not double-entry, and a zero or negative amount
+    /// would let a sign error flip a side silently. Premise first: the
+    /// balanced pair is accepted.
+    ///
+    /// Mutation: lower the posting-count floor to one — the one-legged
+    /// assertion passes the constructor and fails; drop the positivity check —
+    /// the zero and negative assertions fail.
+    #[test]
+    fn fewer_than_two_postings_or_a_non_positive_amount_is_refused() {
+        assert!(build(source(), balanced()).is_ok(), "premise");
+
+        let empty = build(source(), Vec::new()).expect_err("an empty event must be refused");
+        assert!(
+            empty.to_string().contains("at least two postings"),
+            "refused for the wrong reason: {empty}"
+        );
+        let one_legged = build(
+            source(),
+            vec![leg(trading(), Direction::Debit, "USD", "10.5")],
+        )
+        .expect_err("a one-legged event must be refused");
+        assert!(
+            one_legged.to_string().contains("at least two postings"),
+            "refused for the wrong reason: {one_legged}"
+        );
+
+        for amount in ["0", "-10.5"] {
+            let signed = build(
+                source(),
+                vec![
+                    leg(trading(), Direction::Debit, "USD", amount),
+                    leg(venue(), Direction::Credit, "USD", amount),
+                ],
+            )
+            .expect_err("a non-positive posting must be refused");
+            assert!(
+                signed.to_string().contains("is not positive"),
+                "{amount}: refused for the wrong reason: {signed}"
+            );
+        }
+    }
+
+    /// LEDGER-5012: an event without a source is refused, field by field —
+    /// the cell, the journal digest and the order id (session and sequence
+    /// are numbers and cannot be absent). An unattributed posting cannot be
+    /// reproduced from the journal that is supposed to have caused it.
+    ///
+    /// Mutation: remove the `refuse_unnamed` call for the journal digest — the
+    /// digest case is accepted and its assertion fails.
+    #[test]
+    fn an_event_whose_source_names_no_cell_digest_or_order_is_refused() {
+        assert!(build(source(), balanced()).is_ok(), "premise");
+        let blank = |field: &str| {
+            let mut source = source();
+            match field {
+                "cell" => source.cell = String::new(),
+                "digest" => source.journal_digest = String::new(),
+                "order" => source.order_id = String::new(),
+                _ => unreachable!("test bug"),
+            }
+            source
+        };
+        for (field, named) in [
+            ("cell", "source cell"),
+            ("digest", "source journal digest"),
+            ("order", "source order id"),
+        ] {
+            let refused = build(blank(field), balanced())
+                .expect_err("an event without a source must be refused");
+            assert!(
+                refused.to_string().contains(named),
+                "{field}: refused for the wrong reason: {refused}"
+            );
         }
     }
 

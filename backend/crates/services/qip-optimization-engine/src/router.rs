@@ -571,6 +571,22 @@ impl Learned {
     }
 }
 
+/// Refuse a promotion threshold that is not positive and finite, rather than
+/// clamping it. [`Foundry::register`] already refuses one, but the router is the
+/// reader that acts on the number, and a threshold of zero promotes a tie
+/// (R12-QUANT-4028), so it checks what it reads.
+fn checked_threshold(threshold: f64) -> Result<f64> {
+    if threshold.is_finite() && threshold > 0.0 {
+        Ok(threshold)
+    } else {
+        Err(Error::invalid(format!(
+            "the foundry's promotion threshold {threshold} is not positive and finite; a zero or \
+             negative margin lets noise decide which solver is reported better, so register a \
+             positive threshold for the workload"
+        )))
+    }
+}
+
 /// The name the registry records a router rung under.
 fn registry_name(solver: Solver) -> &'static str {
     match solver {
@@ -652,6 +668,10 @@ pub struct ComputeRouter {
     quantum: Option<QuantumArm>,
     learned: Mutex<Learned>,
     seed: u64,
+    /// The Quantum Foundry whose registered per-workload promotion threshold
+    /// the adoption decision reads (R12-QUANT-4028). `None` until a quantum
+    /// provider is attached or a foundry is supplied; then the platform's own.
+    foundry: Option<Foundry>,
 }
 
 impl ComputeRouter {
@@ -662,6 +682,7 @@ impl ComputeRouter {
             quantum: None,
             learned: Mutex::new(Learned::new(seed)),
             seed,
+            foundry: None,
         }
     }
 
@@ -740,8 +761,14 @@ impl ComputeRouter {
     /// acquire a quantum path by being attached here.
     pub fn with_quantum(mut self, provider: Arc<dyn QuantumProvider>) -> Result<Self> {
         self.policy.coherent_with(provider.as_ref())?;
-        match Foundry::platform()?.status(FamilyKind::PortfolioAllocation) {
-            Some(FamilyStatus::Registered(_)) => {}
+        let foundry = match self.foundry.take() {
+            Some(foundry) => foundry,
+            None => Foundry::platform()?,
+        };
+        match foundry.status(FamilyKind::PortfolioAllocation) {
+            Some(FamilyStatus::Registered(family)) => {
+                checked_threshold(family.promotion_threshold())?;
+            }
             other => {
                 return Err(Error::denied(format!(
                     "the quantum foundry does not register portfolio allocation (it reports \
@@ -751,7 +778,61 @@ impl ComputeRouter {
             }
         }
         self.quantum = Some(QuantumArm::new(provider, &self.policy)?);
+        self.foundry = Some(foundry);
         Ok(self)
+    }
+
+    /// Replace the foundry the promotion threshold is read from.
+    ///
+    /// Attach it before [`Self::with_quantum`] and an unregistered portfolio
+    /// family is refused there. Replace it after, and a foundry that no longer
+    /// registers the family is not an error: every solve then runs the
+    /// classical baseline alone and records why in `quantum_note`, because a
+    /// quantum answer with no admitted threshold to clear has nothing to be
+    /// judged against.
+    pub fn with_foundry(mut self, foundry: Foundry) -> Self {
+        self.foundry = Some(foundry);
+        self
+    }
+
+    /// The margin a quantum answer must beat the baseline by, as the adoption
+    /// decision will read it: see [`Self::margin_for`] for the precedence.
+    /// `None` when the foundry admits no portfolio-allocation workload.
+    ///
+    /// Public so a test at the composition seam can prove which number the
+    /// router reads, rather than inferring it from a decision.
+    pub fn quantum_promotion_margin(&self) -> Result<Option<f64>> {
+        self.margin_for(Solver::Quantum)
+    }
+
+    /// The margin a candidate from `solver` must beat the baseline by, or
+    /// `None` when the foundry admits no workload for it.
+    ///
+    /// Precedence: the stricter of [`RoutingPolicy::quantum_margin`] and the
+    /// foundry's registered threshold. The policy margin is a deployment-wide
+    /// floor an operator may raise; the foundry threshold is the workload's
+    /// own admission condition. Taking the larger can only make adoption
+    /// rarer, so neither source can loosen the other, and a policy margin of
+    /// zero (which `validate` allows) can no longer promote a tie.
+    ///
+    /// The quantum-inspired rung is held to the same threshold when the family
+    /// is registered; when it is not, only the policy margin applies, because
+    /// that rung runs in process and needs no quantum provider's admission.
+    fn margin_for(&self, solver: Solver) -> Result<Option<f64>> {
+        let registered = match &self.foundry {
+            Some(foundry) => match foundry.status(FamilyKind::PortfolioAllocation) {
+                Some(FamilyStatus::Registered(family)) => {
+                    Some(checked_threshold(family.promotion_threshold())?)
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        Ok(match (solver, registered) {
+            (_, Some(threshold)) => Some(threshold.max(self.policy.quantum_margin)),
+            (Solver::QuantumInspired, None) => Some(self.policy.quantum_margin),
+            (_, None) => None,
+        })
     }
 
     pub fn policy(&self) -> RoutingPolicy {
@@ -828,6 +909,18 @@ impl ComputeRouter {
                     self.policy.minimum_assets_for_quantum
                 ),
             );
+        }
+        match self.margin_for(Solver::Quantum) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    false,
+                    "the quantum foundry registers no portfolio-allocation workload, so there is no \
+                     promotion threshold for a quantum answer to clear; the classical baseline stands"
+                        .to_string(),
+                );
+            }
+            Err(error) => return (false, error.message().to_string()),
         }
         let capabilities = provider.capabilities();
         if problem.dimension() > capabilities.max_qubits {
@@ -954,7 +1047,7 @@ impl ComputeRouter {
                             let simulated = arm.gateway.provider().capabilities().simulated;
                             match self.judge(problem, &pending.qubo, result, simulated) {
                                 Ok(run) => {
-                                    let judged = self.adopts(&run, classical_objective);
+                                    let judged = self.adopts(&run, classical_objective)?;
                                     harvested = Some(quantum_measurement(
                                         &pending,
                                         MeasurementOutcome::Answered,
@@ -1117,7 +1210,8 @@ impl ComputeRouter {
                 ),
             ),
             (None, Some(quantum)) => {
-                let (adopt, gain) = self.adopts(&quantum, classical_objective);
+                let (adopt, gain) = self.adopts(&quantum, classical_objective)?;
+                let margin = self.margin_for(Solver::Quantum)?;
                 if adopt {
                     (
                         Solver::Quantum,
@@ -1126,10 +1220,10 @@ impl ComputeRouter {
                         format!(
                             "the quantum answer improved on the classical baseline by {:.2}%, above the {:.2}% margin required",
                             gain * 100.0,
-                            self.policy.quantum_margin * 100.0
+                            margin.unwrap_or(0.0) * 100.0
                         ),
                     )
-                } else {
+                } else if let Some(margin) = margin {
                     (
                         classical_solver,
                         classical_weights,
@@ -1137,8 +1231,18 @@ impl ComputeRouter {
                         format!(
                             "the quantum answer was {:.2}% better, inside the {:.2}% margin, so the classical baseline stands: a tie is not evidence",
                             gain * 100.0,
-                            self.policy.quantum_margin * 100.0
+                            margin * 100.0
                         ),
+                    )
+                } else {
+                    (
+                        classical_solver,
+                        classical_weights,
+                        classical_objective,
+                        "the quantum foundry registers no portfolio-allocation workload, so a \
+                         quantum answer has no promotion threshold to clear and the classical \
+                         baseline stands"
+                            .to_string(),
                     )
                 }
             }
@@ -1164,13 +1268,14 @@ impl ComputeRouter {
             .find(|run| run.solver == Solver::QuantumInspired)
             .cloned()
         {
-            let (adopt, gain) = self.adopts(&inspired, classical_objective);
+            let (adopt, gain) = self.adopts(&inspired, classical_objective)?;
+            let inspired_margin = self.margin_for(Solver::QuantumInspired)?.unwrap_or(0.0);
             if adopt && inspired.objective < objective {
                 rationale = format!(
                     "the quantum-inspired answer improved on the classical baseline by {:.2}%, \
                      above the {:.2}% margin required{}",
                     gain * 100.0,
-                    self.policy.quantum_margin * 100.0,
+                    inspired_margin * 100.0,
                     if chosen.is_quantum() {
                         ", and beat the quantum answer outright"
                     } else {
@@ -1320,7 +1425,7 @@ impl ComputeRouter {
                     .to_string(),
             ],
         );
-        let (beat, gain) = self.adopts(&run, classical_objective);
+        let (beat, gain) = self.adopts(&run, classical_objective)?;
         measurement.outcome = MeasurementOutcome::Answered;
         measurement.verified = run.is_usable();
         measurement.beat_baseline = beat;
@@ -1337,12 +1442,17 @@ impl ComputeRouter {
     /// Whether a candidate would be adopted over this baseline, and its
     /// improvement. One predicate for the selection and for the measured
     /// record, so the record cannot count as a win what the selection refused.
-    fn adopts(&self, candidate: &SolverRun, classical_objective: f64) -> (bool, f64) {
+    ///
+    /// The bar is [`Self::margin_for`]: the stricter of the policy margin and
+    /// the foundry's registered threshold, compared with a strict `>` so a tie
+    /// stays classical. A workload the foundry does not admit adopts nothing.
+    fn adopts(&self, candidate: &SolverRun, classical_objective: f64) -> Result<(bool, f64)> {
         let gain = improvement(classical_objective, candidate.objective);
-        (
-            candidate.is_usable() && gain > self.policy.quantum_margin,
-            gain,
-        )
+        let adopted = match self.margin_for(candidate.solver)? {
+            Some(margin) => candidate.is_usable() && gain > margin,
+            None => false,
+        };
+        Ok((adopted, gain))
     }
 
     /// The expected-information-value estimate, and the reason a dispatch is
@@ -1834,4 +1944,23 @@ fn worst_violation(problem: &PortfolioProblem, weights: &[f64]) -> (f64, String)
         label = "none".to_string();
     }
     (worst, label)
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    use super::checked_threshold;
+
+    /// A threshold the router reads that is zero, negative or not a number is
+    /// refused, not raised to a floor: a clamped margin is one nobody chose.
+    ///
+    /// Mutation: change `threshold > 0.0` to `threshold >= 0.0` in
+    /// `checked_threshold` and the zero case fires.
+    #[test]
+    fn a_non_positive_or_non_finite_threshold_is_refused_at_routing_not_clamped() {
+        for bad in [0.0, -0.0, -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(checked_threshold(bad).is_err(), "{bad} was accepted");
+        }
+        assert_eq!(checked_threshold(0.01).ok(), Some(0.01));
+    }
 }

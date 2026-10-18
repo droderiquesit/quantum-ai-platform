@@ -185,7 +185,8 @@ fn run() -> Result<()> {
             .with_central(central)
             .with_live_ceiling(AutonomyLevel::deployable(
                 std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref(),
-            )?),
+            )?)
+            .with_desk_chain(qip_deepbrain::node::DESK_CHAIN),
     )?;
     // A committed tape, opened before the platform exists because the
     // platform's clock has to be the tape's: opportunities expire at tape
@@ -304,6 +305,16 @@ fn run() -> Result<()> {
     // R12-GOV-6121: a deployed process states the commit it was built from,
     // or it does not start — every decision it journals would otherwise name
     // code nobody can check out (`qip_kernel::decision_record`).
+    // The desk's fills, shipped to qip-ledgerd on this process's own chain
+    // after every cycle. Unset QIP_FABRIC_URL: loud, and bounded by the feed.
+    let (mut desk_shipper, _desk_certificate) = qip_desk_ship::build(
+        "qip-deepbrain",
+        qip_deepbrain::node::DESK_CHAIN,
+        deployment,
+        &clock,
+        &|name| std::env::var(name).ok(),
+    )?;
+    println!("  {}", desk_shipper.banner());
     qip_kernel::decision_record::require_source_commit(deployment)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
@@ -861,6 +872,20 @@ fn run() -> Result<()> {
     .map_err(configuration)?;
     let mut ambient = qip_deepbrain::ambient_journal::AmbientJournal::open(&ambient_destination)?;
     println!("  ambient journal:  {}", ambient_destination.describe());
+    // The ambient mesh's door to the agency (`ambient_agency.rs`,
+    // R12-AGENCY-7029): promotion, the action guard, then an append to an
+    // internal outbox and nothing else. A broken outbox chain stops the
+    // process here, as the journal's does.
+    let outbox_destination = qip_deepbrain::ambient_agency::destination(
+        std::env::var(qip_deepbrain::ambient_agency::AGENCY_OUTBOX_VARIABLE).ok(),
+        &config.event_log,
+    )
+    .map_err(configuration)?;
+    let mut agency = qip_deepbrain::ambient_agency::AmbientAgency::open(&outbox_destination)?;
+    println!(
+        "  agency outbox:    {} (drafts only; external action stays refused)",
+        outbox_destination.describe()
+    );
     let mut operations = qip_deepbrain::operations::Operations::new(started)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \
@@ -900,6 +925,8 @@ fn run() -> Result<()> {
             tick: Some(&mut tick_desk),
             permissions: permission_watch.as_mut(),
             ambient: Some(&mut ambient),
+            agency: Some(&mut agency),
+            desk: Some(&mut desk_shipper),
         },
         |outcome| {
             println!();
@@ -981,6 +1008,9 @@ fn run() -> Result<()> {
                 println!("  {}", round.describe());
             }
             if let Some(round) = &outcome.research {
+                println!("  {}", round.describe());
+            }
+            if let Some(round) = &outcome.agency {
                 println!("  {}", round.describe());
             }
             if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {

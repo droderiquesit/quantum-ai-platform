@@ -37,6 +37,13 @@ pub struct IngestionStats {
     pub by_topic: BTreeMap<String, u64>,
     /// Rejections per adapter.
     pub rejections_by_source: BTreeMap<String, u64>,
+    /// Polls skipped per adapter because its licensing class bars a production
+    /// decision. Distinct from `rejections_by_source`, which counts records:
+    /// a refused source yields no record to reject, so without this a node
+    /// whose every source was refused showed a clean zero and a full
+    /// acceptance rate.
+    #[serde(default)]
+    pub refusals_by_source: BTreeMap<String, u64>,
     /// Largest observed gap between event time and ingestion time.
     pub worst_latency: Duration,
 }
@@ -71,6 +78,16 @@ pub struct SensedBatch {
     /// Adapters not polled because their licensing class bars a production
     /// decision. Returned rather than only logged: a node whose every source
     /// was refused would otherwise report a successful poll of nothing.
+    pub refused_sources: Vec<String>,
+}
+
+/// What one [`IngestionService::poll_and_publish_reporting`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PublishReport {
+    /// Records that passed the gate and were queued on the bus.
+    pub published: u64,
+    /// Adapters not polled because their licensing class bars a production
+    /// decision, in registration order.
     pub refused_sources: Vec<String>,
 }
 
@@ -240,10 +257,22 @@ impl IngestionService {
 
     /// Whether this adapter's licensing class bars it from being polled, given
     /// the configured enforcement. Logs and names the source when it does.
-    fn refuses(&self, descriptor: &crate::adapter::SourceDescriptor) -> bool {
+    ///
+    /// Counted here, in the one function both poll paths ask, so the
+    /// refusal is a number whichever entry point the caller took.
+    fn refuses(&mut self, descriptor: &crate::adapter::SourceDescriptor) -> bool {
         if !self.enforce_production_licensing || descriptor.is_production_grade() {
             return false;
         }
+        *self
+            .stats
+            .refusals_by_source
+            .entry(descriptor.name.clone())
+            .or_insert(0) += 1;
+        self.telemetry.metrics.count(
+            names::SOURCES_REFUSED,
+            labels([("source", descriptor.name.as_str())]),
+        );
         self.telemetry.logger.with(
             qip_observability::Severity::Error,
             "refusing to ingest from a non-production source",
@@ -296,8 +325,27 @@ impl IngestionService {
         bus: &mut EventBus,
         until: Timestamp,
     ) -> Result<u64> {
+        Ok(self
+            .poll_and_publish_reporting(context, bus, until)?
+            .published)
+    }
+
+    /// [`Self::poll_and_publish`], plus the sources it declined to poll.
+    ///
+    /// `poll_and_publish` used to skip a licence-refused source and say
+    /// nothing a caller could read, while `poll_batch` returned the same
+    /// refusal in `refused_sources`. A node whose every source was refused
+    /// therefore reported a successful publish of zero records. The names come
+    /// back here for the reason they come back there.
+    pub fn poll_and_publish_reporting(
+        &mut self,
+        context: &Context,
+        bus: &mut EventBus,
+        until: Timestamp,
+    ) -> Result<PublishReport> {
         let now = context.now();
         let mut published = 0u64;
+        let mut refused_sources = Vec::new();
 
         // Indexed for the same reason as `poll_batch`: the gate takes
         // `&mut self`. The adapter loop is not shared with `poll_batch` because
@@ -306,6 +354,7 @@ impl IngestionService {
         for index in 0..self.adapters.len() {
             let descriptor = self.adapters[index].descriptor();
             if self.refuses(&descriptor) {
+                refused_sources.push(descriptor.name.clone());
                 continue;
             }
 
@@ -321,7 +370,10 @@ impl IngestionService {
             }
         }
 
-        Ok(published)
+        Ok(PublishReport {
+            published,
+            refused_sources,
+        })
     }
 
     /// Publish a batch of already-collected records, bypassing the adapters.
@@ -548,6 +600,110 @@ mod tests {
         // match a longer name that embeds it, and would not notice the
         // descriptor's provider being pushed here instead of its name.
         assert_eq!(batch.refused_sources, vec!["synthetic-fixture".to_string()]);
+    }
+
+    #[test]
+    fn poll_and_publish_reports_and_counts_a_licence_refused_source_instead_of_skipping_it() {
+        let synthetic = || FixedAdapter {
+            name: "synthetic-fixture".into(),
+            licensing: LicensingClass::Synthetic,
+            records: vec![good_trade()],
+        };
+        let (context, _clock) = Context::deterministic(at(), 1);
+
+        // Premise: unenforced, the same adapter publishes, so a zero below is
+        // the gate and not an adapter with nothing to say.
+        let mut open = IngestionService::new(Telemetry::silent());
+        open.register(Box::new(synthetic()));
+        let report = open
+            .poll_and_publish_reporting(&context, &mut EventBus::new(), at())
+            .expect("an in-memory bus accepts a valid trade");
+        assert_eq!(report.published, 1);
+        assert!(report.refused_sources.is_empty());
+
+        let telemetry = Telemetry::silent();
+        let mut service =
+            IngestionService::new(telemetry.clone()).enforcing_production_licensing(true);
+        service.register(Box::new(synthetic()));
+        let mut bus = EventBus::new();
+        let report = service
+            .poll_and_publish_reporting(&context, &mut bus, at())
+            .expect("a refused source is not an error");
+        assert_eq!(report.published, 0);
+        assert_eq!(
+            report.refused_sources,
+            vec!["synthetic-fixture".to_string()]
+        );
+        assert_eq!(bus.queued(), 0);
+        assert_eq!(
+            service.stats().refusals_by_source.get("synthetic-fixture"),
+            Some(&1),
+            "the refusal must be a stat, not only a log line"
+        );
+        assert_eq!(
+            telemetry
+                .metrics
+                .snapshot()
+                .counter_total(names::SOURCES_REFUSED),
+            1
+        );
+        // The unreported entry point still reports nothing but a count, and the
+        // refusal is counted through it as well.
+        assert_eq!(
+            service
+                .poll_and_publish(&context, &mut bus, at())
+                .expect("a refused source is not an error"),
+            0
+        );
+        assert_eq!(
+            service.stats().refusals_by_source.get("synthetic-fixture"),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn a_sensed_record_round_trips_through_its_event_and_a_foreign_topic_is_refused() {
+        // Premise: eleven distinct topics, one per `SensedRecord` variant.
+        assert_eq!(SensedRecord::TOPICS.len(), 11);
+        let distinct: std::collections::BTreeSet<_> = SensedRecord::TOPICS.iter().collect();
+        assert_eq!(distinct.len(), 11);
+
+        let (context, _clock) = Context::deterministic(at(), 1);
+        let lineage = Lineage::root(context.ids().generate(at()), "test");
+        let event_id = context.ids().generate(at());
+        let record = good_trade();
+        let event = record
+            .to_event(event_id, at(), lineage.clone())
+            .expect("a trade erases");
+        assert_eq!(event.topic, record.topic());
+        assert_eq!(event.lineage, lineage, "the lineage is carried unchanged");
+        assert_eq!(
+            SensedRecord::from_event(&event).expect("it decodes"),
+            record
+        );
+
+        // Every listed topic reaches a decoder: an empty payload fails to
+        // decode as that body, which is a different refusal from the arm for a
+        // topic `from_event` does not know.
+        for topic in SensedRecord::TOPICS {
+            let mut hollow = event.clone();
+            hollow.topic = topic;
+            hollow.payload = serde_json::json!({});
+            let error = SensedRecord::from_event(&hollow).expect_err("an empty body decodes");
+            assert!(
+                !error.message().contains("does not carry a sensed record"),
+                "{topic} is listed in TOPICS but from_event has no decoder for it"
+            );
+        }
+
+        let mut foreign = event.clone();
+        foreign.topic = qip_events::Topic::DataQualityFailed;
+        let error = SensedRecord::from_event(&foreign).expect_err("not a sensed topic");
+        assert!(error.message().contains("does not carry a sensed record"));
+
+        let mut wrong_body = event;
+        wrong_body.payload = serde_json::json!({"not": "a trade"});
+        assert!(SensedRecord::from_event(&wrong_body).is_err());
     }
 
     #[test]

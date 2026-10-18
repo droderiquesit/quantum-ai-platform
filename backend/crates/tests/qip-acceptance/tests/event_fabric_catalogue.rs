@@ -238,6 +238,8 @@ fn every_schema_id_a_stream_admits_is_in_the_lock() {
                 "reflex.outcome_recorded",
                 "reflex.chain_span",
                 "reflex.fabric_gap",
+                // ADR 0123: non-fill ledger operations, booked by qip-ledgerd.
+                "ledger.operation_recorded",
             ]),
         ),
         (
@@ -376,6 +378,21 @@ fn every_process_identity_in_the_slice_holds_exactly_the_grants_the_slice_uses()
         (
             "release-controller",
             BTreeSet::from([("control.local", "produce", "any")]),
+        ),
+        // Each desk writes its own chain of outcomes and nothing else: the
+        // fast brain's, qip-api's and the deep brain's, own-key so a desk can
+        // produce only to the partition of its own chain name.
+        (
+            "reflex:desk",
+            BTreeSet::from([("reflex-outcomes.local", "produce", "own_key")]),
+        ),
+        (
+            "reflex:desk-api",
+            BTreeSet::from([("reflex-outcomes.local", "produce", "own_key")]),
+        ),
+        (
+            "reflex:desk-deep",
+            BTreeSet::from([("reflex-outcomes.local", "produce", "own_key")]),
         ),
         (
             "ledger",

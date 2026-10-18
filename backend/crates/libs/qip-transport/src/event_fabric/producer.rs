@@ -77,6 +77,7 @@ use qip_core::rng::Xoshiro256;
 use qip_core::time::Clock;
 use qip_events::event_fabric::codec::{Batch, stamp_drain};
 use qip_events::event_fabric::policy::{AckProfile, QosClass};
+use std::time::Duration;
 
 use crate::breaker::{
     BreakerPolicy, BreakerState, CircuitBreaker, Decision, Outcome, Refusal as BreakerRefusal,
@@ -143,6 +144,12 @@ impl fmt::Debug for ProducerConfig {
     }
 }
 
+/// How often an `Archived` producer asks whether the archive covers its
+/// batch. Short against any stream's seal cadence (the local catalogue's is a
+/// second), so the acknowledgement lands within this of the archive rather
+/// than a whole retry rung later; a metadata answer is a small read.
+pub const ARCHIVE_POLL_INTERVAL: qip_core::Duration = qip_core::Duration::from_millis(50);
+
 /// A typed producer for one `(stream, partition, producer_id)`. See the
 /// module documentation for the fenced latch, the retry/breaker split and
 /// why one batch is ever in flight.
@@ -166,6 +173,12 @@ pub struct Producer {
     fenced_epoch: Option<u64>,
     next_sequence: u64,
     archived_through: Option<u64>,
+    /// How long the broker said to wait when it last refused a send for want
+    /// of quota; cleared by the next acknowledged send. The refusal reaches
+    /// the caller as an `Err` that only carries text, so a caller that wants
+    /// to wait exactly as long as the broker asked reads it here instead of
+    /// parsing a message.
+    quota_wait: Option<Duration>,
 }
 
 impl fmt::Debug for Producer {
@@ -234,6 +247,7 @@ impl Producer {
             fenced_epoch: None,
             next_sequence: 0,
             archived_through: None,
+            quota_wait: None,
         })
     }
 
@@ -247,6 +261,12 @@ impl Producer {
 
     pub fn producer_id(&self) -> &str {
         &self.producer_id
+    }
+
+    /// The wait the broker named when the last send was refused for quota, or
+    /// `None` if the last send was not (or was acknowledged since).
+    pub fn quota_wait(&self) -> Option<Duration> {
+        self.quota_wait
     }
 
     pub fn ack_profile(&self) -> AckProfile {
@@ -347,6 +367,7 @@ impl Producer {
         let response = self.call(request)?;
         match response {
             Response::Produce(ack) => {
+                self.quota_wait = None;
                 self.next_sequence = sequence.checked_add(records).ok_or_else(|| {
                     Error::invalid(format!(
                         "the producer sequence for {}:{} would overflow past {sequence}; this \
@@ -372,6 +393,13 @@ impl Producer {
                 Err(describe_refusal(
                     Route::Produce,
                     Refusal::OutOfOrderSequence { expected },
+                ))
+            }
+            Response::Refused(Refusal::Quota { retry_after_ms }) => {
+                self.quota_wait = Some(Duration::from_millis(retry_after_ms));
+                Err(describe_refusal(
+                    Route::Produce,
+                    Refusal::Quota { retry_after_ms },
                 ))
             }
             Response::Refused(refusal) => Err(describe_refusal(Route::Produce, refusal)),
@@ -418,22 +446,36 @@ impl Producer {
         {
             return Ok(ack);
         }
-        let mut attempt = 0u32;
+        // The archive is polled at a fixed short cadence within the retry
+        // policy's whole budget, not on the retry ladder. The ladder is for a
+        // transport that failed and should be given room; an archive is a
+        // broker that answered and will cover the batch at its own seal
+        // cadence. On the ladder (50ms, 200ms, 800ms, 3.2s) a batch the
+        // broker archived about a second after the produce — a stream sealing
+        // at 1000ms — missed the third poll by milliseconds and waited out the
+        // fourth: every desk batch took ~3.8s, measured, of which ~2.8s was
+        // that last sleep. The budget, and so when the wait gives up, is
+        // unchanged.
+        let budget = self.retry_policy.worst_case_backoff();
+        let mut waited = qip_core::Duration::ZERO;
+        let mut polls = 0u32;
         loop {
-            attempt += 1;
-            if !self.retry_policy.may_retry(attempt) {
+            if waited >= budget {
                 return Err(Error::timeout(format!(
                     "produce to {}:{} reached base offset {} but archived_through stayed at {} \
-                     after {attempt} metadata poll(s): the archived acknowledgement this \
-                     producer's ack profile requires never arrived within the retry budget",
+                     after {polls} metadata poll(s) over {waited:?}: the archived \
+                     acknowledgement this producer's ack profile requires never arrived \
+                     within the retry budget",
                     self.stream,
                     self.partition,
                     ack.base_offset(),
                     ack.archived_through()
                 )));
             }
-            let backoff = self.retry_policy.backoff(attempt, &mut self.retry_rng);
-            self.sleeper.sleep(backoff);
+            let step = ARCHIVE_POLL_INTERVAL.min(budget - waited);
+            self.sleeper.sleep(step);
+            waited = waited + step;
+            polls += 1;
 
             let request = Request::Metadata(MetadataRequest {
                 stream: self.stream.clone(),
@@ -751,6 +793,153 @@ mod tests {
             101,
             "the acknowledged ack must carry the archived_through that covers the batch at \
              offset 100, not the stale produce-time value and not the poll one short of it"
+        );
+    }
+
+    /// The broker's quota refusal reaches the caller as text; the wait it
+    /// named is read from `quota_wait`, and an acknowledged send clears it.
+    /// A caller waiting the exponential ladder instead of the broker's own
+    /// number drained a queue several times slower than the quota allowed.
+    ///
+    /// Mutation: stop recording the wait in the `Refusal::Quota` arm — the
+    /// first assertion fails; stop clearing it on `Response::Produce` — the
+    /// last fails.
+    #[test]
+    fn a_quota_refusal_leaves_the_named_wait_until_a_send_is_acknowledged() {
+        let init_epoch = 2;
+        let ack = ProduceAck::new("orders", 0, 0, 1, 1).expect("a coherent produce ack");
+        let mut producer = producer(vec![
+            Response::ProducerInit(super::super::protocol::ProducerInitResponse {
+                producer_epoch: init_epoch,
+                next_sequence: 0,
+            }),
+            Response::Refused(Refusal::Quota {
+                retry_after_ms: 700,
+            }),
+            Response::Produce(ack),
+        ]);
+        producer.init().expect("init succeeds");
+        assert_eq!(producer.quota_wait(), None, "premise: nothing refused yet");
+
+        assert!(producer.send(one_record_batch()).is_err());
+        assert_eq!(
+            producer.quota_wait(),
+            Some(Duration::from_millis(700)),
+            "the wait the broker named was not kept"
+        );
+
+        producer
+            .send(one_record_batch())
+            .expect("the retry is acknowledged");
+        assert_eq!(
+            producer.quota_wait(),
+            None,
+            "an acknowledged send left a stale wait behind"
+        );
+    }
+
+    fn archived_producer(script: Vec<Response>) -> (Producer, Arc<RecordingSleeper>) {
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let config = ProducerConfig {
+            transport: Box::new(ScriptedTransport::new(script)),
+            stream: "orders".to_string(),
+            partition: 0,
+            producer_id: "cell-eu-1".to_string(),
+            qos_class: QosClass::P0Control,
+            ack_profile: AckProfile::Archived,
+            retry_policy: RetryPolicy::default(),
+            breaker_policy: BreakerPolicy::default(),
+            clock: Arc::new(ManualClock::new(Timestamp::from_secs(0))),
+            sleeper: sleeper.clone(),
+            retry_seed: 7,
+            breaker_seed: 7,
+            timeouts: Timeouts::default(),
+        };
+        (
+            Producer::new(config).expect("a well-formed config builds a producer"),
+            sleeper,
+        )
+    }
+
+    fn archive_script(behind: usize, caught_up: bool) -> Vec<Response> {
+        let epoch = 3;
+        let mut script = vec![
+            Response::ProducerInit(super::super::protocol::ProducerInitResponse {
+                producer_epoch: epoch,
+                next_sequence: 0,
+            }),
+            Response::Produce(
+                ProduceAck::new("orders", 0, 100, 120, 80).expect("a coherent produce ack"),
+            ),
+        ];
+        for _ in 0..behind {
+            script.push(Response::Metadata(
+                super::super::protocol::Metadata::new("orders", 0, epoch, 120, 80)
+                    .expect("a coherent metadata answer"),
+            ));
+        }
+        if caught_up {
+            script.push(Response::Metadata(
+                super::super::protocol::Metadata::new("orders", 0, epoch, 120, 101)
+                    .expect("a coherent metadata answer"),
+            ));
+        }
+        script
+    }
+
+    /// The failure this prevents, measured: on the retry ladder a batch the
+    /// broker archived about a second after the produce missed the third poll
+    /// (~1.05s in) and slept out the fourth rung, 3.2s, so every desk batch
+    /// took ~3.8s. Polled at the fixed interval, an archive that lands after
+    /// twenty stale answers is seen on the twenty-first poll: 1.05s of sleep,
+    /// never a step longer than the interval.
+    ///
+    /// Mutation: sleep `self.retry_policy.backoff(polls, ...)` instead of the
+    /// interval — a 3.2s step is recorded and both assertions fail.
+    #[test]
+    fn an_archived_ack_is_polled_at_the_fixed_interval_not_on_the_retry_ladder() {
+        let (mut producer, sleeper) = archived_producer(archive_script(20, true));
+        producer.init().expect("init succeeds");
+        let ack = producer.send(one_record_batch()).expect("archived in time");
+        assert_eq!(ack.archived_through(), 101);
+        let steps = sleeper.recorded();
+        assert!(
+            steps.iter().all(|step| *step <= ARCHIVE_POLL_INTERVAL),
+            "a poll waited longer than the interval: {steps:?}"
+        );
+        assert_eq!(
+            sleeper.total(),
+            qip_core::Duration::from_millis(21 * 50),
+            "the wait is not twenty-one intervals"
+        );
+    }
+
+    /// The budget is unchanged: an archive that never arrives is given up on
+    /// after the retry policy's whole worst-case backoff, not sooner and not
+    /// never.
+    ///
+    /// Mutation: drop the budget check — the scripted transport runs out of
+    /// answers and the error names the script, not the archive.
+    #[test]
+    fn an_archive_that_never_arrives_is_given_up_after_the_retry_budget() {
+        let budget = RetryPolicy::default().worst_case_backoff();
+        let polls = (budget.as_millis() / 50) as usize;
+        let (mut producer, sleeper) = archived_producer(archive_script(polls, false));
+        producer.init().expect("init succeeds");
+        let error = producer
+            .send(one_record_batch())
+            .expect_err("the archive never covered the batch");
+        assert!(
+            error
+                .message()
+                .contains("never arrived within the retry budget"),
+            "{}",
+            error.message()
+        );
+        assert_eq!(
+            sleeper.total(),
+            budget,
+            "gave up at another time than the budget"
         );
     }
 }

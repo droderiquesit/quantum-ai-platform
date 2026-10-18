@@ -28,13 +28,15 @@ being able to say precisely why it did what it did is.
 
 ## Stack, as found in the tree
 
-- **Rust 2024**, resolver 3, one workspace, 60 crates. `unsafe_code = "forbid"`;
+- **Rust 2024**, resolver 3, one workspace, 66 crates under `backend/crates/*/*` on 2026-10-17
+  (`ls -d backend/crates/*/* | wc -l`; recount, do not quote). `unsafe_code = "forbid"`;
   `todo!`/`unimplemented!`/`panic_in_result_fn` denied; no `unwrap()` outside
   tests.
 - **Dependencies by allow-list** (ADR 0109, accepted 2026-10-11). Crates come
   from `scripts/dependency-allowlist.txt`, pinned, each line naming the ADR that
-  admitted it; until a lane adds one the lockfile still holds only `serde`,
-  `serde_json` and their closure. `tokio` is the one async runtime, kept off the
+  admitted it; the lockfile no longer holds only `serde`, `serde_json` and their
+  closure: `./scripts/check-dependencies.sh` printed "42 third-party package(s),
+  all permitted" on 2026-10-17 (recount; do not quote the figure). `tokio` is the one async runtime, kept off the
   decision core and the cell's pass unless a committed measurement justifies it;
   explicit timeouts on every call that leaves the process.
 - **Next.js + TypeScript** in `frontend/portal/` and `frontend/landing/`
@@ -47,8 +49,13 @@ being able to say precisely why it did what it did is.
   Federation. Terraform 1.9.8, `hashicorp/google ~> 6.12`.
 - **GitHub Actions**: `ci.yml` (gate), `deploy.yml` (build/sign/attest/deploy),
   `infra.yml` (plan/up/down).
-- **IBM Quantum** via Qiskit Runtime for QAOA, with a local steepest-descent
-  fallback and a classical baseline computed every time (ADR 0006).
+- **Quantum path** (as of 2026-10-17): QAOA runs against `SimulatedProvider`
+  (`qip-kernel/src/platform.rs`, `router.with_quantum(Arc::new(SimulatedProvider::new(..)))`).
+  `HostedProvider` (`qip-quantum/src/provider.rs`, `connected` at `:441`) is the
+  HTTP seam for a hosted vendor but has no production caller, and no Qiskit
+  code is in the tree (`grep -rli qiskit backend --include=*.rs` finds only
+  mentions in comments and tests). Nothing in the tree submits an IBM Quantum job. The local steepest-descent fallback and the classical
+  baseline computed every time (ADR 0006) are real.
 
 ## Layout
 

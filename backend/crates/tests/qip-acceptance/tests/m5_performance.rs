@@ -285,6 +285,79 @@ fn report_scaling(
     );
 }
 
+/// Messages per timed chunk. Small enough that a chunk usually fits inside one
+/// scheduler time slice, which is what lets the minimum below find an
+/// undisturbed one even on a saturated machine.
+const SCALING_CHUNK: usize = 100;
+
+/// How many full passes over the stream feed the minimum.
+const SCALING_PASSES: usize = 5;
+
+/// Time one pass over `messages` in chunks of `SCALING_CHUNK`, feeding each
+/// message to `step` with its position, and return the wall time of each chunk
+/// in stream order.
+fn chunk_times(
+    messages: &[MarketMessage],
+    mut step: impl FnMut(usize, &MarketMessage) -> Result<()>,
+) -> Result<Vec<WallDuration>> {
+    let mut times = Vec::with_capacity(messages.len() / SCALING_CHUNK);
+    for (chunk_index, chunk) in messages.chunks(SCALING_CHUNK).enumerate() {
+        let started = Instant::now();
+        for (offset, message) in chunk.iter().enumerate() {
+            step(chunk_index * SCALING_CHUNK + offset, message)?;
+        }
+        times.push(started.elapsed());
+    }
+    Ok(times)
+}
+
+/// The cheapest chunk seen in the first `window` messages of the stream and in
+/// the last `window`, across every pass.
+///
+/// Why this and not two whole-run timings: the scaling tests used to time a
+/// short run and a long one and divide. That is a ratio of two wall-clock
+/// readings, and it failed in loaded workspace runs ("growth 2.22x exceeds
+/// tolerance 2.0x") while passing alone. Reproduced here with CPU spinners the
+/// same test failed 3 runs in 30 at 8 spinners and 16 in 30 at 40, and
+/// taking the best of several whole runs did not help, because the short run
+/// fits inside one time slice and the long run does not, so every long run
+/// is preempted and the ratio measures the scheduler. Chunks of 100 messages
+/// are a few tens of microseconds; load only ever adds time, so the minimum
+/// over hundreds of them is the undisturbed cost. And comparing the stream's
+/// own head with its own tail asks the question the tests exist to ask, "does
+/// a message cost more because of how long this has been running", with the
+/// same data and the same engine. The tolerance is unchanged. A real
+/// regression slows every late chunk and so survives the minimum.
+fn early_and_late_chunk(
+    passes: &[Vec<WallDuration>],
+    window: usize,
+) -> (WallDuration, WallDuration) {
+    let chunks = window / SCALING_CHUNK;
+    let mut early = WallDuration::MAX;
+    let mut late = WallDuration::MAX;
+    for times in passes {
+        assert!(
+            times.len() >= 2 * chunks,
+            "the stream must be at least two windows long, or head and tail overlap"
+        );
+        early = early.min(
+            times[..chunks]
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(WallDuration::MAX),
+        );
+        late = late.min(
+            times[times.len() - chunks..]
+                .iter()
+                .copied()
+                .min()
+                .unwrap_or(WallDuration::MAX),
+        );
+    }
+    (early, late)
+}
+
 // === Stage 1: Market Tick Ingestion ======================================
 
 /// Latency to ingest a single market message into the feature engine
@@ -307,32 +380,21 @@ fn market_tick_ingestion_latency() -> Result<()> {
 /// Verify market ingestion scales linearly with uptime
 #[test]
 fn market_tick_ingestion_scales_linearly() -> Result<()> {
-    const SMALL: usize = 10_000;
-    const LARGE: usize = 50_000;
+    const WINDOW: usize = 10_000;
+    const STREAM: usize = 50_000;
 
-    let small_messages = level_stream(SMALL, 0xDEAD_BEEF);
-    let large_messages = level_stream(LARGE, 0xDEAD_BEEF);
-
-    // Small run
-    let mut small_engine = feature_engine()?;
-    let started = Instant::now();
-    for msg in &small_messages {
-        small_engine.ingest(msg)?;
+    let messages = level_stream(STREAM, 0xDEAD_BEEF);
+    let mut passes = Vec::new();
+    for _ in 0..SCALING_PASSES {
+        let mut engine = feature_engine()?;
+        passes.push(chunk_times(&messages, |_, msg| engine.ingest(msg))?);
     }
-    let small_elapsed = started.elapsed();
-
-    // Large run
-    let mut large_engine = feature_engine()?;
-    let started = Instant::now();
-    for msg in &large_messages {
-        large_engine.ingest(msg)?;
-    }
-    let large_elapsed = started.elapsed();
+    let (early, late) = early_and_late_chunk(&passes, WINDOW);
 
     report_scaling(
         "market tick ingestion scaling",
-        (SMALL, small_elapsed),
-        (LARGE, large_elapsed),
+        (SCALING_CHUNK, early),
+        (SCALING_CHUNK, late),
         2.0,
     );
     Ok(())
@@ -359,38 +421,90 @@ fn feature_extraction_latency() -> Result<()> {
 }
 
 /// Verify feature extraction scales with uptime
+///
+/// Two assertions, because a timing ratio alone is a proxy and a flaky one.
+/// The property is that per-message cost does not depend on how many messages
+/// the engine has already seen. What would break it is retention that grows
+/// with the stream (a history nothing caps, a book that accretes levels),
+/// so the first assertion holds that bound directly and deterministically:
+/// after the long run every retained series is within the engine's history
+/// cap and the book is within the price range the stream can reach. The ratio
+/// stays beside it for the other failure, a per-message scan, and is measured
+/// as the best of several interleaved rounds so one scheduler stall cannot
+/// decide it (it failed at 2.22x under a loaded workspace run and passed
+/// alone).
 #[test]
 fn feature_extraction_scales_linearly() -> Result<()> {
-    const SMALL: usize = 5_000;
-    const LARGE: usize = 20_000;
+    const WINDOW: usize = 5_000;
+    const STREAM: usize = 20_000;
+    // `level_stream` prices bids in 95..=99 and asks in 101..=105.
+    const REACHABLE_LEVELS_PER_SIDE: usize = 5;
 
-    let small_messages = level_stream(SMALL, 0xDEAD_BEEF);
-    let large_messages = level_stream(LARGE, 0xDEAD_BEEF);
+    let run = |messages: &[MarketMessage]| -> Result<(Vec<WallDuration>, FeatureEngine)> {
+        let mut engine = feature_engine()?;
+        let times = chunk_times(messages, |index, msg| {
+            engine.ingest(msg)?;
+            let _ = engine.evaluate(start().saturating_add(Duration::from_millis(index as i64)))?;
+            Ok(())
+        })?;
+        Ok((times, engine))
+    };
 
-    // Small run
-    let mut small_engine = feature_engine()?;
-    let started = Instant::now();
-    for (index, msg) in small_messages.iter().enumerate() {
-        small_engine.ingest(msg)?;
-        let _ =
-            small_engine.evaluate(start().saturating_add(Duration::from_millis(index as i64)))?;
+    // Deterministic half: what the engine is still holding after a stream long
+    // enough to fill the largest series. The mid is sampled once per 100 ms
+    // bucket and the stream advances 1 ms a message, so the sample series only
+    // reaches the cap after `cap * 100` messages; the timed runs above are
+    // shorter than that and would never exercise it.
+    let cap = qip_feature_dag::state::DEFAULT_HISTORY;
+    let retention_messages = cap * 100 + 10_000;
+    let (_, long_engine) = run(&level_stream(retention_messages, 0xDEAD_BEEF))?;
+    assert_eq!(
+        long_engine.evaluations(),
+        retention_messages as u64,
+        "premise: every message was evaluated"
+    );
+    let instrument = long_engine
+        .state()
+        .instrument(&obj(SYMBOL))
+        .expect("the stream was for this instrument");
+    // Premise: the stream drove the sample series to its cap, so "within the
+    // cap" is a bound that was pushed against rather than one never reached.
+    assert!(
+        instrument.samples().len() >= cap,
+        "premise: {retention_messages} messages should fill the {cap}-entry sample history"
+    );
+    for (series, held) in [
+        ("samples", instrument.samples().len()),
+        ("spreads", instrument.spreads().len()),
+        ("flow", instrument.flow().len()),
+    ] {
+        assert!(
+            held <= cap,
+            "after {retention_messages} messages the {series} series holds {held}, past the \
+             {cap} history cap; retention is growing with the stream"
+        );
     }
-    let small_elapsed = started.elapsed();
+    let book = instrument.book();
+    assert!(
+        book.bids.len() <= REACHABLE_LEVELS_PER_SIDE
+            && book.asks.len() <= REACHABLE_LEVELS_PER_SIDE,
+        "after {retention_messages} messages the book holds {} bids and {} asks; the stream can \
+         only reach {REACHABLE_LEVELS_PER_SIDE} prices a side",
+        book.bids.len(),
+        book.asks.len()
+    );
 
-    // Large run
-    let mut large_engine = feature_engine()?;
-    let started = Instant::now();
-    for (index, msg) in large_messages.iter().enumerate() {
-        large_engine.ingest(msg)?;
-        let _ =
-            large_engine.evaluate(start().saturating_add(Duration::from_millis(index as i64)))?;
+    let messages = level_stream(STREAM, 0xDEAD_BEEF);
+    let mut passes = Vec::new();
+    for _ in 0..SCALING_PASSES {
+        passes.push(run(&messages)?.0);
     }
-    let large_elapsed = started.elapsed();
+    let (early, late) = early_and_late_chunk(&passes, WINDOW);
 
     report_scaling(
         "feature extraction scaling",
-        (SMALL, small_elapsed),
-        (LARGE, large_elapsed),
+        (SCALING_CHUNK, early),
+        (SCALING_CHUNK, late),
         2.0,
     );
     Ok(())

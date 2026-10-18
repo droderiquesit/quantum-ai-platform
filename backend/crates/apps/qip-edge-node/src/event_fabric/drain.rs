@@ -51,8 +51,10 @@ use crate::event_fabric::telemetry::OutboxTelemetry;
 use crate::event_fabric::writer::{market_event, stream_of};
 use qip_contracts::market_event::MarketEvent;
 use qip_core::error::{Error, Result};
+use qip_events::event_fabric::bindings;
 use qip_events::event_fabric::bindings::MARKET_EVENT_APPLIED;
 use qip_events::event_fabric::codec::Batch;
+use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::QosClass;
 use qip_storage::BlobStore;
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
@@ -70,7 +72,7 @@ use std::time::{Duration, Instant};
 pub const DRAIN_THREAD: &str = "qip-spool-drain";
 
 /// The P1 stream the reflex outcomes are produced to (streams.local.json).
-pub const OUTCOMES_STREAM: &str = "reflex-outcomes.local";
+pub const OUTCOMES_STREAM: &str = bindings::REFLEX_OUTCOMES_STREAM;
 
 /// The P2 stream the reflex journal, pass markers and tape events are
 /// produced to (streams.local.json).
@@ -376,13 +378,23 @@ impl Drop for DrainThread {
 pub struct FabricSink {
     outcomes: Producer,
     journal: Producer,
+    /// The cell's region, stamped on every envelope opened before a send.
+    region: String,
 }
 
 impl FabricSink {
     /// A sink over two producers, which must name the two reflex streams:
     /// a producer pointed at the wrong stream would put outcomes where the
     /// ledger never reads them.
-    pub fn new(outcomes: Producer, journal: Producer) -> Result<Self> {
+    pub fn new(outcomes: Producer, journal: Producer, region: impl Into<String>) -> Result<Self> {
+        let region = region.into();
+        if region.trim().is_empty() {
+            return Err(Error::invalid(
+                "the fabric sink needs the cell's region: every envelope it sends is attributed \
+                 to one"
+                    .to_string(),
+            ));
+        }
         if outcomes.stream() != OUTCOMES_STREAM || journal.stream() != JOURNAL_STREAM {
             return Err(Error::invalid(format!(
                 "the fabric sink produces outcomes to {OUTCOMES_STREAM} and the journal to \
@@ -391,7 +403,11 @@ impl FabricSink {
                 journal.stream()
             )));
         }
-        Ok(Self { outcomes, journal })
+        Ok(Self {
+            outcomes,
+            journal,
+            region,
+        })
     }
 }
 
@@ -411,6 +427,25 @@ impl Sink for FabricSink {
                 )));
             }
         };
+        // R12-CONTRACT-7089: every record is opened as the `FabricEnvelope` the
+        // ledger will open it as, before the producer is touched. A record the
+        // consumer would refuse (a version it cannot read, a payload that does
+        // not match its hash, a topic on the wrong class of stream) would be
+        // acknowledged by the broker and then stall the ledger's partition for
+        // ever, because the ledger never skips a record it cannot read. Refused
+        // here, the batch stays in the spool, nothing is sent, no sequence is
+        // consumed and the drain's cursor does not move.
+        let context = FabricContext {
+            stream: producer.stream().to_string(),
+            region: self.region.clone(),
+            partition: producer.partition(),
+            qos_class: stream,
+            auth_context: format!("producer:{}", producer.producer_id()),
+            provenance: "qip-edge-node.drain".to_string(),
+        };
+        let mut preflight = batch.clone();
+        preflight.producer_id = producer.producer_id().to_string();
+        FabricEnvelope::open_all(&preflight, &context, &bindings::ALL)?;
         // An epoch is taken on first use and again after a fence was for an
         // epoch this producer no longer holds; `init` is the broker's
         // statement of where this producer's dense sequence continues.

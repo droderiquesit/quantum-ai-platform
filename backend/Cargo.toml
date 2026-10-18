@@ -74,6 +74,7 @@ members = [
 
     # --- composition root ---
     "crates/runtime/qip-kernel",
+    "crates/runtime/qip-desk-ship",
 
     # --- workspace-level tests ---
     "crates/tests/qip-acceptance",
@@ -170,6 +171,7 @@ qip-evolution = { path = "crates/services/qip-evolution" }
 qip-investment-agents = { path = "crates/agents/qip-investment-agents" }
 qip-quant = { path = "crates/quant/qip-quant" }
 qip-kernel = { path = "crates/runtime/qip-kernel" }
+qip-desk-ship = { path = "crates/runtime/qip-desk-ship" }
 qip-web = { path = "crates/apps/qip-web" }
 qip-api = { path = "crates/apps/qip-api" }
 qip-cli = { path = "crates/apps/qip-cli" }

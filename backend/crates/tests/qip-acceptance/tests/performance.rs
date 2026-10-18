@@ -270,6 +270,33 @@ fn report_scaling(
     );
 }
 
+/// Like `report_scaling`, for two timings of the same number of operations
+/// taken from the head and the tail of one stream: the cheapest chunk early
+/// and the cheapest chunk late. Growth is how much more a message costs
+/// because of how long the stream has been running.
+fn report_head_and_tail(
+    label: &str,
+    ops: usize,
+    head: WallDuration,
+    tail: WallDuration,
+    tolerance: f64,
+) {
+    let head_micros = head.as_secs_f64() * 1e6 / ops as f64;
+    let tail_micros = tail.as_secs_f64() * 1e6 / ops as f64;
+    let growth = tail_micros / head_micros;
+    println!(
+        "{label}: head {head_micros:.3} us/op vs tail {tail_micros:.3} us/op = {growth:.2}x \
+         growth ({} profile, cheapest chunk of each, this machine)",
+        profile()
+    );
+    assert!(
+        growth < tolerance,
+        "{label}: a message late in the stream cost {growth:.2}x one early in it, past the \
+         {tolerance:.1}x tolerance. Per-operation cost that rises with how long the stream has \
+         run is a complexity class change: a scan of everything seen where there was a lookup"
+    );
+}
+
 // --- which ceilings stay, and why -------------------------------------------
 //
 // [`report_scaling`] is the better assertion wherever the property under test
@@ -2234,42 +2261,92 @@ fn sequencing_costs_the_same_per_message_however_long_the_stream_has_been_runnin
     // and a contiguous stream is precisely the case where nothing should ever
     // be retained at all.
     //
-    // Load-invariant: both halves on this machine, moments apart.
-    const SMALL: usize = 50_000;
-    const LARGE: usize = 250_000;
+    // Two assertions, because a timing ratio is a proxy for that property and
+    // was a flaky one. The bound is asserted directly and deterministically:
+    // after the long stream the tracker holds nothing out of order, never held
+    // anything out of order, and released every message exactly once. The
+    // ratio stays beside it for the other failure, a per-message scan, which
+    // retains nothing and so cannot be seen by the bound.
+    //
+    // The ratio compares the stream's own head with its own tail, using the
+    // cheapest 100-message batch in each across several passes. It used to time
+    // a 50k-message run against a 250k-message run and divide, and it failed
+    // in loaded workspace runs while passing alone. Reproduced with CPU
+    // spinners the old form failed in 1 of 20 runs at 8 spinners (and passed
+    // alone): the short run fits inside one scheduler slice and the long one
+    // does not, so the ratio measured the scheduler. A batch is tens of
+    // microseconds, load only ever adds time, and the minimum over hundreds of
+    // batches is the undisturbed cost. The tolerance is unchanged, and a real
+    // regression slows every late batch, so it survives the minimum.
+    const WINDOW: usize = 50_000;
+    const STREAM: usize = 250_000;
     const BATCH: usize = 100;
+    const PASSES: usize = 3;
 
-    let run = |messages: usize| -> (WallDuration, usize, Vec<SequenceEvent>) {
-        let stream = level_stream("ACME", messages, 0x5E0);
+    let stream = level_stream("ACME", STREAM, 0x5E0);
+    let mut passes: Vec<Vec<WallDuration>> = Vec::new();
+    for _ in 0..PASSES {
         let mut sequencer = Sequencer::new(ReorderPolicy::default());
         let mut released = 0usize;
         let mut events: Vec<SequenceEvent> = Vec::new();
-        let started = Instant::now();
+        let mut batch_times = Vec::with_capacity(STREAM / BATCH);
         for chunk in stream.chunks(BATCH) {
+            let started = Instant::now();
             let batch = sequencer.accept(chunk.to_vec(), start());
+            batch_times.push(started.elapsed());
             released += batch.released.len();
             events.extend(batch.events);
         }
-        (started.elapsed(), released, events)
-    };
 
-    let (small_elapsed, small_released, small_events) = run(SMALL);
-    let (large_elapsed, large_released, large_events) = run(LARGE);
+        // Premise: the pass released every message of a contiguous stream. A
+        // sequencer holding messages back does less work per message, not
+        // more, and would pass the ratio while being broken.
+        assert_eq!(released, STREAM, "the stream was held back");
+        assert_eq!(events.len(), 1, "the stream was not contiguous: {events:?}");
+        assert!(
+            matches!(events[0], SequenceEvent::StreamStarted { .. }),
+            "a contiguous stream produced a gap or a duplicate: {events:?}"
+        );
 
-    // Premise: both runs released every message. A sequencer holding messages
-    // back does less work per message, not more, and would pass this while
-    // being broken.
-    assert_eq!(small_released, SMALL, "the short stream was held back");
-    assert_eq!(large_released, LARGE, "the long stream was held back");
-    assert_eq!(small_events.len(), 1, "the short stream was not contiguous");
-    assert_eq!(large_events.len(), 1, "the long stream was not contiguous");
+        // The bound itself: a contiguous stream retains nothing, however long
+        // it has run. A buffer nothing drains or a seen-set that only gains
+        // members shows here as `buffered` or `peak_buffered` above zero.
+        let streams = sequencer.streams();
+        assert_eq!(streams.len(), 1, "the one stream became {streams:?}");
+        let tracker = sequencer
+            .tracker(streams[0])
+            .expect("a stream the sequencer lists has a tracker");
+        let stats = tracker.stats();
+        assert_eq!(
+            tracker.buffered(),
+            0,
+            "after {STREAM} contiguous messages the tracker still holds messages out of order"
+        );
+        assert!(
+            !tracker.has_open_gap(),
+            "a contiguous stream left a gap open"
+        );
+        assert_eq!(
+            stats.peak_buffered, 0,
+            "a contiguous stream was held out of order at some point: {stats:?}"
+        );
+        assert_eq!(
+            (stats.released, stats.duplicates, stats.gaps_opened),
+            (STREAM as u64, 0, 0),
+            "{stats:?}"
+        );
+        passes.push(batch_times);
+    }
 
-    report_scaling(
-        "sequencing scaling",
-        (SMALL, small_elapsed),
-        (LARGE, large_elapsed),
-        2.0,
-    );
+    let chunks = WINDOW / BATCH;
+    let mut early = WallDuration::MAX;
+    let mut late = WallDuration::MAX;
+    for times in &passes {
+        assert!(times.len() >= 2 * chunks, "head and tail windows overlap");
+        early = early.min(times[..chunks].iter().copied().min().unwrap());
+        late = late.min(times[times.len() - chunks..].iter().copied().min().unwrap());
+    }
+    report_head_and_tail("sequencing scaling", BATCH, early, late, 2.0);
     Ok(())
 }
 

@@ -755,6 +755,13 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
     //   `Platform::decide_fabric`; the registry, the corridors and the gate
     //   assessments they produce are the platform's, not the API's.
     //
+    // * `qip_desk_ship::DeskShipper` — the desk's outbound shipper: a
+    //   producer route, the chain position of the batch in flight and its
+    //   back-off. It holds no record and no balance: the records it ships are
+    //   the platform's queue, borrowed for one `ship` call, and dropped from
+    //   there only when the fabric has acknowledged them; what the ledger
+    //   books is qip-ledgerd's.
+    //
     // A new store is a reviewed change: name it here with its reason.
     let known_stores: BTreeSet<&str> = [
         "Platform",
@@ -767,6 +774,7 @@ fn the_api_owns_no_field_typed_as_money_and_every_store_it_holds_is_named_here()
         "crate::feed::ApiFeed",
         "StatementFeed",
         "FabricFeed",
+        "qip_desk_ship::DeskShipper",
     ]
     .into_iter()
     .collect();
@@ -1299,6 +1307,12 @@ fn the_api_calls_no_platform_mutator_it_has_not_been_allowed() {
         // for this until this test refused it, which is the test working.
         "issue_region_shares",
         "observe",
+        // `observe_fresh` is `observe` with a root lineage minted for each
+        // record: the sense route's one intake of sensed records, now logged
+        // under an id so a later decision can be joined back to the record by
+        // id. It places no order, moves no limit and reads nothing the route
+        // could not already read.
+        "observe_fresh",
         "observe_statement",
         "approve_promotion",
         // `approve_recalibration` — the operator signature on a recalibration

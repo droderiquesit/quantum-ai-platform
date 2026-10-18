@@ -98,12 +98,12 @@ impl Config {
         self
     }
 
-    /// Apply `QIP_`-prefixed environment variables.
-    pub fn with_env(self) -> Self {
-        self.with_env_from(std::env::vars())
-    }
-
-    /// Testable form of [`Self::with_env`].
+    /// Apply `QIP_`-prefixed variables from `vars`.
+    ///
+    /// The caller collects them, so the process environment is read only at a
+    /// composition root. A `with_env()` that read `std::env::vars()` itself once
+    /// lived here with no production caller; it was removed so that a library
+    /// crate holds no hidden global dependency a test cannot isolate.
     pub fn with_env_from<I: IntoIterator<Item = (String, String)>>(mut self, vars: I) -> Self {
         let mut pairs: Vec<(String, String)> = vars
             .into_iter()

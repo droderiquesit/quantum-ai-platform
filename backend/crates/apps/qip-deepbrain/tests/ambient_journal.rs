@@ -127,6 +127,7 @@ fn run_node(every: u64) -> Vec<AmbientRecord> {
         0,
         None,
         Loops {
+            desk: None,
             research: Some(&mut research),
             ambient: Some(&mut ambient),
             ..Loops::default()

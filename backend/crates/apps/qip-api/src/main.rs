@@ -165,7 +165,8 @@ fn run() -> Result<()> {
     let mut config = compute.apply(
         PlatformConfig::default()
             .with_live_ceiling(ceiling)
-            .with_venue_registrations(venue_registrations),
+            .with_venue_registrations(venue_registrations)
+            .with_desk_chain(qip_api::DESK_CHAIN),
     );
     config.central.arbitrage = arbitrage;
     config.central.region_dark_after = region_dark_after;
@@ -303,6 +304,18 @@ fn run() -> Result<()> {
     // R12-GOV-6121: a deployed process states the commit it was built from,
     // or it does not start — every decision it journals would otherwise name
     // code nobody can check out (`qip_kernel::decision_record`).
+    // The desk's fills, shipped to qip-ledgerd on this process's own chain
+    // after every cycle `POST /cycle` runs. Unset QIP_FABRIC_URL: loud, and
+    // bounded by the feed; see `qip_desk_ship::build`.
+    let ship_clock: Arc<dyn qip_core::Clock> = clock.clone();
+    let (desk_shipper, _desk_certificate) = qip_desk_ship::build(
+        "qip-api",
+        qip_api::DESK_CHAIN,
+        deployment,
+        &ship_clock,
+        &|name| std::env::var(name).ok(),
+    )?;
+    println!("  {}", desk_shipper.banner());
     qip_kernel::decision_record::require_source_commit(deployment)
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
@@ -562,7 +575,8 @@ fn run() -> Result<()> {
     )
     .with_cells(cells.clone())
     .with_archive(archive.clone())
-    .with_cycle_overview(web.cycle_overview());
+    .with_cycle_overview(web.cycle_overview())
+    .with_desk_shipper(desk_shipper);
     if let Some(mesh) = &mesh {
         api = api.with_mesh(mesh.clone());
     }

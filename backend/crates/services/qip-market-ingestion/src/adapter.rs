@@ -346,6 +346,108 @@ impl SensedRecord {
             Self::ReferenceData(r) => bus.publish(context, lineage, at, (**r).clone()).map(|_| ()),
         }
     }
+
+    /// The topics a [`SensedRecord`] can arrive on, in declaration order.
+    ///
+    /// One list so a subscriber that must see every kind (the platform's bus
+    /// bridge) and the decoder below cannot disagree about what a sensed
+    /// record is. `a_sensed_record_round_trips_through_its_event_and_a_foreign_topic_is_refused`
+    /// pins the two: every topic listed here must reach a decoder in
+    /// `from_event`, never its refusal arm.
+    pub const TOPICS: [Topic; 11] = [
+        Topic::MarketTick,
+        Topic::MarketQuote,
+        Topic::MarketTrade,
+        Topic::MarketOrderBook,
+        Topic::MarketBar,
+        Topic::MarketCorporateAction,
+        Topic::NewsReceived,
+        Topic::FundamentalUpdated,
+        Topic::MacroUpdated,
+        Topic::AlternativeDataReceived,
+        Topic::ReferenceDataUpdated,
+    ];
+
+    /// Recover the record a bus event carries.
+    ///
+    /// The inverse of [`Self::publish_to`]. A topic that is not a sensed one,
+    /// or a payload that is not that topic's body, is refused with the reason
+    /// rather than skipped: a subscriber that silently dropped what it could
+    /// not read would look exactly like a feed that had gone quiet.
+    pub fn from_event(event: &qip_events::AnyEvent) -> Result<Self> {
+        Ok(match event.topic {
+            Topic::MarketTick => Self::Tick(event.decode::<Tick>()?.body),
+            Topic::MarketQuote => Self::Quote(event.decode::<Quote>()?.body),
+            Topic::MarketTrade => Self::Trade(event.decode::<Trade>()?.body),
+            Topic::MarketOrderBook => Self::Book(Box::new(event.decode::<OrderBook>()?.body)),
+            Topic::MarketBar => Self::Bar(Box::new(event.decode::<Bar>()?.body)),
+            Topic::MarketCorporateAction => {
+                Self::CorporateAction(Box::new(event.decode::<CorporateAction>()?.body))
+            }
+            Topic::NewsReceived => Self::News(Box::new(event.decode::<NewsItem>()?.body)),
+            Topic::FundamentalUpdated => {
+                Self::Fundamental(Box::new(event.decode::<FundamentalUpdate>()?.body))
+            }
+            Topic::MacroUpdated => Self::Macro(Box::new(event.decode::<MacroObservation>()?.body)),
+            Topic::AlternativeDataReceived => {
+                Self::AlternativeData(Box::new(event.decode::<AlternativeDataPoint>()?.body))
+            }
+            Topic::ReferenceDataUpdated => {
+                Self::ReferenceData(Box::new(event.decode::<ReferenceDataUpdate>()?.body))
+            }
+            other => {
+                return Err(qip_core::error::Error::schema(format!(
+                    "topic {other} does not carry a sensed record; subscribe the bridge to \
+                     SensedRecord::TOPICS only"
+                )));
+            }
+        })
+    }
+
+    /// This record as an erased event under `lineage`, for a log that records
+    /// what it was handed rather than publishing it.
+    ///
+    /// `recorded_at` is when the holder learned it; `occurred_at` is the
+    /// record's own instant. The platform logs what it absorbed through this,
+    /// so the event it writes is byte-for-byte the shape the bus carried.
+    pub fn to_event(
+        &self,
+        event_id: qip_core::EventId,
+        recorded_at: Timestamp,
+        lineage: qip_core::Lineage,
+    ) -> Result<qip_events::AnyEvent> {
+        use qip_events::Envelope;
+        let at = self.occurred_at();
+        match self {
+            Self::Tick(t) => Envelope::new(event_id, at, recorded_at, lineage, t.clone()).erase(),
+            Self::Quote(q) => Envelope::new(event_id, at, recorded_at, lineage, q.clone()).erase(),
+            Self::Trade(t) => Envelope::new(event_id, at, recorded_at, lineage, t.clone()).erase(),
+            Self::Book(b) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**b).clone()).erase()
+            }
+            Self::Bar(b) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**b).clone()).erase()
+            }
+            Self::CorporateAction(a) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**a).clone()).erase()
+            }
+            Self::News(n) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**n).clone()).erase()
+            }
+            Self::Fundamental(f) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**f).clone()).erase()
+            }
+            Self::Macro(m) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**m).clone()).erase()
+            }
+            Self::AlternativeData(a) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**a).clone()).erase()
+            }
+            Self::ReferenceData(r) => {
+                Envelope::new(event_id, at, recorded_at, lineage, (**r).clone()).erase()
+            }
+        }
+    }
 }
 
 /// What an adapter is and what it may be trusted with.

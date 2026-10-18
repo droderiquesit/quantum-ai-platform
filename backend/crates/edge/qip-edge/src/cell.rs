@@ -1380,6 +1380,14 @@ pub struct Cell {
     /// classification of them is not.
     episodes: Vec<RegionalEpisode>,
     order_sequence: u64,
+    /// The session the decision chains this cell mints are scoped to, or
+    /// zero while none has been told (see [`Cell::set_chain_epoch`]).
+    chain_epoch: u64,
+    /// The journal sequence of the `SignalRaised` entry each strategy wrote
+    /// this pass, so the order those signals netted into can name them.
+    /// Cleared at the start of every pass and bounded by the deployed
+    /// strategies, one slot each.
+    signal_sequences: BTreeMap<String, u64>,
     /// Passes of [`Self::work`] so far, counting the halted ones. What a
     /// [`CrossingInterval::Passes`] window is measured in.
     pass: u64,
@@ -1601,6 +1609,8 @@ impl Cell {
             breaks_omitted: 0,
             episodes: Vec::new(),
             order_sequence: 0,
+            chain_epoch: 0,
+            signal_sequences: BTreeMap::new(),
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
@@ -2294,6 +2304,53 @@ impl Cell {
 
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// Tell the cell which session it runs in, so the decision chains it
+    /// opens carry an id the spool writer derives identically.
+    ///
+    /// The cell numbers orders from one at every start, so an order id alone
+    /// names a chain only within a session; the chain id is scoped by the
+    /// session the spool writer committed (`SpoolWriter::session`), which the
+    /// cell cannot know on its own. Refused rather than defaulted: zero is no
+    /// session (the writer's first is one), a second call would split a
+    /// session's chains under two ids, and a call after an order has been
+    /// numbered would leave that order's hops under the epoch it was minted
+    /// in. Until it is called the cell opens no chain link, so a cell built
+    /// without a spool journals exactly what it always did.
+    pub fn set_chain_epoch(&mut self, epoch: u64) -> Result<()> {
+        if epoch == 0 {
+            return Err(Error::invalid(
+                "a chain epoch of zero names no session; pass the session the spool writer \
+                 committed, which starts at one",
+            ));
+        }
+        if self.chain_epoch != 0 {
+            return Err(Error::invalid(format!(
+                "this cell's chains are already scoped to session {}; a second epoch would give \
+                 one session's orders two ids",
+                self.chain_epoch
+            )));
+        }
+        if self.order_sequence != 0 {
+            return Err(Error::invalid(
+                "an order has already been numbered; set the chain epoch before the first pass",
+            ));
+        }
+        self.chain_epoch = epoch;
+        Ok(())
+    }
+
+    /// The chain id of an order this cell sent, under the epoch it was told.
+    /// `None` until [`Self::set_chain_epoch`] has been called.
+    pub fn chain_of(&self, order_id: &str) -> Option<qip_core::CorrelationId> {
+        (self.chain_epoch != 0).then(|| {
+            qip_contracts::reflex::chain_correlation(
+                &self.config.cell_id,
+                self.chain_epoch,
+                order_id,
+            )
+        })
     }
 
     /// The registry every series this cell records lands in.
@@ -4387,6 +4444,7 @@ impl Cell {
 
         let vector = self.features.evaluate(now)?;
         let strategy_ids: Vec<String> = self.deployed.keys().cloned().collect();
+        self.signal_sequences.clear();
 
         for id in strategy_ids {
             // A strategy the applied policy names as retired evaluates
@@ -4458,15 +4516,20 @@ impl Cell {
                 continue;
             }
 
-            self.journal.record(
-                Decision::SignalRaised {
-                    strategy: signal.strategy.as_str().to_string(),
-                    object: signal.object_id.as_str().to_string(),
-                    kind: signal.kind.as_str().to_string(),
-                    conviction_shrunk_f64: signal.conviction.shrunk(),
-                },
-                now,
-            );
+            let raised = self
+                .journal
+                .record(
+                    Decision::SignalRaised {
+                        strategy: signal.strategy.as_str().to_string(),
+                        object: signal.object_id.as_str().to_string(),
+                        kind: signal.kind.as_str().to_string(),
+                        conviction_shrunk_f64: signal.conviction.shrunk(),
+                    },
+                    now,
+                )
+                .sequence;
+            self.signal_sequences
+                .insert(signal.strategy.as_str().to_string(), raised);
             self.metrics.signal(signal.kind);
             report.signals.push(signal.clone());
 
@@ -5303,6 +5366,7 @@ impl Cell {
             grants,
             now,
         );
+        self.open_chain(&order_id, net_intent, now);
         // The venue may have filled some of it on acceptance. Those reports
         // are confirmed now, against the record just written, so a fill on
         // this pass is attributed on this pass.
@@ -5634,6 +5698,41 @@ impl Cell {
         );
         self.metrics.order_placed(&order.venue);
         self.working.insert(order.order_id.clone(), working);
+    }
+
+    /// Journal the join between the signals a netted order answered and the
+    /// order, right after its `OrderSent`, so the chain a fill belongs to
+    /// can be walked back to the entries that began it.
+    ///
+    /// A strategy with no signal this pass is skipped rather than named with
+    /// a made-up sequence: a net's contributors are all signals of this
+    /// pass, so a missing one means the intent did not come from a signal
+    /// (a disposition unwind) and has none to point at. Nothing is recorded
+    /// on a cell that was never told its session; see
+    /// [`Self::set_chain_epoch`].
+    fn open_chain(&mut self, order_id: &str, net_intent: &NetIntent, now: Timestamp) {
+        let Some(correlation) = self.chain_of(order_id) else {
+            return;
+        };
+        let signals = net_intent
+            .contributors
+            .iter()
+            .filter_map(|contributor| {
+                let strategy = contributor.strategy.as_str();
+                self.signal_sequences
+                    .get(strategy)
+                    .map(|sequence| (strategy.to_string(), *sequence))
+            })
+            .collect();
+        self.journal.record(
+            Decision::ChainOpened {
+                correlation: correlation.as_str().to_string(),
+                order_id: order_id.to_string(),
+                pass: self.pass,
+                signals,
+            },
+            now,
+        );
     }
 
     /// Whether `orders` more can be held open under [`MAX_OPEN_ORDERS`].

@@ -663,5 +663,31 @@ fn every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_ex
     );
     assert!(reference.parser().is_some());
 
+    // The `is_none` pair above only pins the absence; it passes with the
+    // etag and cursor plumbing deleted. A digest that DID carry both must
+    // surface the same two values on the reference, and distinct values so a
+    // swapped pair is caught.
+    let polled = frankfurter_digest(TABLE, Timestamp::from_secs(1_760_100_000))?
+        .with_etag(Some("\"etag-7\"".to_string()))
+        .with_cursor("cursor-9");
+    assert_eq!(
+        polled.etag(),
+        Some("\"etag-7\""),
+        "premise: the digest carries an etag"
+    );
+    assert_eq!(
+        polled.cursor(),
+        Some("cursor-9"),
+        "premise: the digest carries a cursor"
+    );
+    let filled = qip_data_finder::reference::DataReference::from_digest(
+        &admitted,
+        &polled,
+        qip_core::Decimal::ZERO,
+        0.95,
+    )?;
+    assert_eq!(filled.etag(), Some("\"etag-7\""));
+    assert_eq!(filled.cursor(), Some("cursor-9"));
+
     Ok(())
 }

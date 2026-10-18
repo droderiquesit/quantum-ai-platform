@@ -63,16 +63,21 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, sha256_hex};
 use qip_events::AnyEvent;
 use qip_events::event_fabric::bindings::{
-    EVENT_FABRIC_GAP, REFLEX_CHAIN_SPAN, REFLEX_OUTCOME_RECORDED, TopicBinding,
+    EVENT_FABRIC_GAP, LEDGER_OPERATION_RECORDED, REFLEX_CHAIN_SPAN, REFLEX_OUTCOME_RECORDED,
+    TopicBinding,
 };
 use qip_events::event_fabric::codec::Batch;
+use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
+use qip_events::event_fabric::policy::QosClass;
 use qip_transport::breaker::BreakerPolicy;
 use qip_transport::event_fabric::consumer::{Consumer, ConsumerConfig};
 use qip_transport::event_fabric::transport::{FabricTransport, Timeouts};
 use qip_transport::retry::{RetryPolicy, Sleeper, ThreadSleeper};
 use serde::Serialize;
 
-use crate::store::{Delivery, Disposition, LedgerStore, P1Record};
+use crate::store::{
+    Delivery, Disposition, LedgerStore, OperationApplied, OperationDelivery, P1Record,
+};
 use crate::telemetry::LedgerTelemetry;
 
 /// Delivery offsets reserved per broker batch. A batch is at most 32 MiB
@@ -91,6 +96,37 @@ const MAXIMUM_BACKOFF_MS: u64 = 5_000;
 /// Builds one transport to the broker. Each worker owns its own, because a
 /// transport carries its bearer token and is not shared across threads.
 pub type Connect = Arc<dyn Fn() -> Result<Box<dyn FabricTransport + Send>> + Send + Sync>;
+
+/// The topics the ledger reads, with the schema version it supports for each
+/// (`bindings`' own constants, so the producer and this reader cannot
+/// disagree about what version 1 is).
+const LEDGER_BINDINGS: [TopicBinding; 4] = [
+    REFLEX_OUTCOME_RECORDED,
+    REFLEX_CHAIN_SPAN,
+    EVENT_FABRIC_GAP,
+    LEDGER_OPERATION_RECORDED,
+];
+
+/// The region the ledger stamps on the envelopes it opens: where they were
+/// read, not where they were produced. The batch wire carries no origin
+/// region (ADR 0100's codec header has none), so the producing region is an
+/// open item rather than something this reader may guess; the producing
+/// *cell* is the batch's producer id and is carried.
+pub const READ_REGION: &str = "central";
+
+/// The context the ledger opens every P1 record under: the stream and
+/// partition it reads, the class that stream carries, and the group identity
+/// the broker authenticated the fetch as.
+pub fn fabric_context(stream: &str, partition: u32, group: &str) -> FabricContext {
+    FabricContext {
+        stream: stream.to_string(),
+        region: READ_REGION.to_string(),
+        partition,
+        qos_class: QosClass::P1Outcomes,
+        auth_context: format!("consumer-group:{group}"),
+        provenance: "qip-ledgerd".to_string(),
+    }
+}
 
 /// The delivery offset of record `index` of the batch at `batch_offset`.
 pub fn delivery_offset(batch_offset: u64, index: usize) -> Result<u64> {
@@ -150,6 +186,8 @@ pub enum Decoded {
     /// A producer-declared gap: books nothing; the chain discontinuity it
     /// leaves parks the cell at the store.
     Gap,
+    /// A non-fill ledger operation (ADR 0123), booked by operation id.
+    Operation(Box<OperationDelivery>),
     /// A record on a topic that is not a ledger record.
     Other,
 }
@@ -157,7 +195,18 @@ pub enum Decoded {
 /// Decode every record of `batch` at or after `from` into what the store
 /// is offered, in order. `Err` for a record whose payload does not decode:
 /// the caller stalls there rather than skipping it.
-pub fn decode_batch(partition: &str, batch: &Batch, from: u64) -> Result<Vec<(u64, Decoded)>> {
+///
+/// Each record is opened as a [`FabricEnvelope`] first (R12-CONTRACT-7089):
+/// an unsupported schema version, a payload whose hash does not match, a
+/// header that contradicts its payload or a record on the wrong class of
+/// stream is refused here, before the store is offered anything from the
+/// batch.
+pub fn decode_batch(
+    partition: &str,
+    context: &FabricContext,
+    batch: &Batch,
+    from: u64,
+) -> Result<Vec<(u64, Decoded)>> {
     let mut decoded = Vec::with_capacity(batch.records.len());
     for (index, record) in batch.records.iter().enumerate() {
         let offset = delivery_offset(batch.base_offset, index)?;
@@ -172,15 +221,65 @@ pub fn decode_batch(partition: &str, batch: &Batch, from: u64) -> Result<Vec<(u6
             );
             e.relabelled(message)
         })?;
+        // A record on a topic that is not a ledger record is passed over as
+        // before; every ledger record is opened as a `FabricEnvelope` and
+        // that is what the store is fed from.
+        let is_ledger_topic = LEDGER_BINDINGS.iter().any(|b| b.topic == event.topic);
+        let event = if is_ledger_topic {
+            FabricEnvelope::open_decoded(batch, index, event, context, &LEDGER_BINDINGS)
+                .map_err(|e| {
+                    let message = format!(
+                        "{partition} batch {} record {index} is not a valid fabric envelope: {}",
+                        batch.base_offset,
+                        e.message()
+                    );
+                    e.relabelled(message)
+                })?
+                .event()
+                .clone()
+        } else {
+            event
+        };
         let p1 = if event.topic == REFLEX_OUTCOME_RECORDED.topic {
-            P1Record::Outcome(Box::new(decode_as::<OutcomeRecord>(
-                &event,
-                REFLEX_OUTCOME_RECORDED,
-            )?))
+            let outcome = decode_as::<OutcomeRecord>(&event, REFLEX_OUTCOME_RECORDED)?;
+            // The envelope's lineage must name the decision chain its body
+            // names. The id is derived from the cell, the session and the
+            // order, none of which the lineage can change, so a record whose
+            // lineage was edited or stripped joins the posting to another
+            // order's decisions; it is refused here, before the store sees it,
+            // and the caller stalls on it with nothing booked.
+            if let Some(expected) = outcome.correlation()
+                && event.lineage.correlation_id != expected
+            {
+                return Err(Error::invalid(format!(
+                    "{partition} batch {} record {index} carries lineage correlation {} but its \
+                     body derives {}; the ledger refuses a record whose chain was edited",
+                    batch.base_offset,
+                    event.lineage.correlation_id.as_str(),
+                    expected.as_str()
+                )));
+            }
+            P1Record::Outcome(Box::new(outcome))
         } else if event.topic == REFLEX_CHAIN_SPAN.topic {
             P1Record::Span(decode_as::<ChainSpan>(&event, REFLEX_CHAIN_SPAN)?)
         } else if event.topic == EVENT_FABRIC_GAP.topic {
             decoded.push((offset, Decoded::Gap));
+            continue;
+        } else if event.topic == LEDGER_OPERATION_RECORDED.topic {
+            // Validated on decode as on construction: the body is a
+            // `LedgerOperation`, whose deserialisation refuses what its
+            // constructor refuses, so a malformed one stalls here with
+            // nothing booked rather than reaching the store.
+            let operation = decode_as(&event, LEDGER_OPERATION_RECORDED)?;
+            decoded.push((
+                offset,
+                Decoded::Operation(Box::new(OperationDelivery {
+                    partition: partition.to_string(),
+                    offset,
+                    record_hash: sha256_hex(&record.payload),
+                    operation,
+                })),
+            ));
             continue;
         } else {
             decoded.push((offset, Decoded::Other));
@@ -263,6 +362,8 @@ pub struct PartitionWorker {
     stop: Arc<AtomicBool>,
     config: WorkerConfig,
     label: String,
+    /// What every record of this partition is opened under.
+    context: FabricContext,
     /// The next delivery offset to apply.
     position: u64,
     /// Whether the consumer has been moved to `position`'s batch.
@@ -292,6 +393,7 @@ impl PartitionWorker {
         stop: Arc<AtomicBool>,
     ) -> Result<Self> {
         let label = partition_label(&config.stream, config.partition);
+        let context = fabric_context(&config.stream, config.partition, &config.group);
         let consumer = Consumer::new(ConsumerConfig {
             transport,
             stream: config.stream.clone(),
@@ -315,6 +417,7 @@ impl PartitionWorker {
             stop,
             config,
             label,
+            context,
             position,
             seeked: false,
             joined: false,
@@ -358,6 +461,32 @@ impl PartitionWorker {
         let wait = self.backoff();
         self.config.sleeper.sleep(wait);
         Step::Retry
+    }
+
+    /// Apply an operation until the store commits it or the worker is
+    /// stopped. A refusal is a commit (the cursor moved and a note was
+    /// written); only the store failing is retried.
+    fn apply_operation_until_committed(
+        &mut self,
+        delivery: &OperationDelivery,
+    ) -> Result<OperationApplied> {
+        loop {
+            match self.store.apply_operation(delivery) {
+                Ok(applied) => return Ok(applied),
+                Err(error) => {
+                    self.telemetry.store_retry();
+                    self.report(Some(format!(
+                        "the store refused operation {} of {}; retrying the same record: {error}",
+                        delivery.offset, self.label
+                    )));
+                    if self.stop.load(Ordering::SeqCst) {
+                        return Err(error);
+                    }
+                    let wait = self.backoff();
+                    self.config.sleeper.sleep(wait);
+                }
+            }
+        }
     }
 
     /// Apply `delivery` until the store commits it or the worker is stopped.
@@ -423,7 +552,7 @@ impl PartitionWorker {
                 .high_watermark
                 .saturating_sub(batch.base_offset.saturating_add(1)),
         );
-        let decoded = match decode_batch(&self.label, &batch, self.position) {
+        let decoded = match decode_batch(&self.label, &self.context, &batch, self.position) {
             Ok(decoded) => decoded,
             Err(error) => {
                 self.seeked = false;
@@ -432,6 +561,23 @@ impl PartitionWorker {
         };
         let mut applied = 0usize;
         for (offset, record) in decoded {
+            if let Decoded::Operation(delivery) = &record {
+                match self.apply_operation_until_committed(delivery) {
+                    Ok(OperationApplied::Refused { detail }) => {
+                        self.report(Some(format!(
+                            "operation at {} of {} was refused and noted: {detail}",
+                            delivery.offset, self.label
+                        )));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.seeked = false;
+                        return self.fail(&error);
+                    }
+                }
+                applied += 1;
+                self.count_applied(1);
+            }
             if let Decoded::Ledger(delivery) = record {
                 let disposition = match self.apply_until_committed(&delivery) {
                     Ok(disposition) => disposition,

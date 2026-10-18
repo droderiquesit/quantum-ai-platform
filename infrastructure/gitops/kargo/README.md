@@ -78,6 +78,28 @@ What the person promoting checks, and what is not yet automated:
 - **paper** — the candidate digests ran a paper-trading soak without a
   reconciliation break or a halt nobody explained. Every environment is
   paper-only (ADR 0003); this gate is a soak, not a change of posture.
+  One part of it is automated since R12-CICD-7120:
+  `base/papertask.yaml`'s `verify-paper-ceiling` runs before `record-gate`
+  and fails the promotion unless `QIP_AUTONOMY_CEILING` is exactly
+  `paper_trading` in all six `RunService` manifests under `envs/stage/` and
+  `envs/prod/`, so a failed check records nothing and `stage` is offered
+  nothing. It reads configuration, not the image, and it has never been
+  evaluated by a controller: see the next section.
+
+## Why `paper` has never received freight
+
+Read from the manifests, not from a run. Nothing in the chain blocks freight:
+the warehouse's subscriptions and the three-tag criterion match what
+`deploy.yml` pushes (the commit sha as an immutable tag, into the one build
+registry), `dev` promotes automatically, and `replay` and `paper` request
+freight from `test` and `replay` with no `verification` anywhere, so Kargo
+treats a successful promotion as verified. `paper` is reached only by a
+person promoting out of `replay`. It has not been reached because nothing is
+running: ADR 0093 suspended the dev control-plane cluster, so no Kargo has
+discovered a digest, and `gates/*/freight.yaml` are empty for that reason.
+That is a state of the world, not a defect in the tree. **Cloud validation is
+blocked** on that suspension and on a billing decision; no live promotion
+through `paper` has been run or is claimed.
 
 ## What refuses what
 

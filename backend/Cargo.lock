@@ -115,16 +115,19 @@ dependencies = [
  "qip-core",
  "qip-cost-router",
  "qip-data-finder",
+ "qip-deepbrain",
  "qip-edge",
  "qip-edge-node",
  "qip-entity-resolution",
  "qip-events",
  "qip-execution-engine",
+ "qip-fastbrain",
  "qip-feature-dag",
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
  "qip-learning-engine",
+ "qip-ledgerd",
  "qip-lifecycle",
  "qip-market",
  "qip-market-ingestion",
@@ -200,6 +203,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
+ "qip-desk-ship",
  "qip-edge",
  "qip-events",
  "qip-execution-engine",
@@ -389,11 +393,13 @@ dependencies = [
 name = "qip-deepbrain"
 version = "0.1.0"
 dependencies = [
+ "qip-agency",
  "qip-agents",
  "qip-ai",
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
+ "qip-desk-ship",
  "qip-events",
  "qip-evolution",
  "qip-expansion",
@@ -420,6 +426,21 @@ dependencies = [
  "qip-twin",
  "qip-world-model",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-desk-ship"
+version = "0.1.0"
+dependencies = [
+ "qip-contracts",
+ "qip-core",
+ "qip-events",
+ "qip-execution-engine",
+ "qip-kernel",
+ "qip-observability",
+ "qip-storage",
+ "qip-transport",
  "serde_json",
 ]
 
@@ -560,6 +581,9 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-data-finder",
+ "qip-desk-ship",
+ "qip-events",
+ "qip-execution-engine",
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
@@ -1107,9 +1131,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",

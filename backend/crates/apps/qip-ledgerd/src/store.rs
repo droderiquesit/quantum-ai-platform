@@ -277,6 +277,57 @@ pub enum OperationDisposition {
     Duplicate,
 }
 
+/// A ledger operation as the broker delivered it (ADR 0123): where, what it
+/// hashed to, and the operation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OperationDelivery {
+    pub partition: String,
+    pub offset: u64,
+    pub record_hash: String,
+    pub operation: LedgerOperation,
+}
+
+/// What [`LedgerStore::apply_operation`] did. Every arm moved the cursor.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OperationApplied {
+    /// Booked as one balanced event of this many postings.
+    Posted { postings: usize },
+    /// The ledger already holds this operation id with the same digest.
+    Duplicate,
+    /// Refused and noted; nothing was booked.
+    Refused { detail: String },
+}
+
+/// What booking an operation would write.
+enum PlannedOperation {
+    Duplicate,
+    Post { batch: LedgerBatch, postings: usize },
+}
+
+/// Why the ledger would not book an operation.
+enum OperationRefusal {
+    /// Another digest under an id the ledger holds.
+    Conflict(Error),
+    /// Anything else the ledger refuses: an unbalanced event, an overdraw,
+    /// a lot opened twice.
+    Refused(Error),
+}
+
+impl OperationRefusal {
+    fn outcome(&self) -> &'static str {
+        match self {
+            Self::Conflict(_) => "conflict",
+            Self::Refused(_) => "refused",
+        }
+    }
+
+    fn into_error(self) -> Error {
+        match self {
+            Self::Conflict(error) | Self::Refused(error) => error,
+        }
+    }
+}
+
 /// One tax lot as the ledger holds it: what is left of it, and since when.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaxLotView {
@@ -574,23 +625,126 @@ impl LedgerStore {
     /// would overflow a balance or take a quantity-holding account below
     /// zero is refused. A refusal moves nothing.
     pub fn record_operation(&self, operation: &LedgerOperation) -> Result<OperationDisposition> {
-        let digest = operation.digest()?;
-        let event = operation.to_event()?;
-        let key = operation_key(&operation.operation_id);
-
         let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        match self.plan_operation(operation)? {
+            Ok(PlannedOperation::Duplicate) => {
+                self.telemetry.commit("duplicate");
+                Ok(OperationDisposition::Duplicate)
+            }
+            Ok(PlannedOperation::Post { batch, postings }) => {
+                self.store.commit(batch)?;
+                self.telemetry.commit("success");
+                Ok(OperationDisposition::Posted { postings })
+            }
+            Err(refusal) => {
+                self.telemetry.commit(refusal.outcome());
+                Err(refusal.into_error())
+            }
+        }
+    }
+
+    /// Book one operation the broker delivered (ADR 0123), and move the
+    /// partition's cursor past it in the same commit, so the offset is never
+    /// durable before the postings it stands for.
+    ///
+    /// A duplicate moves only the cursor. A refused operation — another
+    /// digest under a held id, an overdraw, an unbalanced event — moves the
+    /// cursor and a journal note naming the operation and the refusal, and
+    /// nothing else: an operation is on no cell's chain, so there is no cell
+    /// to park, and stalling the partition would hold every fill behind it.
+    /// `Err` is the store failing and means nothing moved; the same delivery
+    /// may be offered again.
+    pub fn apply_operation(&self, delivery: &OperationDelivery) -> Result<OperationApplied> {
+        refuse_blank("partition", &delivery.partition)?;
+        refuse_blank("record hash", &delivery.record_hash)?;
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let cursor = self.cursor(&delivery.partition)?;
+        let advanced = advance_to(&cursor, delivery.offset, &delivery.record_hash)?;
+        let cursor_row = cursor_key(&delivery.partition);
+        if let Some((offset, hash)) = &cursor.last
+            && *offset == delivery.offset
+            && *hash != delivery.record_hash
+        {
+            let detail = format!(
+                "offset {} was consumed with record hash {hash} and has arrived again with {}; \
+                 the broker has said two things about one position",
+                delivery.offset, delivery.record_hash
+            );
+            return self.refuse_operation(delivery, &cursor_row, &advanced, detail);
+        }
+        match self.plan_operation(&delivery.operation)? {
+            Ok(PlannedOperation::Duplicate) => {
+                self.store
+                    .commit(LedgerBatch::new().put_as(cursor_row, &advanced)?)?;
+                self.telemetry.commit("duplicate");
+                Ok(OperationApplied::Duplicate)
+            }
+            Ok(PlannedOperation::Post { batch, postings }) => {
+                self.store.commit(batch.put_as(cursor_row, &advanced)?)?;
+                self.telemetry.commit("success");
+                Ok(OperationApplied::Posted { postings })
+            }
+            Err(refusal) => {
+                let detail = refusal.into_error().message().to_string();
+                self.refuse_operation(delivery, &cursor_row, &advanced, detail)
+            }
+        }
+    }
+
+    fn refuse_operation(
+        &self,
+        delivery: &OperationDelivery,
+        cursor_row: &str,
+        advanced: &Cursor,
+        detail: String,
+    ) -> Result<OperationApplied> {
+        let batch = LedgerBatch::new().put_as(cursor_row.to_string(), advanced)?;
+        let batch = self.note(
+            batch,
+            JournalNote {
+                cell: delivery.operation.origin.clone(),
+                partition: delivery.partition.clone(),
+                offset: delivery.offset,
+                event: "operation_refused".to_string(),
+                detail: format!("operation {}: {detail}", delivery.operation.operation_id),
+                operator_action: format!(
+                    "nothing was booked for operation {}; correct it at its origin and send it \
+                     under a new id",
+                    delivery.operation.operation_id
+                ),
+            },
+        )?;
+        self.store.commit(batch)?;
+        self.telemetry.commit("refused");
+        Ok(OperationApplied::Refused { detail })
+    }
+
+    /// What booking `operation` would write, without writing it. The outer
+    /// `Err` is the store failing; the inner one is the ledger refusing the
+    /// operation, which moves nothing.
+    fn plan_operation(
+        &self,
+        operation: &LedgerOperation,
+    ) -> Result<std::result::Result<PlannedOperation, OperationRefusal>> {
+        let digest = match operation.digest() {
+            Ok(digest) => digest,
+            Err(error) => return Ok(Err(OperationRefusal::Refused(error))),
+        };
+        let event = match operation.to_event() {
+            Ok(event) => event,
+            Err(error) => return Ok(Err(OperationRefusal::Refused(error))),
+        };
+        let key = operation_key(&operation.operation_id);
         if let Some(held) = self.read::<OperationRecord>(&key)? {
             if held.digest == digest {
                 self.telemetry.duplicate("operation");
-                self.telemetry.commit("duplicate");
-                return Ok(OperationDisposition::Duplicate);
+                return Ok(Ok(PlannedOperation::Duplicate));
             }
-            self.telemetry.commit("conflict");
-            return Err(Error::invalid(format!(
+            return Ok(Err(OperationRefusal::Conflict(Error::invalid(format!(
                 "operation {} is held with digest {} and has arrived again as {digest}; two \
                  different operations claim one id, and the ledger books neither again",
                 operation.operation_id, held.digest
-            )));
+            )))));
         }
 
         // A lot is opened once. Opening one id twice would fold two
@@ -605,12 +759,11 @@ impl LedgerStore {
             } => {
                 let lot_key = lot_key(&book.cell, &book.strategy, lot);
                 if self.store.get(&lot_key)?.is_some() {
-                    self.telemetry.commit("refused");
-                    return Err(Error::invalid(format!(
+                    return Ok(Err(OperationRefusal::Refused(Error::invalid(format!(
                         "tax lot {lot} of {}/{} is already open; a lot id is opened once, and \
                          a second acquisition is a new lot",
                         book.cell, book.strategy
-                    )));
+                    )))));
                 }
                 Some(lot_key)
             }
@@ -619,10 +772,7 @@ impl LedgerStore {
 
         let rows = match self.fold(&event) {
             Ok(rows) => rows,
-            Err(refusal) => {
-                self.telemetry.commit("refused");
-                return Err(refusal);
-            }
+            Err(refusal) => return Ok(Err(OperationRefusal::Refused(refusal))),
         };
         let mut batch = LedgerBatch::new();
         for (row_key, row) in rows {
@@ -639,11 +789,10 @@ impl LedgerStore {
                 event: event.clone(),
             },
         )?;
-        self.store.commit(batch)?;
-        self.telemetry.commit("success");
-        Ok(OperationDisposition::Posted {
+        Ok(Ok(PlannedOperation::Post {
+            batch,
             postings: event.postings().len(),
-        })
+        }))
     }
 
     /// Every tax lot the ledger has opened, with what is left of it. A lot
@@ -942,6 +1091,17 @@ impl LedgerStore {
 
     /// Every event booked: fills in chain order per cell and session, then
     /// operations in operation-id order.
+    /// The fill events alone, in chain order: what the chains booked,
+    /// without the operations (ADR 0123) [`Self::events`] also returns.
+    pub fn fill_events(&self) -> Result<Vec<LedgerEvent>> {
+        let mut events = Vec::new();
+        for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
+            let record: ChainRecord = decode(value)?;
+            events.extend(record.event);
+        }
+        Ok(events)
+    }
+
     pub fn events(&self) -> Result<Vec<LedgerEvent>> {
         let mut events = Vec::new();
         for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
@@ -1402,15 +1562,18 @@ fn chains_onto(outcome: &OutcomeRecord, previous: &str) -> std::result::Result<(
 /// must not rewind a restart — and only a filled gap or a release lowers it,
 /// explicitly.
 fn advance(cursor: &Cursor, delivery: &Delivery) -> Result<Cursor> {
-    let after = delivery.offset.checked_add(1).ok_or_else(|| {
+    advance_to(cursor, delivery.offset, &delivery.record_hash)
+}
+
+fn advance_to(cursor: &Cursor, offset: u64, record_hash: &str) -> Result<Cursor> {
+    let after = offset.checked_add(1).ok_or_else(|| {
         Error::numeric(format!(
-            "offset {} is the last representable; nothing can follow it",
-            delivery.offset
+            "offset {offset} is the last representable; nothing can follow it"
         ))
     })?;
     Ok(Cursor {
         next: cursor.next.max(after),
-        last: Some((delivery.offset, delivery.record_hash.clone())),
+        last: Some((offset, record_hash.to_string())),
     })
 }
 

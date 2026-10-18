@@ -45,6 +45,14 @@ qip-market-ingestion.workspace = true
 # before. What it may reach is bounded by the transport itself, which refuses
 # any scheme but plaintext http by name, and by the one operator-set URL.
 qip-transport.workspace = true
+qip-events.workspace = true
+# The desk shipper, moved to a runtime crate so qip-api and the deep brain
+# ship their desks' records with the same code. Re-exported as `ship`.
+qip-desk-ship.workspace = true
+
+[dev-dependencies]
+# `Side`, for the unit tests that build a booked fill by hand.
+qip-execution-engine.workspace = true
 
 [lints]
 workspace = true

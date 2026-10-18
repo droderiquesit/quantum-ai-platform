@@ -2390,14 +2390,12 @@ fn neither_end_of_the_cell_uplink_declares_its_schema_version_as_a_literal() {
 #[test]
 fn no_library_service_runtime_or_edge_crate_reads_the_process_environment() {
     const SCOPES: [&str; 6] = ["libs", "services", "runtime", "edge", "agents", "quant"];
-    const SANCTIONED: [&str; 2] = [
+    const SANCTIONED: [&str; 1] = [
         // `qip_core::secret::from_environment`: the `_FILE` indirection every
-        // credential is read through.
+        // credential is read through. `Config::with_env`, the other reader this
+        // list once named, had no production caller and was removed, so the
+        // overlay now takes its variables as a value (`with_env_from`).
         "backend/crates/libs/qip-core/src/secret.rs",
-        // `qip_core::config::Config::with_env`: the QIP_-prefixed overlay. No
-        // production caller in the workspace today; removing it is a
-        // follow-up, and until then it stays named here rather than hidden.
-        "backend/crates/libs/qip-core/src/config.rs",
     ];
 
     let root = repository_root();

@@ -175,7 +175,10 @@ freshness, refusals, signals, orders, netting, crosses, and
 `qip_edge_work_passes_total`, `qip_edge_fills_confirmed_total` and
 `qip_edge_orders_expired_total` — reach a process that runs passes **only in
 test** (`qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move`).
-Nothing is deployed, because `execution_nodes = {}` in every environment.
+Nothing is deployed: `execution_nodes = {}` in test, stage and prod, and in dev
+`execution_nodes` declares `newyork-1` but `execution_nodes_enabled = false`
+(`grep -n 'execution_nodes' infrastructure/environments/*/terraform.tfvars`, read
+2026-10-17), so `module.execution_node` is empty.
 An earlier version of this paragraph said the binary never called
 `Cell::work`; that was true until `6340610` and is not now. Second, the
 edge-node health server is single-threaded, so
@@ -344,16 +347,18 @@ scrapes; both reach the same `Telemetry` the other central series do.
 `workload_metrics_exist` remains `false` everywhere — the default in
 `infrastructure/terraform/variables.tf` and in the observability module, and
 commented out in `environments/dev/terraform.tfvars` — and flipping it still
-requires evidence something actually scraped. All **nine** alert policies in
-`modules/observability/main.tf` are gated on it and name descriptors the
-binaries do record: seven central-plane policies, `edge_halted` and
-`edge_reconciliation_break`. Nine, and exactly two of them query a
+requires evidence something actually scraped. Every alert policy in
+`modules/observability/main.tf` is gated on it and names a descriptor the
+binaries do record: the central-plane policies plus `edge_halted` and
+`edge_reconciliation_break`. Exactly two of them query a
 `qip_edge_*` series — recount with
 `grep -c '^resource "google_monitoring_alert_policy"' …/main.tf` and
 `grep -c 'query *= *"[^"]*qip_edge' …/main.tf` before quoting either number,
 and check the third figure too, because it is the one that carries the
 meaning: `grep -c 'count *=.*workload_metrics_exist' …/main.tf` must equal
-the first. Declared 9, gated 9, edge 2 on 2026-09-06.
+the first. Declared 9, gated 9, edge 2 on 2026-09-06; **declared 11, gated 11
+(`count` lines naming `workload_metrics_exist`), edge 2 on 2026-10-17**, the two
+added since being `outcome_backlog` and `belief_calibration`.
 
 It was seven until `599daaa` added `risk_figure_unevaluated` (on
 `qip_risk_figures_unevaluated`) and `sign_off_withheld_on_liquidity` (on
@@ -387,9 +392,10 @@ is the record: the `PodMonitoring` that once selected the two brains left
 with the cluster, and nothing scrapes a Cloud Run service. The execution
 node's startup script declares an Ops Agent Prometheus receiver on the health
 port (`startup.sh.tftpl:209-231`), so `qip-edge-node` is scraped once a node
-exists; `execution_nodes = {}` in every environment
-(`grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars`),
-so none does. What is missing is proof of ingestion, not emission.
+exists. `execution_nodes = {}` in test, stage and prod; dev declares
+`newyork-1` with `execution_nodes_enabled = false`
+(`grep -rn execution_nodes infrastructure/environments/*/terraform.tfvars`, read
+2026-10-17), so none exists. What is missing is proof of ingestion, not emission.
 
 The two halves of the collection gap are in **different states**, and an
 earlier version of this paragraph flattened them into one. The node's
@@ -420,7 +426,7 @@ when it was corrected to `:461`; the correction was stale within the hour
 in one day this rule file has proved that a line number into a live file is
 not a fact worth writing down. So it was in `infra.yml`'s `up`. With the
 gate false, `count = 0` on all **seven policies that existed at that apply** —
-there are nine now, and the sentence is kept in the past tense on purpose so
+there were nine on 2026-09-06 and eleven on 2026-10-17 (recount), and the sentence is kept in the past tense on purpose so
 that a reader does not take it for a present count — so that apply created no
 policy. The gate has run, not merely been declared. This changes nothing about
 ingestion.

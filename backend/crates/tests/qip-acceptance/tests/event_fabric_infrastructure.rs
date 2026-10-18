@@ -7,245 +7,466 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[test]
-fn fabric_065_metadata_kept_separate_from_data_log() {
-    // FABRIC-065: Fabric metadata (membership, partition maps, epochs, leases, quotas, ACLs)
-    // must live in the metadata quorum's own replicated log, separate from partition data logs.
+mod event_fabric_support;
 
-    #[derive(Debug)]
-    struct FabricLogStructure {
-        data_logs: Vec<String>, // Partition data logs
-        metadata_log: String,   // Separate metadata log
-        metadata_isolated: bool,
-    }
+use event_fabric_support::{
+    STREAM, batch, batch_of, broker_module, broker_with, hcl_block, norm, spec,
+};
+use qip_events::Topic;
+use qip_events::event_fabric::catalogue::{Catalogue, Permission};
+use qip_events::event_fabric::policy::QosClass;
+use qip_streaming::event_fabric::group::GroupCoordinator;
+use qip_streaming::event_fabric::partition::partition_for;
+use qip_transport::breaker::BreakerPolicy;
+use qip_transport::event_fabric::consumer::{Consumer, ConsumerConfig};
+use qip_transport::event_fabric::protocol::{FetchResponse, Refusal, Request, Response, Route};
+use qip_transport::event_fabric::transport::{FabricTransport, Timeouts};
+use qip_transport::retry::{RecordingSleeper, RetryPolicy};
+use std::sync::Mutex;
 
-    let structure = FabricLogStructure {
-        data_logs: vec![
-            "partition_0_log".to_string(),
-            "partition_1_log".to_string(),
-            "partition_2_log".to_string(),
-        ],
-        metadata_log: "metadata_quorum_log".to_string(),
-        metadata_isolated: true,
-    };
-
-    // Metadata is in its own log
-    assert!(!structure.metadata_log.is_empty());
-    assert!(structure.metadata_isolated);
-
-    // No metadata records in partition logs
-    for log in &structure.data_logs {
-        assert!(!log.contains("metadata"));
-    }
-
-    // Metadata operations work independently of data partition states
-    #[derive(Debug)]
-    enum MetadataOperation {
-        LeaderElection,
-        AclChange,
-        EpochUpdate,
-    }
-
-    let metadata_ops = vec![
-        MetadataOperation::LeaderElection,
-        MetadataOperation::AclChange,
-        MetadataOperation::EpochUpdate,
-    ];
-
-    for _op in metadata_ops {
-        // Metadata operations complete even if a data partition is full
-        // (Contract verified through integration tests, not unit assertions)
-    }
-}
-
-#[test]
-fn fabric_070_admin_tooling_partitions_drains_leadership_repairs_compacts() {
-    // FABRIC-070: The fabric's admin/repair/rebalance component must be able, on every
-    // broker, to move partitions, drain leadership from a broker, enforce retention, repair
-    // under-replicated partitions and perform offline compaction.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug, Clone)]
-    struct PartitionAssignment {
-        partition_id: u32,
-        leader: u32,
-        replicas: Vec<u32>,
-    }
-
-    // Initial assignment
-    let mut assignments = [
-        PartitionAssignment {
-            partition_id: 0,
-            leader: 1,
-            replicas: vec![1, 2, 3],
-        },
-        PartitionAssignment {
-            partition_id: 1,
-            leader: 1,
-            replicas: vec![1, 2, 3],
-        },
-        PartitionAssignment {
-            partition_id: 2,
-            leader: 2,
-            replicas: vec![2, 3, 1],
-        },
-    ];
-
-    // Admin operation: move partition 0 from broker 1 to broker 4
-    assignments[0].replicas = vec![4, 2, 3];
-
-    // Admin operation: drain leadership from broker 1
-    let broker_to_drain = 1;
-    for assignment in assignments.iter_mut() {
-        if assignment.leader == broker_to_drain {
-            // Move leadership to another replica
-            if let Some(&new_leader) = assignment.replicas.iter().find(|&&r| r != broker_to_drain) {
-                assignment.leader = new_leader;
+/// Every file under `dir`, as `(path relative to dir, bytes)`.
+fn files_under(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).expect("a readable directory") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path.strip_prefix(dir).expect("under dir").to_path_buf();
+                found.push((relative, std::fs::read(&path).expect("a readable file")));
             }
         }
     }
+    found
+}
 
-    // Verify leadership is drained
-    let still_leads = assignments.iter().any(|a| a.leader == broker_to_drain);
-    assert!(!still_leads);
+/// The top-level directories under `dir` whose files contain `marker`.
+/// Compared as a whole set by the callers, never by `contains` on a path:
+/// `metadata` is a prefix of nothing here, but a path test would not know it.
+fn holders_of(dir: &std::path::Path, marker: &[u8]) -> BTreeSet<String> {
+    files_under(dir)
+        .into_iter()
+        .filter(|(_, bytes)| bytes.windows(marker.len()).any(|window| window == marker))
+        .filter_map(|(relative, _)| {
+            relative
+                .components()
+                .next()
+                .map(|first| first.as_os_str().to_string_lossy().into_owned())
+        })
+        .collect()
+}
 
-    // Admin operation: repair under-replicated partition
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    struct PartitionState {
-        assignment: PartitionAssignment,
-        in_sync_replicas: Vec<u32>,
-    }
+/// FABRIC-065, the half that exists: the broker keeps its own facts — the
+/// leader epoch, every isolation in force, the operator log — in a store of
+/// its own (`metadata/`), consumer checkpoints in another (`consumers/`), and
+/// a partition's batches in `streams/`. A marker written through each door
+/// is found in that door's directory and in no other, and the metadata door
+/// still answers while the partition's data door refuses writes. The earlier
+/// version of this test built a struct with a `metadata_log` field and
+/// asserted that a string in it did not contain `"metadata"`; it imported
+/// nothing from the platform.
+///
+/// **Gap, not claimed:** the requirement says the metadata lives in a
+/// *quorum's replicated* log. The broker's metadata store is one node's disk
+/// (ADR 0100 §3: no in-tree consensus); membership, partition maps and
+/// leases-as-metadata are not fabric records at all today. What is proven is
+/// the separation, not the replication.
+///
+/// Mutation: in `Broker::open`, open the metadata store under
+/// `data_dir.join("streams")` instead of `data_dir.join("metadata")` — the
+/// operator marker is then found under `streams` and the holder-set
+/// assertion fires.
+#[test]
+fn fabric_065_the_brokers_metadata_lives_in_stores_of_its_own_and_never_in_a_partitions_data_log() {
+    const OPERATOR: &[u8] = b"operator-marker-7f3a19";
+    const REASON: &[u8] = b"reason-marker-91c2d4";
+    const GROUP: &str = "group-marker-55d1e8";
+    const PAYLOAD: &[u8] = b"payload-marker-c0ffee42";
+    let (broker, dir) = broker_with("fabric-065", 1, spec(QosClass::P1Outcomes));
 
-    let under_replicated = PartitionState {
-        assignment: PartitionAssignment {
-            partition_id: 99,
-            leader: 2,
-            replicas: vec![2, 3, 4],
-        },
-        in_sync_replicas: vec![2, 3], // Only 2 of 3 in sync
+    broker
+        .produce(
+            STREAM,
+            "acct",
+            batch_of("venue", 1, 0, &["fill-a"], PAYLOAD),
+        )
+        .expect("premise: the data door admits a batch");
+    broker
+        .commit_offset(GROUP, STREAM, 0, 0)
+        .expect("premise: a checkpoint commits");
+    broker
+        .isolate(
+            STREAM,
+            0,
+            std::str::from_utf8(OPERATOR).unwrap(),
+            std::str::from_utf8(REASON).unwrap(),
+        )
+        .expect("premise: the partition isolates");
+
+    let only = |name: &str| BTreeSet::from([name.to_string()]);
+    assert_eq!(holders_of(&dir, OPERATOR), only("metadata"));
+    assert_eq!(holders_of(&dir, REASON), only("metadata"));
+    assert_eq!(holders_of(&dir, GROUP.as_bytes()), only("consumers"));
+    assert_eq!(holders_of(&dir, PAYLOAD), only("streams"));
+
+    // The data door is shut and the metadata door is not.
+    let refused = match broker
+        .produce_to(STREAM, 0, batch("venue", 1, 1, "fill-b"))
+        .expect("a refusal is an answer, not an error")
+    {
+        Err(refused) => refused,
+        Ok(_) => panic!("a parked partition admitted a write"),
     };
-
-    // Trigger rebuild of replica 4
-    let replica_to_repair = 4;
     assert!(
-        under_replicated
-            .assignment
-            .replicas
-            .contains(&replica_to_repair)
+        matches!(refused.refusal, Refusal::Isolated { .. }),
+        "{:?}",
+        refused.refusal
     );
+    assert!(
+        broker.isolation(STREAM, 0).unwrap().is_some(),
+        "the isolation could not be read back while the partition refused writes"
+    );
+    broker
+        .release(STREAM, 0, "second-operator")
+        .expect("the metadata door releases a partition whose data door is shut");
+    assert!(
+        broker
+            .produce_to(STREAM, 0, batch("venue", 1, 1, "fill-b"))
+            .unwrap()
+            .is_ok(),
+        "released, the partition still refuses writes"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
+/// FABRIC-070, the half that exists: an operator can park a partition and
+/// release it, each durable and attributed, the parked partition stays
+/// readable and its siblings stay writable; retention is enforced only
+/// against an archive that can hydrate what it deletes. **Gap, not claimed:**
+/// moving a partition, draining a broker's leadership, repairing an
+/// under-replicated partition and offline compaction have no operation — the
+/// protocol's only admin routes are isolate and release, asserted below so a
+/// third one makes this test say so.
+///
+/// Mutation: in `Broker::release`, delete the `self.metadata.delete(..)` of
+/// the isolation key — the partition stays parked and the post-release
+/// produce assertion fires.
 #[test]
-fn fabric_075_partitions_chosen_by_explicit_ordering_key() {
-    // FABRIC-075: Every produce must name an explicit ordering key, and all records with the
-    // same key on a topic must land in the same partition.
-
-    fn compute_partition(key: &str, partition_count: u32) -> u32 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        (hasher.finish() % partition_count as u64) as u32
+fn fabric_070_an_operator_can_park_and_release_a_partition_but_nothing_moves_drains_or_repairs_one()
+{
+    let (broker, dir) = broker_with("fabric-070", 2, spec(QosClass::P1Outcomes));
+    for (partition, id) in [(0, "fill-a"), (1, "fill-b")] {
+        assert!(
+            broker
+                .produce_to(STREAM, partition, batch("venue", 1, 0, id))
+                .unwrap()
+                .is_ok(),
+            "premise: partition {partition} admits a write before any isolation"
+        );
     }
 
-    // Records with same key always go to same partition
-    let key = "order_12345";
-    let partition_count = 10;
+    // Refused: an isolation nobody can attribute or explain.
+    assert!(broker.isolate(STREAM, 0, "", "disk repair").is_err());
+    assert!(broker.isolate(STREAM, 0, "alice", "  ").is_err());
+    assert_eq!(broker.isolation(STREAM, 0).unwrap(), None);
 
-    let partition_1 = compute_partition(key, partition_count);
-    let partition_2 = compute_partition(key, partition_count);
-    let partition_3 = compute_partition(key, partition_count);
+    let at = broker.isolate(STREAM, 0, "alice", "disk repair").unwrap();
+    assert_eq!(at, 1, "parked at the offset the partition had reached");
 
-    assert_eq!(partition_1, partition_2);
-    assert_eq!(partition_2, partition_3);
-
-    // Different keys may go to different partitions
-    let key2 = "order_67890";
-    let partition_different = compute_partition(key2, partition_count);
-
-    // May differ (not guaranteed same)
-    let _may_differ = partition_different != partition_1;
-}
-
-#[test]
-fn fabric_080_credit_window_flow_control_paces_every_session() {
-    // FABRIC-080: The fabric must use credit/window flow control on every session, so a
-    // sender transmits only within credit its receiver has granted.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct FlowControlSession {
-        sender_id: String,
-        receiver_id: String,
-        available_credit: i64,
-        max_credit: i64,
-    }
-
-    let mut session = FlowControlSession {
-        sender_id: "producer_1".to_string(),
-        receiver_id: "broker_1".to_string(),
-        available_credit: 1000,
-        max_credit: 1000,
+    let refused = match broker
+        .produce_to(STREAM, 0, batch("venue", 1, 1, "fill-c"))
+        .unwrap()
+    {
+        Err(refused) => refused,
+        Ok(_) => panic!("a parked partition admitted a write"),
     };
+    assert_eq!(
+        refused.refusal,
+        Refusal::Isolated {
+            operator: "alice".to_string(),
+            reason: "disk repair".to_string()
+        }
+    );
+    assert!(
+        broker
+            .produce_to(STREAM, 1, batch("venue", 1, 1, "fill-d"))
+            .unwrap()
+            .is_ok(),
+        "isolating partition 0 stopped partition 1"
+    );
+    let parked_read = broker.fetch(STREAM, 0, 0, 1 << 20).unwrap();
+    assert!(
+        !parked_read.batches().is_empty(),
+        "the retained record stopped being readable while parked"
+    );
 
-    // Sender can transmit up to available credit
-    let message_size = 100;
-    if session.available_credit >= message_size {
-        session.available_credit -= message_size;
-    }
-    assert_eq!(session.available_credit, 900);
+    // A second isolation would overwrite the first one's reason.
+    let second = broker
+        .isolate(STREAM, 0, "mallory", "again")
+        .expect_err("a second isolation was admitted");
+    assert!(second.to_string().contains("by 'alice'"), "{second}");
 
-    // Sender cannot transmit beyond available credit
-    session.available_credit = 50;
-    let large_message = 100;
+    assert!(broker.release(STREAM, 0, "").is_err());
+    assert!(
+        broker.release(STREAM, 1, "bob").is_err(),
+        "released a partition that was never isolated"
+    );
+    broker.release(STREAM, 0, "bob").unwrap();
+    assert!(
+        broker
+            .produce_to(STREAM, 0, batch("venue", 1, 1, "fill-c"))
+            .unwrap()
+            .is_ok(),
+        "released, the partition still refuses writes"
+    );
+    let log: Vec<(String, String)> = broker
+        .admin_log()
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.action, entry.operator))
+        .collect();
+    assert_eq!(
+        log,
+        vec![
+            ("isolate".to_string(), "alice".to_string()),
+            ("release".to_string(), "bob".to_string())
+        ]
+    );
 
-    fn try_send(session: &mut FlowControlSession, message_size: i64) -> bool {
-        if session.available_credit >= message_size {
-            session.available_credit -= message_size;
-            true
-        } else {
-            false // Blocked by flow control
+    // Retention is enforced against an archive, never against nothing.
+    let retention = broker
+        .retain_hot(10)
+        .expect_err("retention ran with no archive to hydrate what it deleted");
+    assert!(
+        retention.to_string().contains("no archive reader"),
+        "{retention}"
+    );
+
+    // GAP: the admin surface is isolate and release.
+    assert_eq!(Route::ALL.len(), 9, "premise: the whole route table");
+    let admin: Vec<&str> = Route::ALL
+        .iter()
+        .map(Route::path)
+        .filter(|path| path.contains("/admin/"))
+        .collect();
+    assert_eq!(
+        admin,
+        vec![
+            "/v1/event-fabric/admin/isolate",
+            "/v1/event-fabric/admin/release"
+        ],
+        "an admin route was added — assert move, drain, repair or compaction here"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// FABRIC-075: a produce names an ordering key, the key routes to one
+/// partition through `partition_for`, and every record of one key lands in
+/// that partition. Driven through the broker: 24 keys over 8 partitions, each
+/// produced twice, then each partition's high watermark read back and
+/// compared with what the router said it would hold. The earlier version
+/// hashed with `DefaultHasher` inside the test and compared a function to
+/// itself.
+///
+/// Mutation: in `Broker::produce`, route `stream` instead of `key` through
+/// `partition_for` — every key lands on one partition and the acknowledgement
+/// assertion fires.
+#[test]
+fn fabric_075_every_record_of_one_ordering_key_lands_in_the_partition_the_router_names() {
+    const PARTITIONS: u32 = 8;
+    let (broker, dir) = broker_with("fabric-075", PARTITIONS, spec(QosClass::P1Outcomes));
+    let keys: Vec<String> = (0..24).map(|n| format!("acct-{n}")).collect();
+
+    let routed: Vec<u32> = keys
+        .iter()
+        .map(|key| partition_for(key, PARTITIONS).expect("a non-zero count routes"))
+        .collect();
+    let distinct: BTreeSet<u32> = routed.iter().copied().collect();
+    assert!(
+        distinct.len() >= 4,
+        "premise: the keys spread over several partitions, else same-partition proves nothing: \
+         {routed:?}"
+    );
+    assert!(routed.iter().all(|partition| *partition < PARTITIONS));
+
+    let mut expected: BTreeMap<u32, u64> = BTreeMap::new();
+    for (key, partition) in keys.iter().zip(&routed) {
+        for round in 0..2 {
+            let producer = format!("producer-{key}-{round}");
+            let ack = broker
+                .produce(
+                    STREAM,
+                    key,
+                    batch(&producer, 1, 0, &format!("{key}-{round}")),
+                )
+                .expect("the key routes and the batch is admitted");
+            assert_eq!(
+                ack.partition(),
+                *partition,
+                "{key} round {round} was acknowledged by a partition the router did not name"
+            );
+            *expected.entry(*partition).or_default() += 1;
         }
     }
-
-    assert!(!try_send(&mut session, large_message));
-
-    // Receiver grants credit by sending window update
-    session.available_credit = session.max_credit;
-    assert!(try_send(&mut session, large_message));
-}
-
-/// An HCL line with its whitespace collapsed.
-fn norm(line: &str) -> String {
-    line.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The broker module's Terraform, read whole. Not a substring search over
-/// prose: the helpers below find HCL blocks by their opening line.
-fn broker_module(file: &str) -> String {
-    qip_acceptance::read(&format!(
-        "infrastructure/terraform/modules/event-fabric-broker/{file}"
-    ))
-}
-
-/// The lines of the first block opening with `opening` (a line whose trimmed
-/// text starts with it), up to the line where its braces balance.
-fn hcl_block(source: &str, opening: &str) -> Option<Vec<String>> {
-    let mut lines = source
-        .lines()
-        .skip_while(|line| !line.trim_start().starts_with(opening));
-    let first = lines.next()?;
-    let mut depth = first.matches('{').count() as i64 - first.matches('}').count() as i64;
-    let mut block = vec![first.to_string()];
-    for line in lines {
-        if depth <= 0 {
-            break;
-        }
-        depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
-        block.push(line.to_string());
+    for partition in 0..PARTITIONS {
+        let held = broker.metadata(STREAM, partition).unwrap().high_watermark();
+        assert_eq!(
+            held,
+            expected.get(&partition).copied().unwrap_or(0),
+            "partition {partition} holds a different number of batches than its keys produced"
+        );
     }
-    Some(block)
+
+    // Refused: no partition to route to, a partition the stream lacks, a
+    // stream nobody declared.
+    assert!(partition_for("acct-0", 0).is_err());
+    let beyond = broker
+        .produce_to(STREAM, PARTITIONS, batch("p", 1, 0, "x"))
+        .expect_err("a partition the stream does not have was written");
+    assert!(beyond.to_string().contains("does not exist"), "{beyond}");
+    assert!(
+        broker
+            .produce("undeclared", "acct-0", batch("p", 1, 0, "x"))
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A transport that answers every fetch with "nothing here" and remembers the
+/// requests it was asked, so a test can read what credit each carried.
+#[derive(Debug)]
+struct RecordingTransport {
+    seen: Arc<Mutex<Vec<Request>>>,
+}
+
+impl FabricTransport for RecordingTransport {
+    fn call(&mut self, request: Request, _timeouts: Timeouts) -> qip_core::error::Result<Response> {
+        self.seen.lock().unwrap().push(request.clone());
+        match request {
+            Request::Fetch(fetch) => Ok(Response::Fetch(FetchResponse::new(
+                fetch.stream,
+                fetch.partition,
+                0,
+                0,
+                String::new(),
+            )?)),
+            other => Err(qip_core::error::Error::invalid(format!(
+                "test bug: only fetch is answered, got {other:?}"
+            ))),
+        }
+    }
+}
+
+fn consumer_with_credit(
+    credit: u32,
+    seen: &Arc<Mutex<Vec<Request>>>,
+) -> qip_core::error::Result<Consumer> {
+    Consumer::new(ConsumerConfig {
+        transport: Box::new(RecordingTransport {
+            seen: Arc::clone(seen),
+        }),
+        stream: STREAM.to_string(),
+        partition: 0,
+        group_id: "risk-desk".to_string(),
+        retry_policy: RetryPolicy::default(),
+        breaker_policy: BreakerPolicy::default(),
+        clock: Arc::new(qip_core::time::SystemClock),
+        sleeper: Arc::new(RecordingSleeper::new()),
+        retry_seed: 1,
+        breaker_seed: 1,
+        timeouts: Timeouts::default(),
+        fetch_credit_bytes: credit,
+    })
+}
+
+/// FABRIC-080: a session paces the sender by a credit the receiver grants.
+/// Two ends are driven. The consumer's end: every fetch it sends carries
+/// exactly the configured credit as its `max_bytes` — fixed at construction,
+/// not a constant and not per call — and a zero credit is refused at
+/// construction. The broker's end: a fetch is answered within the credit it
+/// was given (one batch at minimum, so a single oversized batch still makes
+/// progress), never past it. The earlier version moved integers in a struct
+/// it had defined itself.
+///
+/// Mutation: in `Consumer::fetch`, send `max_bytes: u32::MAX` — the request
+/// assertion fires. Mutation: in `Broker::fetch`, delete the
+/// `encoded.len() + bytes.len() > max_bytes` break — the second batch is
+/// served past a credit that cannot hold it and the broker assertion fires.
+/// Mutation: delete the zero-credit refusal in `Consumer::new` — the
+/// refusal assertion fires.
+#[test]
+fn fabric_080_a_fetch_is_paced_by_the_credit_the_receiver_granted_at_both_ends() {
+    for credit in [4096_u32, 512] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut consumer = consumer_with_credit(credit, &seen).expect("a credit builds");
+        for _ in 0..3 {
+            assert!(consumer.fetch().unwrap().is_none());
+        }
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 3, "premise: three fetches reached the wire");
+        for request in requests.iter() {
+            let Request::Fetch(fetch) = request else {
+                panic!("a non-fetch request reached the wire: {request:?}");
+            };
+            assert_eq!(fetch.max_bytes, credit, "the request exceeded its credit");
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let refused = match consumer_with_credit(0, &seen) {
+        Ok(_) => panic!("a consumer with no credit was built"),
+        Err(error) => error,
+    };
+    assert!(
+        refused.to_string().contains("zero-byte fetch credit"),
+        "{refused}"
+    );
+
+    // The broker's end.
+    let (broker, dir) = broker_with("fabric-080", 1, spec(QosClass::P1Outcomes));
+    for sequence in 0..3 {
+        broker
+            .produce_to(
+                STREAM,
+                0,
+                batch("venue", 1, sequence, &format!("fill-{sequence}")),
+            )
+            .unwrap()
+            .expect("premise: a batch is admitted");
+    }
+    // Each batch's own size, in bytes: `batches()` is hex, two characters a
+    // byte, and a credit of one byte still serves one whole batch.
+    let sizes: Vec<u32> = (0..3)
+        .map(|offset| {
+            let alone = broker.fetch(STREAM, 0, offset, 1).unwrap();
+            assert!(
+                !alone.batches().is_empty(),
+                "premise: a credit of one byte still serves the batch at {offset}"
+            );
+            (alone.batches().len() / 2) as u32
+        })
+        .collect();
+    let first_two = sizes[0] + sizes[1];
+    let two = broker.fetch(STREAM, 0, 0, first_two).unwrap();
+    assert_eq!(
+        two.batches().len() / 2,
+        first_two as usize,
+        "credit for exactly two batches serves exactly two"
+    );
+    let tight = broker.fetch(STREAM, 0, 0, first_two - 1).unwrap();
+    assert_eq!(
+        tight.batches().len() / 2,
+        sizes[0] as usize,
+        "a second batch was served past the credit that could not hold it"
+    );
+    let ample = broker.fetch(STREAM, 0, 0, u32::MAX).unwrap();
+    assert_eq!(
+        ample.batches().len() / 2,
+        sizes.iter().sum::<u32>() as usize,
+        "premise: all three exist"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// FABRIC-085, what holds today. The broker journals on its **own**
@@ -415,7 +636,8 @@ fn fabric_090_an_archived_segment_is_named_by_the_hash_of_its_bytes_and_a_mismat
 /// Mutation: add `access_config {}` inside the template's
 /// `network_interface` — the first assertion fires.
 #[test]
-fn fabric_106_the_broker_template_has_no_external_address_and_the_module_is_not_yet_deployed() {
+fn fabric_106_the_broker_template_has_no_external_address_and_the_module_is_instantiated_but_off_in_every_environment()
+ {
     let main = broker_module("main.tf");
     let interface = hcl_block(&main, "network_interface {")
         .expect("premise: the template declares a network interface");
@@ -429,11 +651,63 @@ fn fabric_106_the_broker_template_has_no_external_address_and_the_module_is_not_
             .any(|line| line.trim_start().starts_with("access_config")),
         "the broker template declares an external address"
     );
-    let root = qip_acceptance::read("infrastructure/terraform/main.tf");
+
+    // Where the module is instantiated: `fabric.tf`, not the root `main.tf`
+    // (an earlier version of this test looked in `main.tf`, found nothing and
+    // concluded the module was undeployed, which was never what that file
+    // could show). It is gated on a variable that defaults to null...
+    let norm = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fabric = qip_acceptance::read("infrastructure/terraform/fabric.tf");
+    // Scoped to the module's own block: other resources in this file carry the
+    // same `count` expression, and an assertion over the whole file would pass
+    // with this module's gate deleted.
+    let module: Vec<String> = fabric
+        .lines()
+        .skip_while(|line| !line.starts_with("module \"event_fabric_broker\" {"))
+        .take_while(|line| !line.starts_with("}"))
+        .map(norm)
+        .collect();
     assert!(
-        !root.contains("modules/event-fabric-broker\""),
-        "the broker module is now instantiated — assert its subnet's private Google access here"
+        module
+            .iter()
+            .any(|line| line == "source = \"./modules/event-fabric-broker\""),
+        "premise: fabric.tf instantiates the broker module: {module:?}"
     );
+    assert!(
+        module
+            .iter()
+            .any(|line| line == "count = var.event_fabric_broker == null ? 0 : 1"),
+        "the broker module is no longer gated on var.event_fabric_broker being set: {module:?}"
+    );
+    let variables = qip_acceptance::read("infrastructure/terraform/variables.tf");
+    let declared: Vec<String> = variables
+        .lines()
+        .skip_while(|line| !line.starts_with("variable \"event_fabric_broker\""))
+        .take_while(|line| !line.starts_with("}"))
+        .map(norm)
+        .collect();
+    assert!(
+        !declared.is_empty(),
+        "premise: the variable is declared in variables.tf"
+    );
+    assert!(
+        declared.iter().any(|line| line == "default = null"),
+        "the broker is on by default now: {declared:?}"
+    );
+    // ...and no environment sets it, so it is off everywhere.
+    for environment in ["dev", "test", "stage", "prod"] {
+        let tfvars = qip_acceptance::read(&format!(
+            "infrastructure/environments/{environment}/terraform.tfvars"
+        ));
+        assert!(
+            !tfvars.lines().any(|line| {
+                let line = line.trim_start();
+                !line.starts_with('#') && line.starts_with("event_fabric_broker")
+            }),
+            "{environment} now sets event_fabric_broker, so a broker is declared there; assert its \
+             subnet's private Google access and the plan here"
+        );
+    }
 }
 
 /// FABRIC-095 does not apply as written: no trading or warm service runs on
@@ -642,232 +916,418 @@ fn sealed_log(label: &str, sealed: usize) -> (std::path::PathBuf, SegmentLog) {
     }
     (dir, log)
 }
+// --- the committed stream catalogue, as the broker reads it ---------------------
+
+/// The committed catalogue as JSON, for a test to add a grant to before the
+/// production parser judges it.
+fn committed_catalogue_json() -> serde_json::Value {
+    serde_json::from_str(&qip_acceptance::read(
+        "infrastructure/event-fabric/streams.local.json",
+    ))
+    .expect("the committed catalogue is JSON")
+}
+
+fn parse_catalogue(document: &serde_json::Value) -> qip_core::error::Result<Catalogue> {
+    Catalogue::parse(document.to_string().as_bytes())
+}
+
+/// The committed catalogue with one grant added.
+fn with_grant(
+    identity: &str,
+    stream: &str,
+    permission: &str,
+    key_scope: &str,
+) -> serde_json::Value {
+    let mut document = committed_catalogue_json();
+    document["grants"]
+        .as_array_mut()
+        .expect("grants is a list")
+        .push(serde_json::json!({
+            "identity": identity,
+            "stream": stream,
+            "permission": permission,
+            "key_scope": key_scope,
+        }));
+    document
+}
+
+/// FABRIC-104, what the platform classifies and what it does not. The topic
+/// a regional service publishes carries its class in `Topic::pclass`, and the
+/// committed catalogue — the table the broker is started from — must agree
+/// with it wherever both speak. Driven: policy distribution is P0, settlement
+/// P1, the research and knowledge topics P3, and every committed stream
+/// carries only topics of its own class (a declared gap, which a stream
+/// writes in whatever class it fell in, is the one named exception). The
+/// earlier version defined `classify_event` in the test body and asserted its
+/// own `match`.
+///
+/// **Gaps, pinned so closing one is noticed.** The requirement also names
+/// risk-envelope and capital-grant events as P0, and the catalogue does carry
+/// them on `control.local` — but `Topic::pclass` returns `None` for
+/// `risk.approved` and `system.kill_switch_engaged`, so the two tables
+/// disagree about what is P0. And no committed stream is P3 or carries
+/// `settlement.recorded`: the classes exist on the topics, the streams that
+/// would carry research and settlement do not. No regional warm service
+/// publishes to the fabric at all (`bindings.rs` fixes six reflex topics).
+///
+/// Mutation: in `Topic::pclass`, class `PolicyDistributed` as P1 — the policy
+/// assertion and the catalogue agreement both fire. Mutation: class
+/// `SettlementRecorded` as P2 — the settlement assertion fires.
 #[test]
-fn fabric_104_regional_services_publish_policy_envelopes_grants_research_to_fabric() {
-    // FABRIC-104: Regional warm (GKE) services must publish policy, risk-envelope and
-    // capital-grant events as P0 control, the financial outcome events they originate
-    // (such as settlement events) as P1, and research, world and knowledge events as P3.
-
-    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
-    #[derive(Debug)]
-    enum EventType {
-        Policy,
-        RiskEnvelope,
-        CapitalGrant,
-        Settlement,
-        ResearchEvent,
-        WorldEvent,
+fn fabric_104_policy_settlement_and_research_topics_are_classed_and_the_catalogue_agrees() {
+    assert_eq!(
+        Topic::PolicyDistributed.pclass(),
+        Some(QosClass::P0Control),
+        "policy is a control record"
+    );
+    assert_eq!(
+        Topic::SettlementRecorded.pclass(),
+        Some(QosClass::P1Outcomes),
+        "settlement is a financial outcome"
+    );
+    for topic in [
+        Topic::WorldModelSnapshot,
+        Topic::OutcomeObserved,
+        Topic::HypothesisScored,
+        Topic::ModelEvaluated,
+        Topic::LearningCompleted,
+    ] {
+        assert_eq!(topic.pclass(), Some(QosClass::P3Research), "{topic}");
     }
 
-    #[derive(Debug, PartialEq)]
-    enum PublishClass {
-        P0Control,
-        P1Financial,
-        P3Research,
-    }
-
-    fn classify_event(event: &EventType) -> PublishClass {
-        match event {
-            EventType::Policy | EventType::RiskEnvelope | EventType::CapitalGrant => {
-                PublishClass::P0Control
+    let catalogue = parse_catalogue(&committed_catalogue_json())
+        .expect("premise: the committed catalogue parses");
+    assert!(catalogue.streams().len() >= 3, "premise: streams declared");
+    let mut checked = 0;
+    let mut disagreements = Vec::new();
+    for (name, stream) in catalogue.streams() {
+        for topic in &stream.topics {
+            let Some(class) = topic.pclass() else {
+                continue;
+            };
+            checked += 1;
+            // A declared gap is written on whichever stream it fell in.
+            if class != stream.policy.qos_class() && *topic != Topic::EventFabricGap {
+                disagreements.push(format!(
+                    "{topic} is {class:?} but {name} is a different class"
+                ));
             }
-            EventType::Settlement => PublishClass::P1Financial,
-            EventType::ResearchEvent | EventType::WorldEvent => PublishClass::P3Research,
         }
     }
+    assert!(
+        checked >= 4,
+        "premise: the agreement was checked on real topics: {checked}"
+    );
+    assert!(disagreements.is_empty(), "{disagreements:?}");
+    let control = catalogue
+        .stream("control.local")
+        .expect("premise: control stream");
+    assert_eq!(control.policy.qos_class(), QosClass::P0Control);
+    assert!(control.topics.contains(&Topic::PolicyDistributed));
 
-    assert_eq!(classify_event(&EventType::Policy), PublishClass::P0Control);
-    assert_eq!(
-        classify_event(&EventType::RiskEnvelope),
-        PublishClass::P0Control
+    // GAP: the catalogue calls these P0, the topic table does not classify them.
+    for topic in [Topic::RiskApproved, Topic::KillSwitchEngaged] {
+        assert!(
+            control.topics.contains(&topic),
+            "premise: the catalogue carries {topic} on the P0 stream"
+        );
+        assert_eq!(
+            topic.pclass(),
+            None,
+            "{topic} is now classed by Topic::pclass — assert P0 here"
+        );
+    }
+    // GAP: no stream carries settlement or research.
+    let carried: BTreeSet<Topic> = catalogue
+        .streams()
+        .values()
+        .flat_map(|stream| stream.topics.iter().copied())
+        .collect();
+    assert!(!carried.is_empty(), "premise: some topics are carried");
+    assert!(
+        !carried.contains(&Topic::SettlementRecorded),
+        "a committed stream now carries settlement — assert it is P1"
     );
-    assert_eq!(
-        classify_event(&EventType::CapitalGrant),
-        PublishClass::P0Control
-    );
-    assert_eq!(
-        classify_event(&EventType::Settlement),
-        PublishClass::P1Financial
-    );
-    assert_eq!(
-        classify_event(&EventType::ResearchEvent),
-        PublishClass::P3Research
+    assert!(
+        catalogue
+            .streams()
+            .values()
+            .all(|stream| stream.policy.qos_class() != QosClass::P3Research),
+        "a P3 stream is now declared — assert research topics ride it"
     );
 }
 
+/// FABRIC-105: a consumer group gives each partition to exactly one member,
+/// a commit from a membership that has since changed is refused, and a
+/// committed offset neither rewinds nor stops a reader replaying from an
+/// earlier one. Driven through the broker's own `GroupCoordinator` and
+/// `Broker`. The earlier version inserted into a `BTreeMap` and asserted the
+/// keys were there.
+///
+/// Mutation: in `GroupCoordinator::admit_commit`, delete the
+/// `generation != current` refusal — the stale commit is admitted and the
+/// fencing assertion fires. Mutation: in `Broker::commit_offset`, delete the
+/// `offset < held` refusal — the rewind is admitted and the checkpoint
+/// assertion fires.
 #[test]
-fn fabric_105_regional_services_consume_partitions_in_consumer_groups_with_replay() {
-    // FABRIC-105: Regional warm services must consume the fabric's ordered partitions by
-    // asynchronous pull/stream in consumer groups, with replay.
+fn fabric_105_a_group_gives_each_partition_to_one_member_fences_stale_commits_and_replays() {
+    let (broker, dir) = broker_with("fabric-105", 3, spec(QosClass::P1Outcomes));
+    let now = 1_000_000_000;
+    let mut coordinator = GroupCoordinator::new(broker.leader_epoch(), 30_000_000_000).unwrap();
+    let all = [0_u32, 1, 2];
 
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug, Clone)]
-    struct ConsumerGroupMembership {
-        group_id: String,
-        consumer_ids: Vec<String>,
-        partition_assignments: BTreeMap<u32, String>, // partition -> consumer
+    let alone = coordinator
+        .join(now, "risk-svc", "risk", STREAM, Some("risk_0"), &all)
+        .unwrap();
+    assert_eq!(
+        alone.partitions,
+        vec![0, 1, 2],
+        "premise: a lone member holds all"
+    );
+    let pair = coordinator
+        .join(now, "risk-svc", "risk", STREAM, Some("risk_1"), &all)
+        .unwrap();
+    let members = coordinator.members("risk", STREAM);
+    assert_eq!(members.len(), 2, "premise: two members");
+    let mut held: Vec<u32> = members.values().flatten().copied().collect();
+    held.sort_unstable();
+    assert_eq!(held, vec![0, 1, 2], "every partition held once, none twice");
+    assert!(members.values().all(|partitions| !partitions.is_empty()));
+
+    // The first member's generation is stale now that the group changed.
+    let stale = coordinator
+        .admit_commit(
+            now,
+            "risk-svc",
+            "risk",
+            STREAM,
+            "risk_0",
+            alone.generation,
+            0,
+        )
+        .expect_err("a commit from a superseded generation was admitted");
+    assert!(stale.to_string().contains("rejoin"), "{stale}");
+    let mine = members["risk_1"][0];
+    let theirs = members["risk_0"][0];
+    coordinator
+        .admit_commit(
+            now,
+            "risk-svc",
+            "risk",
+            STREAM,
+            "risk_1",
+            pair.generation,
+            mine,
+        )
+        .expect("a current member commits a partition it holds");
+    assert!(
+        coordinator
+            .admit_commit(
+                now,
+                "risk-svc",
+                "risk",
+                STREAM,
+                "risk_1",
+                pair.generation,
+                theirs
+            )
+            .is_err(),
+        "a member committed a partition another member holds"
+    );
+
+    // Replay: the checkpoint moves forward only, and the log is still there.
+    for sequence in 0..3 {
+        broker
+            .produce_to(
+                STREAM,
+                0,
+                batch("venue", 1, sequence, &format!("fill-{sequence}")),
+            )
+            .unwrap()
+            .expect("premise: a batch is admitted");
     }
+    assert_eq!(broker.committed_offset("risk", STREAM, 0).unwrap(), None);
+    broker.commit_offset("risk", STREAM, 0, 1).unwrap();
+    assert_eq!(broker.committed_offset("risk", STREAM, 0).unwrap(), Some(1));
+    assert!(
+        broker.commit_offset("risk", STREAM, 0, 0).is_err(),
+        "the checkpoint was rewound"
+    );
+    assert!(
+        broker.commit_offset("risk", STREAM, 0, 3).is_err(),
+        "a checkpoint was committed past what was ever written"
+    );
+    assert_eq!(broker.committed_offset("risk", STREAM, 0).unwrap(), Some(1));
+    let sizes: Vec<usize> = (0..3)
+        .map(|offset| broker.fetch(STREAM, 0, offset, 1).unwrap().batches().len())
+        .collect();
+    assert!(sizes.iter().all(|size| *size > 0), "premise: three batches");
+    let replay = broker.fetch(STREAM, 0, 0, u32::MAX).unwrap();
+    assert_eq!(
+        replay.batches().len(),
+        sizes.iter().sum::<usize>(),
+        "replay from offset zero, behind the checkpoint, returns all three batches"
+    );
+    let resumed = broker.fetch(STREAM, 0, 2, u32::MAX).unwrap();
+    assert_eq!(
+        resumed.batches().len(),
+        sizes[2],
+        "resuming at the checkpoint plus one returns the one batch not yet committed"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
 
-    let mut group = ConsumerGroupMembership {
-        group_id: "risk_service_group".to_string(),
-        consumer_ids: vec!["risk_0".to_string(), "risk_1".to_string()],
-        partition_assignments: BTreeMap::new(),
-    };
+/// FABRIC-110: an ambient or development agent publishes at P3 and P4 and no
+/// higher, and the refusal is in the catalogue's parser, so a catalogue that
+/// carries the offending grant does not parse and no broker starts on it.
+/// Each case adds one grant to the *committed* catalogue and hands it to the
+/// production parser. Premises first: the unmodified catalogue parses; the
+/// agent is admitted a produce on telemetry (P4) and a consume on outcomes
+/// (P1); and a non-agent identity is admitted the very produce on P1 the
+/// agent is refused — so each refusal below is about the identity and the
+/// class together, not about a grant shape the parser dislikes. The earlier
+/// version asserted that a `Vec<String>` it had just built lacked a string.
+///
+/// Prefix trap: `agents:x` and `agent-x` do not start with `agent:` and are
+/// not caught — that is the parser's rule, not a hole this test hides; the
+/// identity prefix is matched with its delimiter and only the delimited form
+/// is asserted.
+///
+/// Mutation: in `Catalogue::grant_from_raw`, let the agent rule's class test
+/// also admit `QosClass::P1Outcomes` — the P1 refusal fires.
+#[test]
+fn fabric_110_an_agent_identity_is_refused_produce_and_admin_above_research_and_telemetry() {
+    parse_catalogue(&committed_catalogue_json()).expect("premise: the committed catalogue parses");
+    parse_catalogue(&with_grant(
+        "agent:ambient-1",
+        "telemetry.local",
+        "produce",
+        "any",
+    ))
+    .expect("premise: an agent may publish telemetry");
+    parse_catalogue(&with_grant(
+        "agent:ambient-1",
+        "reflex-outcomes.local",
+        "consume",
+        "any",
+    ))
+    .expect("premise: an agent may read outcomes");
+    parse_catalogue(&with_grant(
+        "drain-writer",
+        "reflex-outcomes.local",
+        "produce",
+        "any",
+    ))
+    .expect("premise: a non-agent identity may produce to P1");
 
-    // Each partition assigned to one consumer
-    group.partition_assignments.insert(0, "risk_0".to_string());
-    group.partition_assignments.insert(1, "risk_1".to_string());
-    group.partition_assignments.insert(2, "risk_0".to_string());
-
-    // Verify one consumer per partition
-    for partition_id in 0..3 {
-        assert!(group.partition_assignments.contains_key(&partition_id));
-    }
-
-    // Consumer state: offset tracking for replay
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct ConsumerOffset {
-        consumer_id: String,
-        partition: u32,
-        committed_offset: u64,
-    }
-
-    let offsets = vec![
-        ConsumerOffset {
-            consumer_id: "risk_0".to_string(),
-            partition: 0,
-            committed_offset: 1000,
-        },
-        ConsumerOffset {
-            consumer_id: "risk_0".to_string(),
-            partition: 2,
-            committed_offset: 950,
-        },
+    let above = [
+        ("control.local", "p0_control"),
+        ("reflex-outcomes.local", "p1_outcomes"),
+        ("reflex-journal.local", "p2_market_journal"),
     ];
-
-    // On restart, consumers resume from committed offsets
-    for offset in &offsets {
-        assert!(offset.committed_offset > 0);
+    for (stream, class) in above {
+        for permission in ["produce", "admin"] {
+            let refused =
+                parse_catalogue(&with_grant("agent:ambient-1", stream, permission, "any"))
+                    .expect_err(&format!("an agent was granted {permission} on {stream}"));
+            let message = refused.to_string();
+            assert!(
+                message.contains(&format!("may hold '{permission}' only on a p3_research")),
+                "{message}"
+            );
+            assert!(
+                message.contains(&format!("not on the {class} stream '{stream}'")),
+                "{message}"
+            );
+        }
     }
 }
 
+/// FABRIC-111: only the release controller produces to a P0 control stream.
+/// The committed catalogue's produce grants on `control.local` are exactly
+/// `{release-controller}`, and the production parser refuses a produce grant
+/// to anyone else — a cell, an operator, a drain, and the identity
+/// `release-controller-2`, which contains the controller's name and is not
+/// it (a substring test would admit it). **Gap, pinned:** no `Topic` names a
+/// model, policy or package *activation*, so what the controller announces
+/// is `policy.distributed` and the two control records beside it, not an
+/// activation record; and nothing in the tree is the Release/Package
+/// Controller beyond its identity string in this catalogue.
+///
+/// Mutation: in `Catalogue::grant_from_raw`, compare
+/// `identity.starts_with("release-controller")` instead of `!=` — the
+/// `release-controller-2` refusal fires. Mutation: delete the P0-produce
+/// refusal — every refusal below fires.
 #[test]
-fn fabric_110_ambient_and_dev_agents_publish_only_at_p3_p4() {
-    // FABRIC-110: Ambient and development agents must publish their research, operations and
-    // engineering events into the fabric at the P3 Intelligence/Research and P4 Telemetry
-    // classes only, and ACLs must refuse them P0 control and P1 outcome topics.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct AgentIdentity {
-        agent_id: String,
-        is_ambient: bool,
-        allowed_classes: Vec<String>,
-    }
-
-    let ambient_agent = AgentIdentity {
-        agent_id: "ambient_signals_1".to_string(),
-        is_ambient: true,
-        allowed_classes: vec![
-            "P3IntelligenceResearch".to_string(),
-            "P4Telemetry".to_string(),
-        ],
-    };
-
-    // Ambient agents can only publish P3 and P4
-    assert!(
-        ambient_agent
-            .allowed_classes
-            .contains(&"P3IntelligenceResearch".to_string())
-    );
-    assert!(
-        ambient_agent
-            .allowed_classes
-            .contains(&"P4Telemetry".to_string())
-    );
-    assert!(
-        !ambient_agent
-            .allowed_classes
-            .contains(&"P0CriticalControl".to_string())
-    );
-    assert!(
-        !ambient_agent
-            .allowed_classes
-            .contains(&"P1FinancialOutcomes".to_string())
+fn fabric_111_only_the_release_controller_may_produce_to_the_p0_control_stream() {
+    let catalogue = parse_catalogue(&committed_catalogue_json())
+        .expect("premise: the committed catalogue parses");
+    let producers: BTreeSet<&str> = catalogue
+        .grants()
+        .iter()
+        .filter(|grant| grant.stream == "control.local" && grant.permission == Permission::Produce)
+        .map(|grant| grant.identity.as_str())
+        .collect();
+    assert_eq!(producers, BTreeSet::from(["release-controller"]));
+    assert_eq!(
+        catalogue
+            .stream("control.local")
+            .unwrap()
+            .policy
+            .qos_class(),
+        QosClass::P0Control,
+        "premise: the stream is P0"
     );
 
-    // ACL check: refuse P0/P1 publications
-    fn check_publish_acl(agent: &AgentIdentity, target_class: &str) -> Result<(), String> {
-        if agent.allowed_classes.contains(&target_class.to_string()) {
-            Ok(())
+    for identity in [
+        "reflex:cell-local",
+        "operator",
+        "drain-writer",
+        "release-controller-2",
+    ] {
+        let key_scope = if identity.starts_with("reflex:") {
+            "own_key"
         } else {
-            Err(format!(
-                "Agent {} not allowed to publish to {}",
-                agent.agent_id, target_class
-            ))
-        }
+            "any"
+        };
+        let refused = parse_catalogue(&with_grant(identity, "control.local", "produce", key_scope))
+            .expect_err(&format!("{identity} was granted produce on the P0 stream"));
+        assert!(
+            refused.to_string().contains(&format!(
+                "only 'release-controller' may produce to the P0 stream 'control.local', not '{identity}'"
+            )),
+            "{refused}"
+        );
     }
+    // The controller itself, and a consume by anyone, are unaffected.
+    parse_catalogue(&with_grant(
+        "release-controller",
+        "control.local",
+        "produce",
+        "any",
+    ))
+    .expect("premise: the controller may produce");
+    parse_catalogue(&with_grant(
+        "drain-writer",
+        "control.local",
+        "consume",
+        "any",
+    ))
+    .expect("premise: consuming control is not producing it");
 
-    // P3 allowed
-    assert!(check_publish_acl(&ambient_agent, "P3IntelligenceResearch").is_ok());
-
-    // P0 refused
-    assert!(check_publish_acl(&ambient_agent, "P0CriticalControl").is_err());
-}
-
-#[test]
-fn fabric_111_package_controller_announces_activations_as_p0_control_through_fabric_meta() {
-    // FABRIC-111: Model, policy and package activation announcements must be published by the
-    // Release/Package Controller, and by no other producer, as P0 critical-control records.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct PackageActivationAnnouncement {
-        package_id: String,
-        version: u32,
-        content_digest: String,
-        announced_by: String,
-        is_release_controller: bool,
-    }
-
-    // Only release controller can announce
-    let valid_announcement = PackageActivationAnnouncement {
-        package_id: "policy_v5".to_string(),
-        version: 5,
-        content_digest: "blake3:abc123".to_string(),
-        announced_by: "release_controller".to_string(),
-        is_release_controller: true,
-    };
-
-    let invalid_announcement = PackageActivationAnnouncement {
-        package_id: "policy_v5".to_string(),
-        version: 5,
-        content_digest: "blake3:abc123".to_string(),
-        announced_by: "rogue_agent".to_string(),
-        is_release_controller: false,
-    };
-
-    // Only valid if from release controller
-    assert!(valid_announcement.is_release_controller);
-    assert!(!invalid_announcement.is_release_controller);
-
-    // Activation requires matching digest
-    fn activate_package(
-        announcement: &PackageActivationAnnouncement,
-        fetched_digest: &str,
-    ) -> Result<(), String> {
-        if announcement.content_digest != fetched_digest {
-            return Err("Digest mismatch".to_string());
-        }
-
-        if !announcement.is_release_controller {
-            return Err("Not authorized".to_string());
-        }
-
-        Ok(())
-    }
-
-    assert!(activate_package(&valid_announcement, "blake3:abc123").is_ok());
-    assert!(activate_package(&invalid_announcement, "blake3:abc123").is_err());
+    // GAP: no topic is an activation announcement.
+    let activation: Vec<&str> = Topic::ALL
+        .iter()
+        .map(Topic::name)
+        .filter(|name| {
+            name.split(['.', '_'])
+                .any(|word| word == "activation" || word == "package")
+        })
+        .collect();
+    assert!(!Topic::ALL.is_empty(), "premise: topics were enumerated");
+    assert!(
+        activation.is_empty(),
+        "a topic now names activation or package ({activation:?}) — assert it is P0 and \
+         controller-only"
+    );
 }

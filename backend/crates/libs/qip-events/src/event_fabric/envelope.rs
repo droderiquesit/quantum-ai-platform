@@ -34,7 +34,35 @@
 //! | provenance metadata | [`FabricEnvelope::provenance`] |
 //! | auth context | [`FabricEnvelope::auth_context`] |
 //!
+//! # The schema/version hash
+//!
+//! The Blueprint's field list (v12.0 §27, "FabricEnvelope") says "schema/version
+//! hash", and `AnyEvent::schema_version` alone is an integer a publisher can
+//! forget to bump. [`FabricEnvelope::schema_hash`] is a
+//! [`SchemaId`](super::schema_id::SchemaId) — SHA-256 over topic, version and
+//! the payload's recursive shape, the derivation the schema registry already
+//! uses — recomputed from the wrapped event every time an envelope is
+//! assembled. A wire document whose `schema_version` was edited without the
+//! hash (or the hash without the version) is therefore refused, which an
+//! integer alone cannot do. It attests the shape of *this* payload; it is not
+//! a registry lookup, so two instances differing only in an optional field
+//! being absent can hash differently, exactly as the registry's own
+//! sample-based ids can. Compatibility is decided by version against the
+//! reader's bindings in [`FabricEnvelope::open`], not by hash equality.
+//!
+//! # How an envelope crosses the fabric
+//!
+//! The unit on the wire is the existing [`Batch`] of [`Record`]s (ADR 0100 §1:
+//! one format for the spool, the wire and broker segments); there is no
+//! second framing. A record carries the `AnyEvent`; the batch header carries
+//! what the drain (producer id, epoch, base sequence) and the broker (base
+//! offset, leader epoch, HLC) stamped. [`FabricEnvelope::open`] is the one
+//! place those are joined back into the envelope, and the producer's drain and
+//! the ledger's consumer both call it, so a record the consumer would refuse is
+//! refused before it is sent instead of stalling a partition for ever.
+//!
 //! # What the type refuses
+//!
 //!
 //! Every field above that identifies *who* or *where* — the stream, the
 //! region, the ordering key, the producer, the auth context — must be
@@ -45,14 +73,18 @@
 //! refused rather than defaulted.
 
 use qip_core::error::{Error, Result};
+use qip_core::hash::sha256_hex;
 use qip_core::{EventId, Lineage, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::envelope::{AnyEvent, Envelope, EventBody};
+use crate::envelope::{AnyEvent, Envelope, EventBody, canonical_json};
 use crate::topic::Topic;
 
+use super::bindings::TopicBinding;
+use super::codec::{Batch, PayloadCodec, Record};
 use super::hlc::HlcTimestamp;
 use super::policy::QosClass;
+use super::schema_id::{SchemaId, Shape};
 
 /// Everything [`FabricEnvelope::seal`] needs beyond the wrapped event and its
 /// logical timestamp, gathered so the constructor takes one argument that
@@ -69,6 +101,23 @@ pub struct FabricFacts {
     pub producer_sequence: u64,
     pub leader_epoch: u64,
     pub offset: u64,
+    pub qos_class: QosClass,
+    pub auth_context: String,
+    pub provenance: String,
+}
+
+/// What the reader of a batch knows that the batch does not say: which stream
+/// and partition it was read from, under what authenticated identity, and in
+/// whose name the envelope is assembled. Supplied by the caller because the
+/// codec's batch header carries none of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FabricContext {
+    pub stream: String,
+    pub region: String,
+    pub partition: u32,
+    /// The stream's class; a record whose topic is bound to another class is
+    /// refused (a P2 journal entry on the P1 outcomes stream is a routing
+    /// fault, not data).
     pub qos_class: QosClass,
     pub auth_context: String,
     pub provenance: String,
@@ -93,6 +142,7 @@ pub struct FabricEnvelope {
     qos_class: QosClass,
     auth_context: String,
     provenance: String,
+    schema_hash: SchemaId,
 }
 
 impl FabricEnvelope {
@@ -112,7 +162,183 @@ impl FabricEnvelope {
         facts: FabricFacts,
     ) -> Result<Self> {
         let event = Envelope::new(event_id, occurred_at, recorded_at, lineage, body).erase()?;
-        Self::assemble(event, logical_timestamp, facts)
+        Self::assemble(event, logical_timestamp, facts, None)
+    }
+
+    /// Join one record of a fetched or about-to-be-sent batch with the batch
+    /// header and the reader's context into the envelope that record is.
+    ///
+    /// Refuses, with nothing returned:
+    /// * a record whose duplicated header (event id, trace id, source
+    ///   timestamp) disagrees with the event in its payload — the header is
+    ///   what a broker ACL reads and the payload is what a consumer acts on,
+    ///   so a mismatch is a record that says two things;
+    /// * a payload whose `payload_hash` is not the hash of its payload;
+    /// * a topic with no binding in `bindings`, a `schema_version` of zero
+    ///   or newer than the binding's (upgrade the reader before the
+    ///   producer — never read a partly understood event), and a topic bound
+    ///   to a class other than `context.qos_class`;
+    /// * a batch with no producer id (not yet stamped by a drain) or any
+    ///   other empty identity field, via [`Self::assemble`].
+    pub fn open(
+        batch: &Batch,
+        index: usize,
+        context: &FabricContext,
+        bindings: &[TopicBinding],
+    ) -> Result<Self> {
+        let record = Self::record_at(batch, index)?;
+        let event = record.decode_payload(batch.encoding)?;
+        Self::open_decoded(batch, index, event, context, bindings)
+    }
+
+    fn record_at(batch: &Batch, index: usize) -> Result<&Record> {
+        batch.records.get(index).ok_or_else(|| {
+            Error::invalid(format!(
+                "batch at offset {} holds {} records; there is no record {index}",
+                batch.base_offset,
+                batch.records.len()
+            ))
+        })
+    }
+
+    /// [`Self::open`] for a caller that has already decoded record `index`'s
+    /// payload (to route on its topic, say) and should not pay to decode it
+    /// twice. `event` must be that record's own decoded payload; the header
+    /// cross-checks compare it against the record, so a swapped event is
+    /// refused rather than trusted.
+    pub fn open_decoded(
+        batch: &Batch,
+        index: usize,
+        event: AnyEvent,
+        context: &FabricContext,
+        bindings: &[TopicBinding],
+    ) -> Result<Self> {
+        if batch.producer_id.trim().is_empty() {
+            return Err(Error::invalid(
+                "the batch carries no producer id: the drain stamps one before a batch is sent, \
+                 and an unstamped batch has no identity to attribute its records to"
+                    .to_string(),
+            ));
+        }
+        let record = Self::record_at(batch, index)?;
+        if record.event_id != event.event_id.as_str() {
+            return Err(Error::schema(format!(
+                "record {index} is framed as event {} but its payload is event {}; the header                  and the payload disagree, so neither is trusted",
+                record.event_id, event.event_id
+            )));
+        }
+        let payload_trace = event.lineage.trace_id.as_ref().map(|t| t.as_str());
+        if record.trace_id.as_deref() != payload_trace {
+            return Err(Error::schema(format!(
+                "record {index} (event {}) is framed with trace id {:?} but its payload carries                  {:?}",
+                event.event_id, record.trace_id, payload_trace
+            )));
+        }
+        if record.source_timestamp_ns != event.occurred_at.as_nanos() {
+            return Err(Error::schema(format!(
+                "record {index} (event {}) is framed with source timestamp {} ns but its \
+                 payload says {} ns",
+                event.event_id,
+                record.source_timestamp_ns,
+                event.occurred_at.as_nanos()
+            )));
+        }
+        let binding = bindings
+            .iter()
+            .find(|b| b.topic == event.topic)
+            .ok_or_else(|| {
+                Error::schema(format!(
+                    "no reader is bound to topic {}; an event on a topic this build has no \
+                     binding for is refused rather than passed on unread",
+                    event.topic
+                ))
+            })?;
+        if event.schema_version == 0 || event.schema_version > binding.schema_version {
+            return Err(Error::schema(format!(
+                "{} schema version {} is not one this reader supports (1..={}); upgrade the \
+                 reader before the producer",
+                event.topic, event.schema_version, binding.schema_version
+            )));
+        }
+        if binding.qos_class != context.qos_class {
+            return Err(Error::schema(format!(
+                "{} is bound to class {} but arrived on stream {} of class {}",
+                event.topic,
+                binding.qos_class.as_str(),
+                context.stream,
+                context.qos_class.as_str()
+            )));
+        }
+        let index_u64 = u64::try_from(index)
+            .map_err(|_| Error::numeric(format!("record index {index} does not fit a u64")))?;
+        let producer_sequence = batch.base_sequence.checked_add(index_u64).ok_or_else(|| {
+            Error::numeric(format!(
+                "producer sequence {} + {index} overflows",
+                batch.base_sequence
+            ))
+        })?;
+        Self::assemble(
+            event,
+            HlcTimestamp::new(
+                Timestamp::from_nanos(batch.logical_timestamp.physical_ns),
+                u64::from(batch.logical_timestamp.logical),
+            ),
+            FabricFacts {
+                stream: context.stream.clone(),
+                region: context.region.clone(),
+                partition: context.partition,
+                // The catalogue's partition key is `cell` and a cell is its
+                // own producer id, so the producer id is the ordering key.
+                ordering_key: batch.producer_id.clone(),
+                producer_id: batch.producer_id.clone(),
+                producer_epoch: batch.producer_epoch,
+                producer_sequence,
+                leader_epoch: batch.leader_epoch,
+                offset: batch.base_offset,
+                qos_class: binding.qos_class,
+                auth_context: context.auth_context.clone(),
+                provenance: context.provenance.clone(),
+            },
+            None,
+        )
+    }
+
+    /// Open every record of `batch`, all or none. The first refusal is
+    /// returned and nothing is delivered from a batch any of whose records is
+    /// refused: a partial open would let a consumer apply a prefix of a batch
+    /// whose tail it then stalls on.
+    pub fn open_all(
+        batch: &Batch,
+        context: &FabricContext,
+        bindings: &[TopicBinding],
+    ) -> Result<Vec<Self>> {
+        (0..batch.records.len())
+            .map(|index| Self::open(batch, index, context, bindings))
+            .collect()
+    }
+
+    /// The record this envelope's event travels as — the producer-side half
+    /// of [`Self::open`], through the one codec. The facts the envelope adds
+    /// (stream, producer, offset, …) are stamped on the batch by the drain
+    /// and the broker, not on the record.
+    pub fn to_record(&self, encoding: PayloadCodec) -> Result<Record> {
+        Record::from_any_event(&self.event, encoding)
+    }
+
+    /// The identity under which a redelivery is recognised: the same
+    /// producer's same sequence in the same epoch on the same partition is
+    /// the same envelope however many times it arrives. Epoch is part of it
+    /// because a fenced-off incarnation's sequence 7 is not the new
+    /// incarnation's.
+    pub fn identity(&self) -> String {
+        format!(
+            "{}/{}/{}/{}/{}",
+            self.stream,
+            self.partition,
+            self.producer_id,
+            self.producer_epoch,
+            self.producer_sequence
+        )
     }
 
     /// Apply every CONTRACT-036 field's validation and assemble. The one
@@ -123,7 +349,30 @@ impl FabricEnvelope {
         event: AnyEvent,
         logical_timestamp: HlcTimestamp,
         facts: FabricFacts,
+        claimed_schema_hash: Option<SchemaId>,
     ) -> Result<Self> {
+        let expected_hash = sha256_hex(canonical_json(&event.payload).as_bytes());
+        if event.payload_hash != expected_hash {
+            return Err(Error::schema(format!(
+                "event {} carries payload hash {} but its payload hashes to {expected_hash}; the \
+                 payload was altered after it was sealed",
+                event.event_id, event.payload_hash
+            )));
+        }
+        let schema_hash = SchemaId::new(
+            event.topic.name(),
+            event.schema_version,
+            &Shape::from_json(&event.payload),
+        );
+        if let Some(claimed) = claimed_schema_hash
+            && claimed != schema_hash
+        {
+            return Err(Error::schema(format!(
+                "event {} claims schema hash {claimed} but topic {} version {} over this \
+                 payload hashes to {schema_hash}; its version or its shape was edited",
+                event.event_id, event.topic, event.schema_version
+            )));
+        }
         Ok(Self {
             event,
             stream: require_non_empty(facts.stream, "stream namespace")?,
@@ -139,6 +388,7 @@ impl FabricEnvelope {
             qos_class: facts.qos_class,
             auth_context: require_non_empty(facts.auth_context, "auth context")?,
             provenance: require_non_empty(facts.provenance, "provenance")?,
+            schema_hash,
         })
     }
 
@@ -182,6 +432,10 @@ impl FabricEnvelope {
     }
     pub fn provenance(&self) -> &str {
         &self.provenance
+    }
+    /// The schema/version hash; see the module doc.
+    pub fn schema_hash(&self) -> &SchemaId {
+        &self.schema_hash
     }
 
     // --- CONTRACT-036 fields `AnyEvent` already carries ---------------------
@@ -254,6 +508,7 @@ struct FabricEnvelopeWire {
     qos_class: QosClass,
     auth_context: String,
     provenance: String,
+    schema_hash: SchemaId,
 }
 
 impl From<FabricEnvelope> for FabricEnvelopeWire {
@@ -273,6 +528,7 @@ impl From<FabricEnvelope> for FabricEnvelopeWire {
             qos_class: e.qos_class,
             auth_context: e.auth_context,
             provenance: e.provenance,
+            schema_hash: e.schema_hash,
         }
     }
 }
@@ -302,6 +558,7 @@ impl TryFrom<FabricEnvelopeWire> for FabricEnvelope {
                 auth_context: wire.auth_context,
                 provenance: wire.provenance,
             },
+            Some(wire.schema_hash),
         )
     }
 }

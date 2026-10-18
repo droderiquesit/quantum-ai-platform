@@ -34,6 +34,7 @@
 //!   [`qip_contracts::edge::DeductionKind::ComputeCost`] has always had a slot
 //!   for and nothing was filling.
 
+use crate::bus_bridge::SensedInput;
 use crate::central::darkness::{RegionSpokeAgain, RegionTransition, RegionWentDark};
 use crate::central::{
     AbsorbedFill, BeliefIssue, CausalIssue, CellIngestion, CellOutcome, CellReport, CentralPlane,
@@ -43,6 +44,7 @@ use crate::central::{
 use crate::config::PlatformConfig;
 use crate::counterfactual_trial::{CounterfactualTrial, outcome as trial_outcome};
 use crate::cycle::{CycleReport, Stage, StageOutcome};
+use crate::desk_ledger::{Admission, DeskLedgerFeed, DeskOutcome};
 use crate::family_review::{
     FAMILY_FINDING_PROPOSED, FAMILY_FINDING_WITHDRAWN, FamilyAllocationReview, FamilyMember,
     FamilyStanding, Misallocation, MisallocationFinding,
@@ -120,8 +122,8 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
 use qip_cost_router::{
     ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism,
-    Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router, Routing, TierCharge,
-    VolatilityRegime,
+    DeterministicRouting, Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router,
+    Routing, TierCharge, VolatilityRegime,
 };
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
@@ -702,6 +704,12 @@ pub struct Platform {
     /// has to say so in a diff. A ceiling that could be widened at runtime is
     /// a ceiling that gets widened on the cycle it binds.
     cost_router: Router,
+    /// How the most recent order's pre-trade check was routed. Always the
+    /// deterministic arm: `submit_order` obtains it through
+    /// [`Router::determine`], which cannot return a model rung, and refuses the
+    /// order if it cannot. Kept so a test and an operator can see the routing
+    /// that guarded the last order rather than trust that one happened.
+    pretrade_routing: Option<DeterministicRouting>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -853,6 +861,27 @@ pub struct Platform {
     /// swallowed. A record that can lose an entry silently is not a record,
     /// and neither is one that can fail to write silently.
     capture_problems: Vec<String>,
+    /// Records absorbed under an ingestion lineage since the last journalled
+    /// cycle, taken by `journal_cycle` into the entry that joins them to the
+    /// cycle's correlation id. Bounded by [`MAX_SENSED_REFS_PER_CYCLE`].
+    sensed_pending: Vec<SensedRef>,
+    /// Records absorbed under a lineage beyond that bound this cycle: logged
+    /// under their own correlation id, but not listed in the journal entry.
+    sensed_unlisted: u64,
+    /// The desk's fills as the P1 records `qip-ledgerd` books, chained and
+    /// de-duplicated; see [`crate::desk_ledger`]. A fill enters the book
+    /// only through this, so the book and the ledger cannot disagree about
+    /// which fills exist.
+    desk_ledger: DeskLedgerFeed,
+    /// The desk's non-fill ledger operations not yet acknowledged by the
+    /// fabric (ADR 0123): today the treasury funding of its book. Rebuilt at
+    /// every start from the log and re-sent; the ledger books each once by
+    /// operation id, so a resend is a counted duplicate.
+    desk_operations: Vec<qip_contracts::ledger_operation::LedgerOperation>,
+    /// Fills declined for want of a ledger record, bounded like the declined
+    /// queue and cleared by nobody: the list is the evidence a person works
+    /// from.
+    unledgered_fills: Vec<String>,
 
     /// The world model — the one [`Platform::observe`] feeds, held as the
     /// writing end of the slot the agents' desk reads through its
@@ -2639,6 +2668,44 @@ pub struct CycleJournalEntry {
     /// zero, so "no experience" and "nothing was asked" never render alike.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub experience: Option<ExperienceReport>,
+    /// The records this cycle reasoned over that arrived under an ingestion
+    /// lineage, each with the correlation id ingestion minted for it. This is
+    /// the join: the cycle's `correlation_id` is the one every decision,
+    /// order and outcome row carries, and this list is the only place that
+    /// names which ingestion correlation ids fed it, so a fill traces back to
+    /// a tick by id rather than by time and instrument. Empty — and absent
+    /// from the wire — for records handed to [`Platform::observe`], which
+    /// carries no lineage. Bounded by [`MAX_SENSED_REFS_PER_CYCLE`].
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub sensed: Vec<SensedRef>,
+    /// Records absorbed under a lineage beyond the bound on `sensed`: each is
+    /// in the event log under its own correlation id, but this entry cannot
+    /// name it. A non-zero count means the join above is incomplete.
+    #[serde(skip_serializing_if = "is_zero", default)]
+    pub sensed_unlisted: u64,
+}
+
+/// The most records one journal entry names as having fed its cycle.
+///
+/// A replayed tape can hand the platform tens of thousands of records in one
+/// poll, and a journal entry that listed them all would be the unbounded
+/// buffer the data rules prohibit. Past the bound a record is still logged
+/// under its own correlation id and is counted in `sensed_unlisted`.
+pub const MAX_SENSED_REFS_PER_CYCLE: usize = 4096;
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// One record the platform absorbed under an ingestion lineage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensedRef {
+    /// The correlation id ingestion minted when it published the record.
+    pub correlation_id: String,
+    /// The event the platform logged on receipt, under that correlation id.
+    pub event_id: String,
+    /// The topic the record arrived on.
+    pub topic: String,
 }
 
 /// One entity the book depends on and does not hold, as the journal keeps it.
@@ -3936,6 +4003,61 @@ pub struct LotAdjusted {
 /// is shared with the cells' deltas and the retirement dispositions.
 const BOOK_ORIGIN: &str = "kernel/book";
 
+/// The journalled watermark of the desk's ledger records: the fabric has
+/// acknowledged every record through this chain position, so `qip-ledgerd`
+/// holds them.
+///
+/// Written by [`Platform::acknowledge_desk_outcomes`] only when the watermark
+/// advances, in the same hash-chained log the [`FillBooked`] records it
+/// refers to live in, so it is replayable and cannot be edited without
+/// breaking the chain. A restart reads the highest one and re-queues every
+/// booked fill after it ([`Platform::resume_book`]): the record is the
+/// difference between "the ledger has everything the log holds", which was
+/// assumed and false after any crash with records unshipped, and "the ledger
+/// has this much".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeskLedgerAcknowledged {
+    pub through_sequence: u64,
+}
+
+/// The producer of [`DeskLedgerAcknowledged`]. Distinct from [`BOOK_ORIGIN`]
+/// so the book's fold never meets it: the topic is `PositionUpdated`, shared
+/// with the cells' deltas and the lot adjustments, and the producer is what
+/// tells them apart.
+const DESK_LEDGER_ORIGIN: &str = "kernel/desk-ledger";
+
+/// The journalled record that the central treasury funded the desk's book
+/// (ADR 0123), written once, at the first assembly on a fresh log, with the
+/// equity the book opened at. A restart reads it back rather than recomputing
+/// it, so the operation it becomes has the same time and amount, and so the
+/// same digest, under the same id: a changed `initial_equity` on a log that
+/// already holds a funding does not quietly fund the book twice.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeskTreasuryFunded {
+    pub amount: Decimal,
+    pub unit: String,
+    pub at: Timestamp,
+}
+
+/// The producer of [`DeskTreasuryFunded`].
+const DESK_TREASURY_ORIGIN: &str = "kernel/desk-treasury";
+
+/// The treasury that funds every desk's book, as the ledger names it.
+pub const CENTRAL_TREASURY: &str = "central";
+
+// Its own topic, not `PositionUpdated`: a funding is not a position change,
+// and every reader of `PositionUpdated` (retirement dispositions among them)
+// would otherwise find a record it never wrote on every fresh platform.
+impl EventBody for DeskTreasuryFunded {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+impl EventBody for DeskLedgerAcknowledged {
+    const TOPIC: Topic = Topic::PositionUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for FillBooked {
     /// The platform's own fill, in the class the log never evicts. The topic
     /// had a retention class and a stream and, until this record, no writer.
@@ -4401,6 +4523,11 @@ impl Platform {
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
             .collect();
+        // The ids the desk will take an order for: this universe's, and no
+        // others. Installed on the order manager below so an instrument the
+        // platform holds no record of is refused at the door every desk order
+        // passes, not risk-checked against a book with no figures for it.
+        let known_instruments: Vec<String> = asset_classes.keys().cloned().collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -4853,6 +4980,7 @@ impl Platform {
             cycle_pre_positioning: None,
             cost_engine: CostEngine::new(DataCostModel::new()),
             cost_router: Router::default(),
+            pretrade_routing: None,
             reason_routing: None,
             universe_not_decision_grade: not_decision_grade,
             commitments,
@@ -4874,6 +5002,11 @@ impl Platform {
             compute_spend: Decimal::ZERO,
             data_reads: DataReads::new(),
             capture_problems: Vec::new(),
+            sensed_pending: Vec::new(),
+            sensed_unlisted: 0,
+            desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
+            desk_operations: Vec::new(),
+            unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
@@ -4891,10 +5024,13 @@ impl Platform {
             // Every instrument's grid installed at assembly, keyed on the
             // object id an order carries, so the feasibility gate is a
             // control that can fire rather than a module nothing reaches.
-            orders: instrument_grids.into_iter().fold(
-                OrderManager::new(PreTradeChecker::new(limits.clone())),
-                |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
-            ),
+            orders: instrument_grids
+                .into_iter()
+                .fold(
+                    OrderManager::new(PreTradeChecker::new(limits.clone())),
+                    |orders, (object_id, grid)| orders.with_instrument_feasibility(object_id, grid),
+                )
+                .with_known_instruments(known_instruments),
             broker,
             autonomy: AutonomyController::with_live_ceiling(config.autonomy_ceiling),
             monitor: RiskMonitor::new(limits, config.monitor),
@@ -5024,6 +5160,11 @@ impl Platform {
         // the positions, the fees, the drawdown's peak and the day's loss
         // were all forgotten, and the limits read a book that held nothing.
         platform.resume_book(now)?;
+        // The desk's book is funded by the central treasury with the
+        // platform's initial equity, and that funding is a financial fact the
+        // ledger is the authority for (ADR 0123). Journaled once, so every
+        // restart re-derives the same operation with the same digest.
+        platform.queue_treasury_funding(now)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -5162,7 +5303,8 @@ impl Platform {
         );
         metrics.describe(
             names::EVENTS_PUBLISHED,
-            "cycle records sealed onto the durable transport",
+            "records published: cycle records sealed onto the durable transport (topic=cycle), \
+             and records ingestion published to the bus (topic and source)",
         );
         metrics.describe(
             names::PROPOSALS_SIGNED,
@@ -5346,6 +5488,11 @@ impl Platform {
         metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
             "declined and filled paths that will never be priced, by reason",
+        );
+        metrics.describe(
+            names::DESK_FILLS_UNLEDGERED,
+            "venue fills the desk declined to book because no ledger record could be made for \
+             them, by reason; in neither the book nor the ledger, and a break against the venue",
         );
         metrics.describe(
             names::FEASIBILITY_REFUSALS,
@@ -7294,7 +7441,20 @@ impl Platform {
         // book and the aggregate are written, and the aggregate is reached
         // through `&mut self`. Bounded by the log's own retained records.
         let mut entries = Vec::new();
+        // The highest chain position the log says the ledger has been given.
+        let mut watermark: Option<u64> = None;
         for record in self.event_log.records() {
+            if record.event.lineage.producer == DESK_LEDGER_ORIGIN
+                && record.event.topic == DeskLedgerAcknowledged::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                let through = frame
+                    .decode::<DeskLedgerAcknowledged>()?
+                    .body
+                    .through_sequence;
+                watermark = Some(watermark.map_or(through, |held| held.max(through)));
+                continue;
+            }
             if record.event.lineage.producer != BOOK_ORIGIN {
                 continue;
             }
@@ -7306,9 +7466,13 @@ impl Platform {
             } else {
                 continue;
             };
-            entries.push((record.sequence, entry));
+            entries.push((
+                record.sequence,
+                entry,
+                record.event.lineage.correlation_id.clone(),
+            ));
         }
-        let first_fill = entries.iter().find_map(|(_, entry)| match entry {
+        let first_fill = entries.iter().find_map(|(_, entry, _)| match entry {
             Entry::Fill(fill) => Some(fill.at),
             Entry::Adjustment(_) => None,
         });
@@ -7316,9 +7480,65 @@ impl Platform {
             self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
         }
         let resumed = entries.len();
-        for (sequence, entry) in entries {
+        if let Some(through) = watermark {
+            self.desk_ledger.resume_acknowledged(through);
+        }
+        for (sequence, entry, logged_as) in entries {
             match entry {
                 Entry::Fill(fill) => {
+                    // The ledger chain is a fold of the same records, so a
+                    // restart continues it at the position it had. A record
+                    // the ledger would refuse can only be one written before
+                    // the live path checked; the book keeps it (the log is
+                    // what the book is the fold of) and the chain does not.
+                    //
+                    // What the ledger was given is the log's watermark, not
+                    // "everything": a fill at or below it is folded (the ledger
+                    // holds it); every fill after it is re-queued in chain
+                    // order with the sequence and digest it had, because a
+                    // crash between booking and the fabric's acknowledgement
+                    // otherwise left it in the book and out of the ledger for
+                    // good, and the next record a hole the ledger parks on.
+                    // A log with no watermark (every log written before
+                    // records were shipped) re-queues all of them, which is
+                    // right: the ledger has been given none.
+                    // Order ids are minted from a counter that starts at one
+                    // in every process; the desk's chain correlation hashes
+                    // the order id under a session that never changes, so a
+                    // restart that reused `ord-1` would give two orders one
+                    // lineage id. Continue the counter past the log's.
+                    if let Some(used) = fill
+                        .order_id
+                        .rsplit('-')
+                        .next()
+                        .and_then(|tail| tail.parse::<u64>().ok())
+                    {
+                        self.orders.resume_order_sequence(used);
+                    }
+                    let next = self.desk_ledger.next_sequence();
+                    let covered = watermark.is_some_and(|through| next <= through);
+                    let result = if covered {
+                        self.desk_ledger
+                            .fold_booked(&fill, DESK_STRATEGY)
+                            .map(|_| Admission::Duplicate)
+                    } else {
+                        self.desk_ledger
+                            .requeue_booked(&fill, DESK_STRATEGY, logged_as.as_str())
+                    };
+                    match result {
+                        Ok(Admission::Overflowed { sequence }) => {
+                            self.note_unqueued_fill(&fill, sequence);
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            self.capture_problems.push(format!(
+                                "fill {} on order {} is in the event log and has no ledger record: {}",
+                                fill.fill_id,
+                                fill.order_id,
+                                error.message()
+                            ));
+                        }
+                    }
                     let moved = self.capital.apply_fill(
                         &fill.object_id,
                         fill.side,
@@ -7358,6 +7578,18 @@ impl Platform {
                         ))
                     })?,
             }
+        }
+        if let Some(through) = watermark
+            && through >= self.desk_ledger.next_sequence()
+        {
+            return Err(Error::invalid(format!(
+                "the event log says the ledger holds the desk's records through chain position \
+                 {through} and the log's booked fills reach only position {}; the log is \
+                 truncated or the watermark is wrong, and trusting it would leave every fill \
+                 after the real tail out of the ledger. Restore the log or archive it and start \
+                 a new one",
+                self.desk_ledger.next_sequence().saturating_sub(1)
+            )));
         }
         self.capital.open_day(now);
         Ok(resumed)
@@ -8759,6 +8991,21 @@ impl Platform {
             .context
             .ids()
             .generate::<qip_core::lineage::CorrelationKind>(now);
+        self.journal_record_under(body, origin, now, correlation_id)
+    }
+
+    /// [`Self::journal_record`] under a correlation id the caller already
+    /// holds. A fill's record is journalled under the cycle that caused it,
+    /// not a fresh id: the desk's ledger record takes its correlation from the
+    /// log on a restart or a gap heal, and a fresh id there severed the
+    /// ledger posting from the decision it came from.
+    pub(crate) fn journal_record_under<B: EventBody>(
+        &mut self,
+        body: B,
+        origin: &str,
+        now: Timestamp,
+        correlation_id: CorrelationId,
+    ) -> Result<()> {
         let facts = EventFacts::derived(
             SourceIdentity::new(
                 SourceId::new("qip-kernel"),
@@ -9569,6 +9816,93 @@ impl Platform {
     /// question and get the same answer.
     pub fn is_live_capable(&self) -> bool {
         self.config.permits_live_trading() && self.autonomy.ceiling().is_live()
+    }
+
+    /// [`Self::observe`] for records that arrive with the lineage ingestion
+    /// minted for them, recording that lineage where the platform can be
+    /// asked about it.
+    ///
+    /// Each record is appended to the event log on receipt, under the
+    /// correlation id it arrived with, and listed (to a bound) in the next
+    /// journalled cycle's entry. `event_log().by_correlation(&id)` therefore
+    /// finds the tick, and the journal entry joins that id to the cycle
+    /// correlation every decision, order and outcome row carries. Before this
+    /// the ingestion correlation id stopped at the bus: reconstructing "this
+    /// fill came from that tick" needed a join on time and instrument.
+    ///
+    /// `now` is when the platform received the records — the log's
+    /// `recorded_at`, passed in because `observe` reads no clock and a replay
+    /// must reproduce what the live run wrote. The event is logged on
+    /// receipt, before the world model's own refusal of a record (a news item
+    /// it will not store), so a refused record is still findable and its
+    /// refusal is the capture problem it always was. A log that cannot be
+    /// appended to is reported as a capture problem and the record is still
+    /// absorbed: dropping market data because the audit trail is unwell
+    /// would trade the one failure for a worse one.
+    ///
+    /// Returns the number of records taken in, as `observe` does.
+    pub fn observe_with_lineage(&mut self, inputs: Vec<SensedInput>, now: Timestamp) -> usize {
+        let mut records = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            self.log_sensed(&input, now);
+            records.push(input.record);
+        }
+        self.observe(records)
+    }
+
+    /// [`Self::observe`] for a caller with no bus: each record starts its own
+    /// lineage chain under `producer`, minted here.
+    ///
+    /// For a composition root that still hands records straight from its feed
+    /// (`qip-api`'s sense route). The ids are the platform's own, from the same
+    /// generator the cycle draws from, so they cannot collide with it.
+    pub fn observe_fresh(
+        &mut self,
+        records: Vec<SensedRecord>,
+        producer: &str,
+        now: Timestamp,
+    ) -> usize {
+        let inputs = records
+            .into_iter()
+            .map(|record| SensedInput {
+                lineage: Lineage::root(
+                    self.context
+                        .ids()
+                        .generate::<qip_core::lineage::CorrelationKind>(now),
+                    producer,
+                ),
+                record,
+            })
+            .collect();
+        self.observe_with_lineage(inputs, now)
+    }
+
+    /// Append one received record to the event log and queue its reference
+    /// for the next cycle's journal entry.
+    fn log_sensed(&mut self, input: &SensedInput, now: Timestamp) {
+        let event_id = self.context.ids().generate::<EventKind>(now);
+        let logged = input
+            .record
+            .to_event(event_id.clone(), now, input.lineage.clone())
+            .and_then(|event| self.event_log.append(&event));
+        if let Err(error) = logged {
+            self.capture_problems.push(format!(
+                "a {} record could not be logged under correlation {}: {}",
+                input.record.topic().name(),
+                input.lineage.correlation_id.as_str(),
+                error.message()
+            ));
+            return;
+        }
+        if self.sensed_pending.len() >= MAX_SENSED_REFS_PER_CYCLE {
+            self.sensed_unlisted = self.sensed_unlisted.saturating_add(1);
+            return;
+        }
+        self.sensed_pending.push(SensedRef {
+            correlation_id: input.lineage.correlation_id.as_str().to_string(),
+            event_id: event_id.as_str().to_string(),
+            topic: input.record.topic().name().to_string(),
+        });
     }
 
     /// Feed observations in. The SENSE stage's input.
@@ -10471,6 +10805,11 @@ impl Platform {
             // Taken for the same reason: LEARN assigns this on every path
             // through the stage.
             experience: self.cycle_experience.take(),
+            // Taken so the next cycle names only what it itself reasoned
+            // over; a list that carried over would credit a tick to a cycle
+            // that never saw it.
+            sensed: std::mem::take(&mut self.sensed_pending),
+            sensed_unlisted: std::mem::take(&mut self.sensed_unlisted),
         };
 
         let facts = EventFacts::derived(
@@ -12029,6 +12368,25 @@ impl Platform {
             Determinism::NotRequired,
             self.routing_conditions(opportunity),
         ))
+    }
+
+    /// The conditions a pre-trade check is recorded under.
+    fn pretrade_conditions(&self, subject: &str) -> Conditions {
+        Conditions::new(
+            self.asset_classes
+                .get(subject)
+                .copied()
+                .unwrap_or(AssetClass::Equity),
+            CostRegion::new(HOME_REGION),
+            self.market_regime(subject),
+            self.volatility_regime(subject),
+            Horizon::Microsecond,
+        )
+    }
+
+    /// How the last submitted order's pre-trade check was routed.
+    pub fn pretrade_routing(&self) -> Option<&DeterministicRouting> {
+        self.pretrade_routing.as_ref()
     }
 
     /// Describe the market this decision is being made in.
@@ -17329,6 +17687,17 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        // R12-RISK-3022: the pre-trade check is routed through the cost router
+        // as a decision that must be deterministic, and the order does not go
+        // further without that routing. `Router::determine` returns a type that
+        // cannot name a model rung, so the limits below are structurally a
+        // function of their inputs.
+        let subject = order.object_id.as_str().to_string();
+        let conditions = self.pretrade_conditions(&subject);
+        self.pretrade_routing = Some(
+            self.cost_router
+                .determine(format!("pre-trade limits for {subject}"), conditions)?,
+        );
         let risk_state = self.risk_state();
         let object_id = order.object_id.clone();
         let side = order.side;
@@ -17686,6 +18055,65 @@ impl Platform {
         );
 
         for fill in &result.fills {
+            // The ledger record first, and the book only if the record exists.
+            //
+            // The venue has already filled by now, so the order of the two
+            // writes is the only control left. A fill booked into
+            // `self.capital` and then refused by the ledger would leave cash
+            // and position saying one thing and the double-entry ledger
+            // another, with nothing to show which was right. So the record is
+            // made (and checked by the ledger's own posting rules) before any
+            // state moves, and a fill with no record moves nothing: it is
+            // counted, put on the capture problems, and is a break against the
+            // venue for a person — absent from the book and the ledger alike,
+            // which is the one disagreement that is at least the same on both
+            // sides. A fill already on the chain is a replay and is a no-op
+            // here too, so a batch offered twice cannot book twice.
+            let booked = FillBooked {
+                order_id: fill.order_id.to_string(),
+                fill_id: fill.fill_id.to_string(),
+                object_id: object_id.to_string(),
+                venue: venue.to_string(),
+                side,
+                quantity: fill.quantity,
+                price: fill.price,
+                costs: fill.costs,
+                at: fill.at,
+                simulated: fill.simulated,
+            };
+            if fill.order_id != result.order_id || fill.venue != venue.as_str() {
+                self.refuse_unledgered_fill(
+                    "mismatch",
+                    &booked,
+                    format!(
+                        "it names order {} at venue {} but arrived in the submission of order \
+                         {} at {}",
+                        fill.order_id, fill.venue, result.order_id, venue
+                    ),
+                );
+                continue;
+            }
+            match self
+                .desk_ledger
+                .admit(&booked, DESK_STRATEGY, correlation.as_str())
+            {
+                Ok(Admission::Recorded { .. }) => {}
+                Ok(Admission::Duplicate) => continue,
+                // Valid, but nothing has drained the feed and it has no room.
+                // Capacity says nothing about the fill: the venue holds the
+                // position, so the book books it, and the gap is counted and
+                // surfaced. The chain advanced over it, so the record is
+                // re-derivable from the log and nothing is lost; declining the
+                // fill here would make a long-running desk stop booking what the
+                // venue filled.
+                Ok(Admission::Overflowed { sequence }) => {
+                    self.note_unqueued_fill(&booked, sequence);
+                }
+                Err(error) => {
+                    self.refuse_unledgered_fill("refused", &booked, error.message().to_string());
+                    continue;
+                }
+            }
             // P&L is not realised by opening a position, so the only money that
             // has moved is what the fill cost. Reporting an opening trade's
             // gross as profit is the direction that flatters.
@@ -17732,22 +18160,9 @@ impl Platform {
             // already filled, and a book that left the fill out would read
             // every limit low by exactly it. What it costs is said out loud
             // instead — this is the one state a restart cannot rebuild.
-            if let Err(error) = self.journal_record(
-                FillBooked {
-                    order_id: result.order_id.to_string(),
-                    fill_id: fill.fill_id.to_string(),
-                    object_id: object_id.to_string(),
-                    venue: venue.to_string(),
-                    side,
-                    quantity: fill.quantity,
-                    price: fill.price,
-                    costs: fill.costs,
-                    at: fill.at,
-                    simulated: fill.simulated,
-                },
-                BOOK_ORIGIN,
-                now,
-            ) {
+            if let Err(error) =
+                self.journal_record_under(booked, BOOK_ORIGIN, now, correlation.clone())
+            {
                 self.capture_problems.push(format!(
                     "fill {} on order {} was booked and could not be journalled ({}); the book \
                      now holds what the event log cannot rebuild and a restart would open \
@@ -18438,6 +18853,228 @@ impl Platform {
     /// the gates are calibrated or merely shut.
     pub fn outcomes(&self) -> &OutcomeCapture {
         &self.outcomes
+    }
+
+    /// Hand over the ledger records of the desk's fills booked since the last
+    /// call, oldest first, each with the correlation id of the cycle that
+    /// placed the order.
+    ///
+    /// **Destructive**: the records leave the queue whether or not anything
+    /// then delivers them, so a delivery that fails after this call has lost
+    /// them from here. It is for tests and for an operator emptying a queue
+    /// on purpose. Production delivery peeks with [`Self::pending_desk_outcomes`]
+    /// and calls [`Self::acknowledge_desk_outcomes`] only once the fabric holds
+    /// the records; `qip-ledgerd` is idempotent on chain position, so a batch
+    /// resent after a crash between those two steps posts once. The
+    /// acknowledgement is journalled as a watermark ([`DeskLedgerAcknowledged`]),
+    /// so a restart re-queues exactly the fills after it; a record taken here
+    /// is not acknowledged, and a restart will queue it again.
+    pub fn take_desk_outcomes(&mut self) -> Vec<DeskOutcome> {
+        self.desk_ledger.drain()
+    }
+
+    /// The delivery of every desk record through chain position
+    /// `through_sequence` is done: drop them from the queue. Returns how many
+    /// were dropped. Refused, with the queue untouched, for a position beyond
+    /// what was queued or one below an earlier acknowledgement; see
+    /// [`DeskLedgerFeed::acknowledge`].
+    pub fn acknowledge_desk_outcomes(&mut self, through_sequence: u64) -> Result<usize> {
+        // Checked, then journalled, then applied, in the order every resume
+        // seam here keeps: the log never holds a watermark the feed would
+        // have refused, and the queue never drops a record the log does not
+        // say the ledger has. A watermark that does not advance is not
+        // written, so the log does not grow per cycle without progress.
+        if self.desk_ledger.check_acknowledge(through_sequence)? {
+            let now = self.context.now();
+            self.journal_record(
+                DeskLedgerAcknowledged { through_sequence },
+                DESK_LEDGER_ORIGIN,
+                now,
+            )?;
+        }
+        let dropped = self.desk_ledger.acknowledge(through_sequence)?;
+        self.heal_desk_gap();
+        Ok(dropped)
+    }
+
+    /// Queue the desk records a full queue made the chain advance over, now
+    /// that an acknowledgement has made room, by re-deriving the chain from
+    /// the event log: the log is what the chain is a fold of, and the same
+    /// fold is what a restart runs, so the healed records are the ones a
+    /// restart would have re-queued. Without this the gap stayed until the
+    /// process restarted, and the shipper held every later record back.
+    ///
+    /// Never fails the acknowledgement it follows: the fabric already holds
+    /// what was acknowledged. A heal that cannot complete is surfaced as a
+    /// capture problem and leaves the gap, which the shipper still reports.
+    fn heal_desk_gap(&mut self) {
+        if !self.desk_ledger.has_gap() || !self.desk_ledger.has_room() {
+            return;
+        }
+        let result = (|| -> Result<usize> {
+            let mut fills: Vec<(FillBooked, String)> = Vec::new();
+            for record in self.event_log.records() {
+                if record.event.lineage.producer != BOOK_ORIGIN
+                    || record.event.topic != FillBooked::TOPIC
+                {
+                    continue;
+                }
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                fills.push((
+                    frame.decode::<FillBooked>()?.body,
+                    record.event.lineage.correlation_id.as_str().to_string(),
+                ));
+            }
+            let derived = crate::desk_ledger::outcomes_with_correlation_on(
+                self.desk_ledger.chain(),
+                fills
+                    .iter()
+                    .map(|(fill, correlation)| (fill, correlation.as_str())),
+                DESK_STRATEGY,
+            );
+            self.desk_ledger.fill_gap(&derived)
+        })();
+        match result {
+            Ok(0) => {}
+            Ok(healed) => {
+                self.telemetry
+                    .metrics
+                    .count(names::DESK_FILLS_UNLEDGERED, labels([("reason", "healed")]));
+                self.capture_problems.push(format!(
+                    "{healed} desk ledger record(s) the full queue had skipped were re-derived \
+                     from the event log and queued"
+                ));
+            }
+            Err(error) => self.capture_problems.push(format!(
+                "the desk's chain has a gap that could not be healed from the event log: {}; \
+                 a restart re-queues it",
+                error.message()
+            )),
+        }
+    }
+
+    /// The desk's ledger operations not yet acknowledged by the fabric, in
+    /// the order they were recorded (ADR 0123).
+    pub fn pending_desk_operations(&self) -> &[qip_contracts::ledger_operation::LedgerOperation] {
+        &self.desk_operations
+    }
+
+    /// Drop the operations the fabric has acknowledged, by id. Not
+    /// journalled: every start re-sends what the log re-derives, and the
+    /// ledger books each id once.
+    pub fn acknowledge_desk_operations(&mut self, operation_ids: &[String]) -> usize {
+        let before = self.desk_operations.len();
+        self.desk_operations
+            .retain(|operation| !operation_ids.contains(&operation.operation_id));
+        before - self.desk_operations.len()
+    }
+
+    /// Queue the treasury funding of the desk's book, journalling it first
+    /// if this log has never recorded one.
+    fn queue_treasury_funding(&mut self, now: Timestamp) -> Result<()> {
+        use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
+        let mut funded: Option<DeskTreasuryFunded> = None;
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == DESK_TREASURY_ORIGIN
+                && record.event.topic == DeskTreasuryFunded::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                funded = Some(frame.decode::<DeskTreasuryFunded>()?.body);
+                break;
+            }
+        }
+        let funded = match funded {
+            Some(funded) => funded,
+            None => {
+                let funded = DeskTreasuryFunded {
+                    amount: self.config.initial_equity,
+                    unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                    at: now,
+                };
+                self.journal_record(funded.clone(), DESK_TREASURY_ORIGIN, now)?;
+                funded
+            }
+        };
+        let chain = self.desk_ledger.chain().to_string();
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:treasury-funding:0"),
+            origin: chain.clone(),
+            sequence: 0,
+            recorded_at: funded.at,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::TreasuryAllocation {
+                treasury: CENTRAL_TREASURY.to_string(),
+                book: Book {
+                    cell: chain,
+                    strategy: DESK_STRATEGY.to_string(),
+                },
+                unit: funded.unit,
+                amount: funded.amount,
+                phase: Phase::Establish,
+            },
+        })?;
+        self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Note a problem with shipping the desk's records, to be surfaced beside
+    /// every other capture problem in the next cycle's record. The shipper is
+    /// outside the kernel and cannot reach the capture list itself.
+    pub fn note_desk_ship_problem(&mut self, problem: impl Into<String>) {
+        self.capture_problems.push(problem.into());
+    }
+
+    /// The desk's ledger feed, so a test can fill it to its bound.
+    #[cfg(test)]
+    pub(crate) fn desk_ledger_mut(&mut self) -> &mut DeskLedgerFeed {
+        &mut self.desk_ledger
+    }
+
+    /// Desk fill records waiting to be taken, without taking them.
+    pub fn pending_desk_outcomes(&self) -> &[DeskOutcome] {
+        self.desk_ledger.pending()
+    }
+
+    /// Desk fills the venue reported and the book declined; see
+    /// [`Self::refuse_unledgered_fill`].
+    pub fn unledgered_fills(&self) -> &[String] {
+        &self.unledgered_fills
+    }
+
+    /// Note a fill that was booked and chained but not queued for the ledger
+    /// because the desk's feed was full. The book has it; the ledger will have
+    /// it when the record is re-derived from the event log.
+    fn note_unqueued_fill(&mut self, booked: &FillBooked, sequence: u64) {
+        self.telemetry.metrics.count(
+            names::DESK_FILLS_UNLEDGERED,
+            labels([("reason", "capacity")]),
+        );
+        let line = format!(
+            "fill {} on order {} at {} was booked at chain position {sequence} but not queued \
+             for the ledger: the desk's feed is full and nothing has drained it; the record is \
+             re-derivable from the event log, and the book is not affected",
+            booked.fill_id, booked.order_id, booked.venue
+        );
+        self.capture_problems.push(line.clone());
+        if self.unledgered_fills.len() < DECLINED_HISTORY {
+            self.unledgered_fills.push(line);
+        }
+    }
+
+    /// Decline to book a fill that has no ledger record.
+    fn refuse_unledgered_fill(&mut self, reason: &'static str, booked: &FillBooked, why: String) {
+        self.telemetry
+            .metrics
+            .count(names::DESK_FILLS_UNLEDGERED, labels([("reason", reason)]));
+        let line = format!(
+            "fill {} on order {} was reported by {} and not booked: {why}; the book and the              ledger both lack it and the venue holds it, so reconcile it by hand",
+            booked.fill_id, booked.order_id, booked.venue
+        );
+        self.capture_problems.push(line.clone());
+        if self.unledgered_fills.len() < DECLINED_HISTORY {
+            self.unledgered_fills.push(line);
+        }
     }
 
     /// The engine that prices the alternatives to a decision.
@@ -20791,6 +21428,42 @@ fn mechanism_for(
     }
 }
 
+/// The universe the unit-test platforms below trade in: the symbols named, listed.
+///
+/// `Universe::new()` installs no instrument, and the order manager now refuses
+/// an order for an instrument outside the universe the platform was assembled
+/// with. A fixture that trades a symbol it never listed was exercising a desk
+/// that took orders for instruments it held no record of, which is the defect
+/// that refusal ends; the symbol is listed here instead of the refusal relaxed.
+#[cfg(test)]
+fn listed_test_universe(symbols: &[&str]) -> Universe {
+    use qip_financial::asset_class::{InstrumentType, Sector};
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+
+    let now = Timestamp::from_secs(1_760_000_000);
+    let mut universe = Universe::new();
+    for symbol in symbols.iter().copied() {
+        universe
+            .insert(
+                FinancialObject::builder(
+                    qip_core::ObjectId::from_string(symbol),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNAS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", now))
+                .build(now)
+                .expect("valid object"),
+            )
+            .expect("insertable");
+    }
+    universe
+}
+
 #[cfg(test)]
 mod decide_tests {
     //! The decide stage stops being a stub: unit tests, because the seam
@@ -20811,7 +21484,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -20832,7 +21505,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -20863,7 +21536,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -21388,7 +22061,7 @@ mod decide_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["AAPL", "MSFT"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -25764,7 +26437,6 @@ mod rule_attribution_tests {
 
     use super::*;
     use qip_core::dec;
-    use qip_financial::universe::Universe;
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
@@ -25779,7 +26451,7 @@ mod rule_attribution_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["obj-AAA"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -25902,7 +26574,6 @@ mod rule_review_tests {
     use super::*;
     use crate::rule_review::{RULE_DORMANCY_CYCLES, RULE_DORMANCY_MIN_ORDERS};
     use qip_core::dec;
-    use qip_financial::universe::Universe;
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
 
@@ -25919,7 +26590,7 @@ mod rule_review_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["obj-AAA"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
@@ -26835,7 +27506,7 @@ mod rule_review_tests {
             config,
             context,
             Telemetry::silent(),
-            Universe::new(),
+            listed_test_universe(&["obj-AAA"]),
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles over the file-backed log")

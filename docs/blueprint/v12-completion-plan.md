@@ -1,6 +1,6 @@
 # Blueprint v12.0 / GCP v3.0 — completion plan
 
-**Snapshot 2026-10-11, on `ccr-dc3c4d84-dayxv0`.** Derived from the R12 register
+**Snapshot 2026-10-11 (the branch it named, `ccr-dc3c4d84-dayxv0`, is absent from this repository; figures below were recounted 2026-10-17).** Derived from the R12 register
 (`requirements/R12-*.json`, `assessment/R12-*.json`, rendered to
 `traceability-matrix.md`). The register is the source of truth; this plan is a
 reading of it. Recount rather than quote:
@@ -15,18 +15,44 @@ EOF
 
 ## Where the code stands
 
-1,518 requirements decomposed from v12.0 (M1–M7, 1,080) and GCP v3.0 (G1–G3,
-538). Every status was taken from code, test assertions and Terraform, not from
+1,518 requirements decomposed from v12.0 (M1–M7) and GCP v3.0 (G1–G3).
+Per-file row counts under `docs/blueprint/requirements/R12-*.json` summed to
+980 for M1–M7 and 538 for G1–G3 on 2026-10-17 (the plan said 1,080 for M1–M7,
+which with 538 does not make 1,518); recount with `python3 -I -c` over
+`json.load(open(f))` lengths. Every status was taken from code, test assertions and Terraform, not from
 any document.
 
-| Status | Rows | Share |
-|---|---:|---:|
-| COMPLETE | 124 | 8.2% |
-| PARTIAL | 1,125 | 74.1% |
-| MISSING | 207 | 13.6% |
-| BLOCKED (live capital, external action, or a standing ADR refuses it) | 52 | 3.4% |
-| INCORRECT (code contradicts the requirement) | 9 | 0.6% |
-| NEEDS-VALIDATION | 1 | 0.1% |
+Status counts are not restated as a drifting table; run the snippet above.
+Recounted **2026-10-18** with `python3 -I` over `docs/blueprint/assessment/*.json`:
+COMPLETE 249, PARTIAL 1122, MISSING 114, BLOCKED 31, INCORRECT 1,
+NEEDS-VALIDATION 1 (= 1518). On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
+MISSING 159: eleven independent graders read 980 rows (ran nothing), 88
+were proposed COMPLETE, eleven were held back (nine TICK rows reachable only
+with `QIP_DEEPBRAIN_TICK_EVERY` set, which needs a licensing decision;
+OBS-3118, whose alert policy is gated off; AMBIENT-1055, fenced partly by a
+source scan), and the other 77 were promoted after every named test passed in
+a full workspace run and five production calls were mutated. 35 MISSING rows
+became PARTIAL and 218 rows had text corrected. Earlier on 2026-10-17 it was COMPLETE 161, PARTIAL 1165 earlier the
+same day; nine rows (AMBIENT-1026, -1140, -1144, -7025, EXPAND-1113, -1114,
+-1120, -6045, WORLD-9004) were promoted after an independent re-grade found
+their text older than the code and the named tests were run and mutated;
+LEDGER-5002 and LEDGER-5012 followed once their missing refusal tests landed. Of the 177 COMPLETE rows on that date, a W0.10
+independent re-audit confirmed 156 and re-graded 21 to PARTIAL (11.9%; reasons
+in each row's `notes`). A later independent grading of six rows this work
+touched (RISK-3022, QUANT-4028, CONTRACT-7089, AGENCY-7029, COVERAGE-7190,
+CICD-7120) completed QUANT-4028 and AGENCY-7029 and left the other four PARTIAL.
+A third grading, of 28 rows the tick-to-ledger integration touched, completed
+LEDGER-5015, LEDGER-10082 and FABRIC-8023 (their gap text predated a running
+ledger writer) and left 23 PARTIAL with the unmet clause named in each gap. It
+also found no register row for instrument-universe membership, order-id
+idempotency or DECIDE release: those safety properties are tested and enforced
+but not yet requirements the register can score. The 2026-10-11 table (124 / 1,125 / 207 / 52 / 9 / 1)
+was superseded by the register's later rounds. BLOCKED means live capital, an
+external action, or a standing ADR refuses it; INCORRECT means the code
+contradicts the requirement.
+
+The measure table below and the P0 line after it are 2026-10-11 figures not
+recounted on 2026-10-17; treat them as stale.
 
 | Measure | Rows |
 |---|---:|
@@ -133,8 +159,10 @@ Gate on `d49b3899`: `cargo fmt --all --check` exit 0; `cargo clippy
 `check-secrets.sh` "nothing found".
 
 Five independent auditors re-graded the 159 rows round 2 touched: the
-register stands at **177 COMPLETE, 1133 PARTIAL, 151 MISSING, 55 BLOCKED,
-1 INCORRECT** of 1518. Their defects and an independent security review's
+register stood at 177 COMPLETE, 1133 PARTIAL, 151 MISSING, 55 BLOCKED,
+1 INCORRECT after round 2 (these sum to 1517, not 1518; the 2026-10-17 recount
+above is COMPLETE 161, PARTIAL 1165, MISSING 159, BLOCKED 31, INCORRECT 1,
+NEEDS-VALIDATION 1 = 1518, after the W0.10 re-audit of 2026-10-17). Their defects and an independent security review's
 seven findings are assigned to round-3 sessions (capital exposure, signed
 envelope bounds, trust infrastructure, agent controls, evidence and data,
 mesh, mutation verification). Round 4 runs ten sessions over the 469 rows
@@ -307,3 +335,53 @@ The rows it names reach COMPLETE in `assessment/*.json` with path:line
 evidence; `qip blueprint render` re-run and committed; the house gates run and
 quoted (fmt, clippy -D warnings, `cargo test --workspace --no-fail-fast`,
 dependencies, secrets); every new test mutation-verified.
+
+## Corrections 2026-10-17
+
+Each item below was checked by opening the cited lines on 2026-10-17. They
+record what the code shows, not that a gate passed.
+
+Already fixed in code (do not re-plan as open):
+
+- **W0.3 / CICD-9097.** `.github/workflows/deploy.yml:87-97` builds each commit
+  once in `BUILD_ENVIRONMENT: dev`; `:707-716` takes `SOURCE_DATE_EPOCH` from
+  the commit timestamp, not the clock.
+- **CICD-9105.** `deploy.yml:271-305` reads the ci run's jobs and refuses unless
+  at least one `sast / ...` job exists and every one succeeded.
+- **R12-REFLEX-8002 refuted.**
+  `infrastructure/terraform/modules/execution-node/variables.tf:159-167`
+  validation admits only the C4/C4D high-CPU shapes.
+- **R2.1 risk gate installed.** `backend/crates/apps/qip-edge-node/src/lib.rs:247`
+  (`.with_risk_gate(risk_gate)`), assembled via `assemble_with_risk` at
+  `main.rs:592`.
+- **W1.1 ledgerd serves.** `backend/crates/apps/qip-ledgerd/src/lib.rs:366-371`
+  sets serving and spawns `server.serve()`.
+- **R2.2 `import_state` removed.** `qip-ledgerd/src/store.rs:76` documents the
+  removal; `grep -n import_state` finds only that comment.
+- **W5.2.** `qip-streaming/src/event_fabric/group.rs` (509 lines) and
+  `admission.rs` (152 lines) are real implementations, not stubs.
+- **W0.5 product score.** `qip-contracts/src/ambient.rs:696-706`
+  (`net_value_bp`, integer product, floored).
+- **W0.6 rename.** `qip-events/src/event_fabric/catalogue.rs:240-246` maps the
+  old `quorum` spelling to `AckProfile::ManagedMajority` or refuses it. The
+  plan's path `qip-events catalogue.rs` is in the `event_fabric` subdirectory.
+- **W0.8 `HorizonBucket`.** `qip-kernel/src/confidence.rs:485-500`, a five-bucket
+  enum replacing a runtime-duration label.
+- **W0.9 journal trim.** `qip-edge-node/src/main.rs:556-560`
+  (`with_journal_trimmed_on_ship().with_journal_wire()`).
+
+Flagged conflicts, not resolved here:
+
+- **ADR 0043 is binding in code but Proposed on paper.** `docs/adr/0043-*.md`
+  says "Status: proposed. Nothing in this record is applied", while
+  `qip-tls/src/cas.rs:108` and `qip-contracts/src/trust.rs:4` cite it as a
+  decision. Owner to accept it or the citations need a different authority.
+- **`std::env` in `qip-core`.** `libs/qip-core/src/config.rs:103`
+  (`std::env::vars()`) and `secret.rs:59-60` (`std::env::var`) read the
+  environment from a lib, and `.claude/rules/domains/core-rust.md` prohibits
+  `std::env` outside `backend/crates/apps/**`. `secret.rs` is the sanctioned
+  `_FILE` reader; no exception is written down. Open question for the owner;
+  none is invented here.
+- **Prod refusal.** See "Known gap" in `.claude/rules/domains/infrastructure.md`:
+  `deploy.yml` lists `prod` as a dispatch option and refuses it only for
+  non-dispatch events.

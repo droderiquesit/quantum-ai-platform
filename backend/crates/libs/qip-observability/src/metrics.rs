@@ -618,6 +618,17 @@ pub mod names {
     // Streaming
     pub const EVENTS_PUBLISHED: &str = "qip_events_published_total";
     pub const EVENT_LAG_MS: &str = "qip_event_lag_milliseconds";
+    /// Sources ingestion declined to poll because their licensing class bars a
+    /// production decision, by source name (a registered adapter's name, fixed
+    /// at registration). Recorded in `IngestionService::refuses`, which both
+    /// poll paths go through: before it existed `poll_and_publish` skipped a
+    /// refused source with a log line and nothing a scrape could see.
+    pub const SOURCES_REFUSED: &str = "qip_ingestion_sources_refused_total";
+    /// What the platform's bus bridge did with each sensed record, by
+    /// `outcome` — a closed set declared in `qip_kernel::bus_bridge::Outcome`:
+    /// `queued`, `absorbed`, `unabsorbed`, `malformed`, `invalid`,
+    /// `refused_full`, `refused_stopped`. Recorded in `PlatformBridge`.
+    pub const SENSE_BRIDGE_RECORDS: &str = "qip_sense_bridge_records_total";
 
     // Data
     pub const DATA_VALIDATION_FAILURES: &str = "qip_data_validation_failures_total";
@@ -1052,6 +1063,30 @@ pub mod names {
     /// fill that arrived while that queue was full, beside `capacity` for a
     /// refusal that did.
     pub const COUNTERFACTUALS_UNSCORED: &str = "qip_counterfactuals_unscored_total";
+    /// Desk fills the venue reported and the desk declined to book because no
+    /// ledger record could be made for them, by `reason`: `refused` (the
+    /// ledger's own posting rules said no), `capacity` (the feed to the ledger
+    /// is full) or `mismatch` (the fill names another order or venue than the
+    /// submission it arrived in). A fill counted here is in neither the book
+    /// nor the ledger, so the two still agree; it is also a reconciliation
+    /// break against the venue and wants a person.
+    pub const DESK_FILLS_UNLEDGERED: &str = "qip_desk_fills_unledgered_total";
+    /// Delivery attempts of the desk's ledger records to the event fabric, by
+    /// `outcome`: `shipped`, `deferred` (the fabric did not take them; they
+    /// stay pending and are resent), `refused` (a record the ledger would
+    /// refuse, or a hole in the chain, held back so it cannot stall the
+    /// ledger's partition), `unlogged` (the fabric took them but the platform
+    /// could not record the acknowledgement, so they stay pending and are
+    /// resent) and `fenced` (a newer desk owns the partition; shipping
+    /// stopped).
+    pub const DESK_SHIP: &str = "qip_desk_ship_total";
+    /// Desk ledger records booked and not yet acknowledged as delivered. Grows
+    /// without bound only until the feed's own cap, past which fills are
+    /// counted on `qip_desk_fills_unledgered_total` instead.
+    pub const DESK_OUTCOMES_PENDING: &str = "qip_desk_outcomes_pending";
+    /// `1` when the process has a fabric to ship the desk's records to, `0`
+    /// when it was started without one and the records only queue.
+    pub const DESK_SHIP_CONFIGURED: &str = "qip_desk_ship_configured";
     /// Feasibility refusals by `venue` and `constraint`, from both seams: the
     /// desk's order manager, where the venue is the broker's name, and the
     /// cells' reports, where it is the venue the intent named and the centre

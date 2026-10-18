@@ -583,6 +583,73 @@ pub enum Decision {
         narrowed: Vec<String>,
         sizing_multiplier: String,
     },
+    /// The join between a decision chain's signals and the order they became.
+    ///
+    /// Recorded once per netted order, immediately after its
+    /// [`Self::OrderSent`], and only by a cell that was told which session it
+    /// runs in (`Cell::set_chain_epoch`). Until this existed a fill could be
+    /// joined back to its order by `order_id` and no further: the
+    /// [`Self::SignalRaised`] that began the chain names a strategy and an
+    /// object, the order names neither, and nothing said which signals a
+    /// given order answered. `signals` is each contributing strategy and the
+    /// journal sequence of the `SignalRaised` entry it raised this pass, so
+    /// the join is on a sequence and not on a guess from entry order.
+    ///
+    /// `correlation` is [`chain_correlation`] over the cell, the session and
+    /// `order_id`, written out so a reader can compare it with the id it
+    /// would derive; a disagreement means the cell and the spool writer hold
+    /// different sessions, and the writer refuses it. Every later hop of the
+    /// order carries no copy: its id is derived from its own `order_id`.
+    /// P2 only, because ADR 0100 §5's P1 row does not name this kind and
+    /// widening that row is the ADR's to do.
+    ChainOpened {
+        correlation: String,
+        order_id: String,
+        pass: u64,
+        signals: Vec<(String, u64)>,
+    },
+}
+
+/// The id of the decision chain an order belongs to: the cell, the session
+/// that sent it and the cell's own order id.
+///
+/// Derived, never drawn, so no clock or counter is read: the same chain
+/// replayed yields the same id, and a redelivered record carries the id it
+/// carried the first time. The session is part of the preimage because the
+/// cell numbers orders from one at every start, so `cell-1` of one session is
+/// not `cell-1` of the next and an id without the session would join a fill
+/// to the wrong day's decision. The `qip.correlation.chain.v1` prefix keeps
+/// this preimage apart from the session-wide id the spool writer stamps on
+/// records that belong to no order.
+pub fn chain_correlation(cell: &str, session: u64, order_id: &str) -> qip_core::CorrelationId {
+    qip_core::CorrelationId::from_string(qip_core::sha256_hex(
+        format!("qip.correlation.chain.v1|{cell}|{session}|{order_id}").as_bytes(),
+    ))
+}
+
+impl Decision {
+    /// The order this decision is a hop of, when it names one.
+    ///
+    /// The key every hop of a chain shares, and the reason the chain id is
+    /// derived rather than stored on each entry: the digest already covers
+    /// the order id, so an id derived from it cannot be edited without
+    /// breaking the chain, which a stored copy could be only if the digest
+    /// covered it too.
+    pub fn order_id(&self) -> Option<&str> {
+        match self {
+            Self::OrderSent { order_id, .. }
+            | Self::Filled { order_id, .. }
+            | Self::Hedged { order_id, .. }
+            | Self::OrderExpired { order_id, .. }
+            | Self::MassCancelled { order_id, .. }
+            | Self::VenueWithdrawn { order_id, .. }
+            | Self::CycleRested { order_id, .. }
+            | Self::RequoteWithdrawn { order_id, .. }
+            | Self::OrderReplaced { order_id, .. }
+            | Self::ChainOpened { order_id, .. } => Some(order_id),
+            _ => None,
+        }
+    }
 }
 
 impl Decision {
@@ -626,6 +693,7 @@ impl Decision {
             Self::RequoteWithdrawn { .. } => "requote_withdrawn",
             Self::OrderReplaced { .. } => "order_replaced",
             Self::DegradationChanged { .. } => "degradation_changed",
+            Self::ChainOpened { .. } => "chain_opened",
         }
     }
 }
@@ -897,6 +965,21 @@ pub struct OutcomeRecord {
     pub journal_sequence: u64,
     pub journal_digest: String,
     pub entry: JournalEntry,
+}
+
+impl OutcomeRecord {
+    /// The decision chain this outcome belongs to, or `None` for an outcome
+    /// that names no order (a reconciliation break, an internal cross).
+    ///
+    /// Computed from the record's own cell, session and entry, so a ledger
+    /// that holds the outcome can name its chain without asking the cell,
+    /// and a record whose lineage carries any other id can be refused.
+    pub fn correlation(&self) -> Option<qip_core::CorrelationId> {
+        self.entry
+            .decision
+            .order_id()
+            .map(|order_id| chain_correlation(&self.cell, self.session, order_id))
+    }
 }
 
 /// A P1 continuity record spanning a run of non-outcome journal entries

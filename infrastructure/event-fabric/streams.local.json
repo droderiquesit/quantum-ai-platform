@@ -43,7 +43,8 @@
       "topics": [
         "reflex.outcome_recorded",
         "reflex.chain_span",
-        "reflex.fabric_gap"
+        "reflex.fabric_gap",
+        "ledger.operation_recorded"
       ]
     },
     {
@@ -93,6 +94,24 @@
   "grants": [
     {
       "identity": "reflex:cell-local",
+      "stream": "reflex-outcomes.local",
+      "permission": "produce",
+      "key_scope": "own_key"
+    },
+    {
+      "identity": "reflex:desk",
+      "stream": "reflex-outcomes.local",
+      "permission": "produce",
+      "key_scope": "own_key"
+    },
+    {
+      "identity": "reflex:desk-api",
+      "stream": "reflex-outcomes.local",
+      "permission": "produce",
+      "key_scope": "own_key"
+    },
+    {
+      "identity": "reflex:desk-deep",
       "stream": "reflex-outcomes.local",
       "permission": "produce",
       "key_scope": "own_key"

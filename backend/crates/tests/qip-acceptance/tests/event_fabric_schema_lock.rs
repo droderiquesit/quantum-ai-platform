@@ -388,6 +388,33 @@ fn policy_frame_sample() -> PolicyFrame {
     PolicyFrame(policy_payload_sample())
 }
 
+/// ADR 0123's body. `OperationKind` is an enum, so one sample locks one
+/// variant's shape: this is `TreasuryAllocation`, the only kind anything
+/// produces today (the desks' funding). A producer of another kind adds its
+/// own sample here, or that kind's shape travels the stream unlocked.
+fn ledger_operation_sample() -> qip_contracts::ledger_operation::LedgerOperation {
+    use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
+    qip_contracts::validated::Validated::new(LedgerOperationFields {
+        schema_version: 1,
+        operation_id: "desk:treasury-funding:0".to_string(),
+        origin: "desk".to_string(),
+        sequence: 0,
+        recorded_at: t(0),
+        settlement: qip_contracts::ledger::Settlement::Simulated,
+        kind: OperationKind::TreasuryAllocation {
+            treasury: "central".to_string(),
+            book: Book {
+                cell: "desk".to_string(),
+                strategy: "desk".to_string(),
+            },
+            unit: "USD".to_string(),
+            amount: qip_core::Decimal::from_int(100_000),
+            phase: Phase::Establish,
+        },
+    })
+    .expect("the ledger operation fixture validates")
+}
+
 fn halt_frame_sample() -> HaltFrame {
     let halt = HaltCommand::new("cell-nynj", t(0), "manual test halt")
         .signed(TEST_KEY)
@@ -420,6 +447,11 @@ fn computed_rows() -> Vec<LockRow> {
         };
         rows.push(row);
     }
+    // Not in `bindings::ALL`: no cell produces it (ADR 0123).
+    rows.push(row_for_binding(
+        bindings::LEDGER_OPERATION_RECORDED,
+        &ledger_operation_sample(),
+    ));
     rows.push(row_for(&capital_grant_frame_sample()));
     rows.push(row_for(&policy_frame_sample()));
     rows.push(row_for(&halt_frame_sample()));

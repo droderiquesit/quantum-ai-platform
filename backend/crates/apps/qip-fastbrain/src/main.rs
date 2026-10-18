@@ -268,6 +268,22 @@ fn run() -> Result<()> {
         qip_fastbrain::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // Where the desk's ledger records go. Built here, from the environment
+    // read in this root and nowhere else, and before anything is served, so a
+    // configured-but-invalid endpoint stops the process (exit 78) and an unset
+    // one is announced in the banner below rather than discovered as a full
+    // queue. `_certificate` is held for the life of `run`: dropping an issued
+    // workload certificate stops its renewal.
+    // The fast brain's desk ships on the `desk` chain, which it shipped on
+    // first; qip-api and the deep brain each name their own.
+    let (mut shipper, _certificate) = qip_fastbrain::ship::build(
+        "qip-fastbrain",
+        qip_fastbrain::ship::PRODUCER_ID,
+        deployment,
+        &clock,
+        &|name| std::env::var(name).ok(),
+    )?;
+
     // The durable trial book, on the same storage the event log archives to.
     // The factory the plane was built with charges holdout evaluations to an
     // in-process book, so until this call every restart forgot every
@@ -346,6 +362,7 @@ fn run() -> Result<()> {
          sector-concentration, and the decision is the risk desk's, not this process's",
         catalogue.manifest.describe()
     );
+    println!("  {}", shipper.banner());
     match &openobserve_config {
         Some(config) => println!("  openobserve:      draining to {}", config.describe()),
         None => println!(
@@ -378,6 +395,7 @@ fn run() -> Result<()> {
         &status,
         &stop,
         &clock,
+        &mut shipper,
         |outcome| {
             // A bounded line, not the cycle's report: stdout is Cloud Logging on
             // Cloud Run, and the event log and metrics already hold every cycle.
@@ -411,6 +429,16 @@ fn run() -> Result<()> {
     println!(
         "  archived so far:  {} record(s) handed over between cycles",
         summary.archived_while_running
+    );
+    println!(
+        "  desk outcomes:    {} shipped to the ledger's stream, {} still pending ({})",
+        summary.desk_outcomes_shipped,
+        summary.desk_outcomes_pending,
+        if shipper.is_shipping() {
+            "pending records were not delivered and are lost with this process"
+        } else {
+            "not shipped: no fabric was configured"
+        }
     );
 
     let flushed = node::flush(

@@ -18,5 +18,7 @@ pub mod health;
 pub mod node;
 pub mod openobserve;
 pub mod roster;
+/// The desk shipper, shared with every other process that books desk fills.
+pub use qip_desk_ship as ship;
 pub mod status;
 pub mod trust;
