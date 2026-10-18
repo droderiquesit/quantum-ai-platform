@@ -352,6 +352,25 @@ impl Fabric {
         );
     }
 
+    /// [`Self::restart`] after the data directory is deleted: the same
+    /// archive, a new empty disk.
+    fn restart_on_an_empty_disk(&mut self) {
+        self.running.take().expect("running").stop();
+        std::fs::remove_dir_all(&self.config.data_dir).expect("the data directory is removed");
+        assert!(
+            !self.config.data_dir.exists(),
+            "premise: the restarted broker finds no local segment"
+        );
+        self.running = Some(
+            start_with_archive(
+                &self.config,
+                Arc::new(SystemClock),
+                Some(self.archive.clone()),
+            )
+            .expect("a broker starts on an empty disk beside its archive"),
+        );
+    }
+
     fn transport(&self, identity: &str) -> HttpTransport {
         HttpTransport::new(
             format!("http://{}", self.running().address()),
@@ -1905,4 +1924,91 @@ fn the_broker_data_plane_runs_under_the_capped_server_limits() {
     assert_eq!(limits.max_concurrent, defaults.max_concurrent);
     assert_eq!(limits.max_handshaking, defaults.max_handshaking);
     assert_eq!(limits.max_body, qip_fabricd::MAXIMUM_REQUEST_BYTES);
+}
+
+/// RES-9170: the broker's disk is gone and the archive is not. A broker
+/// started on the empty data directory serves the same offsets from the same
+/// bytes, and the next record it accepts continues after them. Before
+/// `Broker::rebuild_from_archive` ran at start the new broker's partitions
+/// began at offset zero beside an archive holding offsets 0..N, so a
+/// replacement disk gave those offsets to new records and the next archive
+/// pass wrote their manifests over the old ones.
+///
+/// Mutation: delete the `archiver::rebuild(&broker)?` call in
+/// `start_composed` — the restarted broker's high watermark is 0, `rebuilt()`
+/// is empty and the first assertion after the restart fires. Mutation: in
+/// `Broker::rebuild_from_archive`, skip the `recover_producers` call after the
+/// replay — the history is served right but the writer's next sequence reads
+/// zero, and the `next_sequence` assertion fires.
+#[test]
+fn a_broker_started_on_an_empty_disk_serves_the_archived_offsets_and_continues_after_them() {
+    let mut fabric = Fabric::start("rebuild");
+    let partition = own_partition(CELL_A);
+    let mut journal = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    journal.init().unwrap();
+    let mut sent = Vec::new();
+    for index in 0..40u8 {
+        let records = vec![vec![index; 1500]];
+        journal
+            .send(batch_of(
+                QosClass::P2MarketJournal,
+                &format!("j{index}"),
+                &records,
+            ))
+            .unwrap();
+        sent.push(records);
+    }
+    wait_until("every journal batch is sealed and archived", || {
+        metadata(&fabric, AUDITOR, JOURNAL, partition).2 == 40
+    });
+    assert_eq!(
+        fetch_all(&fabric, AUDITOR, JOURNAL, partition).len(),
+        40,
+        "premise: the journal holds forty batches before its disk goes"
+    );
+
+    fabric.restart_on_an_empty_disk();
+
+    assert_eq!(
+        fabric
+            .running()
+            .rebuilt()
+            .replayed
+            .get(&(JOURNAL.to_string(), partition)),
+        Some(&40),
+        "the start reports what it rebuilt: {:?}",
+        fabric.running().rebuilt()
+    );
+    assert_eq!(metadata(&fabric, AUDITOR, JOURNAL, partition).1, 40);
+    let served = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        served.iter().map(payloads_of).collect::<Vec<_>>(),
+        sent,
+        "the rebuilt broker serves every archived batch, byte for byte"
+    );
+    assert_eq!(
+        fabric
+            .running()
+            .service()
+            .broker()
+            .next_sequence(JOURNAL, partition, CELL_A)
+            .unwrap(),
+        40,
+        "the rebuilt producer table continues the writer's sequence, so a retry of an archived \
+         batch is a duplicate and not new"
+    );
+    let mut journal = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    journal.init().unwrap();
+    let ack = journal
+        .send(batch_of(
+            QosClass::P2MarketJournal,
+            "after-rebuild",
+            &[vec![200u8; 1500]],
+        ))
+        .unwrap();
+    assert_eq!(
+        ack.base_offset(),
+        40,
+        "the next record continues after the rebuilt offsets rather than reusing them"
+    );
 }

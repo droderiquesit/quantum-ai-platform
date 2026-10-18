@@ -3830,13 +3830,13 @@
   {
     "id": "R12-RES-9170",
     "status": "PARTIAL",
-    "current": "The cell keeps working on its last verified policy with freshness-reduced sizing and spools locally with a journal-pressure halt; mirroring is refused; archives exist (fabricd archiver) but no rebuild procedure.",
+    "current": "The cell keeps working on its last verified policy with freshness-reduced sizing and spools locally with a journal-pressure halt; mirroring is refused. A fabric broker started on an empty data directory beside its archive now rebuilds every empty unmanaged partition before it serves: Broker::rebuild_from_archive replays the archive's manifest-indexed batches (hash re-proved, original stamps kept) into the fresh log, folds them into the producer table and chain tail, and qip-fabricd's start_composed calls it through archiver::rebuild; the next record continues at the archived high offset instead of reusing offsets 0..N.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs",
-      "backend/crates/tests/qip-acceptance/tests/arch_004_regional_cell_autonomy.rs",
-      "backend/crates/apps/qip-fabricd/src/archiver.rs"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs::Broker::rebuild_from_archive",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs::rebuild",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs::a_broker_started_on_an_empty_disk_serves_the_archived_offsets_and_continues_after_them"
     ],
-    "gap": "Rebuild-from-archive procedure; mirroring (refused).",
+    "gap": "Recovery stops at the end of what was archived: batches past archived_through are not rebuilt and rely on producer-retained re-send (ADR 0100 §3); a managed partition is not rebuilt from the archive (its log is Spanner's). The test runs on an in-memory blob store, not the GCS adapter or a deployed region, and no region-level rebuild drill (cells, fabric and ledger together) has been run. Mirroring remains refused by ADR 0100 §3.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3844,10 +3844,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "game day",
+    "verification": "cargo test -p qip-fabricd --test broker a_broker_started_on_an_empty_disk",
     "work_item": "",
     "size": "L",
-    "notes": "Mirroring portion blocked by ADR 0100 §3."
+    "notes": "Mirroring portion blocked by ADR 0100 §3. Gap corrected and fabric half implemented 2026-10-18 by lane L17; mutation-verified (removing the start call; skipping the producer-table fold)."
   },
   {
     "id": "R12-RES-9171",
