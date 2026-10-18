@@ -28,7 +28,7 @@ use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::{ArbitrageDesk, MAX_CYCLES_PER_PASS};
-use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{Granularity, VenueModel};
 use qip_edge::policy::VerifiedPolicy;
@@ -1319,6 +1319,120 @@ fn a_pass_re_quotes_only_the_edges_whose_book_moved_and_charts_both_counts() -> 
         ),
         5,
         "the unchanged arm did not sum to 0 + 3 + 2"
+    );
+    Ok(())
+}
+
+/// A venue that fills every order it accepts in full at once, and refuses
+/// the placement attempt with this ordinal (1-based) — counted by attempt,
+/// so the orders sent after the refusal are accepted.
+#[derive(Debug, Default)]
+struct FillingGateway {
+    attempts: usize,
+    refuse_attempt: usize,
+    placed: Vec<(String, ObjectId, BookSide, Decimal)>,
+    pending: Vec<ExecutionReport>,
+}
+
+impl Placer for FillingGateway {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.attempts += 1;
+        if self.attempts == self.refuse_attempt {
+            return Err(Error::io("the venue refused the order"));
+        }
+        self.placed
+            .push((order_id.to_string(), object_id.clone(), side, quantity));
+        self.pending.push(ExecutionReport {
+            order_id: order_id.to_string(),
+            venue: venue.clone(),
+            quantity,
+            price,
+            at,
+        });
+        Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+#[test]
+fn a_three_leg_cycle_whose_third_leg_is_refused_sends_one_offsetting_order_per_filled_leg_then_halts()
+-> Result<()> {
+    // The failure this prevents: a cycle that broke after two legs filled
+    // halted the cell and left both fills standing — a position in two
+    // instruments nobody decided to hold, at prices chosen for an arbitrage
+    // that no longer existed, watched by a cell that had stopped trading.
+    let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let mut gateway = FillingGateway {
+        refuse_attempt: 3,
+        ..FillingGateway::default()
+    };
+    assert!(
+        cell.work(t(10), &mut gateway).is_err(),
+        "the premise failed: the refused leg did not fail the pass"
+    );
+
+    // Premise: the first two legs went out and filled, on two different
+    // books, and the third was refused.
+    let legs: Vec<_> = gateway.placed.iter().take(2).cloned().collect();
+    assert_eq!(legs.len(), 2, "the premise failed: {:?}", gateway.placed);
+    assert_ne!(legs[0].1, legs[1].1, "the premise failed: one book twice");
+
+    // Then exactly one offset per filled leg: the same book, the other
+    // side, the size that filled, each journaled as a hedge.
+    let offsets: Vec<_> = gateway.placed.iter().skip(2).cloned().collect();
+    assert_eq!(
+        offsets.len(),
+        2,
+        "the filled legs were not each offset: {:?}",
+        gateway.placed
+    );
+    for (_, object_id, side, quantity) in &legs {
+        let opposite = match side {
+            BookSide::Ask => BookSide::Bid,
+            BookSide::Bid => BookSide::Ask,
+        };
+        assert!(
+            offsets
+                .iter()
+                .any(|(_, o, s, q)| o == object_id && *s == opposite && q == quantity),
+            "no offset of {quantity} {object_id:?} on the {opposite:?} side: {offsets:?}"
+        );
+    }
+    let hedged: Vec<String> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            qip_edge::journal::Decision::Hedged { order_id, .. } => Some(order_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut sent: Vec<String> = offsets.iter().map(|(id, ..)| id.clone()).collect();
+    let mut journaled = hedged.clone();
+    sent.sort();
+    journaled.sort();
+    assert_eq!(journaled, sent, "the offsets were not journaled as hedges");
+
+    // The halt is unchanged: the operator still looks.
+    assert!(
+        cell.is_halted(),
+        "the cell kept trading after a broken cycle"
     );
     Ok(())
 }
