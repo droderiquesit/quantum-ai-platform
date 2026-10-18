@@ -1623,3 +1623,116 @@ fn a_policy_the_centre_publishes_while_the_fabric_is_fenced_is_held_and_not_appl
     );
     Ok(())
 }
+
+#[test]
+fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock() -> Result<()>
+{
+    // TICK-1122, TICK-2051, TICK-2052, TICK-2089: capture-time clock
+    // discipline on a production path. Every tick the node's passes apply
+    // reaches the tick lake through the drain's LakeSink, which runs it
+    // through qip_sequencing's CaptureStream: the line carries the
+    // normalized instant and its uncertainty as fields of their own, and
+    // every correction the discipline applied to reach them. The proof is
+    // an independent discipline over the same ticks in the same order: it
+    // must reproduce every line's clock block exactly, and once it holds its
+    // minimum samples the lines must carry its offset estimate.
+    use qip_contracts::market_event::MarketEvent;
+    use qip_sequencing::{CaptureStream, DisciplineSettings};
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    // Forty turns, each with a moved touch so every pass publishes.
+    let mut captured = 0usize;
+    for second in 10..50 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        let bid = dec!("99") - Decimal::from(second % 3);
+        simulated.seed_touch(&object(), Side::Buy, bid, dec!("500"), t(second))?;
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+    let settings = DisciplineSettings::default();
+    assert!(
+        captured > settings.min_samples,
+        "premise: the passes applied enough ticks to warm the discipline ({captured})"
+    );
+
+    let waited = std::time::Instant::now();
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    while lines.len() < captured {
+        drain.step()?;
+        lines.clear();
+        for key in lake.list("lake/class=market/")? {
+            let body = lake.get(&key)?.expect("a listed segment is readable");
+            for line in String::from_utf8(body).expect("canonical JSON").lines() {
+                lines.push(serde_json::from_str(line)?);
+            }
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {} of {captured} ticks reached the lake",
+            lines.len()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // One stream (one venue feed partition), so its sequence is the order
+    // the drain disciplined it in.
+    lines.sort_by_key(|line| line["sequence"].as_u64());
+
+    let mut independent = CaptureStream::new(settings)?;
+    let mut estimated = 0usize;
+    for line in &lines {
+        let event: MarketEvent = serde_json::from_value(line["event"].clone())?;
+        let expected = independent.capture(&event, None)?;
+        let clock = &line["clock"];
+        assert_eq!(
+            clock["normalized_time_ns"].as_i64(),
+            Some(expected.normalized_time.as_nanos()),
+            "a lake line's normalized instant is not the discipline's: {line}"
+        );
+        assert_eq!(
+            clock["uncertainty_ns"].as_i64(),
+            Some(expected.uncertainty.as_nanos()),
+            "a lake line's uncertainty is not the discipline's: {line}"
+        );
+        assert_eq!(
+            clock["corrections"],
+            serde_json::to_value(&expected.corrections)?,
+            "a lake line's correction lineage is not the discipline's: {line}"
+        );
+        if expected
+            .corrections
+            .iter()
+            .any(|correction| correction.kind == "offset_estimate")
+        {
+            estimated += 1;
+        }
+    }
+    assert!(
+        estimated > 0,
+        "no lake line carries the discipline's offset estimate after {} ticks",
+        lines.len()
+    );
+    Ok(())
+}
