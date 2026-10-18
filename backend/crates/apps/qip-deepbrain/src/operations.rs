@@ -317,10 +317,16 @@ impl Operations {
     /// built this way: an in-process trail does not survive the restart a
     /// disabled capability is waiting for.
     pub fn journalled(started: Timestamp, journal: RemediationJournal) -> Result<Self> {
-        Self::build(started, Some(journal))
+        Self::build(started, Some(Box::new(journal)))
     }
 
-    fn build(started: Timestamp, journal: Option<RemediationJournal>) -> Result<Self> {
+    /// As [`Self::journalled`], to any sink: for a test that must make the
+    /// journal fail at a chosen record.
+    pub fn journalled_to(started: Timestamp, sink: Box<dyn AuditSink>) -> Result<Self> {
+        Self::build(started, Some(sink))
+    }
+
+    fn build(started: Timestamp, journal: Option<Box<dyn AuditSink>>) -> Result<Self> {
         let mut timeline = VecDeque::new();
         timeline.push_back(TimelineEvent {
             source: TimelineSource::Deployment,
@@ -333,11 +339,9 @@ impl Operations {
             iterations: VecDeque::new(),
             timeline,
             remediator: match journal {
-                Some(journal) => Remediator::journalled(
-                    runbooks(),
-                    CapabilitySwitch::default(),
-                    Box::new(journal),
-                )?,
+                Some(sink) => {
+                    Remediator::journalled(runbooks(), CapabilitySwitch::default(), sink)?
+                }
                 None => Remediator::new(runbooks(), CapabilitySwitch::default())?,
             },
             incidents: 0,
@@ -574,13 +578,23 @@ impl Operations {
             &events,
         )?;
         let action = "disable_capability";
-        let remediation = match self.remediator.remediate(&id, action, "research") {
-            Ok(done) => {
+        let remediation = match self.remediator.remediate_outcome(&id, action, "research") {
+            Ok(applied) => {
+                // An action that ran is counted as run even when the sink
+                // then refused its outcome record: the capability is off
+                // either way, and `refused` would tell an operator it is on.
+                let (outcome, note) = match &applied.unjournalled {
+                    None => ("applied", String::new()),
+                    Some(why) => (
+                        "applied_unjournalled",
+                        format!("; its outcome could not be journalled: {why}"),
+                    ),
+                };
                 metrics.count(
                     names::AIOPS_REMEDIATIONS,
-                    labels([("action", action), ("outcome", "applied")]),
+                    labels([("action", action), ("outcome", outcome)]),
                 );
-                Ok(done)
+                Ok(format!("{}{note}", applied.result))
             }
             Err(refused) => {
                 metrics.count(
