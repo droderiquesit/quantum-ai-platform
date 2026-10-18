@@ -136,8 +136,10 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
                 0.999,
                 SloWindow::Day,
             ),
-            names::DATA_LINEAGE_COMPLETENESS,
-            SourceRule::NotCountable,
+            // Records whose lineage reached the event log, out of every
+            // record received. Recorded by the platform where it absorbs.
+            names::DATA_LINEAGE_RECORDS,
+            SourceRule::CounterOutcome { good: "linked" },
         ),
         // Quantum job success: attempts that produced a run, out of every
         // attempt. Recorded by the deep brain from the cycle's journalled
