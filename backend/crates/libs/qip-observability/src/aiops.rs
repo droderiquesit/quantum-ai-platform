@@ -372,6 +372,14 @@ pub trait AuditSink: std::fmt::Debug + Send {
     fn journal(&mut self, record: &AuditRecord) -> Result<()>;
 }
 
+/// What an action that was carried out reported: the effector's result, and
+/// the sink's failure if the record of the outcome could not be written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    pub result: String,
+    pub unjournalled: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct Remediator<E: Effector + std::fmt::Debug> {
     runbooks: Vec<Runbook>,
@@ -428,7 +436,35 @@ impl<E: Effector + std::fmt::Debug> Remediator<E> {
 
     /// Execute `action` on `target` only if a runbook names both; otherwise
     /// record a refusal naming the missing runbook. Both outcomes are audited.
+    ///
+    /// An action that ran but whose outcome the sink then refused is an
+    /// `Err` here, as it always was; a caller that must tell that from a
+    /// refusal uses [`Self::remediate_outcome`].
     pub fn remediate(&mut self, incident: &str, action: &str, target: &str) -> Result<String> {
+        let applied = self.remediate_outcome(incident, action, target)?;
+        match applied.unjournalled {
+            Some(why) => Err(Error::io(format!(
+                "{action} on {target} was applied, but its outcome could not be journalled: {why}"
+            ))),
+            None => Ok(applied.result),
+        }
+    }
+
+    /// As [`Self::remediate`], but an action that was carried out is always
+    /// an `Ok`: the effector ran, so the node's state has changed whatever
+    /// happened to the record of it. [`Applied::unjournalled`] carries the
+    /// sink's failure when the outcome record could not be written.
+    ///
+    /// Reporting that case as an error made a caller count the action as
+    /// refused and mark the incident's remediation failed while the
+    /// capability was in fact switched off: the metrics and the incident
+    /// disagreed with the node.
+    pub fn remediate_outcome(
+        &mut self,
+        incident: &str,
+        action: &str,
+        target: &str,
+    ) -> Result<Applied> {
         let found = self
             .runbooks
             .iter()
@@ -467,14 +503,11 @@ impl<E: Effector + std::fmt::Debug> Remediator<E> {
             Ok(result) => {
                 self.audit
                     .append(incident, action, target, &runbook, &result);
-                self.journal_last().map_err(|e| {
-                    Error::io(format!(
-                        "{action} on {target} was applied, but its outcome could not be \
-                         journalled: {}",
-                        e.message()
-                    ))
-                })?;
-                Ok(result)
+                let unjournalled = self.journal_last().err().map(|e| e.message().to_string());
+                Ok(Applied {
+                    result,
+                    unjournalled,
+                })
             }
             Err(e) => {
                 self.audit
