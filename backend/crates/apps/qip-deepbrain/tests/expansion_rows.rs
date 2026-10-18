@@ -526,16 +526,27 @@ fn an_execution_gap_needing_a_tool_the_node_lacks_proposes_a_read_only_tool_spec
         Some(&1),
         "the execution gap was not queued blocked on its tool: {round:?}"
     );
+    // Replaying a venue's ticks needs the replay simulator and the adapter
+    // that reads the venue (R12-EXPAND-6037); the node holds neither, so the
+    // deployed sweep proposes both, as one pack under the one gap.
     let proposals = research.desk().queue().proposals();
-    assert_eq!(proposals.len(), 1, "no tool spec was proposed: {round:?}");
-    assert_eq!(proposals[0].name(), "tick-replay");
-    assert_eq!(proposals[0].kind(), ToolKind::Simulator);
+    let proposed: Vec<(&str, ToolKind)> = proposals.iter().map(|p| (p.name(), p.kind())).collect();
     assert_eq!(
-        proposals[0].scope(),
-        &BTreeSet::from([ToolPermission::Read]),
-        "a proposed tool starts read-only"
+        proposed,
+        [
+            ("tick-replay", ToolKind::Simulator),
+            ("venue-adapter", ToolKind::VenueAdapter)
+        ],
+        "the tool specs proposed: {round:?}"
     );
-    assert_eq!(round.desk.proposals, 1);
+    for proposal in proposals {
+        assert_eq!(
+            proposal.scope(),
+            &BTreeSet::from([ToolPermission::Read]),
+            "a proposed tool starts read-only"
+        );
+    }
+    assert_eq!(round.desk.proposals, 2);
 
     let ranked = research.desk().queue().ranked();
     let blocked = ranked
@@ -545,9 +556,17 @@ fn an_execution_gap_needing_a_tool_the_node_lacks_proposes_a_read_only_tool_spec
     assert_eq!(
         blocked.state(),
         &State::Blocked {
-            tools: vec!["tick-replay".to_string()]
+            tools: vec!["tick-replay".to_string(), "venue-adapter".to_string()]
         }
     );
+    let [pack] = research.desk().queue().packs() else {
+        panic!(
+            "one capability pack per blocked gap: {:?}",
+            research.desk().queue().packs()
+        );
+    };
+    assert_eq!(pack.lineage(), blocked.item().research_question);
+    assert_eq!(pack.tools(), proposals);
     let lineage = research
         .desk()
         .lineage(&blocked.item().research_question)
@@ -828,5 +847,69 @@ fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its
             .iter()
             .any(|id| id == "instrument:BTC-USD")),
         "a tick-campaign signal does not carry the fills' instrument"
+    );
+}
+
+/// R12-EXPAND-6010, on the binary's own sweep. A venue whose fills miss the
+/// twin past the threshold raises one unexplained-P&L gap however many of
+/// its fills did so, and a venue whose fills sit inside the threshold raises
+/// none. The count is of queued items the residual detector derived, read
+/// from each item's lineage, so a gap from any other detector over the same
+/// fills (the tick campaigns, for one) is not mistaken for this one.
+/// Mutation: flip `mean > threshold_bps` to `mean < threshold_bps` in
+/// `qip_expansion::detectors::unexplained_residuals` — no residual gap is
+/// queued for the missing venue and the count assertion fails at zero.
+#[test]
+fn one_fill_residual_past_its_threshold_raises_exactly_one_unexplained_pnl_gap() {
+    let fill = |venue: &str, mins: i64, bps: f64| FillObservation {
+        venue: venue.to_string(),
+        object_id: "BTC-USD".to_string(),
+        filled_at: t0().saturating_sub(Duration::from_mins(mins)),
+        trade_error_bps: Some(bps),
+    };
+    let observed = [
+        fill(VENUE, 20, 40.0),
+        fill(VENUE, 10, 44.0),
+        fill("XQUIET", 20, 3.0),
+        fill("XQUIET", 10, -4.0),
+    ];
+    assert!(
+        observed.iter().filter(|f| f.venue == VENUE).all(|f| f
+            .trade_error_bps
+            .is_some_and(|b| b.abs() > qip_deepbrain::research::RESIDUAL_BPS)),
+        "premise: both fills at the venue miss past the threshold"
+    );
+    let platform = platform_over(Universe::new());
+    let (licensed, eligible) = deployed_bounds();
+    let mut research = deployed(BTreeMap::new());
+    research
+        .sweep_over(&platform, &observed, &[], t0(), &licensed, &eligible)
+        .unwrap();
+
+    let residual_items: Vec<String> = research
+        .desk()
+        .queue()
+        .ranked()
+        .into_iter()
+        .map(|e| e.item().research_question.clone())
+        .filter(|q| {
+            research
+                .desk()
+                .lineage(q)
+                .is_some_and(|l| l.derivation.rule == "detector:unexplained_residual")
+        })
+        .collect();
+    assert_eq!(
+        residual_items.len(),
+        1,
+        "two fills at one venue raised other than one gap: {residual_items:?}"
+    );
+    assert!(
+        residual_items[0].contains(&format!("`{VENUE}`")),
+        "the one gap does not name the missing venue: {residual_items:?}"
+    );
+    assert!(
+        !residual_items[0].contains("`XQUIET`"),
+        "the quiet venue raised the gap: {residual_items:?}"
     );
 }

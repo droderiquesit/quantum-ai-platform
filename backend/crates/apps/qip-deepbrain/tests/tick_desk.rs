@@ -21,7 +21,7 @@ use qip_deepbrain::node::{self, Loops};
 use qip_deepbrain::status::NodeStatus;
 use qip_deepbrain::tick_desk::{
     ENTITLEMENTS_VARIABLE, EVERY_VARIABLE, MEASURE_CODEC_VARIABLE, OUTPUT_NAMESPACE, TickDesk,
-    TickDeskConfig,
+    TickDeskConfig, skill_gate,
 };
 use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
@@ -31,6 +31,7 @@ use qip_simulation_engine::tick_replay::{OrderSide, ReplayOrder};
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
 use qip_storage::lake_codec::SegmentCodec;
 use qip_storage::{BlobStore, ChainArchive, MemoryBlobStore, MemoryKeyValueStore};
+use qip_training::microstructure::{FillModel, Scaling};
 use qip_twin::futures::Provenance;
 use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
@@ -543,4 +544,44 @@ fn a_tick_received_before_it_happened_is_excluded_from_replay_and_counted() -> R
     assert_eq!(round.contaminated, 1);
     assert_eq!(round.ticks, clean, "the contaminated tick was replayed");
     Ok(())
+}
+
+/// A fill model whose holdout skill does not beat the base rate is refused
+/// a card (R12-TICK-2092), and the same model with a better holdout Brier
+/// passes, so the gate is the comparison and not a refusal of everything.
+/// The gate is the one `TickDesk::round` runs before `ModelCard::new`, so a
+/// refusal here is a round with `card_refused` set and no map authorised.
+/// Mutation: make `skill_gate` return `Ok(())` unconditionally — the first
+/// assertion fails.
+#[test]
+fn a_fill_model_that_does_not_beat_its_baseline_issues_no_card() {
+    let model = |holdout_brier: f64| FillModel {
+        features: vec!["spread".to_string()],
+        scaling: Scaling {
+            means: vec![0.0],
+            scales: vec![1.0],
+        },
+        intercept: 0.0,
+        weights: vec![0.1],
+        base_rate: 0.4,
+        train_examples: 40,
+        holdout_examples: 10,
+        holdout_brier,
+        baseline_brier: 0.24,
+    };
+    let unskilled = model(0.25);
+    assert!(
+        !unskilled.beats_baseline(),
+        "premise: 0.25 does not beat 0.24"
+    );
+    let refused = skill_gate(&unskilled).expect_err("no card for a model with no skill");
+    assert!(
+        refused
+            .message()
+            .contains("does not beat its base-rate baseline"),
+        "{refused}"
+    );
+    let skilled = model(0.20);
+    assert!(skilled.beats_baseline(), "premise: 0.20 beats 0.24");
+    skill_gate(&skilled).expect("a skilled model passes the gate");
 }

@@ -1292,14 +1292,17 @@
   },
   {
     "id": "R12-AMBIENT-9056",
-    "status": "PARTIAL",
-    "current": "Agent memory (episodic append-only, semantic lessons promoted only after independent support) is separate from the event log and agents cannot reach execution; no explicit capacity bound found.",
+    "status": "COMPLETE",
+    "current": "Both agent memories are bounded. The running path's episodic memory, qip_ai::memory::EpisodicMemory (constructed by Platform with EpisodicMemory::default(), DEFAULT_CAPACITY 4096), evicts past capacity. The research organisation's ResearchMemory, which pushed onto an unbounded Vec, now holds at most its capacity (DEFAULT_EPISODE_CAPACITY 4096, or ResearchMemory::with_capacity, which refuses zero), gives up the oldest episode past it, counts the eviction, and drops an agent from its per-agent index once that agent holds no episode.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/memory.rs:1-10",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:635 the_agent_organisation_cannot_reach_execution_at_all",
-      "backend/crates/libs/qip-ai/tests/episodic.rs"
+      "backend/crates/libs/qip-agents/src/memory.rs:181 ResearchMemory::record_episode evicts the oldest past capacity",
+      "backend/crates/libs/qip-agents/tests/memory.rs recording_one_episode_past_capacity_keeps_the_memory_at_capacity_and_gives_up_the_oldest",
+      "backend/crates/libs/qip-agents/tests/memory.rs an_agent_whose_every_episode_was_given_up_leaves_the_index",
+      "backend/crates/libs/qip-ai/tests/episodic.rs:223 the_capacity_bound_evicts_the_oldest_known_episode_first",
+      "backend/crates/libs/qip-ai/src/memory/store.rs:63 DEFAULT_CAPACITY",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:635 the_agent_organisation_cannot_reach_execution_at_all"
     ],
-    "gap": "Explicit capacity bound with a test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1307,10 +1310,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents",
+    "verification": "cargo test -p qip-agents --test memory && cargo test -p qip-ai --test episodic",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - bound disabled (capacity compared to usize::MAX) failed both capacity tests (left 4, right 3); per-agent index pop removed failed an_agent_whose_every_episode_was_given_up_leaves_the_index. The Platform's desk (qip-kernel platform.rs, Desk::new) holds a ResearchMemory at the default capacity, so the bound runs on the default path."
   },
   {
     "id": "R12-API-9057",
@@ -3264,24 +3267,27 @@
   },
   {
     "id": "R12-OBS-9145",
-    "status": "PARTIAL",
-    "current": "SLO venue-round-trip-time-p99 declared; execution latency name registered in critical paths; no venue-ack recording on the cell send path.",
+    "status": "COMPLETE",
+    "current": "SLO venue-round-trip-time-p99 declared; the cell records qip_edge_venue_ack_latency_ms{venue}, the milliseconds from an order's release to the venue's first report on it over the order-entry channel, once per order in Cell::confirm, distinct from qip_edge_fill_time_millis which times the last share.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/telemetry.rs:227 EDGE_VENUE_ACK_LATENCY_MILLIS, described with the other edge series; :968 CellMetrics::venue_ack_latency",
+      "backend/crates/edge/qip-edge/src/cell.rs:6568 Cell::confirm records it on the first report of an order (filled was zero), skipping a report stamped before its release",
+      "backend/crates/edge/qip-edge/tests/dispersion.rs:640 the_venues_first_answer_on_an_order_is_published_as_its_ack_latency_apart_from_the_fill_time",
       "backend/crates/libs/qip-observability/src/slo.rs:276",
       "backend/crates/libs/qip-observability/src/critical_paths.rs"
     ],
-    "gap": "Record venue ack.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-edge --test dispersion",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The placer seam is synchronous, so the venue's acknowledgement as the cell can observe it is the first ExecutionReport on the order, carrying the venue's own instant; an order that rests unanswered gives no sample. Recorded on Cell::work's path, which qip-edge-node runs under QIP_VENUE_FEED=simulated; no node is deployed and nothing scrapes, so this is emission, not ingestion. The health verdict still takes a zero typical latency (cell.rs venue_withheld comment says why). Mutations: recording on every report fails the test with 2 acknowledgements for one order; never recording fails it with no series at all."
   },
   {
     "id": "R12-OBS-9146",
@@ -3345,23 +3351,25 @@
   },
   {
     "id": "R12-OBS-9149",
-    "status": "PARTIAL",
-    "current": "qip_ledger_commit_latency_ms recorded by qip-ledgerd with a test.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd records qip_ledger_commit_latency_ms in PartitionWorker::apply_until_committed each time the store commits a delivery, and a test started through qip_ledgerd::start against a real broker listener commits two fills through the consumer and asserts exactly two observations. The check (a test drives the event and the 'ledger commit' series moves; deleting the recording site fails it) is met. Ingestion into Cloud Monitoring belongs to the observability rows that own workload_metrics_exist.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/telemetry.rs:34,81,202-205"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:502 PartitionWorker::apply_until_committed recording site",
+      "backend/crates/apps/qip-ledgerd/src/telemetry.rs LedgerTelemetry::commit_latency_ms",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:822 every_fill_the_consumer_commits_is_observed_once_on_the_ledger_commit_latency_series"
     ],
-    "gap": "Ingestion proof.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-ledgerd --test fabric every_fill_the_consumer_commits_is_observed_once_on_the_ledger_commit_latency_series",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: deleting `self.telemetry.commit_latency_ms(elapsed)` in consumer.rs fails the test at the count assertion (zero observations, two expected). The earlier test called the recorder directly and survived that deletion."
   },
   {
     "id": "R12-OBS-9150",

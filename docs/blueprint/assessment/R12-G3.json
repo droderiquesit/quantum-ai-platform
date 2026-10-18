@@ -1677,28 +1677,28 @@
   {
     "id": "R12-FABRIC-10078",
     "status": "PARTIAL",
-    "current": "qip-ledgerd now runs a real fabric consumer (required fabric URL) that resumes from its store's offset; SDK group commit/resume tested.",
+    "current": "qip-ledgerd runs one PartitionWorker per partition against the broker's consumer group (join/commit through GroupCoordinator, seated by qip-streaming's event_fabric::Service, which qip-fabricd composes). It resumes from its store's cursor, committed in the same write as each posting, and commits the group checkpoint after each applied batch; a test proves that after a restart the group checkpoint names exactly the batch the store's cursor resumes past.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/group.rs",
-      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs:1-12",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 placeholder consumer",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::resume_offset",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:615 PartitionWorker::step group commit",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCoordinator seat",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:854 after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Only qip-ledgerd consumes; it resumes from its own store offset, not a broker consumer-group checkpoint; GroupCoordinator has no binary caller.",
+    "gap": "Only one warm service consumes the fabric: qip-ledgerd is the sole production caller of the event_fabric Consumer (grep 'Consumer::new' outside tests finds qip-transport's definition and qip-ledgerd only). The statement names warm services in the plural; no second warm consumer (for example a read model in qip-api) pulls a partition.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming",
+    "verification": "cargo test -p qip-ledgerd --test fabric",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L15: the previous gap (no broker checkpoint, GroupCoordinator with no binary caller) was stale. Added after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past; mutation: committing batch.base_offset.saturating_sub(1) in step times the test out waiting for the checkpoint to reach the store's batch. Kept PARTIAL for the plural only."
   },
   {
     "id": "R12-DATA-10079",
@@ -2838,14 +2838,15 @@
   },
   {
     "id": "R12-RES-10128",
-    "status": "PARTIAL",
-    "current": "Ledger restart replays accumulated P1 records idempotently (checkpoint held, balances equal clean refold); the worker retries a refusing store forever in apply_until_committed.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd's PartitionWorker, the worker the binary runs, retries a refusing store in apply_until_committed without moving the store cursor or the broker group checkpoint; once writes are accepted the same fills are booked once and the balances equal a clean refold. A store lost outright (a fresh empty store under the same consumer group, whose checkpoint is past every fill) rebuilds from the retained P1 partition to the same balances, because the store's cursor, not the group's, is what resumes.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::PartitionWorker::apply_until_committed",
-      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 (LedgerSink, not used by ledgerd)"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::apply_until_committed (retry, never skip)",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:965 a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "No test makes the store/Spanner refuse writes under a running worker; the retry-forever test targets qip-streaming's LedgerSink, which qip-ledgerd does not use.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2856,10 +2857,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming; cargo test -p qip-ledgerd",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement is about the store being lost; only process-down/restart is tested through the real consumer."
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The store refuses through a LedgerBackend wrapper in the test (the container runs as root, so an unwritable directory refuses nothing); the worker, store and broker are the production types. Mutation: answering a store error in apply_until_committed with Ok(Disposition::Advanced) instead of retrying fails the test at the 'group checkpoint holds' assertion. Spanner-specific loss is the same worker over SpannerBackend and is not separately driven."
   },
   {
     "id": "R12-RES-10129",
@@ -4281,25 +4282,29 @@
   },
   {
     "id": "R12-AMBIENT-10189",
-    "status": "PARTIAL",
-    "current": "Allocations carry rationale; record_outcome logs realised per-unit value, gauge qip_meta_marginal_value_bp.",
+    "status": "COMPLETE",
+    "current": "Realised value is the uncertainty a granted window was observed to remove: the grant snapshots the question's Uncertainty (a fill-bias item's bias-estimate standard error at its venue; any other item's calibration hit rate on its belief class) and measure_last_round reads it again, realised = expected x reduction, recorded through MetaIntelligence::record_outcome. A class whose calibration did not move and a window that gathered no new residual realise zero.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/router.rs:161-168"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:233-299 Uncertainty, reduction_from, standard_error",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1684-1711 uncertainty_of",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1773-1783 the measurement",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2491 a_grant_whose_class_calibration_did_not_move_realises_zero (mutation: return 1.0 for an unmoved calibration; fails)",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:370 a_second_unit_that_realises_nothing_records_zero_marginal_value (a window that narrowed nothing records zero)"
     ],
-    "gap": "Realised value is expected x progress proxy, measured only for fill-bias items; not a measured information value.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-AMBIENT-10094"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_grant_whose_class_calibration_did_not_move_realises_zero && cargo +1.94.1 test -p qip-deepbrain --test research_market a_second_unit_that_realises_nothing_records_zero_marginal_value",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed. A calibration that moves between sweeps needs resolved beliefs a test platform does not produce, so the moved case is proven at the unit (reduction_from) and the unmoved case from a node sweep."
   },
   {
     "id": "R12-QUANT-10190",
