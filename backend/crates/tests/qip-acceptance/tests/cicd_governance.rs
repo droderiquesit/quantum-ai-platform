@@ -262,3 +262,59 @@ fn the_human_release_pipeline_never_depends_on_the_autonomous_development_plane(
         }
     }
 }
+
+/// Hosts a hosted language model is reached at.
+const MODEL_HOSTS: [&str; 5] = [
+    "api.anthropic.com",
+    "api.openai.com",
+    "aiplatform.googleapis.com",
+    "generativelanguage.googleapis.com",
+    "openrouter.ai",
+];
+
+fn names_a_model_host(text: &str) -> bool {
+    MODEL_HOSTS.iter().any(|host| text.contains(host))
+}
+
+#[test]
+fn no_deployable_binary_names_a_model_host_so_no_runtime_component_calls_an_agent_service() {
+    // R12-RES-9178, second half. The first half (every release workflow stays
+    // dispatchable by a person) is the test above. This one is the runtime
+    // side: a binary that names a model host calls an agent service with no
+    // person anywhere in the path, and losing the autonomous plane would then
+    // stop more than autonomous change. The platform reaches a model only
+    // through the `LanguageModel` port in a library adapter that the
+    // model-gateway boundary suite pins; the composition roots under
+    // `apps/` configure it and carry no host of their own.
+    let root = qip_acceptance::repository_root();
+    let mut scanned = 0usize;
+    let mut naming: Vec<String> = Vec::new();
+    for file in qip_acceptance::files_with_extension("backend/crates/apps", "rs") {
+        scanned += 1;
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
+        if names_a_model_host(&text) {
+            naming.push(
+                file.strip_prefix(&root)
+                    .unwrap_or(&file)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    assert!(
+        scanned > 50,
+        "only {scanned} application sources were scanned"
+    );
+    assert_eq!(naming, Vec::<String>::new(), "a binary names a model host");
+
+    // The detector finds each host, so the empty result is a finding.
+    for host in MODEL_HOSTS {
+        assert!(names_a_model_host(&format!(
+            "const U: &str = \"https://{host}/v1\";"
+        )));
+    }
+    assert!(!names_a_model_host(
+        "const U: &str = \"http://127.0.0.1:9105\";"
+    ));
+}
