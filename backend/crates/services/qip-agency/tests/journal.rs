@@ -291,6 +291,7 @@ fn an_attempted_pass_leaves_three_linked_approval_records_on_the_chain() {
             audit_from: 0,
             goal_target: "spread under 5 bps",
             acting_identity: "desk-agent",
+            learning: None,
             at: Timestamp::from_secs(100),
         },
     )
@@ -386,6 +387,7 @@ fn a_guard_resumed_from_the_journal_has_already_spent_what_the_journal_records()
             audit_from: 0,
             goal_target: "t",
             acting_identity: "desk-agent",
+            learning: None,
             at: Timestamp::from_secs(100),
         },
     )

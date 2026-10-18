@@ -22,12 +22,14 @@ use crate::affordance::Method;
 use crate::attribution::EffectAttribution;
 use crate::plan::ActingIdentity;
 use qip_core::{Decimal, Error};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// The authority an approver must independently hold to widen a policy.
 pub const WIDEN_AUTHORITY: &str = "agency:widen-autonomy";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Authority {
     /// Plans, simulates, gates and reports. No adapter is called.
     #[default]
@@ -80,6 +82,19 @@ impl ActionPolicy {
 
     pub fn authority(&self) -> Authority {
         self.authority
+    }
+
+    /// The uplift interval `low..=high` this policy is held to by
+    /// [`Self::observe`]. Journaled beside every learning record so the
+    /// drift verdict can be recomputed from the log alone.
+    pub fn predicted_uplift(&self) -> (Decimal, Decimal) {
+        self.predicted_uplift
+    }
+
+    /// Every side effect this policy predicted; one it did not returns it to
+    /// shadow.
+    pub fn predicted_side_effects(&self) -> &BTreeSet<String> {
+        &self.predicted_side_effects
     }
 
     /// AGENCY-056: shadow to narrow-reversible, on measured causal effect and

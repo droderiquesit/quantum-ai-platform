@@ -2269,7 +2269,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
     ],
-    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced; nothing measures an effect after an intervention — attributions are operator-supplied.",
+    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced; the one attribution the platform computes itself (simulated::evidence after a shadowed pass) is of the simulation at the plan's own horizon, and nothing measures an effect after an intervention.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2280,7 +2280,7 @@
     "verification": "cargo test -p qip-agency -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-AGENCY-6105",
@@ -2309,15 +2309,13 @@
   {
     "id": "R12-AGENCY-6106",
     "status": "PARTIAL",
-    "current": "StageLog enforces the eleven-stage order; engine::learn now implements ObserveEffect, Attribute and Update (memory keep + policy observe), but nothing in a binary calls it; shadow passes stop at Act.",
+    "current": "StageLog enforces the eleven-stage order, with Act holding a third state, shadowed, that execute records when it calls nothing. On the default path (qip agency shadow with a structural model) a pass runs Observe through Gate, shadows Act, then ObserveEffect, Attribute and Update through engine::learn_shadowed; the journal lists the ten passed stages.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:30-58 Stage and ORDER",
-      "backend/crates/services/qip-agency/src/engine.rs:87 pass",
-      "backend/crates/services/qip-agency/tests/agency.rs:857",
-      "backend/crates/services/qip-agency/src/engine.rs:441-452",
-      "backend/crates/services/qip-agency/src/engine.rs::learn"
+      "backend/crates/services/qip-agency/src/engine.rs Stage, ORDER, StageLog::shadow_act, learn_shadowed",
+      "backend/crates/services/qip-agency/tests/agency.rs::learning_after_a_shadowed_act_admits_only_an_outcome_that_says_it_is_simulated",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
     ],
-    "gap": "No production pass completes all eleven stages; engine::learn has no non-test caller.",
+    "gap": "Act is shadowed, not passed, on every production pass, so ten of the eleven stages pass there; all eleven pass only in the crate test with a test adapter (ADR 0114).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2328,43 +2326,47 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-AGENCY-6107",
-    "status": "PARTIAL",
-    "current": "ActionOutcomeMemory refuses a record missing any of the nine fields (or audience/delay) and keeps a bounded working set (memory.rs:1-40). Its only production writer is engine::learn (engine.rs:412-450), which runs only after an executed act. qip-cli never calls learn (no reference in qip-cli/src/agency.rs) and its adapter refuses every call (agency.rs:89-97), so no shipped process writes the memory.",
+    "status": "COMPLETE",
+    "current": "ActionOutcomeMemory refuses a record missing any of the nine fields, or audience, delay or the twelfth, Observed (measured or simulated), and keeps a bounded working set. qip agency shadow writes it on the default path: after every shadowed pass with a structural model, engine::learn_shadowed keeps the simulated outcome (declared Observed::Simulated) and journal::record_pass writes it as AgencyRecord::Learned; a pass with nothing to learn from journals LearningWithheld with the reason.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/memory.rs:1-40",
-      "backend/crates/services/qip-agency/src/engine.rs:412-450",
-      "backend/crates/apps/qip-cli/src/agency.rs:89-97",
-      "backend/crates/services/qip-agency/tests/agency.rs::an_action_outcome_missing_any_of_its_nine_fields_or_its_audience_or_delay_is_refused_and_not_remembered"
+      "backend/crates/services/qip-agency/src/memory.rs ActionOutcomeDraft::build, Observed",
+      "backend/crates/services/qip-agency/src/engine.rs learn_shadowed",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::learn, MEMORY_CAPACITY",
+      "backend/crates/services/qip-agency/tests/agency.rs::an_action_outcome_missing_any_of_its_nine_fields_or_its_audience_or_delay_is_refused_and_not_remembered",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_pass_with_no_simulated_outcome_journals_a_withheld_learning_naming_what_is_absent"
     ],
-    "gap": "No composition root writes an Action Outcome Memory; with external action refused by ADR 0114 the only route to one is an executed act that cannot occur. Either record shadow/refused outcomes, or record that this is blocked on ADR 0114.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo test -p qip-agency --test agency; cargo test -p qip-cli --test agency_record",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-AGENCY-6108",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-agency/src/memory.rs:142 recommend and :164 recommend_for (per state/audience, learned delay)",
+    "current": "memory.rs recommend and recommend_for (per state/audience, learned delay) read only Observed::Measured records. qip-cli records outcomes into the memory after each shadowed pass, all of them simulated.",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/agency.rs:1461 the_learned_policy_selects_an_action_where_it_measurably_worked_and_no_action_where_it_did_not",
-      "backend/crates/services/qip-agency/tests/agency.rs:1486 what_worked_for_one_audience_is_not_recommended_for_another_and_the_delay_is_learned"
+      "backend/crates/services/qip-agency/src/memory.rs recommend_for",
+      "backend/crates/services/qip-agency/tests/agency.rs::the_learned_policy_selects_an_action_where_it_measurably_worked_and_no_action_where_it_did_not",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_shadowed_pass_learns_its_simulated_effect_and_nothing_is_recommended_on_it",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::learn"
     ],
-    "gap": "No composition root records outcomes or asks for a recommendation.",
+    "gap": "No composition root asks for a recommendation, and no measured outcome exists to recommend on: every recorded outcome is simulated and recommend_for deliberately reads none of them.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2372,7 +2374,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-CONTRACT-6109",
