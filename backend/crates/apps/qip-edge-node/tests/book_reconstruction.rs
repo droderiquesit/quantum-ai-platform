@@ -30,7 +30,7 @@ use qip_core::time::Timestamp;
 use qip_core::{Decimal, Duration, SystemClock, dec};
 use qip_edge::cell::{CellConfig, Placer};
 use qip_edge_node::allocation::RegionCapital;
-use qip_edge_node::feed::{MAX_LEVELS_PER_SIDE, SimulatedFeed};
+use qip_edge_node::feed::{MAX_LEVELS_PER_SIDE, SimulatedFeed, level_line};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::{NodeAssembly, assemble};
 use qip_execution_engine::order::Side;
@@ -416,5 +416,55 @@ fn a_book_rebuilt_from_the_simulated_venues_feed_is_the_venues_own_book_at_every
         );
     }
     assert_eq!(next, ticks.len(), "every captured tick was replayed");
+    Ok(())
+}
+
+#[test]
+fn a_captured_tick_names_the_wire_line_it_was_decoded_from_by_its_native_hash() -> Result<()> {
+    let mut session = Session::new()?;
+    session.clock += 1;
+    let now = t(session.clock);
+    session.gateway.advance_to(now)?;
+    session
+        .gateway
+        .seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), now)?;
+    session
+        .feed
+        .publish(&session.gateway, &mut session.node.cell, now)?;
+    let captured = session.feed.take_captured();
+    assert!(
+        !captured.is_empty(),
+        "premise: the publication carried a line"
+    );
+
+    for event in &captured {
+        let MessageBody::LevelSet {
+            side,
+            price,
+            quantity,
+            ..
+        } = event.payload().body
+        else {
+            panic!("the feed publishes levels only");
+        };
+        let origin = event.origin();
+        let wire = level_line(
+            origin.sequence,
+            event.event_time(),
+            OBJECT,
+            side,
+            price,
+            quantity,
+        );
+        let native = event
+            .native_hash()
+            .expect("a captured tick keeps the hash of its wire line");
+        assert_eq!(native, qip_core::sha256_hex(wire.as_bytes()));
+        assert_ne!(
+            native,
+            event.source_hash(),
+            "the wire line and the canonical re-encoding are different bytes"
+        );
+    }
     Ok(())
 }
