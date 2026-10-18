@@ -1646,12 +1646,15 @@
   },
   {
     "id": "R12-REFLEX-6075",
-    "status": "PARTIAL",
-    "current": "Distillation refuses a student whose step cost exceeds the latency budget; no resource or failure-mode budget; no regional deployment path.",
+    "status": "COMPLETE",
+    "current": "A distilled student is held to three deterministic budgets before approved_student hands it out: worst-case evaluation steps (existing), serialised parameter bytes (FidelityReport.parameter_bytes against FidelityPolicy.maximum_parameter_bytes, 64 KiB by default) and failure modes on bound inputs (non-finite, refused, or far outside the teacher's probe range at the probe box's corners and per-feature edges, against maximum_failure_modes, zero by default). The deep brain's learning desk names a distillate to the cells only through approved_student(&FidelityPolicy::default()), so all three run on its default round.",
     "evidence": [
-      "backend/crates/services/qip-training/src/distill.rs:217"
+      "backend/crates/services/qip-training/src/distill.rs FidelityPolicy::shortfalls (parameter bytes, failure modes) and failure_modes",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs approved_student(&FidelityPolicy::default())",
+      "backend/crates/services/qip-training/tests/training.rs a_student_over_its_memory_or_failure_mode_budget_is_refused_by_name",
+      "backend/crates/services/qip-training/tests/training.rs a_student_too_expensive_for_the_hot_path_is_refused_by_name"
     ],
-    "gap": "Resource and failure-mode budgets and a deployment gate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1659,10 +1662,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cargo test -p qip-training --test training && cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: zeroing failure_modes hands out the extrapolating student (fails on 0 bound inputs); scaling the byte bound by a million hands out the student over an 8-byte budget. qip-training and qip-deepbrain suites: 400 passed, 0 failed with the default budgets in force."
   },
   {
     "id": "R12-EXPAND-6076",
