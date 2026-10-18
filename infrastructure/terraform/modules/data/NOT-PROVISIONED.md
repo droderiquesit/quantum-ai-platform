@@ -22,9 +22,12 @@ spool are all code in this repository that had to be right. Provisioning the
 service they replaced would create a bus nothing publishes to, and a topic with
 no publisher is indistinguishable from a topic whose publisher is broken.
 
-There is exactly one Pub/Sub topic in this configuration, in `modules/secrets`,
-and it carries no platform data: Secret Manager will not accept a rotation
-schedule without somewhere to announce a rotation is due.
+There are exactly two Pub/Sub topics in this configuration, and neither
+carries platform data. The one in `modules/secrets` exists because Secret
+Manager will not accept a rotation schedule without somewhere to announce a
+rotation is due; the one in the root's `audit-logs.tf` is where Cloud Asset
+Inventory publishes every change to the project's resources and IAM policies.
+Both are notices from a Google control plane to an operator.
 
 ## Dataflow
 

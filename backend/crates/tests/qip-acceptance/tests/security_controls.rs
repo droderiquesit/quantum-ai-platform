@@ -67,6 +67,127 @@ fn secret_manager_and_kms_data_reads_are_audit_logged() {
 }
 
 #[test]
+fn every_service_holding_secrets_keys_ledger_evidence_or_model_data_has_data_read_audit_logging() {
+    // R12-SEC-10007. Until 2026-10-18 the audit config named Secret Manager
+    // and KMS and nothing else, so a read of the evidence bucket, the
+    // positions database, the research dataset or a signed image left no
+    // data-access record while the register said every such service was
+    // covered. The services are read out of the resource's own `for_each`
+    // rather than the file, so a service mentioned in a comment or in the
+    // service-identity blocks above cannot stand in for one the config has
+    // dropped — the earlier test matched `"secretmanager.googleapis.com"`
+    // anywhere in the file, and that string also appears in the
+    // `google_project_service_identity` block.
+    let text = code("infrastructure/terraform/modules/secrets/main.tf");
+    let configs = resources(&text, "google_project_iam_audit_config");
+    assert_eq!(
+        configs.len(),
+        1,
+        "premise: the secrets module holds exactly one audit config resource, found {configs:?}"
+    );
+    let (_, body) = &configs[0];
+    let for_each = nested_argument(body, "for_each")
+        .expect("premise: the audit config expands over a for_each of services");
+    let for_each = compact(for_each);
+    for service in [
+        "secretmanager.googleapis.com",
+        "cloudkms.googleapis.com",
+        "storage.googleapis.com",
+        "spanner.googleapis.com",
+        "bigquery.googleapis.com",
+        "artifactregistry.googleapis.com",
+    ] {
+        assert!(
+            for_each.contains(&format!("\"{service}\"")),
+            "{service} is not in the data-access audit config's for_each, so a read of what it \
+             holds leaves no record (R12-SEC-10007)"
+        );
+    }
+    let body = compact(body);
+    for log_type in ["\"ADMIN_READ\"", "\"DATA_READ\"", "\"DATA_WRITE\""] {
+        assert!(
+            body.contains(log_type),
+            "audit log type {log_type} is not enabled in the audit config's own body"
+        );
+    }
+}
+
+/// The right-hand side of `name = …` inside `body`, up to the end of the
+/// value: a one-line value ends at its line, a `toset([` or `[` list at its
+/// closing bracket.
+fn nested_argument<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+    let at = body
+        .lines()
+        .map(|line| line.trim_start())
+        .find(|line| line.starts_with(name) && line[name.len()..].trim_start().starts_with('='))?;
+    let start = body.find(at)?;
+    let rest = &body[start..];
+    let value = rest.split_once('=')?.1;
+    if value.trim_start().starts_with("toset([") || value.trim_start().starts_with('[') {
+        let close = value.find("])").or_else(|| value.find(']'))?;
+        Some(&value[..close])
+    } else {
+        value.lines().next()
+    }
+}
+
+#[test]
+fn asset_inventory_feeds_every_change_to_a_topic() {
+    // R12-SEC-9135. Audit logs record who called what; they do not record
+    // what the project now looks like, so a hand-edited firewall rule or an
+    // IAM binding added in the console was one line in a log nothing read
+    // back. The feed is the control: Cloud Asset Inventory publishes every
+    // resource and IAM-policy change to a topic the moment it happens.
+    // Removing the feed, narrowing it to a list of asset types, or dropping
+    // either content type fails here.
+    let services = code("infrastructure/terraform/modules/services/main.tf");
+    assert!(
+        services.contains("\"cloudasset.googleapis.com\" ="),
+        "the Cloud Asset API is not enabled, so no feed can exist"
+    );
+    let root = code("infrastructure/terraform/audit-logs.tf");
+    let feeds = resources(&root, "google_cloud_asset_project_feed");
+    assert_eq!(
+        feeds.len(),
+        1,
+        "premise: audit-logs.tf declares one feed resource expanding over content types, \
+         found {feeds:?}"
+    );
+    let (_, body) = &feeds[0];
+    let flat = compact(body);
+    for content_type in ["\"RESOURCE\"", "\"IAM_POLICY\""] {
+        assert!(
+            flat.contains(content_type),
+            "the asset feed does not publish {content_type} changes"
+        );
+    }
+    assert!(
+        flat.contains("pubsub_destination{topic=google_pubsub_topic.asset_changes.id}"),
+        "the asset feed does not publish to the asset-changes topic"
+    );
+    assert!(
+        !body
+            .lines()
+            .any(|line| line.trim_start().starts_with("asset_types")),
+        "the asset feed names asset types; a list admits exactly the resources somebody \
+         thought of, and the change that matters is the one nobody did"
+    );
+    // The publisher is Cloud Asset Inventory's own service agent, on that one
+    // topic — not a project-wide grant and not a workload identity.
+    let grants = resources(&root, "google_pubsub_topic_iam_member");
+    let publisher = grants
+        .iter()
+        .find(|(name, _)| name == "asset_changes_publisher")
+        .map(|(_, body)| compact(body))
+        .expect("the asset-changes topic has a publisher grant");
+    assert!(
+        publisher.contains("role=\"roles/pubsub.publisher\"")
+            && publisher.contains("@gcp-sa-cloudasset.iam.gserviceaccount.com\""),
+        "the asset-changes publisher is not Cloud Asset Inventory's service agent: {publisher}"
+    );
+}
+
+#[test]
 fn the_container_scanning_api_is_enabled_for_the_registry() {
     let services = code("infrastructure/terraform/modules/services/main.tf");
     assert!(

@@ -2158,13 +2158,14 @@
   {
     "id": "R12-AGENCY-6099",
     "status": "PARTIAL",
-    "current": "ConductGate seven checks now read the given conduct rules (whole words) plus coordinated-voices check; run by ActionGuard::preflight in deepbrain ambient intake before outbox drafts.",
+    "current": "ConductGate's seven checks read the given conduct rules as whole words plus the coordinated-voices check, run by ActionGuard::preflight in the CLI and the deepbrain ambient door before any adapter. Since 2026-10-18 the guard also detects the coordination pattern structurally, with no phrase involved: the same message (by its word fingerprint) released under a second identity in a later pass is refused as fake consensus, remembered across passes and resumed from the journal (R12-AGENCY-1064).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:223-245 check_market_conduct: `_conduct_rules` unused, substring match",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:250 ConductGate",
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:251"
+      "backend/crates/services/qip-agency/src/guard.rs:400-412",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::checks::check_coordinated_voices",
+      "backend/crates/services/qip-agency/tests/agency.rs::the_same_message_released_under_a_second_identity_in_a_later_pass_is_withheld_as_fake_consensus",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_rules_given_decide_the_market_conduct_verdict"
     ],
-    "gap": "Manipulation check is phrase-list matching, not pattern detection; no external communication path exists to gate.",
+    "gap": "Manipulation on the step itself (order sequence, exposure, channel) is still phrase-matched on the draft text rather than detected on the action (R12-AGENCY-1060). No external communication path exists to gate, by design (ADR 0114).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2172,10 +2173,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test conduct_brain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency the_same_message_released_under_a_second_identity && cargo +1.94.1 test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": "Substring matching is the trap .claude/rules/architecture/01-testing-strategy.md warns about; the check guards almost nothing. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L10): the coordination half is pattern detection now (mutation: skipping the voice scan lets the second identity's pass execute). Held PARTIAL on step-level manipulation detection."
   },
   {
     "id": "R12-AGENCY-6100",

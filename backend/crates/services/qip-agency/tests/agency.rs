@@ -494,7 +494,7 @@ fn an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused() {
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
-use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, EvidenceCitation};
+use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
 use qip_agency::engine::{
     Adapter, Decision, EdgeDecl, Execution, Gated, LearningOutcome, LeverEvidence, ORDER, Outcome,
     ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn, learn_shadowed,
@@ -951,7 +951,10 @@ fn quote_draft() -> CommunicationDraft {
             evidence_id: "spread-series-1".into(),
             confidence_bps: 9000,
         }],
-        disclosures: vec![],
+        disclosures: vec![Disclosure {
+            kind: "paper_venue".into(),
+            text: "Paper venue: no live order is placed".into(),
+        }],
         target_audience: "venue-a participants".into(),
         jurisdiction: "US".into(),
     }
@@ -973,7 +976,7 @@ fn guard_decl() -> GuardDecl {
         conduct: ConductPolicy {
             authorized_sources: vec!["venue-feed".into()],
             authorized_identities: vec!["desk-agent".into()],
-            required_disclosures: vec![],
+            required_disclosures: vec!["paper_venue".into()],
             channel_policies: BTreeMap::from([(
                 "paper-venue".to_string(),
                 vec!["venue-a participants".to_string()],
@@ -1641,6 +1644,26 @@ fn an_adapter_is_never_called_without_a_guard_even_at_narrow_reversible_authorit
 fn each_guard_check_alone_withholds_the_plan_before_any_adapter_call() {
     type Mutate = fn(&mut Request);
     let cases: Vec<(&str, Mutate)> = vec![
+        // R12-AGENCY-1065: promissory content, refused before the adapter.
+        ("no_false_claims", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().content =
+                "Quote 20 lots: a guaranteed fill on venue-a".into();
+        }),
+        // R12-AGENCY-1059: the required disclosure absent, and present with
+        // blank text, each withhold; a disclosure is its text, not its kind.
+        ("disclosures", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications
+                .get_mut("quoter")
+                .unwrap()
+                .disclosures
+                .clear();
+        }),
+        ("Required disclosure 'paper_venue'", |r| {
+            let g = r.guards.as_mut().unwrap();
+            g.communications.get_mut("quoter").unwrap().disclosures[0].text = "  ".into();
+        }),
         ("no_fake_consensus", |r| {
             let g = r.guards.as_mut().unwrap();
             g.communications.get_mut("quoter").unwrap().content =
@@ -1802,6 +1825,164 @@ fn a_guard_kept_across_passes_holds_the_rate_window_and_the_revocation() {
     assert_eq!(adapter.calls.len(), 2, "only the two admitted passes sent");
     // Two guards are two sources of truth.
     assert!(run_with(request(), Some(&policy), Some(&mut guard), &mut adapter).is_err());
+}
+
+/// R12-AGENCY-1064 / 6099: the same words under a second identity, in a
+/// later pass. Inside one pass every draft speaks as the goal's one identity,
+/// so the coordinated-voices check cannot see this; the guard's memory of
+/// what it released, and the journal it is resumed from, can. No phrase is
+/// involved: the message is an innocent quote, and the pattern is the only
+/// thing that is wrong with it.
+#[test]
+fn the_same_message_released_under_a_second_identity_in_a_later_pass_is_withheld_as_fake_consensus()
+{
+    use qip_agency::guard::{GuardPolicy, Voice, voice_fingerprint};
+    let policy = narrow();
+    // A second desk identity with its own registered tool, saying the same
+    // thing the first says.
+    let second_draft = || CommunicationDraft {
+        id: "quote-2".into(),
+        sender_identity: "desk-agent-2".into(),
+        ..quote_draft()
+    };
+    let second_request = || {
+        let mut r = request();
+        r.guards = None;
+        r.goal = GoalSpecDraft {
+            acting_identity: s("desk-agent-2"),
+            ..draft(GoalClass::Liquidity)
+        }
+        .build()
+        .unwrap();
+        r.identity = ActingIdentity {
+            name: "desk-agent-2".into(),
+            ..who(&["quote"])
+        };
+        r.tool_edges[0].edge.tool = s("quoter-2");
+        r.proposals[0].root = step("quoter-2", 20);
+        r
+    };
+    let decl = || {
+        let mut decl = guard_decl();
+        decl.conduct
+            .authorized_identities
+            .push("desk-agent-2".into());
+        decl.tools.push(ToolRegistration {
+            acting_identity: "desk-agent-2".into(),
+            max_actions_per_window: 10,
+            budget_units: 1_000,
+            ..tool("quoter-2")
+        });
+        decl.communications
+            .insert("quoter-2".to_string(), second_draft());
+        decl
+    };
+    let first_request = || {
+        let mut r = request();
+        r.guards = None;
+        r
+    };
+
+    // Premise: alone, the second identity's pass is admitted and sent.
+    let mut fresh = ActionGuard::from_decl(decl()).unwrap();
+    let mut adapter = Counting::default();
+    let alone = run_with(
+        second_request(),
+        Some(&policy),
+        Some(&mut fresh),
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(
+        matches!(alone.outcome, Outcome::Executed(_)),
+        "premise: {:?}",
+        alone.outcome
+    );
+    assert_eq!(adapter.calls, vec!["quoter-2".to_string()]);
+    assert_eq!(
+        alone.released,
+        vec![Voice {
+            tool: "quoter-2".into(),
+            identity: "desk-agent-2".into(),
+            fingerprint: voice_fingerprint(&quote_draft().content),
+        }],
+        "the report carries the voice the pass released"
+    );
+
+    // One guard across passes: the first identity says it, then the second.
+    let mut guard = ActionGuard::from_decl(decl()).unwrap();
+    let mut adapter = Counting::default();
+    let first = run_with(
+        first_request(),
+        Some(&policy),
+        Some(&mut guard),
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(matches!(first.outcome, Outcome::Executed(_)), "premise");
+    guard.advance(2, approvals());
+    let second = run_with(
+        second_request(),
+        Some(&policy),
+        Some(&mut guard),
+        &mut adapter,
+    )
+    .unwrap();
+    let Outcome::Stopped(why) = &second.outcome else {
+        panic!("{:?}", second.outcome)
+    };
+    assert!(why.contains("fake consensus across passes"), "{why}");
+    assert!(
+        why.contains("desk-agent-2") && why.contains("`desk-agent`"),
+        "{why}"
+    );
+    assert_eq!(
+        adapter.calls,
+        vec!["quoter".to_string()],
+        "nothing more was sent"
+    );
+    assert_eq!(second.failed, Some(Stage::Act));
+    assert!(second.released.is_empty());
+
+    // The first identity repeating itself is not consensus.
+    guard.advance(3, approvals());
+    let again = run_with(
+        first_request(),
+        Some(&policy),
+        Some(&mut guard),
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(
+        matches!(again.outcome, Outcome::Executed(_)),
+        "{:?}",
+        again.outcome
+    );
+
+    // Resumed from what a previous process released, a fresh guard refuses
+    // the same thing; resuming during a pass is refused.
+    let mut resumed = ActionGuard::from_policy(GuardPolicy {
+        conduct: decl().conduct,
+        tools: decl().tools,
+    })
+    .unwrap();
+    resumed.resume_voices(first.released.clone()).unwrap();
+    resumed.advance(4, approvals());
+    assert!(resumed.resume_voices(Vec::new()).is_err());
+    let mut pass = second_request();
+    pass.pass = Some(qip_agency::guard::PassDecl {
+        communications: BTreeMap::from([("quoter-2".to_string(), second_draft())]),
+        grounds: guard_decl().grounds,
+        approvals: approvals(),
+        rate_window: 4,
+    });
+    let mut adapter = Counting::default();
+    let replayed = run_with(pass, Some(&policy), Some(&mut resumed), &mut adapter).unwrap();
+    let Outcome::Stopped(why) = &replayed.outcome else {
+        panic!("{:?}", replayed.outcome)
+    };
+    assert!(why.contains("fake consensus across passes"), "{why}");
+    assert!(adapter.calls.is_empty());
 }
 
 // ---- R12-AGENCY-6103 / 6107 / 054: learning after an action ---------------

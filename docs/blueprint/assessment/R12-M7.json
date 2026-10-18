@@ -2890,25 +2890,27 @@
   },
   {
     "id": "R12-OBS-7131",
-    "status": "PARTIAL",
-    "current": "GoalApproval/PlanApproval/ExecutionRecord linked records tested; EffectAttribution carries goal/intervention/action ids; no graph store.",
+    "status": "COMPLETE",
+    "current": "journal::lineages folds every AgencyRecord on the hash-chained log into one PassLineage per pass (goal target and acting identity from PassOpened, GoalApproval, PlanApproval, ExecutionRecord, tool decisions, released voices, the learned EffectAttribution, the concluded outcome), journal::lineage_of answers for one pass, and PassLineage::verify refuses a chain with a link missing or mis-cited (a plan approval citing no goal approval, an execution citing no or another plan approval, a charge or a voice with no execution, an attribution over a plan nobody approved). On the default path qip-cli's Session::pass reads its own pass back through lineage_of and verify immediately after record_pass and prints the lineage line, so a journal that cannot be folded stops the binary rather than an auditor later.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:412-436",
-      "backend/crates/libs/qip-contracts/tests/action.rs:170",
-      "backend/crates/libs/qip-contracts/src/expansion.rs:190-193"
+      "backend/crates/services/qip-agency/src/journal.rs:537-640 (PassLineage, verify, lineages, lineage_of)",
+      "backend/crates/apps/qip-cli/src/agency.rs:452-477 (read-back and verify after record_pass)",
+      "backend/crates/services/qip-agency/tests/journal.rs::one_pass_folds_into_one_connected_lineage_and_a_dropped_approval_breaks_it",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal (asserts the lineage line)",
+      "backend/crates/libs/qip-contracts/src/action.rs (GoalApproval/PlanApproval/ExecutionRecord ids the chain is checked on)"
     ],
-    "gap": "Lineage graph persisted and queryable.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test journal one_pass_folds && cargo +1.94.1 test -p qip-cli --test agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutation fired: dropping the `(None, Some(_))` execution-without-plan arm of PassLineage::verify makes the replayed log with PlanApproved removed verify, and the test fails at unwrap_err. The lineage is a fold over the event log, not a second store (no second source of truth for a fact the log holds)."
   },
   {
     "id": "R12-OBS-7132",

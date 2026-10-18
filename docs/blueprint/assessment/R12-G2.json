@@ -3034,25 +3034,26 @@
   },
   {
     "id": "R12-SEC-9135",
-    "status": "PARTIAL",
-    "current": "DATA_WRITE audit config covers run, container and compute plus Secret Manager and KMS, unconditionally in every environment, and is asserted by an acceptance test.",
+    "status": "COMPLETE",
+    "current": "Cloud Audit Logs: DATA_WRITE on run, container and compute (audit-logs.tf) and ADMIN_READ/DATA_READ/DATA_WRITE on secretmanager, cloudkms, storage, spanner, bigquery and artifactregistry (modules/secrets). Cloud Asset Inventory: cloudasset.googleapis.com is in modules/services' always-on set, and audit-logs.tf declares google_cloud_asset_project_feed.changes for RESOURCE and IAM_POLICY content over every asset type, publishing to google_pubsub_topic.asset_changes (CMEK, own key) with Cloud Asset Inventory's service agent as the only publisher.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:318",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:48",
-      "infrastructure/terraform/audit-logs.tf::google_project_iam_audit_config.runtime_changes"
+      "infrastructure/terraform/modules/services/main.tf cloudasset.googleapis.com in local.always",
+      "infrastructure/terraform/audit-logs.tf google_cloud_asset_project_feed.changes, google_pubsub_topic.asset_changes, google_pubsub_topic_iam_member.asset_changes_publisher, google_kms_crypto_key.asset_feed",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs asset_inventory_feeds_every_change_to_a_topic",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs ALLOWED_PUBSUB_RESOURCES (the feed topic admitted beside the rotation notice)"
     ],
-    "gap": "Cloud Asset Inventory is not enabled and has no feeds.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test security_controls asset_inventory_feeds_every_change_to_a_topic --test blueprint_arch",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18: feed added and re-graded COMPLETE. Mutation: renaming the feed resource type failed the test on its premise (no feed found). The topic is the second Pub/Sub topic in the platform; like the rotation notice it carries a Google control-plane notice to an operator and no platform data, and blueprint_arch's allow-list was widened by exactly those two resources. Nothing subscribes in-tree; a SIEM or operator subscription is out of band. Nothing is applied."
   },
   {
     "id": "R12-SEC-9136",

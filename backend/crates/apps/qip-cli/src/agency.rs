@@ -277,6 +277,7 @@ impl Session {
         }
         let resumed = journal::resume(journal)?;
         guard.resume(resumed.decisions)?;
+        guard.resume_voices(resumed.voices)?;
         for tool in &policy.revoked_tools {
             guard.revoke(tool).map_err(|error| {
                 Error::invalid(format!(
@@ -448,7 +449,29 @@ impl Session {
             },
         )?;
         self.next_pass += 1;
-        render(number, &report, widening.as_ref(), &learning)
+        // R12-OBS-7131: the pass is read back as one lineage before it is
+        // reported. A journal that holds every record and cannot be folded
+        // into one chain is a journal that cannot answer who approved what
+        // was sent, and that is found here, by the writer, not by an
+        // auditor later.
+        let lineage = journal::lineage_of(journal, number)?.ok_or_else(|| {
+            Error::guard(format!(
+                "pass {number} was journaled and cannot be read back; the journal is not a \
+                 record of it"
+            ))
+        })?;
+        lineage.verify()?;
+        let (mut lines, code) = render(number, &report, widening.as_ref(), &learning)?;
+        lines.push(format!(
+            "lineage: pass {number} reads back as one connected chain (goal approval {}, plan \
+             approval {}, execution {}, {} tool decision(s), {} voice(s) released)",
+            lineage.goal_approval.as_ref().map_or("none", |_| "present"),
+            lineage.plan_approval.as_ref().map_or("none", |_| "present"),
+            lineage.execution.as_ref().map_or("none", |_| "present"),
+            lineage.tool_decisions.len(),
+            lineage.released.len(),
+        ));
+        Ok((lines, code))
     }
 }
 

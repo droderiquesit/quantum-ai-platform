@@ -64,13 +64,14 @@
   {
     "id": "R12-GOV-10004",
     "status": "PARTIAL",
-    "current": "Two project-scoped org policies disable service-account key creation/upload; tested. No other constraints (external IP, locations, shielded VM) and nothing at organisation scope.",
+    "current": "Four project-scoped org policies in main.tf under project_key_policies_enabled: iam.disableServiceAccountKeyCreation, iam.disableServiceAccountKeyUpload, compute.vmExternalIpAccess (deny_all) and compute.requireShieldedVm, each asserted inside its own resource body by an acceptance test. ADR 0118's folder root (infrastructure/foundation/main.tf) enforces key creation/upload, storage.uniformBucketLevelAccess, compute.skipDefaultNetworkCreation and compute.vmExternalIpAccess at folder scope, which a project owner cannot override; dev sets project_key_policies_enabled = false because it sits in that folder.",
     "evidence": [
-      "infrastructure/terraform/main.tf:1327 google_org_policy_policy disable_service_account_key_creation",
-      "infrastructure/terraform/main.tf:1342 disable_service_account_key_upload",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2137 organization_policy_disables_service_account_key_creation"
+      "infrastructure/terraform/main.tf google_org_policy_policy disable_service_account_key_creation, disable_service_account_key_upload, deny_vm_external_ip, require_shielded_vm",
+      "infrastructure/foundation/main.tf:107 google_org_policy_policy.boolean (folder scope), :126 vm_external_ip",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_disables_service_account_key_creation",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs organization_policy_refuses_external_vm_addresses_and_unshielded_machines"
     ],
-    "gap": "Add the remaining guardrail constraints and apply at folder/org scope so a project owner cannot override them.",
+    "gap": "gcp.resourceLocations is declared at neither scope: it needs an allowed-locations value nobody has decided (the archive bucket is multi-region US while var.region is a single region, so no value derives from existing variables). compute.requireShieldedVm exists only at project scope, where a project owner can remove it; the folder copy is the owner's foundation root. Patch for the location variable is in notes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -78,10 +79,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure organization_policy_disables_service_account_key_creation",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure organization_policy",
     "work_item": "",
     "size": "M",
-    "notes": "Project-scoped policies can be overridden by a project owner; not 'non-bypassable' as written."
+    "notes": "2026-10-18: two constraints added at project scope, test mutation-verified (deleting deny_vm_external_ip and flipping deny_all to FALSE each failed the test). Kept PARTIAL for gcp.resourceLocations. Proposed patch, protected path infrastructure/terraform/variables.tf: variable \"allowed_resource_locations\" { type = list(string); default = []; description = \"Organization Policy gcp.resourceLocations allowed values, e.g. [\\\"in:us-locations\\\"]; empty declares no policy, because a wrong list refuses every new resource at apply.\" } and in main.tf a google_org_policy_policy \"resource_locations\" with count = var.project_key_policies_enabled && length(var.allowed_resource_locations) > 0 ? 1 : 0, spec { rules { values { allowed_values = var.allowed_resource_locations } } }; tfvars value per environment is the owner's to choose."
   },
   {
     "id": "R12-GOV-10005",
@@ -125,13 +126,14 @@
   },
   {
     "id": "R12-SEC-10007",
-    "status": "PARTIAL",
-    "current": "Data-access audit logging is configured for Secret Manager and Cloud KMS and tested; not for Spanner, BigQuery, GCS evidence or Artifact Registry.",
+    "status": "COMPLETE",
+    "current": "google_project_iam_audit_config.secrets_and_keys in modules/secrets/main.tf expands over secretmanager, cloudkms, storage, spanner, bigquery and artifactregistry with ADMIN_READ, DATA_READ and DATA_WRITE, unconditionally in every environment; run, container and compute carry DATA_WRITE in audit-logs.tf. The acceptance test reads the services out of the resource's own for_each, so a service named only in a comment or a service-identity block cannot stand in for one the config dropped.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:318 google_project_iam_audit_config secrets_and_keys",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:48 secret_manager_and_kms_data_reads_are_audit_logged"
+      "infrastructure/terraform/modules/secrets/main.tf:336 google_project_iam_audit_config secrets_and_keys (for_each of six services, three log types)",
+      "infrastructure/terraform/audit-logs.tf:22 google_project_iam_audit_config runtime_changes",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs every_service_holding_secrets_keys_ledger_evidence_or_model_data_has_data_read_audit_logging"
     ],
-    "gap": "Extend audit config to storage, data and registry services.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -139,10 +141,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls",
+    "verification": "cd backend && cargo test -p qip-acceptance --test security_controls every_service_holding_secrets_keys_ledger_evidence_or_model_data_has_data_read_audit_logging",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18: extended from two services to six and re-graded COMPLETE. Mutation: deleting \"spanner.googleapis.com\" from the for_each failed the test naming that service. The config is project IAM policy, written whether or not the store's API is enabled, so a Spanner or BigQuery store a later environment switches on is audited from its first read. Nothing is applied; this is the committed configuration and its test."
   },
   {
     "id": "R12-GCP-10008",
