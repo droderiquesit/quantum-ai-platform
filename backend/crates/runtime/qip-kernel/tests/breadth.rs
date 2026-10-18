@@ -612,6 +612,29 @@ fn commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_c
         !research.cycles().is_empty(),
         "no unit completed a purchase-to-sale cycle: {runs:?}"
     );
+    // R12-LEDGER-5026: every SIMULATE pass reconciles the ledger against the
+    // marketplace's own record. The marketplace booked every settled sale,
+    // and an agreeing record leaves no break and no reported problem.
+    // Mutation: drop the reconcile call from `CommerceResearch::simulate`
+    // and the pass count reads zero.
+    let plane = research.plane();
+    assert_eq!(
+        plane.reconciliations(),
+        6,
+        "one reconciliation per SIMULATE"
+    );
+    assert_eq!(
+        plane.marketplace_statement().lines.len(),
+        research.cycles().len(),
+        "the marketplace booked every sale the ledger settled"
+    );
+    assert!(plane.breaks().is_empty(), "{:?}", plane.breaks());
+    assert!(
+        runs.iter()
+            .flat_map(|run| run.problems.iter())
+            .all(|problem| !problem.starts_with("reconciliation break")),
+        "{runs:?}"
+    );
     assert!(runs.iter().all(|run| !run.decision_grade));
     Ok(())
 }

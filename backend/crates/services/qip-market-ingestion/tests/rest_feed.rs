@@ -988,3 +988,38 @@ fn a_credential_header_the_transport_writes_itself_is_refused_at_configuration_t
         "the refusal must say what would have happened: {error}"
     );
 }
+
+/// R12-DATA-2014: a REST fetch distils the vendor's body into records and
+/// keeps no copy of it. A canary the vendor sends beside the records — a
+/// field no decoder reads — must reach no record, in debug or serialised
+/// form, and nothing the adapter holds. The premise half proves the canary
+/// crossed the socket inside the served bytes. Mutated by writing the whole
+/// body into the trade's `trade_id`; the record then carries the canary.
+#[test]
+fn a_canary_in_a_rest_body_is_found_in_no_record_the_adapter_emits() {
+    const CANARY: &str = "CANARY-a3c40f19-not-for-retention";
+    let body = FULL_PAYLOAD.replacen('{', &format!("{{\n  \"note\": \"{CANARY}\","), 1);
+    assert!(body.contains(CANARY) && !FULL_PAYLOAD.contains(CANARY));
+    let server = TestServer::always(Action::json(200, &body));
+    let mut adapter = adapter_for(&server);
+
+    let records = adapter.poll(poll_instant()).expect("the fetch succeeds");
+
+    assert_eq!(server.served(), 1, "premise: the body crossed a socket");
+    assert_eq!(records.len(), 4, "premise: the body was distilled");
+    assert!(
+        !format!("{records:?}").contains(CANARY),
+        "a record carried the body"
+    );
+    for record in &records {
+        let json = serde_json::to_string(record).expect("a record serialises");
+        assert!(
+            !json.contains(CANARY),
+            "a serialised record carried the body"
+        );
+    }
+    assert!(
+        !format!("{adapter:?}").contains(CANARY),
+        "the adapter retained the body"
+    );
+}
