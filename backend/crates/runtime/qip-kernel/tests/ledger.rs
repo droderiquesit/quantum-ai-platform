@@ -3868,3 +3868,92 @@ fn with_every_derived_store_gone_the_log_and_the_statements_alone_rebuild_and_ve
     let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
     Ok(())
 }
+
+#[test]
+fn a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else() -> Result<()> {
+    // The failure this prevents (R12-ASSET-4074): the wallet reconciliation
+    // halted a venue-asset and journalled it, and the desk went on sending
+    // orders into the very balance or position its custodian disagreed
+    // about — the halt was a record nobody on the desk side read.
+    let at = start().saturating_add(Duration::from_secs(60));
+    let desk = VenueId::new("simulated-venue");
+
+    // Cash scope. Premise: the same buy is admitted before any statement.
+    let mut admitted = platform(PlatformConfig::default())?;
+    trade(&mut admitted, Side::Buy, dec!("10"), dec!("100"), at)?;
+    assert!(
+        !admitted.orders().fills().is_empty(),
+        "premise: the buy filled before any break"
+    );
+
+    let mut cash = platform(PlatformConfig::default())?;
+    let equity = cash.config().initial_equity;
+    cash.observe_statement(
+        desk.clone(),
+        "USD",
+        equity + dec!("500"),
+        dec!("1"),
+        start(),
+    )?;
+    let report = cash.run_cycle(at);
+    assert!(report.stage(Stage::Learn).is_some(), "premise: LEARN ran");
+    assert!(
+        cash.fabric_state()
+            .reconciliations()
+            .get(&desk_cash()?)
+            .is_some_and(ReconciliationOutcome::is_halt),
+        "premise: the desk's cash is halted"
+    );
+    let refused = trade(&mut cash, Side::Buy, dec!("10"), dec!("100"), at);
+    let error = refused.expect_err("a buy was sent into halted cash");
+    assert!(
+        error
+            .message()
+            .contains("halted by the wallet reconciliation"),
+        "the refusal does not name the halt: {}",
+        error.message()
+    );
+    assert!(cash.orders().fills().is_empty(), "the refused buy filled");
+    assert_eq!(
+        cash.telemetry()
+            .metrics
+            .snapshot()
+            .counter_total(qip_observability::metrics::names::ORDERS_REFUSED),
+        1
+    );
+    // A sell spends no cash: the cash halt does not name it, and neither
+    // does it name another instrument's sell at a venue it did not halt.
+    assert_eq!(cash.wallet_halt_for(INSTRUMENT, Side::Sell), None);
+
+    // Instrument scope. The desk holds the position first, so the statement
+    // has a ledger view to disagree with.
+    let mut held = platform(PlatformConfig::default())?;
+    trade(&mut held, Side::Buy, dec!("10"), dec!("100"), at)?;
+    held.observe_statement(desk, INSTRUMENT, dec!("999"), dec!("1"), at)?;
+    held.run_cycle(at.saturating_add(Duration::from_secs(60)));
+    let key = qip_capital_fabric::wallet::VenueAsset {
+        venue: VenueId::new("simulated-venue"),
+        asset: qip_capital_fabric::wallet::Asset::new(INSTRUMENT)?,
+    };
+    assert!(
+        held.fabric_state()
+            .reconciliations()
+            .get(&key)
+            .is_some_and(ReconciliationOutcome::is_halt),
+        "premise: the position is halted"
+    );
+    let sell = trade(
+        &mut held,
+        Side::Sell,
+        dec!("5"),
+        dec!("100"),
+        at.saturating_add(Duration::from_secs(120)),
+    );
+    assert!(
+        sell.expect_err("a sell was sent into a halted position")
+            .message()
+            .contains("halted by the wallet reconciliation"),
+    );
+    assert_eq!(held.wallet_halt_for("obj-other", Side::Buy), None);
+    Ok(())
+}

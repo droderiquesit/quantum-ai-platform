@@ -943,6 +943,49 @@ fn a_drifted_model_raises_exactly_one_model_drift_gap() {
     );
 }
 
+/// R12-TICK-2072: drift the learning round measured is a curriculum item, not
+/// only a counter. The node hands `drifted_references` to the sweep, the sweep
+/// raises a `ModelDrift` gap, and `ExpansionDesk::offer` queues it as a
+/// validated research item naming the model; an undrifted model queues none.
+///
+/// Mutation: delete the `observations.extend(model_drift(..))` line in
+/// `sweep_over`; the drifted model reaches the sweep and no item names it.
+#[test]
+fn a_drifted_model_opens_a_curriculum_task_and_an_undrifted_one_does_not() {
+    let platform = platform_over(Universe::new());
+    let (licensed, eligible) = deployed_bounds();
+    let names_model = |research: &ResearchLoop, model: &str| {
+        research
+            .desk()
+            .queue()
+            .ranked()
+            .iter()
+            .any(|e| e.item().research_question.contains(model))
+    };
+
+    let mut research = deployed(BTreeMap::new());
+    research
+        .sweep_over(&platform, &[], &[], t0(), &licensed, &eligible)
+        .unwrap();
+    assert!(
+        !names_model(&research, "ridge@3"),
+        "premise: with no drift noted no item names the model"
+    );
+
+    research.note_drifted_models(["ridge@3".to_string()]);
+    let round = research
+        .sweep_over(&platform, &[], &[], t0(), &licensed, &eligible)
+        .unwrap();
+    assert!(
+        names_model(&research, "ridge@3"),
+        "the drifted model opened no curriculum item: {round:?}"
+    );
+    assert!(
+        !names_model(&research, "lasso@1"),
+        "a model that did not drift must not be named"
+    );
+}
+
 /// A stand-in for a hosted model that refuses every second call. No
 /// provider is reached from a test: the tally wraps whatever model it is
 /// given, and this is the model.

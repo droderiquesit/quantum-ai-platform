@@ -795,11 +795,14 @@
   {
     "id": "R12-WORLD-3036",
     "status": "PARTIAL",
-    "current": "Self-model grades components and scales evidence; drift and operational health are not part of it; capability boundaries not modelled.",
+    "current": "The self-model grades components and scales evidence by them, and since 2026-10-18 it also detects model/data drift: CapabilityEstimate::drift compares the mean Brier of the older and newer half of a component's window (each at least MINIMUM_SAMPLE) and reports a Drift when the newer half is worse by more than DRIFT_TOLERANCE; Capability::weight then weights a drifting component by its recent shrunk accuracy instead of the window average, and SelfModel::factor and origin_factors (handed to REASON at platform.rs:9763) use it. Operational health and capability boundaries are not modelled.",
     "evidence": [
-      "(no line-cited evidence re-read in this audit; status carried from prior assessment)"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs Drift, CapabilityEstimate::drift, Capability::weight",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_has_started_missing_is_weighted_by_its_recent_record_not_its_window_average",
+      "backend/crates/services/qip-learning-engine/tests/self_model.rs a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drifting",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:9763 set_origin_factors(self.self_model.origin_factors())"
     ],
-    "gap": "Drift, operational health and capability boundaries in the self-model.",
+    "gap": "Operational health (kill-switch/halt and stale-feed facts the kernel already holds, as a self-model input) and a capability boundary per registered asset class are not in the self-model. Drift is per component and covers forecasts only; a feed whose data drifted without its component's Brier worsening is not seen.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -807,10 +810,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test self_model",
+    "verification": "cargo test -p qip-learning-engine --test self_model && cargo test -p qip-kernel --test self_model",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged; not re-read line by line in this audit (no landed lane commit targets it), so PARTIAL is carried, not re-proven."
+    "notes": "2026-10-18 lane L23: drift third closed, health and boundaries not. Mutations fired - Capability::weight returning the window accuracy ('a drifting component kept its window weight 0.5'); the tolerance check removed (the steady component reported drift). DRIFT_TOLERANCE 0.05 is a chosen constant, said so in its doc."
   },
   {
     "id": "R12-WORLD-3037",
@@ -1261,14 +1264,13 @@
   {
     "id": "R12-REASON-3057",
     "status": "PARTIAL",
-    "current": "The kernel loads a versioned rule pack (eligibility plus paper-boundary and kill-switch invariants) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict.",
+    "current": "The kernel loads a versioned rule pack (v2) and evaluates it per hypothesis; replay re-evaluates and refuses a non-reproducing verdict. Besides eligibility and the paper-boundary/kill-switch invariants, v2 carries a market-structure fact (lot_headroom: the position budget left after buying one lot at the last price, from the instrument's lot and multiplier and the tightest MaxPositionWeight) and an accounting fact (cash_headroom: cash left after one lot), each gating r10-eligible, with rules r60/r61 naming the breach and invariant i30 forbidding eligibility on negative cash.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:264 rule_pack; :595 replay"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs rule_pack (v2: r60, r61, i30), rule_inputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs a_hypothesis_whose_smallest_lot_breaks_the_budget_or_the_cash_is_ruled_against_and_replays",
+      "backend/crates/runtime/qip-kernel/src/platform.rs lot_headrooms, called from reason_symbolically"
     ],
-    "gap": "Only an eligibility plus paper/kill-switch rule pack is wired; accounting, market-structure and contract rules are not.",
+    "gap": "Tick-grid and contract-specification rules (expiry, deliverability, multiplier) are not in the pack: the tape the platform holds is f64-derived, so an on-tick rule would rule against every synthetic price, and a contract rule needs the derivative extension's expiry carried into SymbolicInput. Accounting is one invariant (no negative cash after the smallest lot), not a double-entry check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1276,10 +1278,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-kernel --lib symbolic_stage && cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Rule pack now loaded by the kernel. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): The only rule pack (symbolic_stage.rs:264 rule_pack) encodes hypothesis eligibility and paper/kill-switch invariants; no accounting-invariant, market-structure or contract rule pack."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Pack bumped to v2, so a record written under v1 is refused at replay (verify names the pack version). Mutation fired: dropping the two headroom conditions from r10-eligible -> the lot case stays eligible and the unit test fails."
   },
   {
     "id": "R12-REASON-3058",

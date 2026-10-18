@@ -31,7 +31,7 @@
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes"
     ],
-    "gap": "Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0138 (accepted 2026-10-18): The hosted language-model adapters move from qip-reasoning-engine/src/providers to services/qip-language-providers, linked by qip-deepbrain alone and pinned out of the fast lanes by lane_placement.rs. Code left: the crate move, the dependency edges, a lane_placement.rs closure test with its mutation, and the egress.rs and model_gateway_boundary.rs paths.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -42,7 +42,7 @@
     "verification": "new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code."
   },
   {
     "id": "R12-MODEL-4003",
@@ -1603,14 +1603,15 @@
   },
   {
     "id": "R12-ASSET-4074",
-    "status": "PARTIAL",
-    "current": "LEARN reconciles the wallet (ledger view vs observed statements) through the fabric journal; the central plane halts a cell on a reconciliation break. Statements are handed in (simulated); nothing reaches a real custodian.",
+    "status": "COMPLETE",
+    "current": "LEARN reconciles the wallet (ledger view vs observed statements) through the fabric journal, and the desk now reads the outcome: Platform::submit_order, the only path to a venue, refuses an order in a venue-asset the desk venue's latest reconciliation halted (an instrument refuses every order in it; a halted settlement cash refuses buys), puts the refusal on the record under gate wallet-halt and counts it, while other instruments and sells against cash are untouched and a later clean reconciliation lifts the halt. The central plane still halts a cell on a reconciliation break. Statements reach the kernel through qip-api's statement route; nothing reaches a real custodian.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8284 reconcile_wallet",
-      "backend/crates/services/qip-capital-fabric/src/wallet.rs:633 reconcile",
+      "backend/crates/runtime/qip-kernel/src/platform.rs wallet_halt_for / refuse_for_wallet_halt, called first in submit_order (grep -n wallet_halt_for)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
+      "backend/crates/apps/qip-api/src/statement.rs production caller of observe_statement",
       "backend/crates/runtime/qip-kernel/tests/central.rs:682 a_reconciliation_break_halts_that_cell_and_only_that_cell"
     ],
-    "gap": "Desk-side halt on a wallet break; real custody statements need a deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1618,10 +1619,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test ledger a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutation: filtering wallet_halt_for's result to None in submit_order failed the test at 'a buy was sent into halted cash'; restored byte-for-byte, it passes. Real custody statements remain deploy-dependent: the halt is only as live as the statements an operator hands the qip-api route."
   },
   {
     "id": "R12-CAPITAL-4075",

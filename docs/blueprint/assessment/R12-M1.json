@@ -327,15 +327,13 @@
   },
   {
     "id": "R12-ASSET-1015",
-    "status": "PARTIAL",
-    "current": "Kernel AssetClassRegistry registers all AssetClass variants with valuation, settlement, families; refuses unregistered at assembly.",
+    "status": "COMPLETE",
+    "current": "Every AssetClassRecord in the shipped registry carries a LifecycleEngine derived from its class by an exhaustive match (PortfolioStages = qip_portfolio::LifeStage for listed/event/tokenized/cash/fund classes, PrivateStages = PrivateStage for PrivateMarket and RealAsset, CommerceLedger = qip_financial::commerce::Ledger for PhysicalProduct). AssetClassRegistry::lifecycle_of resolves it and refuses a class with no record; a new AssetClass variant does not compile until it names an engine. The registry is built by Platform::new on every start.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
-      "backend/crates/libs/qip-financial/src/asset_class.rs",
-      "backend/crates/libs/qip-financial/src/cashflow.rs:274 knowable-at guard on private cash flows",
-      "backend/crates/services/qip-chain/src/adapter.rs"
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs LifecycleEngine::for_class, AssetClassRecord::lifecycle, AssetClassRegistry::lifecycle_of",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs every_asset_class_resolves_its_lifecycle_engine_and_an_unregistered_class_is_refused"
     ],
-    "gap": "No lifecycle engine per class; private/physical lifecycles not integrated.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -343,10 +341,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel (asset class registry tests)",
+    "verification": "cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE on the clause as written (the registry maps each class to an engine). It does not claim a runtime path drives a position through the engine the registry names: that consumer is a separate item. Mutation fired: mapping PrivateMarket/RealAsset to PortfolioStages -> the three-engines premise assertion fails ({PortfolioStages, CommerceLedger})."
   },
   {
     "id": "R12-WORLD-1016",
