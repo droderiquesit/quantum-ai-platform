@@ -632,15 +632,15 @@
   },
   {
     "id": "R12-FABRIC-1028",
-    "status": "PARTIAL",
-    "current": "Acceptance scan refuses any Kafka/Pub/Sub client crate; qip-streaming's pubsub module is a refusing port. Terraform still carries Pub/Sub IAM for a 'control fabric topic' (null in main.tf) and the cicd module grants roles/pubsub.admin.",
+    "status": "COMPLETE",
+    "current": "No internal Pub/Sub path exists in code or Terraform. The trust-zones control-fabric topic variable and its IAM members are gone (blueprint_arch the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists refuses their return); qip-streaming's PubSub transport kind and refusing port are deleted and an acceptance scan refuses the identifier in its source. The cicd module's roles/pubsub.admin is the Terraform deployer's grant to create the two recorded peripheral topics (secret rotation notice, asset-change feed), not a runtime consumer.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no workspace crate declares a Kafka or Pub/Sub client",
-      "backend/crates/services/qip-streaming/src/pubsub.rs:1 port returns Unavailable",
-      "infrastructure/terraform/modules/trust-zones/main.tf:624 google_pubsub_topic_iam_member fabric_publish",
-      "infrastructure/terraform/main.tf:500 control_fabric_topic = null"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs qip_streaming_source_names_no_pub_sub_transport",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists",
+      "infrastructure/terraform/modules/cicd/main.tf:251 roles/pubsub.admin (deployer, creates the rotation and asset-change topics)"
     ],
-    "gap": "Remove or justify the Pub/Sub control-fabric IAM path in trust-zones, which contradicts the requirement if ever enabled.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -648,10 +648,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary --test blueprint_arch",
     "work_item": "",
     "size": "S",
-    "notes": "trust-zones module names Pub/Sub 'the control fabric' (main.tf:620-647); gated off by null topic, but it is a latent contradiction of §1.1."
+    "notes": "Lane L21 2026-10-18. The register's trust-zones evidence (main.tf:624 fabric_publish, main.tf:500 control_fabric_topic) was stale: grep finds neither. The deployer's pubsub.admin was not narrowed: topic-scoped roles cannot create a topic, and a custom role is an IAM change outside this lane; it is a plan-time grant, not an internal runtime dependency. Mutation: appending `pub struct PubSubBinding;` to qip-streaming registry.rs fails the scan."
   },
   {
     "id": "R12-DATA-1029",

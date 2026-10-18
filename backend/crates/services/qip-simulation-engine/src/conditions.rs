@@ -160,6 +160,75 @@ pub enum MarketCondition {
     /// Models the queue ahead of an order that an aggregated book cannot see:
     /// the size is displayed, it is simply not this order's to take.
     PartialFillCap { fraction: f64 },
+    /// The venue accepts at most `per_window` order messages in any trailing
+    /// `window`; the next one is refused, not queued and not filled.
+    ///
+    /// A replay that ignored a venue's rate limit credits a strategy with fills
+    /// the venue would have answered with a throttle reject, and the strategy
+    /// that bursts hardest is the one most flattered.
+    MessageBudget { per_window: u32, window: Duration },
+}
+
+/// A venue's order-message rate limit: at most `per_window` messages in any
+/// trailing `window`.
+///
+/// Shared by [`MarketCondition::MessageBudget`] and the tick replay's
+/// [`crate::tick_replay::ExecutionModel`], so the two cannot disagree about
+/// what a budget is or when one is malformed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageBudget {
+    pub per_window: u32,
+    pub window: Duration,
+}
+
+impl MessageBudget {
+    /// Refuse a budget that would admit nothing or measure nothing.
+    ///
+    /// Zero messages is a venue that is down, which [`MarketCondition::VenueOutage`]
+    /// states honestly; a zero or negative window divides no time and would
+    /// make every message its own window, which is no limit at all.
+    pub fn validate(&self) -> Result<()> {
+        if self.per_window == 0 {
+            return Err(Error::invalid(
+                "a message budget of zero admits nothing; a venue that answers nothing is a \
+                 venue outage, so say that instead",
+            ));
+        }
+        if self.window.as_nanos() <= 0 {
+            return Err(Error::invalid(
+                "a message budget needs a positive window; without one no two messages ever \
+                 share a window and the limit never binds",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether a message at `at` may be sent, given the instants of the
+    /// messages already admitted (ascending). Counts those inside the trailing
+    /// window `(at - window, at]`.
+    pub fn admits(&self, admitted: &[Timestamp], at: Timestamp) -> bool {
+        let floor = self.trailing_floor(at);
+        let inside = admitted
+            .iter()
+            .filter(|sent| sent.as_nanos() > floor && sent.as_nanos() <= at.as_nanos())
+            .count();
+        inside < self.per_window as usize
+    }
+
+    /// The exclusive lower edge, in nanoseconds, of the window ending at `at`.
+    /// An arrival at or before it no longer counts against the budget.
+    pub fn trailing_floor(&self, at: Timestamp) -> i64 {
+        at.as_nanos().saturating_sub(self.window.as_nanos())
+    }
+
+    /// The tighter of two budgets, by admitted rate. Ties keep `self`.
+    fn tighter(self, other: Self) -> Self {
+        // per_window / window, compared by cross-multiplication in i128 so
+        // neither a division nor an f64 decides which limit binds.
+        let mine = i128::from(self.per_window) * i128::from(other.window.as_nanos());
+        let theirs = i128::from(other.per_window) * i128::from(self.window.as_nanos());
+        if theirs < mine { other } else { self }
+    }
 }
 
 impl MarketCondition {
@@ -178,6 +247,7 @@ impl MarketCondition {
             Self::Latency { .. } => "latency",
             Self::LatencySpike { .. } => "latency_spike",
             Self::PartialFillCap { .. } => "partial_fill_cap",
+            Self::MessageBudget { .. } => "message_budget",
         }
     }
 
@@ -269,6 +339,9 @@ impl MarketCondition {
                     return Err(Error::invalid("a latency spike cannot be negative"));
                 }
             }
+            Self::MessageBudget { per_window, window } => {
+                MessageBudget { per_window, window }.validate()?;
+            }
             Self::VenueOutage | Self::BadFeed { .. } => {}
         }
         Ok(())
@@ -318,6 +391,9 @@ impl MarketCondition {
             Self::PartialFillCap { fraction } => format!(
                 "the venue fills at most {:.1}% of what was asked for, modelling the queue an aggregated book does not show",
                 fraction * 100.0
+            ),
+            Self::MessageBudget { per_window, window } => format!(
+                "the venue accepts at most {per_window} order messages in any {window:?}; the next is refused, not queued"
             ),
         }
     }
@@ -468,6 +544,9 @@ pub struct Regime {
     pub order_latency: Duration,
     /// Ceiling on the fraction of available depth that will fill.
     pub fill_fraction_cap: f64,
+    /// The tightest venue message budget in force, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_budget: Option<MessageBudget>,
     /// Names of the conditions that produced this regime, in schedule order.
     pub applied: Vec<String>,
 }
@@ -493,6 +572,7 @@ impl Regime {
             feed_faults: Vec::new(),
             order_latency: Duration::ZERO,
             fill_fraction_cap: 1.0,
+            message_budget: None,
             applied: Vec::new(),
         }
     }
@@ -686,6 +766,13 @@ fn apply_condition(
             regime.depth_fraction = regime.depth_fraction.min(1.0 - 0.9 * intensity);
         }
         MarketCondition::VenueOutage => regime.venue_down = true,
+        MarketCondition::MessageBudget { per_window, window } => {
+            let budget = MessageBudget { per_window, window };
+            regime.message_budget = Some(match regime.message_budget {
+                Some(current) => current.tighter(budget),
+                None => budget,
+            });
+        }
         MarketCondition::CrossedMarket { by_bps } => {
             regime.crossed_by_bps = regime.crossed_by_bps.max(by_bps.max(0.0));
         }
