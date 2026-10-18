@@ -1309,14 +1309,13 @@
   {
     "id": "R12-MESH-5057",
     "status": "PARTIAL",
-    "current": "EdgeCosts carries settlement_risk_fraction and fill_probability, charged in netedge with named-line tests; latency deduction exists. Centre whitelist ships costs: None, so production edges carry certain fill and no settlement risk.",
+    "current": "EdgeCosts carries settlement_risk_fraction and fill_probability, charged in netedge with named-line tests. The edge node's desk prices whatever costs a whitelisted conversion states (backend/crates/apps/qip-edge-node/src/arbitrage.rs graph_from_whitelist_in, graph.set_costs), refusing an out-of-range figure rather than clamping it. The only production producer of whitelists, the centre's builder (backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 and :616), writes costs: None on both edges of every market, so production edges carry certain fill and no settlement risk.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:73",
-      "backend/crates/edge/qip-edge/src/settlement.rs",
-      "backend/crates/edge/qip-edge/tests/settlement.rs",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs::EdgeCosts::rate_multiplier"
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs set_costs from conversion.costs",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 costs: None"
     ],
-    "gap": "No production producer of per-edge fill probability/settlement risk.",
+    "gap": "The centre's whitelist builder must state per-conversion costs: settlement_risk_fraction from the venue's settlement terms and fill_probability from the venue's measured fill record, both of which the centre holds per venue. The node already prices them; nothing in qip-edge-node needs to change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1327,7 +1326,7 @@
     "verification": "cargo test -p qip-arbitrage",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure proposed deriving the costs on the node, but the node does not hold the evidence for a fill probability (its fill-time measurement is a latency, not a probability) and the settlement terms are the centre's; the producer belongs in qip-kernel central/whitelist.rs, outside this lane."
   },
   {
     "id": "R12-MESH-5058",
