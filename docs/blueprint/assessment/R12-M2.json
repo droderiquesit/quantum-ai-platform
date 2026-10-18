@@ -488,13 +488,14 @@
   {
     "id": "R12-DATA-2022",
     "status": "PARTIAL",
-    "current": "incremental_information_gain now has a production caller: each connector is scored against the deep brain's own stream; a duplicate earns no gain and an independent source earns some.",
+    "current": "A source is scored over every series the deep brain already holds: SourceAlphaDesk::score passes the own stream's change and every other arm's change on the same subject, aligned by sense number, to SourceAlphaHistory::score_over, which computes incremental_information_gain_over as 1 - R² of the candidate regressed on all of them by OLS (qip_numerics::stats::ols), leaving out an incumbent an earlier one already explains exactly so the fit stays non-singular. Two connectors duplicating each other now both earn no gain while an independent third still does. An arm that did not print at every sense of the candidate's window is left out rather than interpolated.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/source_alpha.rs:68 incremental_information_gain",
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:28 a_duplicate_source_adds_no_information_and_an_informative_one_earns_a_positive_contribution",
-      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score"
+      "backend/crates/services/qip-data-finder/src/source_alpha.rs incremental_information_gain_over, SourceAlphaHistory::score_over",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs SourceAlphaDesk::score, aligned_changes",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs tests::two_connectors_duplicating_each_other_both_earn_no_gain_over_the_sources_already_held",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::the_gain_over_every_held_series_matches_the_pairwise_one_and_survives_a_duplicate_incumbent"
     ],
-    "gap": "The incumbent is only the own stream, not every source already held (two connectors duplicating each other both earn gain); the score feeds no routing or SourceScores.",
+    "gap": "The desk runs in no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is unset in catalogue.tf by a recorded decision (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) because deepbrain_connector is null in every infrastructure/environments/*/terraform.tfvars, a protected path a lane may not edit; the score also feeds no routing or SourceScores.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -502,10 +503,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test source_alpha",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-data-finder --test source_alpha && cargo +1.94.1 test -p qip-deepbrain --lib source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L04: the own-stream-only incumbent is replaced by the union of held series. Mutations fired: taking no other arm into the incumbents (`.take(0)` on the extend) scores both copies a gain of 0.988; keeping every incumbent (the collinear check bypassed) makes the three-incumbent fit fail 'matrix is singular at column 2'. Restored byte-identical; both pass. Kept PARTIAL only because nothing deployed runs the desk."
   },
   {
     "id": "R12-DATA-2023",

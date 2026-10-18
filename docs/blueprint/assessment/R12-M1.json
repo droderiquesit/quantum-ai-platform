@@ -2454,7 +2454,7 @@
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:68",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk"
     ],
-    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; no global Scout Fabric beyond one deep brain's arms.",
+    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; recording it needs a kernel journaling seam for a deep-brain-owned record (Platform has journal_campaign for campaigns, nothing generic a binary may call). Even recorded, it would reach no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is deliberately unset (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) and deepbrain_connector is null in every environment's terraform.tfvars (protected path). No global Scout Fabric beyond one deep brain's arms.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2465,7 +2465,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the closure's 'commit the cadence' half would select a desk with nothing to read until an operator names a connector in a tfvars file, which a lane may not edit. The incumbent the desk scores against now spans every held arm (R12-DATA-2022)."
   },
   {
     "id": "R12-DATA-1106",
