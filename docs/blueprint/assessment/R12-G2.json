@@ -2860,15 +2860,14 @@
   },
   {
     "id": "R12-SEC-9126",
-    "status": "PARTIAL",
-    "current": "Secrets created by Terraform and granted per workload, mounted as files and read through qip_core::secret _FILE; data-read audit logs enabled for Secret Manager and KMS (tested). No rotation schedule on secrets.",
+    "status": "COMPLETE",
+    "current": "Every google_secret_manager_secret in the tree (one resource, for_each over secret_names, in modules/secrets) carries a rotation block with a rotation_period and a topics block naming the qip-secret-rotation topic; security_controls.rs::every_secret_carries_a_rotation_schedule_and_announces_it refuses one without either. The register text 'No rotation schedule on secrets' was older than the code.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:318",
-      "backend/crates/libs/qip-core/src/secret.rs:47-49",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:48",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3213"
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs every_secret_carries_a_rotation_schedule_and_announces_it",
+      "infrastructure/terraform/modules/secrets/main.tf google_secret_manager_secret.platform rotation and topics blocks",
+      "backend/crates/libs/qip-core/src/secret.rs:47-49"
     ],
-    "gap": "Rotation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2876,10 +2875,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test security_controls -- every_secret_carries_a_rotation_schedule_and_announces_it",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: the rotation block deleted from modules/secrets/main.tf failed the test naming the platform secret; restored byte for byte. The test proves the schedule is declared; Terraform never writes a new value, an operator does when the topic announces it, and nothing is applied that would send the first notice (next_rotation_time 2026-12-01)."
   },
   {
     "id": "R12-SEC-9127",
