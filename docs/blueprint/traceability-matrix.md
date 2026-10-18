@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 421 | 27.7% |
+| Blueprint completion (COMPLETE) | 423 | 27.9% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1217 | 80.2% |
-| Integrated (reached from a composition root) | 853 | 56.2% |
+| Integrated (reached from a composition root) | 854 | 56.3% |
 | Deployable (provisionable from committed config) | 207 | 13.6% |
 | End-to-end demonstrated | 19 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 421 |
-| PARTIAL | 950 |
+| COMPLETE | 423 |
+| PARTIAL | 948 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -28,7 +28,7 @@ register (ADR 0099), and there is no second one.
 
 | Domain | Reqs | COMPLETE | PARTIAL | MISSING | BLOCKED | Other | Implemented | Tested | E2E |
 |---|---|---|---|---|---|---|---|---|---|
-| [ARCH](#arch) | 23 | 8 | 15 | 0 | 0 | 0 | 21 | 19 | 0 |
+| [ARCH](#arch) | 23 | 9 | 14 | 0 | 0 | 0 | 21 | 19 | 0 |
 | [CONTRACT](#contract) | 43 | 16 | 27 | 0 | 0 | 0 | 43 | 43 | 0 |
 | [FABRIC](#fabric) | 94 | 30 | 53 | 10 | 1 | 0 | 74 | 68 | 0 |
 | [REFLEX](#reflex) | 56 | 24 | 29 | 1 | 0 | 2 | 55 | 48 | 0 |
@@ -56,7 +56,7 @@ register (ADR 0099), and there is no second one.
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
 | [GCP](#gcp) | 54 | 6 | 27 | 15 | 6 | 0 | 33 | 24 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
-| [RES](#res) | 61 | 14 | 40 | 7 | 0 | 0 | 47 | 40 | 0 |
+| [RES](#res) | 61 | 15 | 39 | 7 | 0 | 0 | 47 | 40 | 0 |
 | [FINOPS](#finops) | 15 | 3 | 8 | 4 | 0 | 0 | 11 | 8 | 0 |
 | [COVERAGE](#coverage) | 57 | 5 | 51 | 1 | 0 | 0 | 55 | 55 | 0 |
 
@@ -72,7 +72,7 @@ register (ADR 0099), and there is no second one.
 | R12-ARCH-9014 | Each cognitive service degrades without stopping local execution | The cell decides from a degradation table: each capability's freshness lowers the sizing multiplier rather than stopping the pass; arch_004 and edge tests cover stale policy. Proven in-process only; no node is deployed. | PARTIAL | Deployment-level game day proving a cell continues with the centre unreachable. |  | P0 | cargo test -p qip-edge; game day on a deployed node |  |
 | R12-ARCH-9028 | Agents are not all required to use the same runtime | One in-process Rust agent runtime (qip-agents) with manifests; no second runtime adapter. | PARTIAL | A runtime field in the manifest and a second adapter. |  | P3 | cargo test -p qip-agents |  |
 | R12-ARCH-9071 | Architecture agent cannot silently redefine non-negotiables | The architecture suite enforces dependency direction, hot-path and paper-boundary invariants; CODEOWNERS covers critical paths. Nothing detects a silent edit to the test itself beyond review. | PARTIAL | Protection of the guard tests themselves. |  | P0 | inspection / cargo test -p qip-acceptance |  |
-| R12-ARCH-10061 | Every cloud service has a reason, connections, scaling and degraded mode | catalogue.tf holds one entry per Cloud Run workload (binary, plane, trust zone, traffic, variables, secrets) with acceptance tests on parity; no degraded-mode or scaling-model field, and VMs/managed stores are outside it. | PARTIAL | Add state owner, protocol, scaling and degraded-mode fields and cover non-Cloud-Run services. |  | P1 | cargo test -p qip-acceptance --test infrastructure |  |
+| R12-ARCH-10061 | Every cloud service has a reason, connections, scaling and degraded mode | catalogue.tf holds one entry per Cloud Run workload (binary, plane, trust zone, traffic, variables, secrets) with acceptance tests on parity; no degraded-mode or scaling-model field, and VMs/managed stores are outside it. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test infrastructure -- state_owner pinned_to_one blanked_contract; cd infrastructure/terraform && terraform init -backend=false && terraform validate |  |
 | R12-ARCH-10159 | Build phase 0: Foundations | Projects, IAM, modules, VPC/DNS/firewalls, KMS, audit (partial), WIF exist; PAM, NCC, CA missing; SCC off. | PARTIAL | PAM, NCC, CA, SCC enabled. | R12-SEC-10003, R12-GCP-10009, R12-SEC-10054, R12-SEC-10006 | P1 | per-deliverable checks above |  |
 | R12-ARCH-10176 | No synchronous remote call between venue event and local order | DecisionLoop runs the pass on the decision thread and reaches every remote only through a bounded non-blocking seam: the centre through MeshWorker on its own qip-mesh-link thread (backend/crates/apps/qip-edge-node/src/main.rs:1236, take_inbound try_recv at src/mesh.rs:681), other regions through qip_peer_link's ReflexPort, and the journal's store through the JournalRelay thread. No warm service, Spanner, Bigtable, Redis, BigQuery or model call exists on the node's turn. With a centre and a peer that accept and never answer and the journal store stalled, all at once, forty turns run passes that place local orders in bounded time. | COMPLETE | None for the requirement; not deployed (no execution node exists). |  | P0 | cargo test -p qip-edge-node --test decision_loop a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn |  |
 | R12-ARCH-10193 | No superintelligence service is a synchronous dependency between tick and order | The edge node links no cognitive crate directly or transitively: the acceptance test parses every workspace manifest whole (dependency names, ignoring comments and dev tables) and walks the closure from qip-edge-node; a node trades identically with the centre silent. The check is met. | COMPLETE |  | R12-ARCH-10176 | P0 | cargo test -p qip-acceptance --test arch_001_independent_reflex; cargo test -p qip-edge-node --test reasoning_outage |  |
@@ -1646,7 +1646,7 @@ register (ADR 0099), and there is no second one.
 | R12-RES-7108 | Causal effect not identifiable: no causal claim, no autonomy scaling | ActionPolicy::widen refuses unidentified attribution; weakly identified plans never returned for execution. | COMPLETE |  |  | P0 | cargo test -p qip-agency --test agency |  |
 | R12-RES-7109 | Compromised action identity: revoke, stop, preserve audit, re-authorise | ToolRegistry::revoke refuses the next action and audits it. ToolRegistry::reauthorise(tool, operator) is now the only way back: it is refused for a blank operator, an unregistered tool, or a tool not revoked, and it records who restored the tool. ActionGuard::reauthorise passes it through. AmbientIntake::revoke drops every draft held for a retry, returning each as Intake::Abandoned, so a later reauthorisation cannot send work authorised before the stop. | PARTIAL | No production seam calls reauthorise or AmbientIntake::revoke. The deployed revocation is qip-cli agency.rs:281, which re-applies policy.revoked_tools at start, so deleting an entry from that list readmits the tool on the next start with no named operator and no attested identity. Closing the row needs that path to require a reauthorisation record carrying an authenticated operator (AutonomyController-style), journaled beside the guard's decisions. Credential rotation is Secret Manager work outside the crate. |  | P0 | cd backend && cargo test -p qip-contracts --test action && cargo test -p qip-agency --test ambient_intake |  |
 | R12-RES-7110 | Conduct gate failure blocks the action; profit never overrides | ConductGate blocks on any failing check; profit-only justification refused; deceptive step makes plan infeasible; no retained failed-plan record or alternative search. | PARTIAL | Retention of failed plan and alternative search. |  | P0 | cargo test -p qip-agency |  |
-| R12-RES-7111 | Adverse side effect: rollback, reduce authority, failure episode | ActionPolicy::observe narrows authority on side effects; stage admission refuses after a failure; no rollback actions or failure episode. | PARTIAL | Rollback/mitigation and failure episode. |  | P0 | cargo test -p qip-agency --test agency |  |
+| R12-RES-7111 | Adverse side effect: rollback, reduce authority, failure episode | A drift now creates a failure episode with a plan-specific stop and roll-back, not only a narrowed policy. engine::learn_outcome (engine.rs:496) computes ActionPolicy::drift (autonomy.rs:158: effect below or above the predicted interval, each unpredicted side effect, as Drift values), narrows through observe exactly when drift is non-empty, and files FailureEpisode::of (memory.rs:146; engine.rs:557) into ActionOutcomeMemory (keep_failure, memory.rs:242, bounded by the memory's capacity): the class, the action sequence, the regime, measured or simulated, the effect, every departure, the authority before and after, and the mitigations — a Halt naming the plan's tools and, after an executed (measured) act, a Reverse per step newest first; a shadowed act sent nothing and gets no reversal. The episode rides Learned to the journal (AgencyRecord::Learned.failure, journal.rs:451). Production callers: qip-deepbrain's ambient door calls engine::learn on every follow-up (ambient_agency.rs:698) with the memory it holds, and qip-cli agency learns every shadowed pass through learn_shadowed. | COMPLETE |  |  | P0 | cd backend && cargo +1.94.1 test -p qip-agency --test agency a_side_effect_the_policy_did_not_predict |  |
 | R12-RES-7112 | Fabric broker loss: ISR failover, epoch retry, offset resume | qip-fabricd has an ADR 0111 managed-log mode (QIP_EVENT_FABRIC_MANAGED_LOG=spanner) that acknowledges P0/P1 only after a managed commit and holds partition leadership as a lease row with epoch fencing (backend/crates/apps/qip-fabricd/src/config.rs:59-130; src/spanner.rs). An integration test through the composition root kills the leader, promotes the follower by lease, and loses no acknowledged record — with an in-memory managed log standing in for Spanner. Nothing deploys it: no infrastructure sets QIP_EVENT_FABRIC_MANAGED_LOG (only a comment in infrastructure/event-fabric/spanner.ddl:3). | PARTIAL | A deployed managed log (Spanner instance + fabricd configured) and the game day on it; consumer offset resume demonstrated across failover. | R12-FABRIC-7035, R12-FABRIC-7037, R12-FABRIC-7033 | P0 | failover game day |  |
 | R12-RES-7113 | Fabric quorum lost: reflex continues, local queue bounded, degrade first | Spool pressure gauge reads narrow before exhausted and the cell is built with the journal wire; no fabric quorum exists, and nothing tests that control changes stop on fabric loss. | PARTIAL | Control-change freeze on fabric loss; quorum (none exists). | R12-FABRIC-7058 | P0 | cargo test -p qip-edge --test journal_pressure |  |
 | R12-RES-7114 | Mirror down: local streams writable, lag visible, replay on return | Fabric mirroring is refused by name: StreamPolicy rejects any mirroring policy 'fabric-mirror is not built' (backend/crates/libs/qip-events/src/event_fabric/policy.rs:451-455). No mirror, lag gauge or stale marking exists. | MISSING | With the ADR 0120 mirror: local streams stay writable with the mirror down, lag series and bound, stale marking past the bound, replay from checkpoint or archive on return; prove by a two-broker game day. Deployment waits on a second region (ADR 0035 stands). | R12-FABRIC-7038 | P1 | mirror game day |  |
