@@ -3094,24 +3094,27 @@
   },
   {
     "id": "R12-ARCH-7140",
-    "status": "PARTIAL",
-    "current": "qip-capital (treasury), capital-fabric corridors, risk engine exist; no asset registry.",
+    "status": "COMPLETE",
+    "current": "AssetClassRegistry::shipped holds all 15 asset classes and gates Platform::new (qip-kernel/tests/asset_classes.rs); qip-capital treasury, qip-capital-fabric corridors and the risk engine's pretrade gate exist; qip-acceptance names each and asserts the registry holds more than one class. The register text 'no asset registry' was stale.",
     "evidence": [
       "backend/crates/services/qip-capital/src/lib.rs",
-      "backend/crates/services/qip-capital-fabric/src/corridor.rs"
+      "backend/crates/services/qip-capital-fabric/src/corridor.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::phase_three_exits_with_a_registry_of_more_than_one_class_beside_treasury_corridors_and_risk",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::shipped"
     ],
-    "gap": "Asset registry; multiple asset classes end to end.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Inspection row. Mutation 2026-10-18: renaming the kernel's gate test failed the inspection naming 'asset registry gate'; deleting the DigitalAsset record failed asset_class_registry.rs. Per-class trading-path gaps live in R12-COVERAGE-5099..5106, not here."
   },
   {
     "id": "R12-MESH-7141",
@@ -3600,20 +3603,21 @@
     "current": "An asset class registry exists in qip-kernel asset_class_registry.rs registering equity, fixed income, credit, rates, derivative, prediction, commodity, private, real asset, physical product.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/universe.rs",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs"
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::the_shipped_registry_holds_a_record_for_every_asset_class_the_object_model_names, ::an_instrument_of_each_constructible_class_assembles_through_platform_new"
     ],
-    "gap": "Composite checklist: constituent class rows (5099-5106) are PARTIAL; tokenized class and acceptance composite not shown.",
+    "gap": "The acceptance suite exists (2026-10-18): AssetClassRegistry::shipped holds a record for all 15 AssetClass variants including DigitalAsset (tokenized representations resolve into it), and Platform::new assembles over one instrument of each of the ten classes that can be built without a maturity record. Still PARTIAL as a composite: FixedIncome, Credit and Derivative are not assembled by the suite (every instrument type of theirs needs a maturity or extension record), Prediction and PhysicalProduct have no InstrumentType so no instrument can be in them, and constituent rows R12-COVERAGE-5099..5106 remain PARTIAL on trading-path integration.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Mutation 2026-10-18: deleting the DigitalAsset record from AssetClassRegistry::shipped failed all four tests; restored."
   },
   {
     "id": "R12-COVERAGE-7164",
@@ -3845,9 +3849,10 @@
     "current": "Quantum research gaps reach capability only through promotion::promote (four environments, nine criteria incl. IncrementalValue vs classical baseline), capability Simulate only; proven by a crate test in qip-expansion/tests/loop.rs.",
     "evidence": [
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436",
-      "backend/crates/services/qip-expansion/tests/loop.rs::quantum_research_reaches_capability_only_through_every_environment_and_criterion"
+      "backend/crates/services/qip-expansion/tests/loop.rs::quantum_research_reaches_capability_only_through_every_environment_and_criterion",
+      "backend/crates/tests/qip-acceptance/tests/quantum_promotion.rs::quantum_research_failing_any_single_criterion_is_refused_naming_that_criterion"
     ],
-    "gap": "Composite clause: constituent obligations are not all COMPLETE (e.g. EXPAND-6049 PARTIAL) and no qip-acceptance suite proves the composite; the proof is a crate test.",
+    "gap": "The acceptance suite exists (2026-10-18): promote is driven directly once per criterion for a ComputeQuantumResearch gap (each of the nine, IncrementalValue included, refuses naming itself) and once per truncated campaign (0..3 of 4 environments refused). Still PARTIAL as a composite because constituent R12-EXPAND-6049 (executors for data discovery, connector creation, specialist instantiation and simulation construction) is PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3855,10 +3860,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test quantum_promotion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Mutation 2026-10-18: filtering IncrementalValue out of EvaluationRecord::failed failed the per-criterion test; bypassing the campaign.is_complete() check failed the truncated-campaign test; both restored."
   },
   {
     "id": "R12-COVERAGE-7176",
@@ -3908,20 +3913,22 @@
     "current": "qip-kernel fusion.rs fuses world and market intelligence as of one instant with bitemporal discipline, measured reactions and mismatches; tested in qip-kernel tests/fusion.rs.",
     "evidence": [
       "backend/crates/services/qip-world-model",
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
+      "backend/crates/tests/qip-acceptance/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_changes_the_fused_state",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:652 the one production caller of fuse"
     ],
-    "gap": "Composite checklist: constituent rows not all COMPLETE; no acceptance suite proving the composite.",
+    "gap": "The acceptance suite exists (2026-10-18): a graph built only through qip-world-model's public API fuses with kernel traces, surfaces all three Mismatch kinds, is bitemporally filtered (a later event and a later tick change nothing at the fusion instant) and replays to the same digest. Not as the closure proposed: fuse is not called from Platform's UNDERSTAND stage and no fused mismatch is journaled there; its only production caller is qip-deepbrain tick_desk, which counts mismatches and ships the opportunity map. Journaling the fused state in UNDERSTAND is unbuilt code, not a test.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test fusion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Mutation 2026-10-18: removing the p.at <= as_of filter on market points failed the bitemporal test; widening events_at's recorded-by bound failed all three; both restored."
   },
   {
     "id": "R12-COVERAGE-7179",

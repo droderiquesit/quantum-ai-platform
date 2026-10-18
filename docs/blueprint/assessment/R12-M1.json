@@ -354,9 +354,10 @@
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/contradiction.rs:21 ResolutionMethod",
       "backend/crates/services/qip-world-model/tests/contradictions.rs",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs",
+      "backend/crates/tests/qip-acceptance/tests/uncertainty_records.rs"
     ],
-    "gap": "Uniform uncertainty/contradiction fields across all five model kinds, integrated in the cycle.",
+    "gap": "Uncertainty is shown on four of the five model kinds by acceptance tests (2026-10-18): world Fact (confidence refused outside [0,1]), episodic ClaimRecord.confidence, self-model CapabilityEstimate (refuses a thin sample, never reports certainty), reasoning-engine confidence-by-arithmetic. Contradiction records exist only for the world graph (graph::Contradiction, both beliefs kept) and the reasoning engine (ContradictionResolution); the episodic, semantic and self models hold no contradiction record, and nothing shows a semantic-memory type carrying confidence. Uniform fields across all five kinds are unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -364,10 +365,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test contradictions",
+    "verification": "cd backend && cargo test -p qip-acceptance --test uncertainty_records && cargo test -p qip-world-model --test contradictions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations 2026-10-18, each failing its named test and restored: Fact::new confidence check disabled; contradiction gap threshold unreachable; MINIMUM_SAMPLE check removed (the first version of the test survived this, because an empty record errs by another path; strengthened to MINIMUM_SAMPLE-1 outcomes); ContradictionResolution two-id minimum lowered."
   },
   {
     "id": "R12-GOV-1017",
@@ -3551,9 +3552,11 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/cycle.rs:17 Stage",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_financial_agi_core_scope_item_names_a_seam_and_a_test_that_still_exist",
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "A scope map now names a seam and an existing test for all ten items, and a test pins the deep brain's unconditional AmbientAgency::open. Still PARTIAL: it is inspection, not behaviour; hypothesis generation (stage_reason) and uncertainty (calibrate_resolved) are covered only by a cycle-level test, not one named for them; planning and tool use run in the ambient agency's shadow/outbox path, not as an executing planner.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3561,10 +3564,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored."
   },
   {
     "id": "R12-MODEL-1157",
