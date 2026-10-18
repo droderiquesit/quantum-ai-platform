@@ -28,6 +28,10 @@ use qip_orderbook::{Sweep, VenueCheckpoint, VenueState};
 use qip_protocols::decoder::Diagnostics;
 use qip_protocols::{Decoder, InstrumentPartitions, ItchDecoder};
 use qip_sequencing::{ReorderPolicy, SequenceEvent, Sequencer, StreamStats};
+use qip_strategy::model::DistilledModel;
+use qip_training::dataset::TrainingDataset;
+use qip_training::distill::{StudentForm, distil};
+use qip_training::{LocalTrainer, ModelFamily, TrainingSpec};
 use serde::Serialize;
 
 // --- the recorded session: ITCH 5.0 bytes as MoldUDP would have carried them -
@@ -595,6 +599,120 @@ fn a_hole_one_packet_wide_is_replayed_as_degraded_with_the_step_after_it_flagged
             .iter()
             .all(|step| step.unreliable),
         "a step after the hole was replayed as reliable"
+    );
+    Ok(())
+}
+
+// --- the distillation stage inside the replay's digest ----------------------
+
+/// What the reflex model made of the recorded session: the student's own
+/// serialised form and its score at every step of the replay where the touch
+/// was two-sided. Digested, so a change to the student moves a number a person
+/// can compare.
+#[derive(Serialize)]
+struct DistilledScores<'a> {
+    student: &'a DistilledModel,
+    scores: Vec<f64>,
+}
+
+/// Book features at every released event that has both sides of the touch:
+/// the spread in price units and the size imbalance at the touch. The target
+/// is the microprice's offset from the mid, which the book alone determines.
+fn touch_features(record: &ReplayRecord) -> Result<(Vec<Vec<f64>>, Vec<f64>)> {
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    for through in 1..=record.events.len() {
+        let mut state = fresh_book();
+        replay(&mut state, &record.events[..through])?;
+        let (Some(bid), Some(ask), Some(mid), Some(micro), Some(spread)) = (
+            state.best_bid(),
+            state.best_ask(),
+            state.mid(),
+            state.microprice(),
+            state.spread(),
+        ) else {
+            continue;
+        };
+        let (b, a) = (bid.size.to_f64(), ask.size.to_f64());
+        rows.push(vec![spread.to_f64(), (b - a) / (b + a)]);
+        targets.push((micro - mid).to_f64());
+    }
+    Ok((rows, targets))
+}
+
+fn distilled_digest(student: &DistilledModel, rows: &[Vec<f64>]) -> Result<String> {
+    let scores = rows
+        .iter()
+        .map(|row| student.evaluate(row))
+        .collect::<Result<Vec<f64>>>()?;
+    Ok(sha256_hex(
+        &serde_json::to_vec(&DistilledScores { student, scores }).expect("scores serialise"),
+    ))
+}
+
+fn distil_the_recorded_session() -> Result<(DistilledModel, Vec<Vec<f64>>)> {
+    let record = replay_from_the_start(&recorded_session())?;
+    let (rows, targets) = touch_features(&record)?;
+    let times = (0..rows.len())
+        .map(|i| captured(i as i64))
+        .collect::<Vec<_>>();
+    let data = TrainingDataset::new(
+        "recorded-session",
+        vec!["spread".to_string(), "imbalance".to_string()],
+        rows.clone(),
+        targets,
+        times,
+    )?;
+    let spec = TrainingSpec::new(
+        "touch-model",
+        "v1",
+        "the-model-owner",
+        "recorded session",
+        ModelFamily::Linear { ridge: 1e-6 },
+    );
+    let teacher = LocalTrainer::new().fit(&spec, &data, captured(1_000))?;
+    let distillation = distil(&teacher, &data, StudentForm::Linear { ridge: 1e-6 }, 0.0)?;
+    Ok((distillation.student().clone(), rows))
+}
+
+/// The digest of the student distilled from the recorded session's touch, as
+/// first computed. Moves only when the distillation stage, the trainer or the
+/// replay it learns from moves.
+const DISTILLED_DIGEST: &str = "4296d2909713b5336fc94a247882adbb338bffc5d7eb65ef6d0816234964363c";
+
+#[test]
+fn a_mutated_distillation_stage_changes_the_digest_of_the_replay_it_learned_from() -> Result<()> {
+    let (student, rows) = distil_the_recorded_session()?;
+    assert!(
+        rows.len() >= 8,
+        "premise: the session gave {} row(s)",
+        rows.len()
+    );
+    let digest = distilled_digest(&student, &rows)?;
+
+    // Reproducible: a second run of the whole chain, bytes to student.
+    let (again, again_rows) = distil_the_recorded_session()?;
+    assert_eq!(rows, again_rows, "the features are not reproducible");
+    assert_eq!(digest, distilled_digest(&again, &again_rows)?);
+
+    // Sensitive: a student whose one weight is nudged is a different student,
+    // and the digest says so. A digest that ignored the student would pass the
+    // line above on any build.
+    let qip_strategy::model::ModelForm::Linear {
+        intercept,
+        coefficients,
+    } = student.form().clone()
+    else {
+        panic!("premise: a linear student");
+    };
+    let mut nudged = coefficients.clone();
+    nudged[0] += 1e-6;
+    let mutated = DistilledModel::linear(student.name().to_string(), intercept, nudged)?;
+    assert_ne!(digest, distilled_digest(&mutated, &rows)?);
+
+    assert_eq!(
+        digest, DISTILLED_DIGEST,
+        "the distilled digest moved; see the constant"
     );
     Ok(())
 }
