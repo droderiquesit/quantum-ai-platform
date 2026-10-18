@@ -47,6 +47,7 @@ use qip_core::{Decimal, dec};
 use qip_edge::cell::{
     Cell, CellConfig, ExecutionReport, Placer, PolledHalt, PricingPolicy, WorkReport,
 };
+use qip_edge::conduct::ConductPolicy;
 use qip_edge::dropcopy::DropCopyFill;
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{self as edge_feasibility, Granularity, VenueModel};
@@ -1384,7 +1385,14 @@ fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
 /// A cell holding the ACME book and one always-firing strategy per entry,
 /// each priced as given.
 fn edge_cell(strategies: &[(&str, SignalKind, &str, PricingPolicy)]) -> Result<Cell> {
-    let config = CellConfig::new(EDGE_CELL, EDGE_REGION).with_venue(venue());
+    edge_cell_with(CellConfig::new(EDGE_CELL, EDGE_REGION), strategies)
+}
+
+fn edge_cell_with(
+    config: CellConfig,
+    strategies: &[(&str, SignalKind, &str, PricingPolicy)],
+) -> Result<Cell> {
+    let config = config.with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut cell = Cell::new(config, features)?;
     cell.track(edge_book("ACME")?);
@@ -1972,12 +1980,24 @@ fn a_resting_orders_expiry_costs_what_the_execution_measurements_say() -> Result
     // premise is the venue's cancel count — an order the cell forgot rather
     // than withdrew would leave the venue holding it and read here as fast.
     const PASSES: usize = 1_000;
-    let mut cell = edge_cell(&[(
-        "alpha",
-        SignalKind::Enter,
-        "100",
-        PricingPolicy::rest_at_mid(Duration::from_secs(1))?,
-    )])?;
+    // This loop is, order for order, the place-and-withdraw-unfilled pattern
+    // the cell's conduct gate (`qip_edge::conduct`) refuses after four
+    // rounds, which is the gate working. What is measured here is the
+    // expiry path, so the cell is given a conduct policy that cannot judge
+    // inside the loop — more withdrawals than the loop makes — and the
+    // gate's own cost and behaviour are proven in `qip-edge`'s pricing
+    // suite. Left at the default, 868 of the thousand passes were refused.
+    let mut config = CellConfig::new(EDGE_CELL, EDGE_REGION);
+    config.conduct = ConductPolicy::new(Duration::from_secs(60), PASSES + 1, dec!("0.75"))?;
+    let mut cell = edge_cell_with(
+        config,
+        &[(
+            "alpha",
+            SignalKind::Enter,
+            "100",
+            PricingPolicy::rest_at_mid(Duration::from_secs(1))?,
+        )],
+    )?;
     let mut gateway = PaperVenue::default();
 
     let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_secs(2))?;
