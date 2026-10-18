@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 498 | 32.8% |
+| Blueprint completion (COMPLETE) | 499 | 32.9% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1226 | 80.8% |
 | Integrated (reached from a composition root) | 872 | 57.4% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 498 |
-| PARTIAL | 873 |
+| COMPLETE | 499 |
+| PARTIAL | 872 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -47,7 +47,7 @@ register (ADR 0099), and there is no second one.
 | [AGENCY](#agency) | 69 | 39 | 23 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 26 | 51 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 24 | 28 | 26 | 0 | 0 | 52 | 51 | 0 |
-| [EXPAND](#expand) | 68 | 28 | 38 | 2 | 0 | 0 | 65 | 64 | 3 |
+| [EXPAND](#expand) | 68 | 29 | 37 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 12 | 9 | 3 | 2 | 0 | 21 | 21 | 2 |
@@ -1258,7 +1258,7 @@ register (ADR 0099), and there is no second one.
 | R12-EXPAND-6071 | Evidence and rollback requirements scale with authority | Tool scope widens only with a cited evaluation; agency ActionPolicy widens only with identified attribution plus approver authority, and drops to shadow on drift (library); no graded schedule linking authority level to evidence strength. | PARTIAL | Decided by ADR 0141 (accepted 2026-10-18): Agency authority is a typed schedule widen reads, with evidence, rollback and approvers per level; nothing above NarrowReversible is granted, and External and Capital stay refused by ADR 0114 D8 and ADR 0003/0021/0108. Code left: the schedule table in autonomy.rs, widen reading it, the two ungranted variants, and tests/agency.rs asserting each level refuses lesser evidence and names the record that refuses it. |  | P1 | cargo test -p qip-agency --test agency |  |
 | R12-EXPAND-6072 | New tools default to read-only, sandboxed permissions | ToolRegistry::register has no parameter to start wider; promote requires a non-blank evaluation; qip-deepbrain registers the model endpoint read-only and authorises LeaveSandbox through the registry. | COMPLETE |  |  | P1 | cargo test -p qip-agents --test expansion_registries |  |
 | R12-EXPAND-6073 | New specialists declare competency boundaries and abstain outside them | A manifest without a competency boundary is refused; each analyst declares its remit and answers outside it with a Deferred finding of exactly zero effective conviction (the macro analyst on an intraday horizon, the equity analyst on a non-equity instrument), so downstream weights nothing. The check is met; enforcement is per agent through `out_of_scope` rather than a generic manifest match. | COMPLETE |  |  | P1 | cargo test -p qip-investment-agents --test organisation the_macro_analyst_defers_on_an_intraday_horizon; cargo test -p qip-investment-agents --test organisation the_equity_analyst_declines_an_instrument_outside_its_remit |  |
-| R12-EXPAND-6076 | Promoted capability keeps full lineage and rollback parent | Model cards carry dataset name and digest and rollback predecessor; no campaign or code-version lineage. | PARTIAL | Campaign and code lineage. |  | P1 | cargo test -p qip-kernel --test serving |  |
+| R12-EXPAND-6076 | Promoted capability keeps full lineage and rollback parent | ModelCard carries campaign_id (the research campaign whose window the model was fitted on) and code_version (the kernel's code_version(): crate version plus the source commit the build was stamped with). EvolutionEngine::maybe_learn notes both on the learning desk before learn_window, the desk stamps every card the round registers, and an engine-owned desk (requiring_provenance) refuses in promote_candidate to promote a card with neither or either missing. | COMPLETE |  |  | P1 | cargo test -p qip-deepbrain --lib -- a_desk_requiring_provenance a_card_the_engine_registers |  |
 | R12-EXPAND-6077 | Capability receives authority only after measurable value | Each authority-widening path requires a measured-value record and one suite enumerates them: authority_paths.rs::every_authority_widening_path_refuses_without_a_measured_value_record drives the calibrated-baseline gate (qip-kernel central/models.rs), the tool-scope promotion (qip-agents tools.rs, citing its evaluation) and the action-policy widening (qip-agency autonomy.rs, on an identified attribution and an approver) with empty or inadequate evidence, requires each to refuse and the authority to stay put, then admits complete evidence through the same seams. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test authority_paths |  |
 | R12-EXPAND-7147 | Phase 9 exit: open-ended intelligence expansion | qip-expansion, registries (brain/memory) exist. | PARTIAL | Sandboxed creation, active learning, consolidation. |  | P3 | inspection |  |
 
