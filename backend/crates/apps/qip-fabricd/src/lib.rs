@@ -300,6 +300,7 @@ pub struct Running {
     /// Set by [`Running::drain`] or by the operator's [`DRAIN_FILE`]; read by
     /// the lease thread, which then hands leases back instead of renewing.
     draining: Arc<AtomicBool>,
+    rebuilt: qip_streaming::event_fabric::broker::RebuildReport,
     data_thread: Option<JoinHandle<()>>,
     other_threads: Vec<JoinHandle<()>>,
     /// The listener's certificate and its renewal loop, under
@@ -334,6 +335,12 @@ impl Running {
     /// The address health and metrics are served on, as bound.
     pub fn health_address(&self) -> &str {
         &self.health_address
+    }
+
+    /// The partitions this start rebuilt from the archive, and how many
+    /// batches each was given back; empty on a broker whose disk was intact.
+    pub fn rebuilt(&self) -> &qip_streaming::event_fabric::broker::RebuildReport {
+        &self.rebuilt
     }
 
     /// The protocol handler, for a caller in the same process.
@@ -552,6 +559,10 @@ fn start_composed(
         config.partitions,
         segment_config(clock.clone(), config.segment_bytes),
     )?);
+    // Before anything is served: a partition on a replaced disk is rebuilt
+    // from the archive, so it continues the offsets the archive holds rather
+    // than reusing them (RES-9170).
+    let rebuilt = archiver::rebuild(&broker)?;
     for (stream, partition_count) in broker.declared_streams() {
         for partition in 0..partition_count {
             broker.metadata(&stream, partition)?;
@@ -733,6 +744,7 @@ fn start_composed(
         stop_health,
         stop_housekeeping,
         draining,
+        rebuilt,
         data_thread: Some(data_thread),
         other_threads: [health_thread, archive_thread, catalogue_thread]
             .into_iter()
