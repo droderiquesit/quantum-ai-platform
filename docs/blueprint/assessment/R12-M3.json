@@ -178,13 +178,15 @@
   },
   {
     "id": "R12-MODEL-3009",
-    "status": "PARTIAL",
-    "current": "qip-training and deepbrain learning assembly exist; covered in MODEL slice.",
+    "status": "COMPLETE",
+    "current": "The deep brain trains models from its own bars in the slow lane: LearningDesk::maybe_learn fits a baseline and a challenger with qip_training::local::LocalTrainer on the subject's observed bars, promote_candidate promotes a candidate that beats every incumbent on held-out rows through the platform's serving provider (journalled as a ModelPromotion naming the artifact digest), and main.rs writes the PublishedArtifact into the blob store under MODEL_ARTIFACTS_NAMESPACE as <digest>.json, readable back by that digest with the promoted reference as its manifest.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs",
-      "backend/crates/services/qip-training/src/job.rs"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::learn, trainer.fit(&spec_for(BASELINE_CLASS), ..)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs write_model_artifact(model_artifacts.as_ref(), published)",
+      "backend/crates/apps/qip-deepbrain/src/artifacts.rs write_model_artifact, read_model_artifact",
+      "backend/crates/apps/qip-deepbrain/tests/model_artifacts.rs::a_learning_round_writes_one_trained_artifact_named_by_the_digest_its_promotion_records"
     ],
-    "gap": "Assessed in the foundry slice; here only noted that the deep brain owns training.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -192,10 +194,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test model_artifacts",
     "work_item": "",
     "size": "L",
-    "notes": "Not re-assessed in depth in this slice."
+    "notes": "Re-graded 2026-10-18 by lane L04; the earlier text deferred to the foundry slice and asserted nothing. Mutation-verified: making the baseline's trainer.fit a refusal leaves no fit that clears the skill bar, nothing is promoted and the test fails; restored byte-identical and it passes. The test composes the same three calls main.rs composes; it does not run main.rs itself."
   },
   {
     "id": "R12-REASON-3010",

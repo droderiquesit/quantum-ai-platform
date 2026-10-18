@@ -8,7 +8,9 @@
 //! through [`observations`], states the campaigns a sweep opened as the
 //! [`Observation`]s the curriculum queues research from (RM-P9-08). It
 //! replays nothing and schedules nothing: the desk decides what is queued
-//! and what starts.
+//! and what starts. When a campaign's residuals are re-measured,
+//! [`TickCampaignDetector::conclude`] states what the replay found as the
+//! §27 `MicrostructureDelta`, under the campaign's own id.
 //!
 //! Fed by the deep brain's research loop (`qip-deepbrain/src/research.rs`)
 //! from the kernel's scored fills: each fill's trade error is a fill
@@ -21,8 +23,13 @@
 //! `grep -rn 'campaigns::observations' backend/crates/apps`.
 
 use crate::gap::{GapTrigger, Observation, Wanting};
-use qip_core::Decimal;
+use qip_contracts::microstructure_delta::{
+    MicrostructureDelta, MicrostructureDeltaFields, Residual, ResidualKind,
+};
+use qip_contracts::validated::Contract;
+use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,6 +92,34 @@ impl TickCampaignTrigger {
             | Self::PaperReplayDivergence => GapTrigger::UnexplainedPnl,
             Self::AbnormalLeadLag | Self::WorldEventReaction => GapTrigger::Surprise,
             Self::NewVenue => GapTrigger::UnsupportedRequest,
+        }
+    }
+}
+
+/// One instrument's residual as the concluding replay re-measured it: what
+/// the model said and what the venue did, in the kind's own unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remeasured {
+    pub instrument: String,
+    pub modelled: Decimal,
+    pub observed: Decimal,
+    pub samples: u64,
+}
+
+impl TickCampaignTrigger {
+    /// The §27 residual family a campaign of this trigger re-measures. A
+    /// queue prediction residual is a fill-probability one, because queue
+    /// position is what the fill model prices; a world-event reaction, a
+    /// paper-versus-replay divergence and a new venue are the venue's own
+    /// behaviour.
+    pub const fn residual_kind(self) -> ResidualKind {
+        match self {
+            Self::UnexplainedSlippage => ResidualKind::Slippage,
+            Self::FillPredictionError | Self::QueuePredictionError => ResidualKind::FillProbability,
+            Self::AbnormalLeadLag => ResidualKind::LeadLag,
+            Self::WorldEventReaction | Self::PaperReplayDivergence | Self::NewVenue => {
+                ResidualKind::VenueBehaviour
+            }
         }
     }
 }
@@ -365,6 +400,64 @@ impl TickCampaignDetector {
             residual_value: Some(residual),
             threshold: Some(threshold),
         }))
+    }
+
+    /// Conclude a campaign on its re-measured residuals: the
+    /// [`MicrostructureDelta`] the slow brain learns from (§27,
+    /// R12-EXPAND-6042).
+    ///
+    /// The failure it prevents: a campaign opened, ran, and re-measured its
+    /// venue, and the only thing left behind was the counter that it opened.
+    /// What the replay found — what the model said against what the venue
+    /// did, over how many samples, in which window — went nowhere a learner
+    /// could read. The delta's id is the campaign's, so every residual traces
+    /// to the campaign that measured it.
+    ///
+    /// Refuses a campaign with no venue (a delta is a venue's), and a
+    /// residual for an instrument the campaign never studied, which would
+    /// attribute a measurement to a campaign that did not take it. Every
+    /// other refusal is the contract's: a blank cell or model version, an
+    /// inverted window, no residual, zero samples, a duplicate per instrument.
+    pub fn conclude(
+        campaign: &TickCampaign,
+        cell: &str,
+        model_version: &str,
+        window: (Timestamp, Timestamp),
+        remeasured: Vec<Remeasured>,
+    ) -> Result<MicrostructureDelta> {
+        let venue = campaign.venue.as_deref().ok_or_else(|| {
+            Error::invalid(format!(
+                "campaign {} names no venue; a microstructure delta is a venue's, so conclude a venue-scoped campaign",
+                campaign.campaign_id
+            ))
+        })?;
+        let kind = campaign.trigger.residual_kind();
+        let mut residuals = Vec::with_capacity(remeasured.len());
+        for r in remeasured {
+            if !campaign.affected_instruments.contains(&r.instrument) {
+                return Err(Error::invalid(format!(
+                    "campaign {} did not study `{}`; conclude it only on the instruments it was opened for",
+                    campaign.campaign_id, r.instrument
+                )));
+            }
+            residuals.push(Residual {
+                kind,
+                instrument: r.instrument,
+                modelled: r.modelled,
+                observed: r.observed,
+                samples: r.samples,
+            });
+        }
+        MicrostructureDelta::new(MicrostructureDeltaFields {
+            schema_version: MicrostructureDeltaFields::SCHEMA_VERSION,
+            delta_id: campaign.campaign_id.clone(),
+            cell: cell.to_string(),
+            venue: VenueId::new(venue),
+            model_version: model_version.to_string(),
+            window_start: window.0,
+            window_end: window.1,
+            residuals,
+        })
     }
 
     fn next_id(&mut self) -> String {
