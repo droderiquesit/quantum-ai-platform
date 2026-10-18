@@ -395,6 +395,7 @@ fn facts(at: Timestamp, ms: f64, drifted: &[String]) -> IterationFacts<'_> {
         problems: 0,
         anomalies: Some(2),
         drifted,
+        package_promoted: false,
     }
 }
 
@@ -794,4 +795,44 @@ fn a_sweep_record_carries_the_evolution_round_that_preceded_it() {
         "premise: the engine turned at least once in twelve cycles"
     );
     assert_eq!(traced, turned);
+}
+
+/// R12-OBS-9151: the central plane carries model freshness. The age of the
+/// last promoted model package is absent until one is promoted, grows with
+/// every iteration after, and a newer promotion resets it. A gauge written
+/// only at a promotion would read zero for ever after it, the stalest model
+/// looking the freshest.
+///
+/// Mutation: drop the `self.package_promoted_at = Some(at)` assignment in
+/// `Operations::observe`; the gauge never appears.
+#[test]
+fn a_promoted_model_package_resets_the_freshness_gauge_and_it_ages_between_promotions() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    let age = || {
+        metrics
+            .snapshot()
+            .gauge(names::MODEL_PACKAGE_AGE, &labels([]))
+    };
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let at = |hours: i64| start().saturating_add(Duration::from_hours(hours));
+    let observe = |ops: &mut Operations, at: Timestamp, promoted: bool| {
+        let facts = IterationFacts {
+            package_promoted: promoted,
+            ..facts(at, 10.0, &[])
+        };
+        ops.observe(&platform, &facts)
+            .unwrap_or_else(|e| panic!("{e}"));
+    };
+
+    observe(&mut ops, at(0), false);
+    assert_eq!(age(), None, "no package promoted, no freshness figure");
+
+    observe(&mut ops, at(1), true);
+    assert_eq!(age(), Some(0.0));
+    observe(&mut ops, at(3), false);
+    assert_eq!(age(), Some(7_200.0), "the package ages between promotions");
+
+    observe(&mut ops, at(4), true);
+    assert_eq!(age(), Some(0.0), "a newer promotion resets the age");
 }

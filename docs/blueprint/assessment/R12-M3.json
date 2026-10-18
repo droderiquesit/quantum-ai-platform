@@ -1611,7 +1611,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:13848",
       "backend/crates/runtime/qip-kernel/tests/exploration.rs"
     ],
-    "gap": "Does not trigger tools, simulations or specialists.",
+    "gap": "Does not trigger tools, simulations or specialists. The triage closure (one AmbientSignal per exploration probe from ResearchLoop::sweep) would not run on a default path: PlatformConfig::exploration_share defaults to zero (qip-kernel config.rs default_exploration_share, fail-closed), so exploration::review holds no budget and opens no probe in any deployment that has not set a share. Closing it needs either an owner to set a non-zero exploration share in a committed deployment, or a wake seam fed from the ignorance measures exploration::review computes before the budget gate (uncertainty_by_subject, private today), which is a kernel API change. The kernel half of the closure is not needed: Platform::exploration() already exposes the desk and its open probes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1622,7 +1622,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L20 2026-10-18: gap corrected, no code changed. A probe-fed wake would have been code that runs only under an owner switch, and a test of it would need a platform whose self model holds thin-record components, which a fresh platform does not."
   },
   {
     "id": "R12-AMBIENT-3074",

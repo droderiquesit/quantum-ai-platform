@@ -2366,7 +2366,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs",
       "backend/crates/services/qip-risk-engine/src"
     ],
-    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests.",
+    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests. No such test can be written today without restating the composition: qip-deepbrain main.rs assembles the platform inline (Platform::with_model_provider at main.rs:249, then trust::harden_central, survival policy, central horizons, each read from the environment in main), so a test under qip-deepbrain/tests builds its own Platform and proves only the kernel again. The prerequisite is extracting that composition into a library function main calls and a test can call; then the test drives a held book through SIMULATE and asserts the stress report and a central policy envelope.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2377,7 +2377,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Lane L20 2026-10-18: gap corrected, no code changed; extracting main's composition is a refactor of the binary's start-up order (configuration, ports, trust root, serve) larger than this test-only row."
   },
   {
     "id": "R12-RISK-8107",
