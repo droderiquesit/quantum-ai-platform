@@ -293,16 +293,71 @@ pub enum Routed {
 }
 
 /// The instruments an opportunity may become an action in.
+///
+/// Optionally also the jurisdictions the platform is licensed to act in
+/// ([`Self::with_jurisdictions`]). Technical capability and legal capability
+/// are separate questions: an instrument can be one the platform can price,
+/// size and route and still be one it may not trade, and a scope that only
+/// held the first would execute it.
 #[derive(Clone, Debug, Default)]
 pub struct ExecutableScope {
     instruments: BTreeSet<String>,
+    legal: Option<LegalScope>,
+}
+
+/// The licence half of an [`ExecutableScope`].
+#[derive(Clone, Debug, Default)]
+struct LegalScope {
+    /// Jurisdictions the platform is licensed to execute in.
+    authorised: BTreeSet<String>,
+    /// The jurisdictions that govern each instrument.
+    governing: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ExecutableScope {
     pub fn new(instruments: impl IntoIterator<Item = String>) -> Self {
         Self {
             instruments: instruments.into_iter().collect(),
+            legal: None,
         }
+    }
+
+    /// Require a licence to execute: an instrument becomes executable only if
+    /// it names at least one governing jurisdiction and every one of them is
+    /// in `authorised`. Research is untouched — an instrument outside the
+    /// licence still routes to a [`ShadowRecord`], which the research path
+    /// reads in every jurisdiction — and [`ActionClass::Research`] intents
+    /// are not gated, since they move nothing.
+    ///
+    /// Fails closed in both directions: an instrument whose governing
+    /// jurisdictions are unknown is refused, not presumed local, and one
+    /// governed partly by an unlicensed jurisdiction is refused, not admitted
+    /// on the strength of the licensed part.
+    #[must_use]
+    pub fn with_jurisdictions(
+        mut self,
+        authorised: impl IntoIterator<Item = String>,
+        governing: impl IntoIterator<Item = (String, BTreeSet<String>)>,
+    ) -> Self {
+        self.legal = Some(LegalScope {
+            authorised: authorised.into_iter().collect(),
+            governing: governing.into_iter().collect(),
+        });
+        self
+    }
+
+    /// Whether the licence half admits `instrument` for `action_class`.
+    fn licensed(&self, instrument: &str, action_class: ActionClass) -> bool {
+        let Some(legal) = &self.legal else {
+            return true;
+        };
+        if action_class == ActionClass::Research {
+            return true;
+        }
+        legal
+            .governing
+            .get(instrument)
+            .is_some_and(|set| !set.is_empty() && set.is_subset(&legal.authorised))
     }
 
     /// Fail closed: an empty scope makes everything shadow. The score is not a
@@ -319,7 +374,7 @@ impl ExecutableScope {
         action_class: ActionClass,
     ) -> Routed {
         let (opportunity, instrument) = (opportunity.to_string(), instrument.to_string());
-        if self.instruments.contains(&instrument) {
+        if self.instruments.contains(&instrument) && self.licensed(&instrument, action_class) {
             Routed::Executable(ActionIntent {
                 opportunity,
                 instrument,

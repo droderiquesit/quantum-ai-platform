@@ -968,11 +968,56 @@ pub fn tool_count(tools: &qip_agents::tools::ToolRegistry) -> usize {
 }
 
 pub fn registered_tools() -> Result<qip_agents::tools::ToolRegistry> {
+    registered_tools_holding(&[])
+}
+
+/// The tool `plan::AcquisitionAction::FormulateSolver` resolves a quantum
+/// backend by, and the classical solver it needs beside it (ADR 0006: a
+/// quantum result is scored against the classical baseline, so a node with
+/// one and not the other cannot evaluate a formulation).
+pub const QUANTUM_BACKEND_TOOL: &str = "quantum-backend";
+pub const CLASSICAL_SOLVER_TOOL: &str = "classical-solver";
+
+/// What this process runs beyond the three desks every node has: the
+/// classical router's solver always, the in-tree quantum simulator only where
+/// the compute settings attached it, and one connector per catalogued source
+/// the node polls (R12-EXPAND-6059).
+///
+/// Derived from the settings the composition root read, never listed. A tool
+/// registered here that the process does not run would let a gap that needs
+/// it be admitted unblocked and then do nothing; a tool the process runs and
+/// leaves out is built again by the desk's queue. `tick-replay` and
+/// `venue-adapter` are deliberately absent: the node holds neither
+/// (R12-EXPAND-6037), and the desk proposes them as one pack.
+pub fn node_tools(
+    compute: &qip_kernel::compute_routing::ComputeSettings,
+    connector_sources: &[String],
+) -> Vec<(String, qip_agents::tools::ToolKind)> {
+    use qip_agents::tools::ToolKind;
+    let mut held = vec![(CLASSICAL_SOLVER_TOOL.to_string(), ToolKind::Solver)];
+    if compute.provider != qip_kernel::compute_routing::QuantumProviderChoice::Off {
+        held.push((QUANTUM_BACKEND_TOOL.to_string(), ToolKind::QuantumBackend));
+    }
+    held.extend(
+        connector_sources
+            .iter()
+            .map(|id| (format!("connector/{id}"), ToolKind::Connector)),
+    );
+    held
+}
+
+/// [`registered_tools`] plus what [`node_tools`] says this process runs.
+pub fn registered_tools_holding(
+    extra: &[(String, qip_agents::tools::ToolKind)],
+) -> Result<qip_agents::tools::ToolRegistry> {
     use qip_agents::tools::ToolKind;
     let mut tools = qip_agents::tools::ToolRegistry::new();
     tools.register("source-discovery", ToolKind::Connector)?;
     tools.register("model-fit", ToolKind::ModelEndpoint)?;
     tools.register("stress-simulator", ToolKind::Simulator)?;
+    for (name, kind) in extra {
+        tools.register(name, *kind)?;
+    }
     Ok(tools)
 }
 
@@ -981,6 +1026,28 @@ impl ResearchLoop {
         config: ResearchConfig,
         coverage: BTreeMap<String, BTreeSet<String>>,
     ) -> Result<Self> {
+        Self::new_holding(config, coverage, &[])
+    }
+
+    /// The loop a composition root builds: [`Self::new_holding`] over what
+    /// [`node_tools`] reads from the settings the root parsed.
+    pub fn new_for_node(
+        config: ResearchConfig,
+        coverage: BTreeMap<String, BTreeSet<String>>,
+        compute: &qip_kernel::compute_routing::ComputeSettings,
+        connector_sources: &[String],
+    ) -> Result<Self> {
+        Self::new_holding(config, coverage, &node_tools(compute, connector_sources))
+    }
+
+    /// [`Self::new`] with the tools [`node_tools`] derived from the running
+    /// process added to the registry the desk and the brain specs are
+    /// checked against.
+    pub fn new_holding(
+        config: ResearchConfig,
+        coverage: BTreeMap<String, BTreeSet<String>>,
+        extra_tools: &[(String, qip_agents::tools::ToolKind)],
+    ) -> Result<Self> {
         let desk = ExpansionDesk::new(
             DeskConfig {
                 quiet_sweeps: 3,
@@ -988,7 +1055,7 @@ impl ResearchLoop {
                 jurisdiction: config.jurisdiction.clone(),
                 owner: "qip-deepbrain/research".to_string(),
             },
-            registered_tools()?,
+            registered_tools_holding(extra_tools)?,
         )?;
         // Materiality 10%: a detection weaker than that is below the bar and
         // wakes nothing. 256 activations an hour, 256 held: far above what a
@@ -1000,7 +1067,7 @@ impl ResearchLoop {
         // the first wake: a spec naming a tool nobody registered is a brain
         // that would be woken to do work it cannot do.
         let brains = crate::now::specialist_registry()?;
-        let tools = registered_tools()?;
+        let tools = registered_tools_holding(extra_tools)?;
         let ontology = sweep_ontology()?;
         Self::check_ontology(&ontology)?;
         let tool_count = tool_count(&tools);

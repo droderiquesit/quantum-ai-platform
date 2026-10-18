@@ -23,7 +23,15 @@ which with 538 does not make 1,518); recount with `python3 -I -c` over
 any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
-Recounted **2026-10-18 17:15 UTC, after the parallel lanes' second wave** with
+Recounted **2026-10-18 19:55 UTC, after the lanes' fourth wave merged as #235**
+with `python3 -I` over `docs/blueprint/assessment/*.json` at ab06b938: COMPLETE
+452, PARTIAL 919, MISSING 114, BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1
+(= 1518). 53 rows moved to COMPLETE since 725a5abe, each in the lane commit that
+closed it (`git log -S '"R12-XXX-NNNN"'` names it). The ADR lane's re-grade of
+the 122 design rows (36cdd964) moved no status: it rewrote each gap against the
+ADR that now decides it or the owner question that blocks it, so a reader can
+tell a row waiting on code from a row waiting on a person.
+Before that it was recounted **2026-10-18 17:15 UTC, after the parallel lanes' second wave** with
 `python3 -I` over `docs/blueprint/assessment/*.json` at 725a5abe: COMPLETE 399,
 PARTIAL 972, MISSING 114, BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1 (= 1518).
 92 rows moved to COMPLETE since the previous recount, each in the lane commit

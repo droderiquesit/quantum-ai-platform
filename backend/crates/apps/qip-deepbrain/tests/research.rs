@@ -367,6 +367,7 @@ fn the_run_loop_sweeps_research_and_observes_operations_every_cycle() {
             permissions: None,
             ambient: None,
             agency: None,
+            warehouse: None,
         },
         |outcome| {
             researched += usize::from(outcome.research.is_some());
@@ -1015,6 +1016,7 @@ fn a_sweep_record_carries_the_evolution_round_that_preceded_it() {
             permissions: None,
             ambient: None,
             agency: None,
+            warehouse: None,
         },
         |outcome| {
             manual.advance(Duration::from_mins(1));
@@ -1142,4 +1144,88 @@ fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() 
         "each once, in order"
     );
     assert_eq!(desk.scout_queue().count(), 0, "the pass took the queue");
+}
+
+/// R12-EXPAND-6059: the tools the node registers are the tools its settings
+/// say it runs, by the names the acquisition planner resolves them by.
+///
+/// The failure this prevents: the registry held three desks and the hosted
+/// endpoint, so a gap that needed a classical solver or a quantum backend —
+/// both of which the process runs — was queued as a tool to build and the
+/// sweep spent compute rebuilding what the router already had; and the
+/// opposite, a registry that listed a quantum backend on a node whose
+/// compute settings attached none, admitting a gap unblocked on a tool that
+/// would never answer. `tick-replay` stays unregistered because the node does
+/// not hold it (the deployed-sweep test in `expansion_rows.rs` depends on
+/// that).
+#[test]
+fn the_node_registers_every_tool_kind_it_actually_runs() {
+    use qip_agents::tools::ToolKind;
+    use qip_deepbrain::research::{node_tools, registered_tools, registered_tools_holding};
+    use qip_expansion::plan::AcquisitionAction;
+    use qip_kernel::compute_routing::{ComputeSettings, QuantumProviderChoice};
+
+    let off = ComputeSettings::default();
+    let simulated = ComputeSettings {
+        provider: QuantumProviderChoice::Simulated,
+        ..off
+    };
+    let names = |tools: &qip_agents::tools::ToolRegistry, kind| -> Vec<String> {
+        tools
+            .by_kind(kind)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect()
+    };
+
+    // Premise: the bare registry holds neither a solver nor a quantum
+    // backend, so what follows is added by `node_tools` and nothing else.
+    let bare = registered_tools().unwrap_or_else(|e| panic!("{e}"));
+    assert!(names(&bare, ToolKind::Solver).is_empty());
+    assert!(names(&bare, ToolKind::QuantumBackend).is_empty());
+
+    // Off: the classical router's solver, no quantum backend, no connector.
+    let held = registered_tools_holding(&node_tools(&off, &[])).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&held, ToolKind::Solver), ["classical-solver"]);
+    assert!(names(&held, ToolKind::QuantumBackend).is_empty());
+
+    // Simulated and two polled sources: the backend and a connector each.
+    let sources = vec!["src-a".to_string(), "src-b".to_string()];
+    let held = registered_tools_holding(&node_tools(&simulated, &sources))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&held, ToolKind::QuantumBackend), ["quantum-backend"]);
+    assert_eq!(
+        names(&held, ToolKind::Connector),
+        ["connector/src-a", "connector/src-b", "source-discovery"]
+    );
+    // The names are the planner's: a gap formulating a solver finds both
+    // tools it needs registered rather than queued to build.
+    for (name, kind) in AcquisitionAction::FormulateSolver.tools() {
+        let spec = held
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} unregistered"));
+        assert_eq!(spec.kind(), *kind);
+    }
+    assert!(held.get("tick-replay").is_none());
+
+    // The loop the root builds counts what it holds.
+    let loop_ = ResearchLoop::new_for_node(
+        ResearchConfig::default(),
+        coverage(&[]),
+        &simulated,
+        &sources,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let round = {
+        let mut loop_ = loop_;
+        loop_
+            .sweep(&platform(), start(), &set(&["src-a"]), &set(&["US"]))
+            .unwrap_or_else(|e| panic!("{e}"))
+    };
+    assert_eq!(
+        round.registries.tools,
+        qip_deepbrain::research::tool_count(&held),
+        "{:?}",
+        round.registries
+    );
 }

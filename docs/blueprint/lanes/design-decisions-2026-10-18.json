@@ -156,8 +156,8 @@
    "rows": [
     "R12-WORLD-10187"
    ],
-   "statement": "Thesis beliefs, feature forecasts and capital-fabric demand forecasts carry qip_contracts::forecast::Forecast.",
-   "record": "not written this session"
+   "statement": "A forecast is material when it reaches a size, a capital plan, a published record or a promotion, and every material forecast is a qip_contracts Forecast: lattice members, DemandForecast and the return forecast an ApprovedThesis is sized on.",
+   "record": "ADR 0140"
   },
   {
    "id": "D14",
@@ -165,8 +165,8 @@
    "rows": [
     "R12-MODEL-4002"
    ],
-   "statement": "LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs.",
-   "record": "not written this session"
+   "statement": "The hosted language-model adapters move from qip-reasoning-engine/src/providers to services/qip-language-providers, linked by qip-deepbrain alone and pinned out of the fast lanes by lane_placement.rs.",
+   "record": "ADR 0138"
   },
   {
    "id": "D15",
@@ -174,8 +174,8 @@
    "rows": [
     "R12-EVID-2034"
    ],
-   "statement": "A trusted-issuer registry contract (issuer, key, domain) read from configuration lets connector evidence credit SignatureVerified under qip_transport::trust.",
-   "record": "not written this session"
+   "statement": "A committed issuer registry lets connectors verify detached signatures with ring, and the evidence fabric credits SignatureVerified only from a VerifiedSignature token the verifier constructs.",
+   "record": "ADR 0139"
   },
   {
    "id": "D16",
@@ -183,8 +183,8 @@
    "rows": [
     "R12-DATA-8112"
    ],
-   "statement": "Connector polling runs as a scout Cloud Run job with its own service account and no trading role, in the environment's existing project (ADR 0024 amendment).",
-   "record": "not written this session"
+   "statement": "Research connector polling runs as a scout Cloud Run job in the existing project with its own identity, no trading role, its own proxy routes and immutable records the deep brain only reads.",
+   "record": "ADR 0144"
   },
   {
    "id": "D17",
@@ -192,8 +192,8 @@
    "rows": [
     "R12-EXPAND-6071"
    ],
-   "statement": "Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8.",
-   "record": "not written this session"
+   "statement": "Agency authority is a typed schedule widen reads, with evidence, rollback and approvers per level; nothing above NarrowReversible is granted, and External and Capital stay refused by ADR 0114 D8 and ADR 0003/0021/0108.",
+   "record": "ADR 0141"
   },
   {
    "id": "D18",
@@ -201,8 +201,8 @@
    "rows": [
     "R12-EXPAND-6050"
    ],
-   "statement": "Define the shadow environment for a paper platform as a candidate run beside the paper book without acting.",
-   "record": "not written this session"
+   "statement": "Shadow is a forward window where the candidate is scored and provably not installed; paper is a later disjoint window where it is installed and acts; ORDER becomes Historical, Simulated, Shadow, Paper.",
+   "record": "ADR 0142"
   },
   {
    "id": "D19",
@@ -210,8 +210,8 @@
    "rows": [
     "R12-ARCH-7134"
    ],
-   "statement": "A phase register with recorded exit checks read by an acceptance test, without runtime feature gating.",
-   "record": "not written this session"
+   "statement": "A committed phase register lists each phase's exit capability and named tests, and an acceptance test refuses a phase entered over an unexited predecessor; no runtime feature flags.",
+   "record": "ADR 0143"
   },
   {
    "id": "D20",
@@ -219,8 +219,8 @@
    "rows": [
     "R12-REFLEX-8069"
    ],
-   "statement": "A cross-zone execution lease as a GCS object written under a generation precondition through the existing REST adapter.",
-   "record": "not written this session"
+   "statement": "A GcsLeaseStore implements LeaseStore over one object whose generation is the version, in a regional bucket created with the nodes; no Spanner instance for a lock.",
+   "record": "ADR 0137"
   },
   {
    "id": "E01",

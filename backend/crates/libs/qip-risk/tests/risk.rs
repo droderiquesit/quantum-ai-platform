@@ -530,6 +530,8 @@ fn state() -> RiskState {
         // Nor is the survival ceiling; its fixtures are there too.
         survival_gross_ceiling: None,
         gross_before_order: None,
+        margin_utilisation: None,
+        funding_buffer: None,
     }
 }
 

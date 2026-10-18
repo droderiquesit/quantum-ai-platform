@@ -226,6 +226,36 @@ pub enum LimitKind {
     /// that trapped the book in the exposure it exists to shed would make
     /// de-risking impossible exactly when survival is in doubt.
     MaxSurvivalGross { limit: f64 },
+    /// Maximum margin utilisation: the maintenance the book must keep posted
+    /// over the post-haircut cover the desk's own venue statements show.
+    ///
+    /// Read from [`RiskState::margin_utilisation`], which the kernel fills
+    /// from `cross_margin::review` over the statements handed in. Margin was
+    /// a measurement before this (the review raised a finding and a stage
+    /// problem on a call) and never a limit, so an order could deepen a call
+    /// the platform had already reported. A figure of 1.0 is a venue exactly
+    /// at maintenance; the bound is the share of cover the book may consume.
+    ///
+    /// **An absent figure records nothing**, as an absent counterparty axis
+    /// does: a desk is entitled to have handed in no statement, and an
+    /// account nobody observed is not an account observed empty. That makes
+    /// this limit dormant on a deployment that observes no venue, and it is
+    /// said here because a dormant control reads as protection; the unread
+    /// venues are reported by the cross-margin finding, which is where they
+    /// belong.
+    MaxMarginUtilisation { limit: f64 },
+    /// Minimum funding buffer: the share of equity left after the capital
+    /// held for approved proposals and the unfunded commitments the survival
+    /// waterfall withholds on its funding-maturity tier.
+    ///
+    /// Read from [`RiskState::funding_buffer`]. `MinCashBuffer` reads cash
+    /// over equity and cannot see a drawdown notice due next week, so a book
+    /// could keep its two percent of cash while owing more than the rest of
+    /// it. **An absent figure records nothing**: the kernel files one only
+    /// when a commitment stands, because with no maturing obligation there is
+    /// no funding to buffer and a reassuring ratio would be a number nobody
+    /// had a question about.
+    MinFundingBuffer { limit: f64 },
 }
 
 impl LimitKind {
@@ -251,12 +281,17 @@ impl LimitKind {
             Self::MaxVenueExposure { .. } => "max_venue_exposure",
             Self::MaxVenueNotionalRate { .. } => "max_venue_notional_rate",
             Self::MaxSurvivalGross { .. } => "max_survival_gross",
+            Self::MaxMarginUtilisation { .. } => "max_margin_utilisation",
+            Self::MinFundingBuffer { .. } => "min_funding_buffer",
         }
     }
 
     /// Whether the limit is a floor rather than a ceiling.
     pub fn is_minimum(&self) -> bool {
-        matches!(self, Self::MinLiquidity { .. } | Self::MinCashBuffer { .. })
+        matches!(
+            self,
+            Self::MinLiquidity { .. } | Self::MinCashBuffer { .. } | Self::MinFundingBuffer { .. }
+        )
     }
 
     /// The one bound this limit compares against, in the limit's own units.
@@ -288,6 +323,8 @@ impl LimitKind {
             | Self::MaxVenueExposure { limit, .. }
             | Self::MaxVenueNotionalRate { limit, .. }
             | Self::MaxSurvivalGross { limit }
+            | Self::MaxMarginUtilisation { limit }
+            | Self::MinFundingBuffer { limit }
             | Self::MinCashBuffer { limit } => *limit,
             Self::MinLiquidity { fraction, .. } => *fraction,
         }
@@ -390,6 +427,8 @@ impl LimitKind {
                 limit: bound,
             },
             Self::MaxSurvivalGross { .. } => Self::MaxSurvivalGross { limit: bound },
+            Self::MaxMarginUtilisation { .. } => Self::MaxMarginUtilisation { limit: bound },
+            Self::MinFundingBuffer { .. } => Self::MinFundingBuffer { limit: bound },
         })
     }
 
@@ -436,7 +475,11 @@ impl LimitKind {
             | Self::MaxVenueNotionalRate { .. }
             // The ceiling is fixed by the survival kernel before the order
             // exists; the order moves the numerator only.
-            | Self::MaxSurvivalGross { .. } => false,
+            | Self::MaxSurvivalGross { .. }
+            // Both are figures the kernel measured from statements and
+            // commitments before the order; the order changes neither.
+            | Self::MaxMarginUtilisation { .. }
+            | Self::MinFundingBuffer { .. } => false,
         }
     }
 
@@ -784,9 +827,24 @@ pub struct RiskState {
     /// projection so a limit can tell an order that adds risk from one that
     /// sheds it. `None` on a state that is not a projection.
     pub gross_before_order: Option<Decimal>,
+    /// Maintenance required over post-haircut observed cover, read by
+    /// [`LimitKind::MaxMarginUtilisation`]. `None` when no venue statement was
+    /// observed, which that limit records nothing on. Infinite when a venue is
+    /// observed with maintenance due and no cover at all.
+    pub margin_utilisation: Option<f64>,
+    /// Equity left after held capital and unfunded commitments, as a fraction
+    /// of equity, read by [`LimitKind::MinFundingBuffer`]. `None` when no
+    /// commitment stands.
+    pub funding_buffer: Option<f64>,
 }
 
 impl RiskState {
+    /// Whether this state is a projection of an order that does not raise
+    /// gross. Only a projection can say so: a bare state carries no "before".
+    fn sheds_gross(&self) -> bool {
+        matches!(self.gross_before_order, Some(before) if self.gross_exposure <= before)
+    }
+
     /// `value` as a fraction of equity, or infinity when there is no equity to
     /// divide by.
     ///
@@ -1762,6 +1820,40 @@ impl LimitSet {
                     ),
                 }
             }
+            LimitKind::MaxMarginUtilisation { limit: bound } => {
+                // The figure is the book before the order, so it cannot say
+                // whether this order deepens the call. An order that does not
+                // raise gross is the way out of one and is never refused by
+                // it, exactly as `MaxSurvivalGross` treats a book above its
+                // ceiling; a margin limit that refused the sale that cures
+                // the call would hold the book in it.
+                if state.sheds_gross() {
+                    return out;
+                }
+                if let Some(utilisation) = state.margin_utilisation {
+                    record(
+                        utilisation,
+                        *bound,
+                        None,
+                        "maintenance required over observed post-haircut cover".into(),
+                    );
+                }
+            }
+            LimitKind::MinFundingBuffer { limit: bound } => {
+                // Same exemption, same reason: selling is how a book below its
+                // funding floor gets back above it.
+                if state.sheds_gross() {
+                    return out;
+                }
+                if let Some(buffer) = state.funding_buffer {
+                    record(
+                        buffer,
+                        *bound,
+                        None,
+                        "equity left after held capital and unfunded commitments".into(),
+                    );
+                }
+            }
         }
         out
     }
@@ -1929,6 +2021,21 @@ impl LimitSet {
             .with(
                 Limit::new("cash-buffer", LimitKind::MinCashBuffer { limit: 0.02 })
                     .with_rationale("settlement and margin need headroom"),
+            )
+            .with(
+                Limit::new(
+                    "margin-utilisation",
+                    LimitKind::MaxMarginUtilisation { limit: 1.0 },
+                )
+                .with_rationale(
+                    "an order must not deepen a margin call the platform has already reported:                      maintenance may not exceed the cover the desk's statements show",
+                ),
+            )
+            .with(
+                Limit::new("funding-buffer", LimitKind::MinFundingBuffer { limit: 0.02 })
+                    .with_rationale(
+                        "cash over equity cannot see a drawdown notice due next week: equity                          left after held capital and unfunded commitments needs headroom too",
+                    ),
             )
         // No venue limit ships here. `venue-exposure-simulated` did, and
         // nothing in production writes `RiskState::venue_exposures`, so it

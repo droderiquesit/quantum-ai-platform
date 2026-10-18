@@ -168,6 +168,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-events",
+ "qip-evidence",
  "serde",
  "serde_json",
 ]
@@ -321,6 +322,7 @@ dependencies = [
  "qip-strategy",
  "qip-streaming",
  "qip-transport",
+ "qip-twin",
  "serde",
  "serde_json",
 ]
@@ -410,9 +412,11 @@ dependencies = [
  "qip-financial",
  "qip-investment-agents",
  "qip-kernel",
+ "qip-learning-engine",
  "qip-lifecycle",
  "qip-market",
  "qip-market-ingestion",
+ "qip-mesh",
  "qip-numerics",
  "qip-observability",
  "qip-opportunity-engine",

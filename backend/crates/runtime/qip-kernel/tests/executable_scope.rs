@@ -17,6 +17,7 @@ use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Decimal, ObjectId, dec};
 use qip_events::{EventFilter, Topic};
 use qip_financial::asset_class::{InstrumentType, Sector};
+use qip_financial::constraints::{Jurisdiction, RegulatoryConstraints};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
@@ -215,5 +216,93 @@ fn an_opportunity_outside_the_executable_scope_is_shadowed_and_never_queued_howe
             .contains("shadowed as outside the executable scope"),
         "DISCOVER does not report the shadow count"
     );
+    Ok(())
+}
+
+/// AAA is governed by the United States, BBB by the European Union.
+fn governed_universe() -> Universe {
+    let mut universe = Universe::new();
+    for (symbol, jurisdiction) in [
+        ("AAA", Jurisdiction::UnitedStates),
+        ("BBB", Jurisdiction::EuropeanUnion),
+    ] {
+        universe
+            .insert(
+                FinancialObject::builder(
+                    object(symbol),
+                    symbol,
+                    InstrumentType::CommonStock,
+                    fixture_liquidity(),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(dec!("100"))
+                .regulatory(RegulatoryConstraints::unrestricted().with_jurisdiction(jurisdiction))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+    }
+    universe
+}
+
+/// Mutation: in `Platform::executable_scope` return the scope before
+/// `with_jurisdictions` — BBB then routes `Executable` and is queued.
+#[test]
+fn an_instrument_in_an_unlicensed_jurisdiction_is_shadowed_by_the_kernels_scope_and_never_queued()
+-> Result<()> {
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        governed_universe(),
+        limits(),
+    )?;
+    // Premise: with no licence stated both are inside the scope, so the
+    // refusal below is the licence's and not the universe's.
+    for symbol in ["AAA", "BBB"] {
+        assert!(matches!(
+            platform
+                .executable_scope()
+                .route("any", object(symbol).as_str()),
+            Routed::Executable(_)
+        ));
+    }
+
+    platform.license_jurisdictions([Jurisdiction::UnitedStates]);
+    assert!(matches!(
+        platform
+            .executable_scope()
+            .route("any", object("AAA").as_str()),
+        Routed::Executable(_)
+    ));
+    assert!(matches!(
+        platform
+            .executable_scope()
+            .route("any", object("BBB").as_str()),
+        Routed::Shadow(_)
+    ));
+
+    let now = start().saturating_add(Duration::from_days(30));
+    platform.observe(bars("BBB", now, 120));
+    platform.observe(bars("AAA", now, 120));
+    platform.run_cycle(now);
+    let records = shadowed(&platform)?;
+    assert!(
+        records
+            .iter()
+            .any(|record| record.instrument == object("BBB").as_str()),
+        "the detectors never found an opportunity on BBB: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record.instrument == object("BBB").as_str()),
+        "something in the licensed jurisdiction was shadowed: {records:?}"
+    );
+    assert!(!platform.queue().iter().any(|o| names(o, "BBB")));
     Ok(())
 }

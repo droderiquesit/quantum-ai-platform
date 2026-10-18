@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use qip_contracts::action::{
-    ExecutableScope, ExecutionRecord, GoalApproval, Ground, PlanApproval, Routed, ToolRegistration,
-    ToolRegistry, check_justification,
+    ActionClass, ExecutableScope, ExecutionRecord, GoalApproval, Ground, PlanApproval, Routed,
+    ToolRegistration, ToolRegistry, check_justification,
 };
 use qip_core::Timestamp;
 
@@ -243,4 +243,61 @@ fn a_revoked_tool_stays_refused_until_a_named_operator_reauthorises_it() {
             .is_ok(),
         "the reauthorised tool acts again"
     );
+}
+
+/// Mutation: drop the `licensed` conjunct in `ExecutableScope::route_with_class`
+/// — the unlicensed instrument then routes `Executable`.
+#[test]
+fn the_same_opportunity_is_researched_and_kept_shadow_in_an_unlicensed_jurisdiction() {
+    // AAA is governed by the US alone; BBB by the EU alone; CCC by both; DDD
+    // names none. The platform is licensed in the US only.
+    let scope = ExecutableScope::new(["AAA", "BBB", "CCC", "DDD"].map(String::from))
+        .with_jurisdictions(
+            ["united_states".to_string()],
+            [
+                ("AAA".to_string(), set(&["united_states"])),
+                ("BBB".to_string(), set(&["european_union"])),
+                ("CCC".to_string(), set(&["united_states", "european_union"])),
+                ("DDD".to_string(), set(&[])),
+            ],
+        );
+
+    // Premise: the unlicensed instruments are inside the technical scope, so
+    // it is the licence and not the instrument list that refuses them.
+    let technical = ExecutableScope::new(["BBB", "CCC", "DDD"].map(String::from));
+    for instrument in ["BBB", "CCC", "DDD"] {
+        assert!(matches!(
+            technical.route("o", instrument),
+            Routed::Executable(_)
+        ));
+    }
+
+    assert!(matches!(scope.route("o1", "AAA"), Routed::Executable(_)));
+    for instrument in ["BBB", "CCC", "DDD"] {
+        assert!(
+            matches!(scope.route("o1", instrument), Routed::Shadow(ref s) if s.instrument() == instrument),
+            "{instrument} is not licensed and must stay shadow"
+        );
+    }
+    // Instruments the technical scope does not name stay shadow too.
+    assert!(matches!(scope.route("o1", "ZZZ"), Routed::Shadow(_)));
+    // Research admits every jurisdiction: the research class routes through.
+    for instrument in ["AAA", "BBB", "CCC", "DDD"] {
+        assert!(matches!(
+            scope.route_with_class("o1", instrument, ActionClass::Research),
+            Routed::Executable(_)
+        ));
+    }
+    // Premise for that last check: the same instrument as a capital action
+    // is shadow, so the class and not the instrument moved the answer.
+    assert!(matches!(
+        scope.route_with_class("o1", "BBB", ActionClass::Capital),
+        Routed::Shadow(_)
+    ));
+    // A licence that names no jurisdictions authorises nothing.
+    let nothing = ExecutableScope::new(["AAA".to_string()]).with_jurisdictions(
+        Vec::<String>::new(),
+        [("AAA".to_string(), set(&["united_states"]))],
+    );
+    assert!(matches!(nothing.route("o", "AAA"), Routed::Shadow(_)));
 }

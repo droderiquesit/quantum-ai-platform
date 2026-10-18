@@ -589,7 +589,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:298,572,741,997,1093 no-action baseline, deceptive step infeasible, weakly identified plan never executed, adapter only after simulation+gate, default authority shadow",
       "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328"
     ],
-    "gap": "Deepbrain path has no causal simulation access; no separate policy/identity service.",
+    "gap": "The deepbrain ambient path has no causal simulation access: it runs no engine::run simulate stage (see R12-AGENCY-6105 for why a per-opportunity model is a design question, not a missing call). The shadow binary does simulate, against declared models and, since R12-AGENCY-6088, a market twin's futures. The in-process ActionGuard/ToolRegistry is the policy and identity component; there is no separate service.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -600,7 +600,7 @@
     "verification": "cargo test -p qip-agency",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-read 2026-10-18 (lane L10). Held PARTIAL; the simulation half is on the shadow binary only."
   },
   {
     "id": "R12-AGENCY-7028",
@@ -1417,7 +1417,7 @@
       "backend/crates/services/qip-reasoning-engine/src/engine.rs:17 production imports the reasoning-engine type",
       "backend/crates/runtime/qip-kernel/src/central/belief.rs::belief_state"
     ],
-    "gap": "It gates locally; what crosses to cells is BeliefPriors slots, not BeliefState. A divergent BeliefState in qip-reasoning-engine/src/belief.rs remains.",
+    "gap": "Two different things share the name. qip-reasoning-engine's BeliefState (belief.rs, 70 lines) is a freshness clock - when a belief was last formed, read for Capability::BeliefState - and carries no probability, TTL or uncertainty, so a TryFrom to the contract's six-field BeliefState has nothing to convert. The contract BeliefState is built where it belongs, from episodes, in central/belief.rs and gates what ships to cells; what crosses to cells is still BeliefPriors slots. Closing needs either renaming the engine type (e.g. BeliefClock) so the contract owns the name, and a receiver that reads BeliefState rather than priors.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1428,7 +1428,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field refusal test added; still two types and the contract is unused. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: not implemented; a conversion at engine.rs:17 would have invented the fields."
   },
   {
     "id": "R12-CONTRACT-7064",
@@ -1528,7 +1528,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
     ],
-    "gap": "No production seam constructs or consumes OpportunityToken (grep of OpportunityTokenFields outside qip-contracts finds nothing).",
+    "gap": "The Lane 1 frame carries no contract body: qip_peer::PeerMessage::Token holds only an OpportunityEpoch (qip-peer lib.rs:457), and qip-mesh has no seam that raises a multi-leg opportunity (the arbitrage desk that does is in qip-arbitrage and qip-edge-node). Carrying the contract OpportunityToken as the frame body is a wire change to the peer protocol under ADR 0116 (and MESH-013 forbids reflex crates from naming qip-peer), plus a construction site in the desk that knows legs, size, edge and reservations.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1539,7 +1539,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding OpportunityToken exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields (legs, size, reservations, unwind policy). Kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -2220,7 +2220,7 @@
       "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
     ],
-    "gap": "Custody-availability input to sizing.",
+    "gap": "No custody-availability signal exists to feed sizing: qip-capital-fabric's custody table (custody.rs) records who may move capital and under which agreement, not whether a custodian is reachable, and nothing in the tree marks custody down. Platform::survival_figures already withholds unsettled sale proceeds from sizing (unsettled_sale_proceeds), so settled-only sizing holds for the one settlement the platform models; a custody-down mode needs a source for the outage (an operator-asserted state through an authenticated route, or a custodian health read) and a decision on who may assert it before a gate input can be added.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2231,7 +2231,7 @@
     "verification": "capital-fabric integration test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL."
   },
   {
     "id": "R12-RES-7100",
@@ -2375,7 +2375,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:280",
       "backend/crates/services/qip-expansion/src/gap.rs:20"
     ],
-    "gap": "Contradiction trace and alternate search in a reasoning fabric.",
+    "gap": "ContradictionResolution (contradiction.rs) has one consumer, trust_score.rs, and no running path: nothing in the cycle builds one. The closure's last clause (an unresolved contradiction marks the dependent proposal infeasible and blocks money movement) contradicts a standing design: Hypothesis::confidence_for_sizing narrows size on conflicting evidence and its doc says it is deliberately not folded into the action bar, so a contested thesis is held small and scored rather than refused. Blocking would be a reversal needing an ADR. Buildable without it: a derivation trace and an alternates search over ResolutionMethod on ContradictionResolution, fed from evidence the fabric already contests.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2388,7 +2388,7 @@
     "verification": "reasoning test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented; see gap for the design conflict."
   },
   {
     "id": "R12-RES-7107",
@@ -3023,7 +3023,7 @@
       "backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs",
       "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs"
     ],
-    "gap": "Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0143 (accepted 2026-10-18): A committed phase register lists each phase's exit capability and named tests, and an acceptance test refuses a phase entered over an unexited predecessor; no runtime feature flags. Code left: docs/architecture/phase-register.json populated from the blueprint phases and the acceptance test reading it, with its mutations.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3034,7 +3034,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates. ADR lane 2026-10-18: gap re-graded against ADR 0143; gap before it: Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code."
   },
   {
     "id": "R12-ARCH-7135",
@@ -3692,11 +3692,11 @@
   {
     "id": "R12-COVERAGE-7164",
     "status": "PARTIAL",
-    "current": "Cash/positions double-entry now run in ledgerd; obligations, collateral and inventory accounts absent.",
+    "current": "Cash/positions double-entry run in ledgerd. Account::Obligation/Collateral/Inventory exist and ledger_operation.rs posts them through CollateralPledge, MarginRequirement, Commitment, InventoryReservation and PhysicalInventory, which LedgerStore::record_operation books and qip-capital's LedgerObligations reads back; the only production producers of operations are the kernel's TreasuryAllocation and CapitalGrantFunded/Recalled (platform.rs).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::new"
     ],
-    "gap": "Obligations, collateral, physical inventory.",
+    "gap": "No production producer posts a collateral pledge, a margin requirement, a commitment or a physical-inventory movement: the kernel emits only treasury allocation and capital-grant funding/recall. A producer needs a source of truth for the fact, and none is named: margin has the risk engine's cross-margin requirement but no booking seam, collateral has survival.rs reading it and nothing writing it, and a paper platform holds no physical inventory to move. Each is a design decision about which event books it, not a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3707,27 +3707,30 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Constituents unmet."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits: constituents unmet. Gap corrected 2026-10-18 by lane L15 from platform.rs's OperationKind sites and ledger_operation.rs; nothing in the code changed."
   },
   {
     "id": "R12-COVERAGE-7165",
-    "status": "PARTIAL",
-    "current": "LEARN stage calibrates resolved, scores declined and filled.",
+    "status": "COMPLETE",
+    "current": "LEARN calibrates resolved theses, prices every refused order against its gate (score_declined) and every filled order for size (score_filled); a partly filled order is now scored as such: FillScore.unfilled carries the quantity the venue left, from the order manager's own book, and is_partial() reads it, beside the existing PartiallyFilled capture record.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585,17244,17410 stage_learn, score_declined, score_filled"
+      "backend/crates/runtime/qip-kernel/src/platform.rs FilledPath.unfilled / FillScore.unfilled (grep -n 'unfilled' platform.rs)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:422 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_realises_nothing_twice"
     ],
-    "gap": "Partial fills and failures explicitly.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutation: recording Decimal::ZERO instead of the order manager's remainder in the FilledPath push failed the test at 'the score does not carry what the venue left unfilled'; restored byte-for-byte, it passes. Not covered, and not what this row asks: a resting remainder later cancelled or expired is not priced separately (see R12-MODEL-6004 for hedged/unwound paths)."
   },
   {
     "id": "R12-COVERAGE-7166",
@@ -3753,12 +3756,15 @@
   {
     "id": "R12-COVERAGE-7167",
     "status": "PARTIAL",
-    "current": "ExecutableScope keeps out-of-scope opportunities shadow.",
+    "current": "ExecutableScope::with_jurisdictions (qip-contracts action.rs) adds a licence half: an instrument is executable only if it names governing jurisdictions and all are authorised, research-class routes are not gated, and an unlicensed instrument routes to a ShadowRecord. Platform::executable_scope applies it from Platform::license_jurisdictions, reading each instrument governing jurisdictions from its regulatory constraints; PreActionGate check 8 still refuses an unauthorised jurisdiction for agency actions.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:188",
-      "backend/crates/libs/qip-contracts/tests/action.rs:31"
+      "backend/crates/libs/qip-contracts/src/action.rs ExecutableScope::with_jurisdictions / licensed",
+      "backend/crates/runtime/qip-kernel/src/executable_scope.rs Platform::executable_scope",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::license_jurisdictions",
+      "backend/crates/libs/qip-contracts/tests/action.rs the_same_opportunity_is_researched_and_kept_shadow_in_an_unlicensed_jurisdiction",
+      "backend/crates/runtime/qip-kernel/tests/executable_scope.rs an_instrument_in_an_unlicensed_jurisdiction_is_shadowed_by_the_kernels_scope_and_never_queued"
     ],
-    "gap": "Legal gate per jurisdiction.",
+    "gap": "No composition root states the licence: nothing calls Platform::license_jurisdictions, so the deployed scope runs ungated. The determination of which jurisdictions the platform may execute in is compliance input the repository has never been given (the same position as the product catalogue); until a binary reads it from configuration the gate is proven but not on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3766,20 +3772,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-contracts --test action; cargo test -p qip-kernel --test executable_scope",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: removing the licensed conjunct in route_with_class failed the contracts test; returning the scope before with_jurisdictions in Platform::executable_scope failed the kernel test. Unset is ungated rather than fail-closed because an empty default would shadow every opportunity on the deployed path; stating an empty set does license nothing."
   },
   {
     "id": "R12-COVERAGE-7168",
     "status": "PARTIAL",
-    "current": "Quantum and cognition are structurally absent from reflex; degradation table partial.",
+    "current": "qip-contracts degradation.rs now has Ledger, Custody, Clock and Fabric Capability variants (Capability::dependencies) with multipliers from the v12 failure table: ledger unavailable sizes to nothing (new exposure halts, cancels continue), ledger stale 0.5, custody 0.75/0.5, clock 0.75/0.5, fabric 1 (cells decide alone; the loss narrows through the TTL-governed policy rows). DegradationState::dependency_multiplier compounds only observed dependency rows and permits_new_exposure reads it. Cell::narrowing records Ledger from the journal wire (Normal/Narrow/Exhausted = Fresh/Stale/Unavailable) and Fabric from the held policy; the pass keeps sizing by the journal wire own multiplier so the ledger fact is charged once.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:64-142,693-725 Capability/Freshness/DegradationState (absence = unavailable; multipliers compound)"
+      "backend/crates/libs/qip-contracts/src/degradation.rs Capability::dependencies / dependency_multiplier / permits_new_exposure",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::narrowing (Ledger, Fabric rows)",
+      "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs an_unavailable_fabric_still_permits_a_sized_pass_while_an_unavailable_ledger_halts_new_exposure",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs the_ledger_row_follows_the_journal_wire_and_agrees_with_it_on_halting_new_exposure",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs a_cell_holding_no_policy_records_an_unavailable_fabric_and_still_sizes_its_pass"
     ],
-    "gap": "Degraded modes for every dependency (ledger, custody, clock, fabric).",
+    "gap": "Custody and Clock have a multiplier but no reading anywhere: no cell or centre path observes either row, so they never narrow a pass. The cell compounds no dependency_multiplier into its size (Ledger is carried by the journal wire own multiplier, Fabric by design is 1), the dependency rows are not in the chain narrowed list (it is hashed and the ledger row moves with the wire) and have no telemetry series. Needs a custody/treasury balance-freshness reading and a clock-sync reading from the node, and an edge series for the new rows.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3787,10 +3796,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test journal_pressure",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: swapping the ledger-unavailable and fabric multipliers failed the contracts test; mapping Exhausted to Fresh failed the ledger-row test; dropping observe(Fabric) failed the fabric test. Unobserved dependency rows read unavailable from freshness() but contribute one to dependency_multiplier: scaling every unwired plane by a number nobody measured is the failure the module refuses elsewhere."
   },
   {
     "id": "R12-COVERAGE-7169",
@@ -4029,34 +4038,34 @@
   },
   {
     "id": "R12-COVERAGE-7180",
-    "status": "PARTIAL",
-    "current": "Federation with branches and arbitration.",
+    "status": "COMPLETE",
+    "current": "An acceptance suite proves the composite through a real Platform: fourteen cycles of divergent members journal arbitrations whose spread is material and whose views differ (not averaged), a Branch decision whose branch later appears in a recorded Disagreement with its parent, trigger and depth 1, and no cycle's ACT stage released an order or moved the book. The register's 'numerous deployed models' gap was already stale: federation_stage.rs declares and runs the population every UNDERSTAND pass.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:246-275,641 Disagreement/Decision/Arbitration, arbitrate",
-      "backend/crates/services/qip-world-model/tests/federation.rs:204,243,472,509 keeps every view; branches stay live; material disagreement raises research task"
+      "backend/crates/tests/qip-acceptance/tests/federation_disagreement.rs divergent_members_journal_a_disagreement_with_branch_lineage_and_no_cycle_releases_an_order",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs act_on_decisions (the branch lineage)"
     ],
-    "gap": "Numerous deployed models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test federation_disagreement",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutation fired: feeding only the momentum member in FederationStage::run -> 'no material disagreement was recorded'."
   },
   {
     "id": "R12-COVERAGE-7181",
     "status": "PARTIAL",
-    "current": "qip-reasoning-engine; symbolic reasoner registration.",
+    "current": "Proof traces exist and run: qip-reasoning-engine rules.rs returns a Verdict whose TraceStep list is re-checked by RulePack::verify, and qip-kernel symbolic_stage.rs composes rules, timeline, Bayesian network, constraint conflict and lifecycle into one SymbolicDerivation (qip_contracts::symbolic, a checked trace) per hypothesis, called from platform.rs (derive, ~13883) and journaled. Constraint solving (constraint.rs) returns a minimal conflict. No planning reasoner exists.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Proof traces and constraint/planning.",
+    "gap": "Planning: no search over constraint goals. The register text 'no proof trace is attached to a conclusion' is stale for the derivation (symbolic_stage attaches one); what remains is that ReasoningOutcome (engine.rs) itself carries no trace, and the derivation is advisory by design, so a conclusion without a complete trace is not refused by anything that decides.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4067,7 +4076,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: gap corrected, not implemented. Promoting a trace to a refusal on the REASON conclusion is a sizing decision the symbolic_stage header reserves for an ADR."
   },
   {
     "id": "R12-COVERAGE-7182",
@@ -4198,12 +4207,16 @@
   },
   {
     "id": "R12-COVERAGE-7188",
-    "status": "PARTIAL",
-    "current": "EffectAttribution multi-horizon; widen refuses unidentified.",
+    "status": "COMPLETE",
+    "current": "qip-agency draws a randomised hold-out itself (estimate::Experiment::design: units ranked by SHA-256 of seed and unit, the first share held out) and analyses outcomes per horizon into an Estimate labelled Identification::Experiment, so the assignment is a pure function of a committed seed and the operator cannot pick who is held out. The shipped shadow binary takes it as widening evidence (EstimateInput::HoldOutExperiment): ActionPolicy::widen accepts an attribution this estimate supports and still refuses a correlation of the same cells as not identified.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects"
+      "backend/crates/services/qip-agency/src/estimate.rs::Experiment, EstimatorKind::HoldOutExperiment, EstimateInput::HoldOutExperiment",
+      "backend/crates/services/qip-agency/src/autonomy.rs:112 (widen still refuses an unidentified attribution)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_hold_out_drawn_here_earns_the_experiment_label_and_a_correlation_of_the_same_cells_widens_nothing",
+      "backend/crates/services/qip-agency/tests/agency.rs::an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_not_match_the_design",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped"
     ],
-    "gap": "Experiment runner.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4211,10 +4224,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: correlation() labelled Experiment (the observational estimate then widens); the seed dropped from the ranking hash (eight seeds draw one split); the missing-outcome check replaced by a zero default (a held-out cell dropped after the fact is analysed, in the library and in the binary). Limits stated, not hidden: the platform is shadow-only and stages no intervention, so the operator runs the treatment in the cells Experiment names and supplies the outcomes; that the seed was committed before any outcome existed is the caller's ordering and nothing here proves it. Running estimators on observed post-intervention effects is R12-AGENCY-1184."
   },
   {
     "id": "R12-COVERAGE-7189",
@@ -4248,7 +4261,7 @@
       "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::the_run_loop_routes_activated_ambient_signals_through_the_guard_into_the_outbox",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "The verification clause wants every constituent obligation COMPLETE, but the register still has many PARTIAL, MISSING or BLOCKED rows, e.g. AGENCY-6105 MISSING, AGENCY-1056/1057/1059/1060/1063-1069 conduct checks PARTIAL, AGENCY-6091, AMBIENT-3027, 3064, 3065. No qip-acceptance suite proves the composite.",
+    "gap": "The verification clause wants every constituent obligation COMPLETE and a composite acceptance suite. The coordinated-voices check is reachable through ActionGuard::preflight (a test where only that check refuses is tests/agency.rs near 'coordinated_voices'; the cross-pass fingerprint scan is in preflight), so that part of the old gap is closed. Still PARTIAL constituents on the conduct road: R12-AGENCY-1065 and R12-AGENCY-1069 (sentence-level binding of content to citations), R12-AGENCY-6105 and R12-AGENCY-7027 (the deepbrain ambient path runs no engine::run and no simulation). No qip-acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4259,7 +4272,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Claim that agency gates sit between ambient detection and execution is unreached; only an order-path text grep backs it. Re-graded 2026-10-17 after this session's work, by an independent grader that wrote none of the code (tests read, not run by the grader; the full workspace run is 9407 passed, 0 failed): The statement's core (ambient proposes only, gates sit between) now holds as in 7029. The row is an aggregate whose acceptance bar is constituents COMPLETE plus a composite acceptance suite, and neither is met. The conduct gates between detection and execution are themselves partial (the coordinated-voices check is unreachable through preflight)."
+    "notes": "Re-read 2026-10-18 (lane L10): 1056, 1057, 1059, 1060, 1064, 1066 and 6099 are now COMPLETE; the aggregate stays PARTIAL on the rows named in the gap and on the missing composite suite."
   },
   {
     "id": "R12-COVERAGE-7191",
@@ -4698,7 +4711,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn",
       "backend/crates/runtime/qip-kernel/tests/learning.rs"
     ],
-    "gap": "Rejected-by-risk and edge-refusal outcomes in learning; desk outcome records not consumed by any learner.",
+    "gap": "Desk risk-limit vetoes are already learned from: capture_submission records Action::Rejected with gate, rules and readings and queues the sizing-evidence refusals for score_declined. Not learned from: edge-cell refusals, which reach the centre as DeltaRefusal { gate, reason, venue } with no instrument, side or size (see R12-MESH-5068 for the wire change), and desk outcome records, which DeskShipper carries to the ledger stream and no learner consumes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4709,7 +4722,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent."
   },
   {
     "id": "R12-FABRIC-7211",

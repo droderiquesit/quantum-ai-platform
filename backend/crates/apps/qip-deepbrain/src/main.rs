@@ -864,13 +864,24 @@ fn run() -> Result<()> {
     // HMAC under a seed-derived key — is the defect W1.4 exists to remove.
     // Until it lands every package is compiled, counted as `held_unsigned`,
     // and written nowhere.
-    let mut research =
-        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?
-            .with_package_store(
-                config
-                    .storage
-                    .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
-            );
+    // The tools this process runs (R12-EXPAND-6059) are read from the
+    // settings already parsed rather than listed: the classical solver
+    // always, the quantum simulator where `compute` attached it, one
+    // connector per catalogued source polled above.
+    let mut research = qip_deepbrain::research::ResearchLoop::new_for_node(
+        research_config,
+        research_coverage,
+        &compute,
+        config
+            .connector_feed
+            .as_ref()
+            .map_or(&[][..], |feed| feed.source_ids.as_slice()),
+    )?
+    .with_package_store(
+        config
+            .storage
+            .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+    );
     if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
         (&language_model.replies, &language_model.hosted)
     {
@@ -905,6 +916,27 @@ fn run() -> Result<()> {
     println!(
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
+    );
+    // The research warehouse (`warehouse.rs`, R12-DATA-9054): resolved
+    // outcomes streamed to BigQuery. Off, and printed as off, in every
+    // environment that names no QIP_BIGQUERY_PROJECT and
+    // QIP_BIGQUERY_DATASET; a half-named or unreachable target stops the
+    // process here rather than reading as a warehouse that is quietly absent.
+    let mut warehouse = qip_deepbrain::warehouse::OutcomeSink::from_lookup(
+        &|name| std::env::var(name).ok(),
+        clock.clone(),
+    )
+    .map_err(configuration)?;
+    println!(
+        "  warehouse:        {}",
+        if warehouse.is_some() {
+            format!(
+                "resolved outcomes stream to {}",
+                qip_deepbrain::warehouse::OUTCOMES_TABLE
+            )
+        } else {
+            "off (QIP_BIGQUERY_PROJECT and QIP_BIGQUERY_DATASET unset)".to_string()
+        }
     );
     // The remediation journal: the audit record of an automated action is
     // written here before the action runs, so a node that restarts after
@@ -954,6 +986,7 @@ fn run() -> Result<()> {
             permissions: permission_watch.as_mut(),
             ambient: Some(&mut ambient),
             agency: Some(&mut agency),
+            warehouse: warehouse.as_mut(),
             desk: Some(&mut desk_shipper),
         },
         |outcome| {
@@ -1039,6 +1072,9 @@ fn run() -> Result<()> {
                 println!("  {}", round.describe());
             }
             if let Some(round) = &outcome.agency {
+                println!("  {}", round.describe());
+            }
+            if let Some(round) = &outcome.warehouse {
                 println!("  {}", round.describe());
             }
             if let Some(line) = outcome.operations.as_ref().and_then(|o| o.describe()) {

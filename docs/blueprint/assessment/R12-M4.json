@@ -31,7 +31,7 @@
       "backend/crates/edge/qip-edge/Cargo.toml no qip-ai dependency",
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 fast lanes cannot depend on slower lanes"
     ],
-    "gap": "Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0138 (accepted 2026-10-18): The hosted language-model adapters move from qip-reasoning-engine/src/providers to services/qip-language-providers, linked by qip-deepbrain alone and pinned out of the fast lanes by lane_placement.rs. Code left: the crate move, the dependency edges, a lane_placement.rs closure test with its mutation, and the egress.rs and model_gateway_boundary.rs paths.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -42,7 +42,7 @@
     "verification": "new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D14; gap before it: qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. ADR lane 2026-10-18: gap re-graded against ADR 0138; gap before it: Delegable decision D14 (design-decisions-2026-10-18.json), ADR not yet written: LanguageModel providers move out of qip-reasoning-engine into a slow-lane crate linked by qip-deepbrain alone, pinned by lane_placement.rs. Needs that ADR, then the code."
   },
   {
     "id": "R12-MODEL-4003",
@@ -209,7 +209,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs constraint reasoner",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Neural-symbolic hybrids and planning reasoners absent.",
+    "gap": "Neural-symbolic hybrids and planning reasoners absent. Registering a planning or hybrid ModelClass would be a card in a test registry: the graph and causal cards in symbolic_reasoner_registration.rs are test fixtures, no binary registers a reasoner card. The real work is a planning search over qip-reasoning-engine's constraint goals and a path by which a registered model's prediction enters the Bayesian network (symbolic_stage.rs composes rules, timeline, network, constraint and lifecycle but takes no model prediction). symbolic_stage is advisory by design (its header), so a hybrid would be recorded, not acted on.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -220,7 +220,7 @@
     "verification": "cargo test -p qip-reasoning-engine; kernel REASON tests",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented; no running path to attach a registration to."
   },
   {
     "id": "R12-MODEL-4011",
@@ -1358,13 +1358,15 @@
   {
     "id": "R12-QUANT-4063",
     "status": "PARTIAL",
-    "current": "Quantum path is now asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts with JobClass research classes.",
+    "current": "Quantum path is asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts. The kernel now states a discrete solve in them: ComputeRouter keeps the QUBO and each QUBO run's assignment on its RoutingDecision, and Platform::route_quantum_decisions (no longer a stub) converts the previous DECIDE's solve into a DecisionRequest, a recomputed classical SolverResult, the quantum or quantum-inspired result where one ran, and a contract RoutingDecision, journalled on optimization.completed under kernel/quantum-routing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/quantum.rs:21-310",
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-235 JobClass",
-      "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway"
+      "backend/crates/runtime/qip-kernel/src/quantum_routing.rs contract_of / QuantumRoutingRecorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs route_quantum_decisions (grep -n 'fn route_quantum_decisions')",
+      "backend/crates/services/qip-optimization-engine/src/router.rs RoutedQubo, SolverRun.assignment",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs a_discrete_solve_is_stated_in_the_quantum_contract_with_its_classical_baseline_recomputed"
     ],
-    "gap": "ComputeRouter takes PortfolioProblem and returns its own RoutingDecision; nothing in production builds a qip_contracts::quantum::DecisionRequest or SolverResult. The kernel seam meant to journal contract decisions, Platform::route_quantum_decisions in qip-kernel platform.rs, is a stub returning Vec::new(). Closing needs a router-side conversion (the QUBO the arm submits as a DecisionRequest, each run as a SolverResult) and that stub replaced by a call journaling it; the stub is lane L01's file.",
+    "gap": "The default composition never reaches it: PlatformConfig::default's Mandate has maximum_holdings None, so DECIDE solves a continuous quadratic program, which has no QUBO, and route_quantum_decisions journals nothing there (the test pins that). It runs for a mandate that sets maximum_holdings. A quantum-enabled continuous problem still states nothing, because the contract's classical result must be a classical solve of the same QUBO the quantum arm was sent, and the router solves the QP baseline instead; stating it needs the router to also solve that QUBO classically (a design decision on its cost against ADR 0006's baseline). No test drives the quantum result arm end to end.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1374,10 +1376,10 @@
       "R12-QUANT-4029"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change."
+    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change. Advanced 2026-10-18 (lane L01), kept PARTIAL. Mutation: making route_quantum_decisions discard the pending solve failed the test at 'one solve, one contract record'; restored byte-for-byte, it passes. Found on the way: weights cannot stand in for the assignment (an encoding whose per-holding weight is zero loses the selection), so SolverRun now carries it."
   },
   {
     "id": "R12-QUANT-4064",
@@ -1603,14 +1605,15 @@
   },
   {
     "id": "R12-ASSET-4074",
-    "status": "PARTIAL",
-    "current": "LEARN reconciles the wallet (ledger view vs observed statements) through the fabric journal; the central plane halts a cell on a reconciliation break. Statements are handed in (simulated); nothing reaches a real custodian.",
+    "status": "COMPLETE",
+    "current": "LEARN reconciles the wallet (ledger view vs observed statements) through the fabric journal, and the desk now reads the outcome: Platform::submit_order, the only path to a venue, refuses an order in a venue-asset the desk venue's latest reconciliation halted (an instrument refuses every order in it; a halted settlement cash refuses buys), puts the refusal on the record under gate wallet-halt and counts it, while other instruments and sells against cash are untouched and a later clean reconciliation lifts the halt. The central plane still halts a cell on a reconciliation break. Statements reach the kernel through qip-api's statement route; nothing reaches a real custodian.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8284 reconcile_wallet",
-      "backend/crates/services/qip-capital-fabric/src/wallet.rs:633 reconcile",
+      "backend/crates/runtime/qip-kernel/src/platform.rs wallet_halt_for / refuse_for_wallet_halt, called first in submit_order (grep -n wallet_halt_for)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
+      "backend/crates/apps/qip-api/src/statement.rs production caller of observe_statement",
       "backend/crates/runtime/qip-kernel/tests/central.rs:682 a_reconciliation_break_halts_that_cell_and_only_that_cell"
     ],
-    "gap": "Desk-side halt on a wallet break; real custody statements need a deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1618,10 +1621,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test ledger a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutation: filtering wallet_halt_for's result to None in submit_order failed the test at 'a buy was sent into halted cash'; restored byte-for-byte, it passes. Real custody statements remain deploy-dependent: the halt is only as live as the statements an operator hands the qip-api route."
   },
   {
     "id": "R12-CAPITAL-4075",
@@ -1632,7 +1635,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
       "backend/crates/services/qip-capital/src/treasury.rs:52 CapitalBook (unintegrated)"
     ],
-    "gap": "Integrate the uncommitted-reserve floor.",
+    "gap": "The uncommitted-reserve floor is already carried by the survival kernel: SurvivalGovernor builds the waterfall (emergency reserve as a fraction of equity, margin, collateral, settlement, funding maturity, stressed-liquidity reserve) and installs what is left as the gross ceiling the risk state carries (RiskState.survival_gross_ceiling, seeded by seed_survival_ceiling), so building qip_capital::treasury::CapitalBook in deployable_capital would state the same floor a second time and two claims about one fact will disagree. Needs a design decision: either CapitalBook becomes the journal of commitments against the survival floor (floor read from the governor, never configured separately), or it is retired in favour of the governor's budget. No code was changed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1643,7 +1646,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01) after reading survival.rs and deployable_capital."
   },
   {
     "id": "R12-CAPITAL-4076",
@@ -1698,7 +1701,7 @@
     "evidence": [
       "backend/crates/services/qip-capital/src/bank.rs:449 route_idle_cash"
     ],
-    "gap": "Integration as a paper record; real routing BLOCKED (ADR 0003/0021).",
+    "gap": "route_idle_cash needs a shelf of YieldInstrument (custodian offerings with class, realisation and capacity) and nothing in the kernel, its config or any feed supplies one, so a call from DECIDE would route nothing. Also needs the uncommitted floor (see R12-CAPITAL-4075: one floor, not two). Needs a decision on where the shelf comes from (config, a custodian statement, a data source with a licence) before the paper routing record can be journalled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1709,7 +1712,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call."
   },
   {
     "id": "R12-CAPITAL-4079",
@@ -1719,7 +1722,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:143,797 LiquidityLadder",
       "backend/crates/services/qip-capital/src/dated_ladder.rs:76 DatedLadder (unintegrated)"
     ],
-    "gap": "Dated treasury ladder and withdrawal/reserve forecast in the cycle.",
+    "gap": "DatedLadder needs dated inflows and outflows, and the kernel dates only unfunded commitments (CommitmentBook) and the survival governor's CapitalObligations; no withdrawal or redemption event was found in the kernel (grep of platform.rs for withdraw/redemption finds only data-source and venue withdrawals), so a withdrawal/reserve forecast cannot be built from facts the platform holds. Needs a design decision on the withdrawal signal (mandate terms? an operator declaration?) before the ladder can be fed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1730,7 +1733,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-CAPITAL-4080",
@@ -1879,7 +1882,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/runtime/qip-kernel/tests/survival_gate.rs::unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases"
     ],
-    "gap": "Platform::observe_ledger_obligations has no production caller, so in every binary collateral and ledger settlement read zero; no single test drives over-commit, ignored obligation and hard-limit breach on one plan.",
+    "gap": "Platform::observe_ledger_obligations has no production caller. The ledger side exists (qip-ledgerd store.rs obligations() folds LedgerObligations::from_balances) but is not served: read_api.rs exposes balance, postings, parked, tax-lots and trial-balance, and qip-api holds no ledger state by acceptance (api_boundary). Needs a ledgerd obligations route, a qip-api reader with an explicit timeout and a configured ledger URL, and the survival_gate.rs test driving over-commit, ignored obligation and hard-limit breach on one plan.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1893,7 +1896,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap's 'no leverage ceiling is applied' is out of date (limits.rs:1802). Margin is now derived (cross-margin review). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L24 2026-10-18 re-graded: closure's handle_balance reads one account in one unit and cannot produce the fold; the route is the missing piece. Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-4087",
@@ -1908,7 +1911,7 @@
       "backend/crates/runtime/qip-kernel/src/survival.rs::CombinedObligations",
       "backend/crates/services/qip-capital/src/obligations.rs::LedgerObligations"
     ],
-    "gap": "No binary calls observe_ledger_obligations, so collateral/ledger settlement are zero in production; emergency reserve is a policy fraction, not a ledger account.",
+    "gap": "Same missing caller as R12-CAPITAL-4086 (no binary observes the ledger, so collateral and ledger settlement read zero in production); the emergency reserve is still a policy fraction (SurvivalPolicy::emergency_reserve_fraction), not a ledger account.",
     "implemented": false,
     "tested": true,
     "integrated": true,
@@ -1919,7 +1922,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Two claims disagree: survival.rs:358-364 sets settlement to zero because 'the simulated venue books cash at the fill', while the same platform declares the desk's venue on a T+1 settlement calendar for pre-positioning (platform.rs:4713-4718). Old note 'free cash and emergency reserves have no field' is no longer true. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L24 2026-10-18 re-graded: depends on the ledgerd obligations route in R12-CAPITAL-4086. Kept PARTIAL."
   },
   {
     "id": "R12-CAPITAL-4088",
@@ -2027,7 +2030,7 @@
       "backend/crates/services/qip-learning-engine/src/attribution.rs:22-42 Source",
       "backend/crates/runtime/qip-kernel/src/sizing_review.rs"
     ],
-    "gap": "Four-way decomposition record.",
+    "gap": "A four-way split needs three order quantities this platform does not stamp together: the thesis's reference size, the size after sizing, and the size the book finally allocated. AttributionLineage::note_release (runtime/qip-kernel/src/attribution.rs) stamps strategy, capital policy, risk rule, execution path and quoted spread only, and 'allocation' has no counterfactual yet (what weight the book would have held with no allocator). Without those, prediction/sizing/allocation can only be defined by choosing the numbers; the existing per-fill total (signed_qty x (mark - fill) - commission) already splits exactly into the execution term (arrival to fill, plus commission) and the held move (arrival to mark). Next step: stamp the three quantities at release, then split the held move as q_ref x move (prediction), (q_sized - q_ref) x move (sizing), (q_final - q_sized) x move (allocation), and assert the sum equals the fill total.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2038,7 +2041,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented. Read attribution.rs and the learning engine's Attribution; the four-way record would have defined its own reference quantities rather than reading stamped ones, and the grader's closure names none of the three sources."
   },
   {
     "id": "R12-RISK-4093",
@@ -2095,7 +2098,7 @@
       "backend/crates/libs/qip-risk/src/limits.rs:149 MaxAxisWeight",
       "backend/crates/runtime/qip-kernel/src/platform.rs:20113 gapped fill test"
     ],
-    "gap": "Basis and Greeks exposures and limits.",
+    "gap": "Book-level basis and Greeks exposures have no measurement to limit: BookGreeks carries delta (the book's net signed notional, already limited by MaxNetExposure) with gamma and vega None, because the risk aggregate holds signed notionals and no option sensitivities, and no book basis figure exists (basis_volatility is a per-hedge-candidate input, not a book measurement). A MaxNetDelta limit would duplicate MaxNetExposure and a MaxBasisExposure fed from ExposureSurvey could not fire. Needs per-instrument sensitivities on catalogue records and a hedge-pair basis in the aggregate before a limit can read them.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2106,7 +2109,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the grader's closure (limits filled from ExposureSurvey Greeks/basis) names figures the survey does not hold; adding the limits first is the MaxExpectedShortfall defect. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-4096",
@@ -2117,7 +2120,7 @@
       "backend/crates/services/qip-capital/src/margin.rs",
       "backend/crates/libs/qip-contracts/src/feasibility.rs:31 GATE_DEPTH"
     ],
-    "gap": "Borrow/quote availability.",
+    "gap": "No borrow or quote availability datum exists anywhere in the tree: TransactionCostModel.short_borrow_bps_annual is a price, not availability, and no catalogue field says whether an instrument can be borrowed. Needs a borrow-availability source evaluated by qip-data-finder for licensing posture, a catalogue/wire field with no default (an unknown must not read as borrowable), and a RiskState map the kernel fills; quote presence needs the book-side quote read at the gate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2128,7 +2131,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'catalogue borrowable flag' does not exist, and inventing one with a default would be a limit reading a number nobody measured. Kept PARTIAL."
   },
   {
     "id": "R12-RISK-4097",
@@ -2154,13 +2157,16 @@
   },
   {
     "id": "R12-RISK-4098",
-    "status": "PARTIAL",
-    "current": "MaxLeverage, MaxConcentration/MaxAxisWeight, MinCashBuffer limits; collateral graph findings. Funding buffers not limited.",
+    "status": "COMPLETE",
+    "current": "LimitKind::MaxMarginUtilisation (maintenance required over post-haircut observed cover) and LimitKind::MinFundingBuffer (equity left after held capital and the survival waterfall's funding-maturity tier) exist beside MaxLeverage/MaxConcentration/MinCashBuffer. Platform::risk_state_from fills both through with_margin_and_funding from cross_margin::review and the SurvivalGovernor's funding read, so submit_order refuses an order that raises gross while utilisation is past 1.0 or the buffer under its floor, and never refuses one that sheds gross. Both ship in LimitSet::conservative_default and are dormant on a book with no venue statement or no commitment (the figure stays absent and records nothing).",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/limits.rs:126,130,187",
-      "backend/crates/runtime/qip-kernel/src/cross_margin.rs:228"
+      "backend/crates/libs/qip-risk/src/limits.rs:246 MaxMarginUtilisation, :258 MinFundingBuffer, RiskState::margin_utilisation/funding_buffer, evaluate arms and the sheds_gross exemption",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18202 with_margin_and_funding (called from risk_state_from)",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:760 SurvivalGovernor::funding_read, set by size and seed",
+      "backend/crates/runtime/qip-kernel/tests/margin_funding_limits.rs",
+      "backend/crates/libs/qip-risk/tests/limit_fixtures.rs a_book_inside_its_margin_utilisation_limit_passes .. a_book_below_the_funding_floor_is_vetoed"
     ],
-    "gap": "Funding-buffer limit; margin as a limit.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2168,10 +2174,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-risk --test limit_fixtures && cargo test -p qip-kernel --test margin_funding_limits",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Dormant by construction on every committed deployment: no venue statement is handed in and no private commitment is declared, so neither figure is filed and neither rule records anything; each fires as soon as a statement or commitment exists. Margin utilisation is over observed venues only (unread venues stay the cross-margin finding's). Both figures describe the book before the order, so the rules refuse risk-raising orders after a call or shortfall exists, not the order that opens it. Mutations that fired: margin figure left unset, sheds_gross exemption dropped, funding tier not subtracted, unobserved maintenance folded into utilisation, MinFundingBuffer removed from is_minimum."
   },
   {
     "id": "R12-RISK-4099",
