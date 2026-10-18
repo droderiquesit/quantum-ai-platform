@@ -444,13 +444,13 @@
   {
     "id": "R12-DATA-7021",
     "status": "PARTIAL",
-    "current": "data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite.",
+    "current": "data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite. The connector path (ConnectorArm over a Platform) is proven to retain no fetched body in the event log, journal KV, knowledge-pack or tick-lake stores by a canary test.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src",
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos (data-refetch-health)",
-      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:526 a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_the_platform"
     ],
-    "gap": "Not verified that no ingestion path persists raw content.",
+    "gap": "The canary test covers the connector path only (ConnectorArm, one shipped connector). The other ingestion paths - the narrative/news adapters and the REST market-data adapter - have no equivalent canary test; the register's 'every ingestion path' is not yet verified.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -461,7 +461,7 @@
     "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L08 2026-10-18. Kept PARTIAL: closure's cross-store canary test landed (see R12-DATA-1029 for the mutation, which fired) but covers one path of several."
   },
   {
     "id": "R12-MODEL-7022",
