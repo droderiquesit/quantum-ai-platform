@@ -1381,12 +1381,14 @@
   {
     "id": "R12-MODEL-10064",
     "status": "PARTIAL",
-    "current": "qip-training builds Vertex job specs and has a cadence; no Spot/preemptible scheduling found.",
+    "current": "Every TrainingSpec carries JobScheduling (queue, Capacity OnDemand|Spot, JobPriority Critical|Standard), validated by TrainingSpec::validate, which refuses a critical job on Spot. VertexAiProvider writes jobSpec.scheduling.strategy SPOT for an interruptible custom-container job and STANDARD otherwise, refuses Spot for an AutoML workload, and with_quotas(QueueQuotas) refuses a submit into a full or undeclared queue before any request is sent. No deployment submits to Vertex: enable_vertex_ai is false in every environment and the deep brain fits in process with LocalTrainer.",
     "evidence": [
-      "backend/crates/services/qip-training/src/vertex.rs",
-      "backend/crates/services/qip-training/src/cadence.rs"
+      "backend/crates/services/qip-training/src/job.rs JobScheduling::validate, QueueQuotas::admit",
+      "backend/crates/services/qip-training/src/vertex.rs request_body scheduling.strategy; submit quota and AutoML-Spot refusals",
+      "backend/crates/services/qip-training/tests/vertex.rs an_interruptible_job_asks_vertex_for_spot_and_a_critical_one_is_never_placed_there",
+      "backend/crates/services/qip-training/tests/vertex.rs a_submit_beyond_its_queue_quota_is_refused_before_any_request"
     ],
-    "gap": "Spot scheduling and quota awareness.",
+    "gap": "No deployed provider submits a job: enable_vertex_ai=false everywhere and the deep brain's learning desk fits with LocalTrainer, so Spot placement and quota refusal are proven against a local Vertex stand-in only, not in a committed deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1396,10 +1398,10 @@
       "R12-MODEL-10043"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cargo test -p qip-training --test vertex --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations: Spot mapped to STANDARD fails the strategy assertion; `active > limit` in QueueQuotas::admit admits a second job into a queue of one. Closing needs a deployment that enables Vertex (enable_vertex_ai, a protected tfvars change) and a production caller of VertexAiProvider."
   },
   {
     "id": "R12-MODEL-10065",

@@ -1317,13 +1317,15 @@
   },
   {
     "id": "R12-EXPAND-6060",
-    "status": "PARTIAL",
-    "current": "qip-ai ModelRegistry with stages, cards, digests and rollback, integrated in qip-deepbrain; resource budgets and model-class coverage (foundation/policy/reflex) absent.",
+    "status": "COMPLETE",
+    "current": "ModelClass records Foundation, Policy, Ensemble and Reflex beside Generic, the specialists and the reasoners (ALL is sixteen). ModelCard::decision_eligibility, which ModelRegistry::require_for_decision applies to every decision lookup, adds per-class rules: a foundation model is never decision-eligible; a policy or ensemble needs a named benchmark; a reflex model needs a resource budget. Generic and Reflex are the only classes admitted to the hot lane. ResourceBudget already existed on the card.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:99",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:605"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelClass (Foundation, Policy, Ensemble, Reflex) and ModelClass::class_eligibility",
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility calls class_eligibility",
+      "backend/crates/libs/qip-ai/tests/registry.rs a_reflex_class_card_without_a_resource_budget_is_refused",
+      "backend/crates/libs/qip-ai/tests/registry.rs foundation_models_never_decide_and_policies_and_ensembles_need_a_named_benchmark"
     ],
-    "gap": "Resource budgets and missing model classes.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1331,10 +1333,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-ai --test registry",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. The gap's 'resource budgets' half was stale: ModelCard.resource_budget already existed. Mutations, each fired: disabling the reflex arm admits an unbudgeted reflex card; disabling the policy/ensemble arm admits an unbenchmarked policy; disabling the foundation arm makes a foundation model eligible. No default-path caller registers a reflex card yet: the deep brain holds its distillate on LearningRound rather than registering it."
   },
   {
     "id": "R12-EXPAND-6061",
