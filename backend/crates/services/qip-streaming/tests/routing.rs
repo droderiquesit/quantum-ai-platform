@@ -5,13 +5,39 @@
 mod common;
 
 use common::{at, hot_tick, research_source, venue_source, warm_note};
+use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::Topic;
 use qip_streaming::{
-    Confidence, DurableLogTransport, EventFacts, LocalQueue, PubSubBinding, PubSubTransport,
-    Publisher, RoutingClass, SourceType, StreamEnvelope, Subject, Subscriber, TieredPublisher,
-    TransportPath,
+    Confidence, DurableLogTransport, EventFacts, LocalQueue, PublishReceipt, Publisher,
+    RoutingClass, SourceType, StreamEnvelope, Subject, Subscriber, TieredPublisher,
+    TransportDescriptor, TransportPath,
 };
+
+/// A durable-path publisher that refuses every envelope it is handed.
+///
+/// Stands in for the durable side where the proof is that it was never called:
+/// a hot event that reached it would fail the route.
+#[derive(Debug)]
+struct RefusingDurable;
+
+impl Publisher for RefusingDurable {
+    fn descriptor(&self) -> TransportDescriptor {
+        TransportDescriptor {
+            name: "refusing-durable".to_string(),
+            path: TransportPath::Durable,
+            durable: true,
+            available: false,
+            production_requirement: Some("nothing; it exists to refuse".to_string()),
+        }
+    }
+
+    fn publish(&mut self, _envelope: StreamEnvelope, _at: Timestamp) -> Result<PublishReceipt> {
+        Err(Error::unavailable(
+            "the durable side was handed an envelope",
+        ))
+    }
+}
 
 /// Topics spanning both sides of `Topic::is_lossy_tolerable` and both sides of
 /// `TopicGroup::is_latency_critical`.
@@ -27,11 +53,7 @@ fn a_hot_routed_event_never_traverses_the_durable_buffer() -> Result<()> {
     // The durable side is a transport that cannot work at all. If a hot event
     // touched it — even to be handed over and refused — routing would fail.
     // It succeeding is the proof that the durable path is not called.
-    let durable = PubSubTransport::declared(PubSubBinding::new(
-        "projects/PROJECT/topics/qip-sense",
-        "projects/PROJECT/subscriptions/qip-sense-worldmodel",
-    ));
-    let mut tiered = TieredPublisher::new(LocalQueue::new("hot", 64)?, Box::new(durable));
+    let mut tiered = TieredPublisher::new(LocalQueue::new("hot", 64)?, Box::new(RefusingDurable));
 
     for sequence in 1..=5 {
         let receipt = tiered.route(hot_tick(sequence, at(0), at(sequence as i64))?, at(10))?;
