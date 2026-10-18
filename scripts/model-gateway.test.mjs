@@ -49,7 +49,7 @@ test("an extra body is merged but may not override the model, messages or budget
   assert.ok(bad.problems.some((p) => p.includes("may not set model")), JSON.stringify(bad.problems));
 });
 
-const budget = { ALGORIK_WORKER_MAX_CALLS: "5" };
+const budget = { ALGORIK_WORKER_MAX_CALLS: "5", ALGORIK_WORKER_DAILY_CALLS: "50", ALGORIK_WORKER_MONTHLY_CALLS: "500", ALGORIK_WORKER_BUILD_CALLS: "50", ALGORIK_WORKER_TOOL_CALLS: "50" };
 
 test("a hugging face token in a payload is refused by name, never sent", () => {
   // Premise: the shape is plausible for a real token and clean text passes.
@@ -329,7 +329,7 @@ function desk() {
 
 const keyed = (maxCalls) =>
   configure(
-    { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "org/model", HF_TOKEN_FILE: "/f", ALGORIK_WORKER_MAX_CALLS: String(maxCalls) },
+    { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "org/model", HF_TOKEN_FILE: "/f", ALGORIK_WORKER_MAX_CALLS: String(maxCalls), ALGORIK_WORKER_DAILY_CALLS: "50", ALGORIK_WORKER_MONTHLY_CALLS: "500", ALGORIK_WORKER_BUILD_CALLS: "50", ALGORIK_WORKER_TOOL_CALLS: "50" },
     () => "k",
   );
 const goodTask = { task: "summarise the module", context: "fn main() {}", acceptance: "one paragraph", paths: ["notes.md"] };
@@ -429,7 +429,7 @@ test("a spent call ceiling refuses the next task before anything is sent, and a 
 });
 
 test("without a positive call ceiling the gateway is not configured, and a task run against it sends nothing", async () => {
-  const base = { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "org/model", HF_TOKEN_FILE: "/f" };
+  const base = { ALGORIK_WORKER_PROVIDER: "huggingface", ALGORIK_WORKER_MODEL: "org/model", HF_TOKEN_FILE: "/f", ALGORIK_WORKER_DAILY_CALLS: "50", ALGORIK_WORKER_MONTHLY_CALLS: "500", ALGORIK_WORKER_BUILD_CALLS: "50", ALGORIK_WORKER_TOOL_CALLS: "50" };
   const complaint = (config) => config.problems.filter((p) => p.startsWith("ALGORIK_WORKER_MAX_CALLS must be a positive number"));
   // Premise: a positive ceiling draws no complaint, so the complaint below is
   // about the ceiling and not about the rest of the fixture.
@@ -443,6 +443,48 @@ test("without a positive call ceiling the gateway is not configured, and a task 
     assert.equal(await run(config, d.task(goodTask), { agent: "test-engineer", fetchImpl, ledger: d.ledger }), 78);
     assert.equal(requests.length, 0, `a task was sent under a ceiling of ${value}`);
     d.remove();
+  }
+});
+
+test("without a daily, a monthly, a build and a tool budget the gateway is not configured, and the first call against it is never sent", async () => {
+  // R12-FINOPS-10140. The failure: these budgets were optional, an unset one
+  // read as zero and zero as "no limit", so a gateway with a per-run ceiling
+  // and nothing else spent without a calendar bound while looking configured.
+  const full = {
+    ALGORIK_WORKER_PROVIDER: "huggingface",
+    ALGORIK_WORKER_MODEL: "org/model",
+    HF_TOKEN_FILE: "/f",
+    ALGORIK_WORKER_MAX_CALLS: "5",
+    ALGORIK_WORKER_DAILY_CALLS: "50",
+    ALGORIK_WORKER_MONTHLY_CALLS: "500",
+    ALGORIK_WORKER_BUILD_CALLS: "50",
+    ALGORIK_WORKER_TOOL_CALLS: "50",
+  };
+  // Premise: with every budget set the fixture draws no complaint at all.
+  assert.deepEqual(configure(full, () => "k").problems, []);
+  for (const variable of [
+    "ALGORIK_WORKER_DAILY_CALLS",
+    "ALGORIK_WORKER_MONTHLY_CALLS",
+    "ALGORIK_WORKER_BUILD_CALLS",
+    "ALGORIK_WORKER_TOOL_CALLS",
+  ]) {
+    for (const value of [undefined, "", "0", "-3", "lots"]) {
+      const env = { ...full };
+      if (value === undefined) delete env[variable];
+      else env[variable] = value;
+      const config = configure(env, () => "k");
+      assert.deepEqual(
+        config.problems.map((p) => p.split(" ")[0]),
+        [variable],
+        `${variable}=${JSON.stringify(value)} drew ${JSON.stringify(config.problems)}`,
+      );
+
+      const d = desk();
+      const { requests, fetchImpl } = scripted(answer("sent"));
+      assert.equal(await run(config, d.task(goodTask), { agent: "test-engineer", fetchImpl, ledger: d.ledger }), 78);
+      assert.equal(requests.length, 0, `the first call was sent with ${variable}=${JSON.stringify(value)}`);
+      d.remove();
+    }
   }
 });
 
@@ -476,6 +518,9 @@ test("a spent daily call budget refuses further calls today and is audited with 
       ALGORIK_WORKER_MODEL: "org/model",
       HF_TOKEN_FILE: "/f",
       ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_BUILD_CALLS: "1000",
+      ALGORIK_WORKER_TOOL_CALLS: "1000",
+      ALGORIK_WORKER_MONTHLY_CALLS: "10000",
       ALGORIK_WORKER_DAILY_CALLS: "1",
     },
     () => "k",
@@ -510,6 +555,9 @@ test("a spent monthly call budget refuses further calls this month and is audite
       ALGORIK_WORKER_MODEL: "org/model",
       HF_TOKEN_FILE: "/f",
       ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_BUILD_CALLS: "1000",
+      ALGORIK_WORKER_TOOL_CALLS: "1000",
+      ALGORIK_WORKER_DAILY_CALLS: "1000",
       ALGORIK_WORKER_MONTHLY_CALLS: "2",
     },
     () => "k",
@@ -550,6 +598,9 @@ test("a spent build-type budget refuses further build-type calls and is audited 
       ALGORIK_WORKER_MODEL: "org/model",
       HF_TOKEN_FILE: "/f",
       ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_TOOL_CALLS: "1000",
+      ALGORIK_WORKER_DAILY_CALLS: "1000",
+      ALGORIK_WORKER_MONTHLY_CALLS: "10000",
       ALGORIK_WORKER_BUILD_CALLS: "1",
     },
     () => "k",
@@ -583,6 +634,9 @@ test("a spent tool-type budget refuses further tool-type calls and is audited wi
       ALGORIK_WORKER_MODEL: "org/model",
       HF_TOKEN_FILE: "/f",
       ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_BUILD_CALLS: "1000",
+      ALGORIK_WORKER_DAILY_CALLS: "1000",
+      ALGORIK_WORKER_MONTHLY_CALLS: "10000",
       ALGORIK_WORKER_TOOL_CALLS: "1",
     },
     () => "k",
@@ -617,6 +671,8 @@ test("work-type-specific budgets do not block other work types: exhausting build
       ALGORIK_WORKER_MODEL: "org/model",
       HF_TOKEN_FILE: "/f",
       ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_DAILY_CALLS: "1000",
+      ALGORIK_WORKER_MONTHLY_CALLS: "10000",
       ALGORIK_WORKER_BUILD_CALLS: "1",
       ALGORIK_WORKER_TOOL_CALLS: "1",
     },

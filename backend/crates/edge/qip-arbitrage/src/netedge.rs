@@ -91,6 +91,10 @@ use serde::{Deserialize, Serialize};
 /// typical case by about a quarter and makes every path look worse than it is.
 const EXPECTED_ABSOLUTE_NORMAL: f64 = 0.797_884_560_802_865_4;
 
+fn zero_duration() -> Duration {
+    Duration::from_nanos(0)
+}
+
 /// What the calculator is entitled to assume about the world.
 ///
 /// Held in one struct rather than passed piecemeal so that a change of
@@ -100,6 +104,16 @@ const EXPECTED_ABSOLUTE_NORMAL: f64 = 0.797_884_560_802_865_4;
 pub struct EdgeAssumptions {
     /// Decision to last leg landing. What the latency deduction is priced over.
     pub round_trip: Duration,
+    /// Time the legs spend waiting on each other across regions before the
+    /// last one can be sent: the peer round trip a cross-region cycle pays to
+    /// agree its epoch (R12-MESH-5069). Priced with [`Self::round_trip`],
+    /// because the market moves while two regions coordinate exactly as it
+    /// moves while one leg is in flight, and a path whose edge does not
+    /// survive that wait is not an opportunity. Zero for a cycle the cell
+    /// trades alone; defaulted on decode so a record written before the
+    /// field existed reads as the single-region assumption it was made under.
+    #[serde(default = "zero_duration")]
+    pub coordination_latency: Duration,
     /// Annualised volatility of the path's payoff, as a fraction. A statistic.
     pub volatility_annual_f64: f64,
     /// How long capital stays committed. What funding and collateral are priced
@@ -131,6 +145,7 @@ impl Default for EdgeAssumptions {
     fn default() -> Self {
         Self {
             round_trip: Duration::from_millis(250),
+            coordination_latency: Duration::from_nanos(0),
             volatility_annual_f64: 0.40,
             holding_period: Duration::from_mins(5),
             funding_rate_annual_f64: 0.05,
@@ -233,8 +248,11 @@ impl NetEdgeCalculator {
                 DeductionKind::Latency,
                 latency,
                 format!(
-                    "expected absolute move at {} annualised volatility over a {:?} round trip",
-                    self.assumptions.volatility_annual_f64, self.assumptions.round_trip
+                    "expected absolute move at {} annualised volatility over a {:?} round trip \
+                     and {:?} of cross-region coordination",
+                    self.assumptions.volatility_annual_f64,
+                    self.assumptions.round_trip,
+                    self.assumptions.coordination_latency
                 ),
             )?)
             .deduct(Deduction::new(
@@ -389,7 +407,8 @@ impl NetEdgeCalculator {
     }
 
     fn latency_deduction(&self, size: Decimal) -> Result<Decimal> {
-        let years_f64 = self.assumptions.round_trip.as_years_f64().max(0.0);
+        let exposed = self.assumptions.round_trip + self.assumptions.coordination_latency;
+        let years_f64 = exposed.as_years_f64().max(0.0);
         let move_f64 = self.assumptions.volatility_annual_f64.max(0.0)
             * years_f64.sqrt()
             * EXPECTED_ABSOLUTE_NORMAL;

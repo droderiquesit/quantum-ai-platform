@@ -22,6 +22,7 @@ import {
   PRICES,
   RESERVED_SOURCE,
   ROLES,
+  DATASETS,
   assess,
   bucketStore,
   ceilingRefusal,
@@ -984,4 +985,61 @@ test("the day's total counts a reserved but unfinalised object at its worst case
   const world = fleet({ objects: { "ledger/2026-10-04/a-0.json": reserved, "ledger/2026-10-04/a-1.json": unbilled } });
   const store = bucketStore({ bucket: BUCKET, token: async () => "tok", fetchImpl: world.fetchImpl });
   assert.equal(await dayTotalMicroUsd(store, "2026-10-04"), 400);
+});
+
+// --- synthetic data only (ADR 0102 amendment of 2026-10-11, item 4) ------------
+
+const FIXTURE_LIST = {
+  datasets: {
+    "data/datasets/universe.json": "synthetic",
+    "data/research/licensed-panel.csv": "licensed-research",
+    "data/vendor/live-ticks.csv": "production",
+  },
+};
+
+test("a packet may name a dataset the committed list marks synthetic or licensed-research, and only those", () => {
+  // Premise: the committed list is not empty, so the worker has something to admit.
+  assert.ok(Object.keys(DATASETS.datasets).length > 0, "the committed dataset list is empty");
+  for (const name of Object.keys(DATASETS.datasets)) {
+    assert.deepEqual(validatePacket({ ...good, datasets: [name], source_paths: [name] }), [], `${name} is committed as admitted and was refused`);
+  }
+  for (const name of ["data/research/licensed-panel.csv", "data/datasets/universe.json"]) {
+    assert.deepEqual(validatePacket({ ...good, datasets: [name] }, { datasets: FIXTURE_LIST }), [], name);
+  }
+  const marked = validatePacket({ ...good, datasets: ["data/vendor/live-ticks.csv"] }, { datasets: FIXTURE_LIST });
+  assert.equal(marked.length, 1, marked.join("\n"));
+  assert.ok(marked[0].includes("is marked 'production'") && marked[0].includes("only synthetic and licensed-research"), marked[0]);
+  const unlisted = validatePacket({ ...good, datasets: ["data/market/ticks.parquet"] });
+  assert.equal(unlisted.length, 1, unlisted.join("\n"));
+  assert.ok(unlisted[0].includes("is not in scripts/fleet/synthetic-datasets.json"), unlisted[0]);
+  // Not a name inherited from Object.prototype.
+  assert.equal(validatePacket({ ...good, datasets: ["constructor"] }).length, 1);
+  for (const shape of ["universe.json", [7], {}]) {
+    const problems = validatePacket({ ...good, datasets: shape });
+    assert.equal(problems.length, 1, JSON.stringify(shape));
+    assert.ok(problems[0].startsWith("'datasets' must be an array"), problems[0]);
+  }
+});
+
+test("naming a data file as a source or a path is held to the same list as the datasets field, and data documentation is not data", () => {
+  for (const field of ["source_paths", "paths"]) {
+    for (const path of ["data/market/ticks.csv", "./data/market/ticks.csv", "Data/market/ticks.csv", "data/datasets", "data//datasets//other.json"]) {
+      const problems = validatePacket({ ...good, [field]: [path] });
+      assert.equal(problems.length, 1, `${field} ${path}: ${problems.join("\n")}`);
+      assert.ok(problems[0].includes("is under data/ and is not in scripts/fleet/synthetic-datasets.json"), problems[0]);
+    }
+    assert.deepEqual(validatePacket({ ...good, [field]: ["data/datasets/universe.json"] }), []);
+    assert.deepEqual(validatePacket({ ...good, [field]: ["data/README.md", "data/datasets/README.md"] }), []);
+  }
+});
+
+test("a worker given a packet naming a dataset outside the list refuses before any model call and writes nothing", async () => {
+  // Premise: the same packet without the dataset runs.
+  assert.equal((await task()).seen.chat.length, 1);
+  const outside = { ...good, datasets: ["data/market/ticks.parquet"] };
+  const { code, seen, said } = await task({ objects: { [PACKET]: JSON.stringify(outside) } });
+  assert.equal(code, 2);
+  assert.ok(said.includes("dataset \"data/market/ticks.parquet\" is not in scripts/fleet/synthetic-datasets.json"), said);
+  assert.equal(seen.chat.length, 0, "a packet naming unlisted data reached the model");
+  assert.deepEqual(seen.writes, [], "a refused packet left a ledger or output object");
 });

@@ -67,8 +67,8 @@ use qip_expansion::desk::{
 };
 use qip_expansion::detectors::{
     Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
-    coverage, incompetent_specialists, low_confidence, refusal_clusters, repeated_vetoes,
-    split_by_wanting, unexplained_residuals,
+    coverage, incompetent_specialists, low_confidence, model_drift, model_error_rate,
+    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -115,6 +115,12 @@ pub const RESIDUAL_BPS: f64 = 25.0;
 pub const CLUSTER_SUBJECTS: usize = 3;
 /// Consecutive sweeps a subject's discrepancy must persist.
 pub const PERSIST_SWEEPS: u32 = 3;
+/// Hosted-model replies counted before their error rate is judged, and the
+/// share refused or malformed past which one surprise is raised. One in five
+/// is far above a provider's ordinary failure rate and below the point where
+/// the templates are doing most of the narrating unnoticed.
+pub const MODEL_REPLIES_MIN: u64 = 20;
+pub const MODEL_ERROR_RATE: f64 = 0.2;
 /// Share of an asset class's instruments that must have history.
 pub const COVERAGE_FLOOR: f64 = 0.5;
 /// Lowest net value, in basis points, an information request may launch at.
@@ -815,6 +821,11 @@ pub struct ResearchLoop {
     /// The Brain Registry entry of every specialist a NOW surprise can wake,
     /// by specialist (R12-CONTRACT-7086). Checked complete at construction.
     brains: BTreeMap<&'static str, qip_contracts::BrainSpec>,
+    /// Model references the learning round found past their drift threshold
+    /// since the last sweep, consumed by it (R12-EXPAND-6046).
+    drifted_models: Vec<String>,
+    /// The hosted model's reply tally, where one is installed (6040).
+    replies: Option<(String, crate::language::ReplyTally)>,
     /// Assumption health by assumption, bounded by [`RETAINED`]: the entry
     /// longest unchallenged leaves first when a new one arrives at the cap.
     assumptions: BTreeMap<String, AssumptionState>,
@@ -936,6 +947,8 @@ impl ResearchLoop {
             capabilities: VecDeque::new(),
             packages: VecDeque::new(),
             brains,
+            drifted_models: Vec::new(),
+            replies: None,
             assumptions: BTreeMap::new(),
             ontology,
             tool_count,
@@ -966,6 +979,21 @@ impl ResearchLoop {
     /// when it exists; until then packages are held unsigned.
     pub fn with_package_signer(mut self, signer: Box<dyn PackageSigner + Send>) -> Self {
         self.signer = Some(signer);
+        self
+    }
+
+    /// Hand the next sweep the models the learning round found drifted, so
+    /// each raises a `GapTrigger::ModelDrift` gap. Taken by the sweep, so a
+    /// drift is reported once per learning round that measured it, not on
+    /// every sweep after.
+    pub fn note_drifted_models(&mut self, references: impl IntoIterator<Item = String>) {
+        self.drifted_models.extend(references);
+    }
+
+    /// Judge `model`'s refused and malformed replies each sweep, once
+    /// `MODEL_REPLIES_MIN` have accumulated.
+    pub fn with_reply_tally(mut self, model: String, tally: crate::language::ReplyTally) -> Self {
+        self.replies = Some((model, tally));
         self
     }
 
@@ -1162,6 +1190,18 @@ impl ResearchLoop {
             })
             .collect();
         observations.extend(unexplained_residuals(&residuals, RESIDUAL_BPS)?);
+        observations.extend(model_drift(&std::mem::take(&mut self.drifted_models)));
+        if let Some((model, tally)) = &self.replies
+            && let Some(counts) = tally.take_at_least(MODEL_REPLIES_MIN)
+        {
+            observations.extend(model_error_rate(
+                model,
+                counts.total(),
+                counts.failed(),
+                MODEL_REPLIES_MIN,
+                MODEL_ERROR_RATE,
+            )?);
+        }
         // A shrunken list means the platform retained fewer scores than were
         // read; read them all again rather than index past the end.
         if fills.len() < self.fills_read {

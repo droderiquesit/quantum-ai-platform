@@ -11,6 +11,7 @@
 //! somebody already approved, for as long as the envelope has left to run.
 
 use crate::arbitrage::{ArbitrageDesk, EdgeRefresh};
+use crate::conduct::{ConductPolicy, ConductWatch};
 use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseSchedule};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -206,6 +207,12 @@ fn path_assigned(cycle_id: &str, assignment: &PathAssignment) -> Decision {
 /// fund, which are the same fact about the same bucket seen from the two
 /// sides that matter.
 pub const GATE_QUOTE_BUDGET: &str = "quote_budget";
+
+/// The gate an order is refused under when it would continue the cell's own
+/// place-and-cancel pattern on one side of one book ([`crate::conduct`]).
+/// Refused through [`Cell::refuse`] in `place_net`, before the order exists,
+/// so the label needs no second enumeration.
+pub const GATE_CONDUCT_SPOOFING: &str = "conduct_spoofing";
 
 /// The gate a cell refuses a cycle under when its legs' venues fill too far
 /// apart in time (§32.1). Refused through [`Cell::refuse`] like every other
@@ -492,6 +499,12 @@ pub struct CellConfig {
     /// every later leg at its planned size, which is the position this
     /// control exists to stop.
     pub decomposition: DecompositionPolicy,
+    /// The bound on the cell's own cancel-before-fill pattern
+    /// ([`crate::conduct`]). Always in force, for the reason above: a cell
+    /// that decides alone has no surveillance desk behind it, and a conduct
+    /// control that defaulted to absent would be the spoofing pattern
+    /// waiting for a strategy that happens to produce it.
+    pub conduct: ConductPolicy,
     /// Whether this cell reads the journal-pressure wire (ADR 0100 §6).
     ///
     /// Off by default, and that is the decision rather than an omission. A
@@ -576,6 +589,7 @@ impl CellConfig {
             venue_quote_limits: BTreeMap::new(),
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
+            conduct: ConductPolicy::default(),
             journal_wire: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
@@ -1460,6 +1474,11 @@ pub struct Cell {
     /// [`Cell::admit_cycle`], which refuses a cycle whose legs would arrive
     /// too far apart to be one position.
     fill_times: FillTimes,
+    /// What the cell placed and withdrew unfilled, per side of each book,
+    /// over the conduct window. Read before an order is built in
+    /// `place_net`; written where the venue accepts an order (`send`) and
+    /// where the cell withdraws one at its time to live (`withdraw_all`).
+    conduct: ConductWatch,
     /// What this cell has been told about the other regions (§36.3).
     ///
     /// [`RegionOutlook::AllLit`] is the state every cell has run in and is
@@ -1621,6 +1640,7 @@ impl Cell {
             region_allocation: None,
             budget,
             fill_times,
+            conduct: ConductWatch::new(config.conduct.clone()),
             suspended: BTreeMap::new(),
             outlook: RegionOutlook::AllLit,
             resume: None,
@@ -5248,6 +5268,17 @@ impl Cell {
             self.release_region_holds(&net_intent.contributors);
             return Ok(None);
         }
+        // The cell's own conduct, before pricing builds anything: a place-and-
+        // cancel pattern is refused on the record of what this side of this
+        // book already did, whatever this one order looks like on its own.
+        if let Some(reason) = self
+            .conduct
+            .refusal(&venue, &net_intent.object_id, side, now)
+        {
+            self.refuse(report, GATE_CONDUCT_SPOOFING, &reason, now);
+            self.release_region_holds(&net_intent.contributors);
+            return Ok(None);
+        }
         if !self.has_open_capacity(1) {
             self.refuse_for_capacity(report, now);
             self.release_region_holds(&net_intent.contributors);
@@ -5500,6 +5531,9 @@ impl Cell {
             if placed.is_err() || matches!(placed, Ok(false)) {
                 health.record_reject(venue, now);
             }
+        }
+        if matches!(placed, Ok(true)) {
+            self.conduct.placed(venue, object_id, side, now);
         }
         match placed? {
             true => Ok((order_id, simulated)),
@@ -6096,12 +6130,16 @@ impl Cell {
     ) -> Vec<String> {
         let mut withdrawn = Vec::new();
         let mut venue_left_open = Vec::new();
+        // The withdrawals the cell chose — a time to live it set, elapsed —
+        // judged for the conduct record once the last reports are in.
+        let mut chosen = Vec::new();
         for order_id in due {
             let Some(working) = self.working.get(&order_id) else {
                 continue;
             };
             let venue = working.order.venue.clone();
             let object_id = working.order.object_id.clone();
+            let side = working.order.side;
             // An order past its own time to live is journaled as expired
             // whatever else is going on, because that is what happened to it;
             // everything else on the list during a halt was pulled by the
@@ -6170,6 +6208,7 @@ impl Cell {
                             now,
                         );
                     } else if expired {
+                        chosen.push((order_id.clone(), venue.clone(), object_id.clone(), side));
                         self.journal.record(
                             Decision::OrderExpired {
                                 order_id: order_id.clone(),
@@ -6208,6 +6247,19 @@ impl Cell {
         }
         if !withdrawn.is_empty() {
             self.confirm_execution_reports(gateway, now);
+        }
+        // After the reports, so a fill that landed between the last report
+        // and the cancel makes the order one that traded, not one withdrawn
+        // before anything did.
+        for (order_id, venue, object_id, side) in chosen {
+            let unfilled = self
+                .working
+                .get(&order_id)
+                .is_some_and(|working| working.order.filled.is_zero());
+            if unfilled {
+                self.conduct
+                    .cancelled_unfilled(&venue, &object_id, side, now);
+            }
         }
         // Only after the last reports are in: an order the venue says it
         // withdrew whole, on which no report ever named a fill, did not run,
