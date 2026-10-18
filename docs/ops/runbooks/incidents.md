@@ -184,6 +184,12 @@ rollback, do not `gcloud run services update` by hand, and do not run `infra.yml
 up` to change what serves; none of them can roll a service back (deployment-path
 page). Do not delete a cloud resource without approval naming it.
 
+**When Git itself is lost.** If GitHub or the GitOps control plane cannot
+carry a change that must happen now, the bounded procedure — who acts, what
+is recorded, and how the change is reconciled to `infrastructure/gitops`
+afterwards — is [the break-glass runbook](break-glass.md). It moves traffic
+between admitted revisions or scales a service to nothing, and nothing else.
+
 ## After any incident
 
 1. Say what you ran and what you read. A check you did not run is "not run".

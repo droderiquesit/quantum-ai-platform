@@ -40,7 +40,7 @@ use crate::causal::Objective;
 use crate::comparison::ComparisonDraft;
 use crate::generate::{Simulated, Structural, StructuralDecl};
 use crate::goal::GoalSpec;
-use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl};
+use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl, Voice};
 use crate::memory::{ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, Observed};
 use crate::plan::{
     ActingIdentity, Candidate, InterventionPlan, PlanNode, Proposal, Selection, Step, select,
@@ -269,6 +269,9 @@ pub struct Acted {
     /// The goal and plan approvals, and the execution record once anything
     /// was sent. `None` when no guard was supplied, or it refused.
     pub approvals: Option<ApprovalChain>,
+    /// The voices the guard admitted this pass: one per step sent, so the
+    /// journal can carry what was said under which name (R12-AGENCY-1064).
+    pub released: Vec<Voice>,
 }
 
 /// A plan that has cleared the gate, and the context it is executed in.
@@ -363,6 +366,7 @@ pub fn execute(
         return Ok(Acted {
             execution: Execution::Shadow(steps),
             approvals: None,
+            released: Vec::new(),
         });
     };
     let (mut chain, cleared) = match guard.preflight(gated.goal, &priced) {
@@ -372,6 +376,7 @@ pub fn execute(
             return Ok(Acted {
                 execution: Execution::Withheld(refusal.message().to_string()),
                 approvals: None,
+                released: Vec::new(),
             });
         }
     };
@@ -380,10 +385,12 @@ pub fn execute(
         return Ok(Acted {
             execution: Execution::Shadow(steps),
             approvals: Some(chain),
+            released: Vec::new(),
         });
     }
 
     guard.execution(&mut chain, &gated.goal.acting_identity, &steps)?;
+    let voices_from = guard.voices().count();
     for step in &cleared {
         let sent = guard
             .authorise(step)
@@ -396,6 +403,7 @@ pub fn execute(
                     attempted: steps,
                 },
                 approvals: Some(chain),
+                released: guard.voices().skip(voices_from).cloned().collect(),
             });
         }
     }
@@ -403,6 +411,7 @@ pub fn execute(
     Ok(Acted {
         execution: Execution::Executed(steps),
         approvals: Some(chain),
+        released: guard.voices().skip(voices_from).cloned().collect(),
     })
 }
 
@@ -775,6 +784,9 @@ pub struct Report {
     pub approvals: Option<ApprovalChain>,
     /// Every registry decision the guard has audited, this pass included.
     pub audit: Vec<ToolAudit>,
+    /// The voices the guard admitted this pass, one per step sent
+    /// (R12-AGENCY-1064). Empty in shadow and when nothing was sent.
+    pub released: Vec<Voice>,
     /// A label per candidate, in index order: `proposal N` for the
     /// operator's, the steps for a generated one.
     pub candidates: Vec<String>,
@@ -807,6 +819,7 @@ fn report(
         outcome,
         approvals: None,
         audit: Vec::new(),
+        released: Vec::new(),
         candidates: Vec::new(),
         simulations: Vec::new(),
         eligibility: Vec::new(),
@@ -1165,6 +1178,7 @@ fn stages(
     };
     let mut done = finish(log, levers, refused, outcome);
     done.approvals = acted.approvals;
+    done.released = acted.released;
     done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
     done.chosen = chosen;
     Ok(done)

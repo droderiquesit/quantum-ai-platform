@@ -47,18 +47,24 @@ fn the_whole_platform_resolves_to_one_repository_built_from_one_commit() {
     assert!(checked >= 3, "only {checked} workflows were scanned");
 }
 
-/// The one Pub/Sub topic Terraform may create, and the binding that lets the
-/// secret store publish to it. It carries a Secret Manager rotation notice to
-/// an operator and is not internal messaging.
+/// The two Pub/Sub topics Terraform may create, each with the one binding
+/// that lets a Google service agent publish to it. The first carries a Secret
+/// Manager rotation notice to an operator; the second carries Cloud Asset
+/// Inventory's record of every resource and IAM change (R12 SEC-9135, the
+/// root's `audit-logs.tf`). Both are notices from a Google control plane to
+/// an operator, and neither is internal messaging: nothing in the tree
+/// publishes to or subscribes from either.
 ///
 /// The trust-zones module once declared two more — `fabric_publish` and
 /// `fabric_attach`, `for_each` over an empty map behind a
 /// `control_fabric_topic` the root could only set to null. They were removed
 /// because inert bindings read as a Pub/Sub control fabric §1.1 contradicts;
 /// the second test refuses the variable coming back.
-const ALLOWED_PUBSUB_RESOURCES: [&str; 2] = [
+const ALLOWED_PUBSUB_RESOURCES: [&str; 4] = [
     "google_pubsub_topic.rotation",
     "google_pubsub_topic_iam_member.rotation_publisher",
+    "google_pubsub_topic.asset_changes",
+    "google_pubsub_topic_iam_member.asset_changes_publisher",
 ];
 
 #[test]
@@ -92,8 +98,9 @@ fn terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_no
     let allowed: BTreeSet<String> = ALLOWED_PUBSUB_RESOURCES.map(str::to_string).into();
     assert_eq!(
         declared, allowed,
-        "a Pub/Sub or Kafka resource other than the rotation notice is internal messaging \
-         ARCH-047 and ARCH-048 forbid; Algorik semantics are defined by the Rust Fabric"
+        "a Pub/Sub or Kafka resource other than the rotation notice and the asset-change feed \
+         is internal messaging ARCH-047 and ARCH-048 forbid; Algorik semantics are defined by \
+         the Rust Fabric"
     );
 }
 

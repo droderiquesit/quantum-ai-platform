@@ -1164,14 +1164,15 @@
   },
   {
     "id": "R12-MESH-5051",
-    "status": "PARTIAL",
-    "current": "Cell::on_bytes/work touch memory only (backend/crates/edge/qip-edge/src/cell.rs:3498, :4084; lib.rs doc); qip-edge depends on qip-transport for the uplink but not in work. PeerEndpoint::send_leg keeps the local gate last (backend/crates/services/qip-mesh/src/peer.rs:1077).",
+    "status": "COMPLETE",
+    "current": "Cell::on_bytes and Cell::work touch memory only, and arch_001_independent_reflex.rs now extracts both bodies from qip-edge/src/cell.rs and refuses any mention of qip_transport, MeshPublisher, RemoteSubscriber, TcpStream, TcpListener, UdpSocket, ToSocketAddrs, std::net or tokio, after asserting the same scan does see qip_transport in mesh.rs (the uplink, off the pass). PeerEndpoint::send_leg keeps the local gate last (qip-mesh/src/peer.rs).",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:4084",
-      "backend/crates/services/qip-mesh/src/peer.rs:1077 send_leg local gate",
+      "backend/crates/edge/qip-edge/src/cell.rs on_bytes and work (locate with grep -n 'pub fn on_bytes\\|pub fn work' )",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:287 the_cells_hot_path_bodies_name_no_transport_socket_or_runtime",
+      "backend/crates/services/qip-mesh/src/peer.rs send_leg local gate",
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
     ],
-    "gap": "No test asserting the absence of I/O in Cell::work; peer path unintegrated.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1179,10 +1180,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "architecture test over qip-edge hot path",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test arch_001_independent_reflex -- the_cells_hot_path_bodies_name_no_transport_socket_or_runtime",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02) on the check as written: the hot path performs no I/O and names no socket-owning path, now proven by a scan rather than a doc comment. Mutation: a line naming qip_transport inserted as the first statement of Cell::work failed the test ('work: qip_transport'); the same line appended to mesh.rs did not fire; restored byte-for-byte. Peer state exchange on the pass is a separate capability (the MESH lane), not this invariant."
   },
   {
     "id": "R12-MESH-5052",

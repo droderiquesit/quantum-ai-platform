@@ -1442,3 +1442,48 @@ resource "google_org_policy_policy" "disable_service_account_key_upload" {
 
   depends_on = [module.services]
 }
+
+# No virtual machine in the project may hold an external address (R12
+# GOV-10004). Every VM template here omits `access_config` on purpose — the
+# execution node, fabricd and ledgerd each say so beside the omission — and
+# this turns the convention into a refusal: a machine created by hand, or a
+# template edited to add the block, is refused at creation rather than found
+# on the next review. `deny_all` on the list constraint, because the only
+# allowed set is the empty one. Under the same switch as the key policies,
+# and for the same reason: ADR 0118's platform folder enforces this
+# constraint on every project in it (`infrastructure/foundation`), and a
+# project-level copy there would need an organisation-wide right to restate
+# a refusal already in force; a project outside the folder keeps its own.
+resource "google_org_policy_policy" "deny_vm_external_ip" {
+  count  = var.project_key_policies_enabled ? 1 : 0
+  parent = "projects/${var.project_id}"
+  name   = "projects/${var.project_id}/policies/compute.vmExternalIpAccess"
+
+  spec {
+    rules {
+      deny_all = "TRUE"
+    }
+  }
+
+  depends_on = [module.services]
+}
+
+# Every virtual machine is a Shielded VM (R12 GOV-10004, SEC-070). The three
+# templates each declare secure boot, a vTPM and integrity monitoring, and
+# `every_virtual_machine_the_repository_defines_is_shielded_with_secure_boot_vtpm_and_integrity_monitoring`
+# in the acceptance suite reads them; this is the half a text test cannot hold — a
+# machine created outside Terraform from an image that cannot be shielded is
+# refused at creation. Boolean, so `enforce` as the two key policies write it.
+resource "google_org_policy_policy" "require_shielded_vm" {
+  count  = var.project_key_policies_enabled ? 1 : 0
+  parent = "projects/${var.project_id}"
+  name   = "projects/${var.project_id}/policies/compute.requireShieldedVm"
+
+  spec {
+    rules {
+      enforce = "TRUE"
+    }
+  }
+
+  depends_on = [module.services]
+}
