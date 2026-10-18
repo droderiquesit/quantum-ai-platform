@@ -12059,6 +12059,34 @@ impl Platform {
             .iter()
             .map(|(model, why)| format!("world model federation refused `{model}`: {why}"))
             .collect();
+        // Charge each resolved forecast to the member that made it, so a
+        // world model is scored in the self-model like every other component
+        // once its outcome resolves (R12-MODEL-6016).
+        for resolution in &review.resolved {
+            for (member, probability) in &resolution.forecasts {
+                let charged = ComponentKey::new(
+                    qip_learning_engine::self_model::ComponentKind::WorldModel,
+                    member.as_str(),
+                )
+                .and_then(|key| {
+                    self.self_model.absorb_forecast(
+                        key,
+                        resolution.proposition.as_str(),
+                        *probability,
+                        resolution.outcome,
+                        now,
+                    )
+                });
+                if let Err(error) = charged {
+                    problems.push(format!(
+                        "world model `{member}` forecast on `{}` resolved and was charged to no \
+                         component: {}",
+                        resolution.proposition,
+                        error.message()
+                    ));
+                }
+            }
+        }
         if let Err(error) = self.journal_record(review, "kernel/federation", now) {
             problems.push(format!(
                 "the world model federation's review was computed and not journalled: {}",

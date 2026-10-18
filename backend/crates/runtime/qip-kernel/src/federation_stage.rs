@@ -155,6 +155,11 @@ pub struct Resolution {
     pub outcome: bool,
     /// Branches closed because they forecast the wrong side.
     pub closed: Vec<String>,
+    /// The probability each member had given the proposition, by member id:
+    /// what the platform charges to that member in its self-model. Absent
+    /// from a review journaled before it existed, which reads as empty.
+    #[serde(default)]
+    pub forecasts: BTreeMap<String, f64>,
 }
 
 /// The pass, once a cycle, as the log keeps it.
@@ -288,6 +293,11 @@ pub struct FederationStage {
     asset_classes: BTreeMap<String, String>,
     /// Classes whose domain member has been declared.
     domain_members: BTreeSet<String>,
+    /// The probability each member gave each pending proposition, as the
+    /// federation took it: what a resolution charges to the member's entry
+    /// in the self-model (R12-MODEL-6016). Kept only for propositions still
+    /// pending, so it is bounded by `pending`.
+    views: BTreeMap<String, BTreeMap<String, f64>>,
 }
 
 /// Hand one view to `model`; true when the federation took it. A refusal is
@@ -298,10 +308,16 @@ fn feed(
     assessment: Assessment,
     fed: &mut BTreeSet<String>,
     refused: &mut Vec<(String, String)>,
+    views: &mut BTreeMap<String, BTreeMap<String, f64>>,
 ) -> bool {
+    let (proposition, probability) = (assessment.proposition.clone(), assessment.probability);
     match federation.assess(model, assessment) {
         Ok(()) => {
             fed.insert(model.to_string());
+            views
+                .entry(proposition)
+                .or_default()
+                .insert(model.to_string(), probability);
             true
         }
         Err(error) => {
@@ -719,6 +735,7 @@ impl FederationStage {
                     },
                     &mut fed,
                     &mut refused,
+                    &mut self.views,
                 );
             }
             if any {
@@ -759,6 +776,7 @@ impl FederationStage {
             },
             &mut fed,
             &mut refused,
+            &mut self.views,
         ) {
             self.pending.insert(
                 proposition.clone(),
@@ -789,6 +807,7 @@ impl FederationStage {
                 },
                 &mut fed,
                 &mut refused,
+                &mut self.views,
             ) {
                 self.pending.insert(
                     proposition.clone(),
@@ -938,10 +957,12 @@ impl FederationStage {
             match answer {
                 Some(Some(outcome)) => {
                     let closed = self.federation.resolve(&proposition, outcome, now);
+                    let forecasts = self.views.remove(&proposition).unwrap_or_default();
                     resolved.push(Resolution {
                         proposition,
                         outcome,
                         closed,
+                        forecasts,
                     });
                 }
                 Some(None) => {
@@ -959,6 +980,9 @@ impl FederationStage {
                 }
             }
         }
+        let pending = &self.pending;
+        self.views
+            .retain(|proposition, _| pending.contains_key(proposition));
         (resolved, abandoned)
     }
 }
