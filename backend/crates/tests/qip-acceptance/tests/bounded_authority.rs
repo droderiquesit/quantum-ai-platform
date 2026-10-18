@@ -19,6 +19,7 @@
 //!   (`qip_risk_engine::autonomy::AutonomyLevel::deployable`).
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::budget::{Budget, BudgetLedger};
 use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
