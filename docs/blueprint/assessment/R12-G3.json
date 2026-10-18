@@ -4273,7 +4273,7 @@
       "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs",
       "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastFields"
     ],
-    "gap": "Delegable decision D13 (design-decisions-2026-10-18.json), ADR not yet written: Thesis beliefs, feature forecasts and capital-fabric demand forecasts carry qip_contracts::forecast::Forecast. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0140 (accepted 2026-10-18): A forecast is material when it reaches a size, a capital plan, a published record or a promotion, and every material forecast is a qip_contracts Forecast: lattice members, DemandForecast and the return forecast an ApprovedThesis is sized on. Code left: lattice members as Forecast, DemandForecast holding a Forecast, ApprovedThesis carrying its return Forecast with refusal and round-trip tests.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4284,7 +4284,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D13; gap before it: Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D13; gap before it: Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it. ADR lane 2026-10-18: gap re-graded against ADR 0140; gap before it: Delegable decision D13 (design-decisions-2026-10-18.json), ADR not yet written: Thesis beliefs, feature forecasts and capital-fabric demand forecasts carry qip_contracts::forecast::Forecast. Needs that ADR, then the code."
   },
   {
     "id": "R12-MODEL-10188",
