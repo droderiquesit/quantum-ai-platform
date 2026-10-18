@@ -1952,13 +1952,18 @@
   },
   {
     "id": "R12-CONTRACT-7087",
-    "status": "PARTIAL",
-    "current": "qip-agents ToolSpec and qip-contracts ToolRegistration carry scope/identity/limits; no dependency provenance, sandbox tests or allowed-callers fields.",
+    "status": "COMPLETE",
+    "current": "ToolRegistration carries provenance, sandbox_tests, cost_latency (CostLatency: per-call cost units and latency bound) and allowed_callers beside the existing identity, scope, disclosure, channels, limits and revocation path. All four are required (deny_unknown_fields, no serde default), ToolRegistry::register refuses a registration missing any and one whose per-call cost exceeds its whole budget, and ToolRegistry::permits_caller is enforced by the agency ActionGuard preflight against the goal acting identity before the rate and budget are looked at. The qip-cli agency policy document, the ambient-intake draft tool and every fixture declare them.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/tools.rs:56",
-      "backend/crates/libs/qip-contracts/src/action.rs:250-258"
+      "backend/crates/libs/qip-contracts/src/action.rs ToolRegistration / CostLatency / ToolRegistry::register / permits_caller",
+      "backend/crates/services/qip-agency/src/guard.rs preflight permits_caller loop",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs DRAFT_TOOL registration",
+      "backend/crates/libs/qip-contracts/tests/action.rs a_registration_missing_provenance_sandbox_tests_cost_latency_or_callers_is_refused_and_a_full_one_round_trips",
+      "backend/crates/libs/qip-contracts/tests/action.rs only_a_declared_caller_may_invoke_a_tool",
+      "backend/crates/services/qip-agency/tests/journal.rs a_plan_naming_a_tool_its_identity_may_not_call_is_refused_before_the_adapter_is_reached",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs a_tool_declaration_missing_any_control_stops_the_binary_before_a_pass"
     ],
-    "gap": "Missing fields.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1966,10 +1971,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cargo test -p qip-contracts --test action; cargo test -p qip-agency --test journal a_plan_naming; cargo test -p qip-agency --test agency a_tool_missing_any_of_its_declarations; cargo test -p qip-cli --test agency_record",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: dropping the provenance row from the register table; making permits_caller admit everyone; removing the permits_caller loop from ActionGuard preflight. Not done and not claimed: qip-agents ToolSpec (name, kind, scope: the capability-pack tool model) is not converged onto ToolRegistration; provenance and sandbox test names are declarations that nothing verifies against an SBOM or a test run; the latency bound is declared and not enforced on a call."
   },
   {
     "id": "R12-CONTRACT-7088",

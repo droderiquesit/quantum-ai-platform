@@ -1646,7 +1646,9 @@ impl Broker {
                     continue;
                 }
                 let mut offset = 0u64;
-                while let Some(batch) = reader.read_indexed(&stream, partition, offset)? {
+                while let Some((batch, segment_last)) =
+                    reader.read_indexed_with_extent(&stream, partition, offset)?
+                {
                     if batch.base_offset != offset {
                         return Err(Error::invalid(format!(
                             "{stream}:{partition}: the archive answered offset {offset} with a \
@@ -1660,6 +1662,16 @@ impl Broker {
                             "{stream}:{partition}: replaying archived offset {offset} was \
                              assigned offset {assigned}; the rebuilt log has diverged"
                         )));
+                    }
+                    // Seal where the archive's segment ended. The log rolls on
+                    // size alone, and segments the original broker cut by age
+                    // end elsewhere: re-archived under different index keys
+                    // they would leave the old keys beside the new, and the
+                    // reader's largest-start-at-or-below rule would answer an
+                    // offset the archive holds from a stale, shorter manifest
+                    // as absent.
+                    if offset == segment_last {
+                        state.log.seal_active()?;
                     }
                     offset += 1;
                 }
