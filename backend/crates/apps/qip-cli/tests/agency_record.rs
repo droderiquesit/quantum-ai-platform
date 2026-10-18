@@ -428,6 +428,31 @@ fn attribution(identification: Value, effect: f64) -> Value {
     })
 }
 
+/// R12-COVERAGE-7188: evidence for a treated-minus-held-out effect of 3.0
+/// from a hold-out the binary draws itself (twelve cells, a quarter held
+/// out). Replaces the `randomised_experiment` fixture, whose groups the
+/// operator formed.
+fn hold_out_evidence() -> Value {
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = qip_agency::estimate::Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcomes: serde_json::Map<String, Value> = units
+        .iter()
+        .map(|u| {
+            (
+                u.clone(),
+                json!(if design.treated().contains(u) {
+                    4.0
+                } else {
+                    1.0
+                }),
+            )
+        })
+        .collect();
+    json!({"hold_out_experiment": {
+        "seed": "seed-2026-10-18", "units": units, "hold_out_bps": 2500, "outcomes": outcomes
+    }})
+}
+
 fn widening(attribution: Value, evidence: Value) -> Value {
     let mut document = request(1);
     document["widening"] = json!({
@@ -471,8 +496,8 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
         (
             "rct",
             json!("experiment"),
-            json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}}),
-            "randomised_experiment",
+            hold_out_evidence(),
+            "hold_out_experiment",
         ),
     ];
     for (name, label, evidence, method) in cases {
@@ -624,8 +649,7 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
 /// chain check — the chainless attribution widens.
 #[test]
 fn an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record() {
-    let evidence =
-        json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}});
+    let evidence = hold_out_evidence();
     let (out, _, journaled) = pass(
         "complete-attribution",
         &policy_document(),
@@ -715,8 +739,7 @@ fn withheld(records: &[AgencyRecord]) -> Vec<&str> {
 /// horizon value as `0.0` (the hand-computed effect assertions fail).
 #[test]
 fn a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update() {
-    let evidence =
-        json!({"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}});
+    let evidence = hold_out_evidence();
     let document = with_structural_model(widening(attribution(json!("experiment"), 3.0), evidence));
     let (out, code, journaled) = pass("learned", &policy_document(), &document);
     assert_eq!(code, 0, "premise: the pass is shadowed: {out}");

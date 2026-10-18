@@ -24,11 +24,13 @@
 //! * [`IbmQuantumSolver`] is the port: it reports itself unavailable and names
 //!   exactly what a deployment is missing, because *this type* holds no
 //!   transport and no credential. A deployment that has both reaches the device
-//!   through [`crate::provider::HostedProvider::connected`] wrapped in a
-//!   [`ProviderSolver`], which enters the same benchmark under the same
-//!   [`SolverKind::Quantum`] and therefore under the same requirement for a
-//!   classical baseline. This type stays as the description of what such a
-//!   deployment has to supply.
+//!   through [`crate::provider::HostedProvider::connected`] behind a
+//!   [`crate::gateway::QuantumGateway`]: the job is submitted, polled, and the
+//!   collected result enters the benchmark as a [`GatewayEntrant`] under the
+//!   same [`SolverKind::Quantum`] and therefore under the same requirement for
+//!   a classical baseline. [`ProviderSolver`] refuses a provider that is not a
+//!   simulator, because its `solve` is synchronous. This type stays as the
+//!   description of what such a deployment has to supply.
 //!
 //! **Runtime here is modelled, not measured.** The platform forbids reaching
 //! for an ambient clock, and a benchmark that called one would produce a
@@ -38,8 +40,9 @@
 //! applied to the work the solver actually did. It is comparable and
 //! reproducible; it is not a stopwatch, and nothing here pretends it is.
 
+use crate::gateway::{JobPoll, JobTicket, QuantumGateway};
 use crate::provider::{ProviderCapabilities, QuantumProvider};
-use crate::qaoa::QaoaSettings;
+use crate::qaoa::{QaoaResult, QaoaSettings};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::rng::{Rng, Xoshiro256};
@@ -1008,6 +1011,17 @@ impl QuboSolver for ProviderSolver {
     }
 
     fn solve(&self, qubo: &Qubo, effort: &SolverEffort) -> Result<SolverCandidate> {
+        // R12-QUANT-4029: a provider that is not a simulator is a queue the
+        // caller does not control (the hosted adapter declares thirty minutes).
+        // `solve` is synchronous, so entering one here would make the caller's
+        // thread wait on it, the failure `QuantumGateway` exists to prevent.
+        // The device's answer enters a benchmark as a `GatewayEntrant` instead.
+        if !self.provider.capabilities().simulated {
+            return Err(Error::denied(format!(
+                "{} is not a simulator, so a synchronous solve would wait on a queue this caller                  does not control; submit the job through QuantumGateway::submit, poll it, and                  enter the collected result with GatewayEntrant",
+                self.provider.name()
+            )));
+        }
         let mut settings = self.settings;
         // The caller's budget governs the angle search: it is what a QAOA
         // attempt actually costs.
@@ -1022,6 +1036,103 @@ impl QuboSolver for ProviderSolver {
             kind: SolverKind::Quantum,
             claimed_objective: result.energy,
             assignment: result.assignment,
+            evaluations: result.evaluations,
+            trace,
+        })
+    }
+}
+
+/// A benchmark entrant built from a result the [`QuantumGateway`] collected:
+/// the way a non-simulated provider's answer reaches a [`SolverBenchmark`]
+/// (R12-QUANT-4029) now that [`ProviderSolver`] refuses it a synchronous solve.
+///
+/// The flow is `QuantumGateway::submit`, then `poll` until the job completes,
+/// then [`GatewayEntrant::collect`]. The entrant holds the answer already
+/// obtained, so `solve` never reaches the provider and cannot wait on it, and
+/// the answer is a candidate like any other: it reports the provider's own
+/// energy as its claim, and the benchmark's `ClassicalValidator` throws that
+/// claim away and re-scores the assignment against the problem, beside the
+/// classical baseline the benchmark always computes first (ADR 0006).
+///
+/// The result belongs to one problem. The benchmark refuses an assignment of
+/// the wrong length, so an entrant collected for another QUBO is not a
+/// solution to this one.
+///
+/// [`SolverBenchmark`]: crate::benchmark::SolverBenchmark
+#[derive(Clone, Debug)]
+pub struct GatewayEntrant {
+    name: String,
+    capabilities: ProviderCapabilities,
+    result: QaoaResult,
+}
+
+impl GatewayEntrant {
+    /// Enter `result`, which `provider` returned through the gateway.
+    pub fn new(provider: &dyn QuantumProvider, result: QaoaResult) -> Self {
+        Self {
+            name: provider.name().to_string(),
+            capabilities: provider.capabilities(),
+            result,
+        }
+    }
+
+    /// Poll `ticket` once. `Ok(None)` while the job is pending, so the caller
+    /// keeps its classical answer for this cycle; the entrant once it has
+    /// completed; a refusal when the provider failed or the job was abandoned.
+    pub fn collect(gateway: &QuantumGateway, ticket: JobTicket) -> Result<Option<Self>> {
+        match gateway.poll(ticket)? {
+            JobPoll::Pending { .. } => Ok(None),
+            JobPoll::Completed { result, .. } => {
+                Ok(Some(Self::new(gateway.provider().as_ref(), result?)))
+            }
+            JobPoll::Abandoned { polls } => Err(Error::unavailable(format!(
+                "quantum job {} was abandoned after {polls} poll(s); its answer is discarded and \
+                 the classical baseline stands",
+                ticket.id()
+            ))),
+        }
+    }
+}
+
+impl QuboSolver for GatewayEntrant {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> SolverKind {
+        SolverKind::Quantum
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn cost_model(&self) -> SolverCostModel {
+        SolverCostModel {
+            // The work is already done; what remains is what it cost to wait
+            // for and to buy, which the provider declares.
+            nanos_per_evaluation: if self.capabilities.simulated {
+                5_000
+            } else {
+                0
+            },
+            queue: self.capabilities.typical_queue,
+            price_micros_per_job: self.capabilities.cost_per_job_micros,
+        }
+    }
+
+    fn solve(&self, qubo: &Qubo, _effort: &SolverEffort) -> Result<SolverCandidate> {
+        let result = &self.result;
+        let mut trace = SearchTrace::new("qaoa");
+        trace.moves_proposed = result.evaluations;
+        trace.restarts = 1;
+        trace.local_optimum = is_local_optimum(qubo, &result.assignment);
+        Ok(SolverCandidate {
+            solver: self.name.clone(),
+            kind: SolverKind::Quantum,
+            // The provider's claim, to be discarded by the validator.
+            claimed_objective: result.energy,
+            assignment: result.assignment.clone(),
             evaluations: result.evaluations,
             trace,
         })

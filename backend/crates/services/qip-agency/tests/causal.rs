@@ -17,7 +17,7 @@ use qip_agency::comparison::ComparisonDraft;
 use qip_agency::engine::{
     Adapter, EdgeDecl, LeverEvidence, Outcome, ProposalDraft, Request, VariableDecl, run,
 };
-use qip_agency::estimate::{self, EstimatorKind};
+use qip_agency::estimate::{self, Estimate, EstimatorKind, Experiment};
 use qip_agency::generate::{GenerateDecl, StructuralDecl};
 use qip_agency::goal::{GoalClass, GoalSpecDraft};
 use qip_agency::plan::{ActingIdentity, Candidate, PlanNode, Proposal, Step, select};
@@ -640,17 +640,54 @@ fn an_axis_outside_the_range_it_is_weighed_in_is_refused() {
 
 // ---- R12-AGENCY-6102: estimators carry their identification ----------------
 
+/// A hold-out drawn by [`Experiment::design`] over eight units, four each
+/// side, treated outcomes around 4 and held-out ones around 1 (effect 3).
+/// R12-COVERAGE-7188 moved this fixture here from hand-formed groups: the
+/// groups are now the assignment's, not the caller's.
+fn hold_out_estimate() -> Estimate {
+    let units: Vec<String> = (0..8).map(|i| format!("cell-{i}")).collect();
+    let design = Experiment::design("seed-causal", &units, 5000).unwrap();
+    let outcomes = units
+        .iter()
+        .enumerate()
+        .map(|(i, u)| {
+            let base = if design.treated().contains(u) {
+                4.0
+            } else {
+                1.0
+            };
+            (u.clone(), base + [-1.0, 0.0, 1.0, 0.0][i % 4])
+        })
+        .collect();
+    let estimate = design.analyse(&outcomes).unwrap();
+    assert!(
+        (estimate.effect() - 3.0).abs() < 1.5,
+        "premise: an effect near 3, got {}",
+        estimate.effect()
+    );
+    estimate
+}
+
 /// Each method computes its effect and its label together; only the
 /// correlation is unidentified. Mutation: label `correlation` as
 /// `Observational` — the last assertion block fails, and so does
 /// `supports` refusing it as experiment evidence.
+///
+/// The randomised-experiment block now runs on a hold-out drawn here and
+/// still proves that an assigned experiment computes a nonzero standard
+/// error and earns the experiment label; that the same arithmetic over
+/// operator-formed groups earns none is
+/// `an_operator_formed_group_comparison_earns_no_experiment_label_and_widens_nothing`.
 #[test]
 fn each_estimator_produces_an_effect_with_the_identification_its_method_earns() {
-    let rct = estimate::randomised_experiment(&[3.0, 4.0, 5.0], &[0.0, 1.0, 2.0]).unwrap();
-    assert_eq!(rct.kind(), EstimatorKind::RandomisedExperiment);
+    let rct = hold_out_estimate();
+    assert_eq!(rct.kind(), EstimatorKind::HoldOutExperiment);
     assert_eq!(rct.identification(), &Identification::Experiment);
-    assert!((rct.effect() - 3.0).abs() < 1e-12);
     assert!(rct.standard_error().unwrap() > 0.0);
+    let formed = estimate::operator_formed_comparison(&[3.0, 4.0, 5.0], &[0.0, 1.0, 2.0]).unwrap();
+    assert_eq!(formed.kind(), EstimatorKind::RandomisedExperiment);
+    assert!((formed.effect() - 3.0).abs() < 1e-12);
+    assert_eq!(formed.identification(), &Identification::NotIdentified);
 
     let did = estimate::difference_in_differences(
         &[10.0, 11.0],
@@ -720,14 +757,15 @@ fn attribution(identification: Identification, mean: f64) -> EffectAttribution {
 /// both refusals below pass through.
 #[test]
 fn an_attribution_is_supported_only_by_an_estimate_with_its_label_and_its_effect() {
-    let rct = estimate::randomised_experiment(&[3.0, 4.0, 5.0], &[0.0, 1.0, 2.0]).unwrap();
+    let rct = hold_out_estimate();
+    let effect = rct.effect();
     assert!(
-        rct.supports(&attribution(Identification::Experiment, 3.0))
+        rct.supports(&attribution(Identification::Experiment, effect))
             .is_ok(),
         "premise"
     );
     let wrong_effect = rct
-        .supports(&attribution(Identification::Experiment, 4.0))
+        .supports(&attribution(Identification::Experiment, effect + 1.0))
         .unwrap_err();
     assert!(
         wrong_effect.to_string().contains("computes"),
