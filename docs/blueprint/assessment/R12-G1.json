@@ -2114,13 +2114,15 @@
   },
   {
     "id": "R12-FABRIC-8095",
-    "status": "PARTIAL",
-    "current": "P4 ack None; over-quota P4 produce is shed (refused) visibly; health served directly.",
+    "status": "COMPLETE",
+    "current": "Under pressure telemetry is shed at both ends. A P4 producer over its quota is answered Shed (existing), and since this lane a sample_or_shed stream whose consumer group trails the high watermark by more than the lag limit drops its oldest sealed segments past the limit and admits the newest batch, where a P0/P1 stream refuses the producer and P2/P3 keep their declared backlog. Broker::produce runs the check on every produce, so qip-fabricd applies it to the committed catalogue's telemetry.local stream (p4_telemetry, sample_or_shed). Health remains on the direct path.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs drops_oldest_for_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::drop_oldest_past_lag (from refuse_when_a_group_lags)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_pressure.rs a_lagging_p4_stream_drops_its_oldest_batches_and_admits_the_newest",
+      "infrastructure/event-fabric/streams.local.json telemetry.local sample_or_shed"
     ],
-    "gap": "Shed refuses the new batch; no drop-oldest behaviour under pressure, untested.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2128,10 +2130,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new pressure test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_pressure",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Pressure is consumer lag, not producer quota: dropping stored batches does not relieve a producer's rate, so an over-quota P4 batch is still shed (the newest) and a lagging P4 backlog loses its oldest. Granularity is a segment. Mutation: drops_oldest_for_lag returning false keeps offset 0 on the lagging telemetry stream. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 158 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-8096",

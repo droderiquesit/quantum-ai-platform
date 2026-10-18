@@ -1750,6 +1750,9 @@ impl Broker {
     /// broker); index groups by partition if that count ever grows large.
     fn refuse_when_a_group_lags(&self, stream: &str, partition: u32) -> Result<()> {
         let policy = self.stream_policy(stream)?;
+        if super::admission::drops_oldest_for_lag(&policy) {
+            return self.drop_oldest_past_lag(stream, partition, &policy);
+        }
         if !super::admission::refuses_for_lag(&policy) {
             return Ok(());
         }
@@ -1770,6 +1773,43 @@ impl Broker {
                     policy.lag_limit()
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// FABRIC-8095: on a `sample_or_shed` stream, a group trailing past the
+    /// lag limit does not refuse the producer and does not let the backlog
+    /// grow: the partition's sealed segments lying wholly more than
+    /// `lag_limit` batches behind the high watermark are deleted, oldest
+    /// first, and the new batch is admitted. A fetch of a dropped offset
+    /// returns nothing, which the lagging group reads as the gap it is.
+    /// Segment granularity means up to one segment past the limit is kept.
+    fn drop_oldest_past_lag(
+        &self,
+        stream: &str,
+        partition: u32,
+        policy: &StreamPolicy,
+    ) -> Result<()> {
+        let state = self.partition_state(stream, partition)?;
+        let high_watermark = state.log.high_water();
+        let suffix = format!("|{stream}|{partition}");
+        let mut lagging = false;
+        for key in self.checkpoints.keys_with_prefix("")? {
+            let Some(group) = key.strip_suffix(&suffix) else {
+                continue;
+            };
+            let Some(committed) = self.committed_offset(group, stream, partition)? else {
+                continue;
+            };
+            if high_watermark.saturating_sub(committed.saturating_add(1)) > policy.lag_limit() {
+                lagging = true;
+                break;
+            }
+        }
+        if lagging {
+            state
+                .log
+                .retain_before(high_watermark.saturating_sub(policy.lag_limit()))?;
         }
         Ok(())
     }
