@@ -1405,11 +1405,12 @@ fn venue_status_from_code(feed: &str, symbol: &str, code: Option<&str>) -> Resul
         Some("open") => Ok(VenueStatus::Open),
         Some("auction") => Ok(VenueStatus::Auction),
         Some("halted") => Ok(VenueStatus::Halted),
+        Some("circuit_breaker") => Ok(VenueStatus::CircuitBreaker),
         Some("closed") => Ok(VenueStatus::Closed),
         Some("unreachable") => Ok(VenueStatus::Unreachable),
         Some(other) => Err(Error::schema(format!(
-            "unknown venue status {other:?}: this decoder accepts open, auction, halted, closed \
-             and unreachable"
+            "unknown venue status {other:?}: this decoder accepts open, auction, halted, \
+             circuit_breaker, closed and unreachable"
         ))),
     }
 }

@@ -1033,13 +1033,15 @@
   {
     "id": "R12-TICK-2044",
     "status": "PARTIAL",
-    "current": "qip-orderbook models auctions beside the book and venue status; ITCH trading-action messages are decoded in the replay acceptance session; edge cell journals refusals and expiries.",
+    "current": "qip-orderbook models auctions beside the book and venue status; MessageBody::AuctionUpdate carries imbalance and imbalance_side (message.rs); VenueStatus::CircuitBreaker (venue.rs) is a distinct typed status that refuses orders and prices, decoded from an ITCH trading action whose reason is LUDP/LUDS/MWCn (itch.rs) and from the JSON framing and depth snapshot status strings, and the book drops its auction and serves no price on it; edge cell journals refusals and expiries.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/venue.rs",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume",
-      "backend/crates/edge/qip-edge/src/telemetry.rs refusals/expired series"
+      "backend/crates/libs/qip-contracts/src/venue.rs VenueStatus::CircuitBreaker",
+      "backend/crates/edge/qip-protocols/src/itch.rs trading-action reason decode",
+      "backend/crates/edge/qip-orderbook/tests/venue.rs a_circuit_breaker_halts_the_book_and_withdraws_the_auction_it_replaced",
+      "backend/crates/edge/qip-protocols/tests/itch.rs a_breaker_reason_on_a_trading_action_decodes_as_a_circuit_breaker_not_an_ordinary_halt",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume"
     ],
-    "gap": "Imbalance and circuit-breaker events are not distinct record types; only simulated sources.",
+    "gap": "Imbalance and circuit-breaker are now distinct typed records, but the only decoder that emits the breaker from a venue frame (qip_protocols::itch) has no production caller outside tests/acceptance, so no binary receives a breaker from a venue; only simulated sources feed the edge node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1047,10 +1049,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-orderbook",
+    "verification": "cargo test -p qip-contracts --test contracts a_circuit_breaker; cargo test -p qip-protocols --test itch a_breaker_reason; cargo test -p qip-orderbook --test venue a_circuit_breaker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent)."
   },
   {
     "id": "R12-TICK-2045",
