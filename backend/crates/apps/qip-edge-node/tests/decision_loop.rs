@@ -1453,3 +1453,173 @@ fn a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() 
     }
     Ok(())
 }
+
+#[test]
+fn a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool()
+-> Result<()> {
+    // RES-10126: with the regional warm services lost the cell keeps
+    // executing locally and the Fabric keeps journaling. The centre here
+    // accepts and never answers, so no new policy or capital reaches the
+    // cell, and the orders its passes place still reach the spool the drain
+    // ships from — the outbox does not wait on the centre and is not routed
+    // through it.
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    let (centre, centre_accepted) = silent_peer();
+    let rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64)?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: format!("http://{centre}"),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    let mut decisions = rig.decisions.with_mesh(worker);
+    let spool = rig.spool;
+    let sent_on_spool = || -> Result<usize> {
+        Ok(writer::records(&spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .filter(|record| {
+                writer::journal_entry(&record.event)
+                    .is_ok_and(|entry| matches!(entry.decision, Recorded::OrderSent { .. }))
+            })
+            .count())
+    };
+    let waited = std::time::Instant::now();
+    while centre_accepted.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the mesh worker never reached the silent centre"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(sent_on_spool()?, 0, "premise: nothing journaled yet");
+    let policy_before = decisions.cell().policy_sequence();
+
+    let _watchdog = Watchdog::arm("orders reaching the spool beside a silent centre");
+    let mut second = 10;
+    while sent_on_spool()? == 0 {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "no order reached the fabric spool while the centre was silent: {:?}",
+            decisions.stats()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        decisions.stats().orders > 0,
+        "premise: the cell placed orders"
+    );
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        policy_before,
+        "a silent centre delivered new authority"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_policy_the_centre_publishes_while_the_fabric_is_fenced_is_held_and_not_applied() -> Result<()>
+{
+    // RES-7113: on fabric loss new control changes stop. A fenced producer
+    // reads exhausted, so the spool cannot journal the PolicyApplied entry
+    // an application would write, and a control change the event log cannot
+    // replay is one the desk could never attribute afterwards. The centre's
+    // policy reaches the loop through the real worker and is held; the cell
+    // keeps the sequence it already had and keeps deciding under it.
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64)?;
+    let inbox = MeshInbox::new("london-1-inbox", 64, 256)?;
+    let centre = CentreServer::spawn(MeshEndpoint::new(inbox.clone()))?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: centre.url(),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    rig.drain_publisher
+        .as_mut()
+        .expect("the rig hands back the drain's publisher")
+        .mark_fenced();
+    let mut decisions = rig.decisions.with_mesh(worker);
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "premise: the rig applied sequence 1 and nothing newer"
+    );
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(10));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(10),
+    );
+    let frame = policy_frame(payload.signed(ENVELOPE_KEY)?, t(10))?;
+    let admission = inbox.accept(&MeshMessage {
+        key: frame.event_id.as_str().to_string(),
+        attempt: 1,
+        frame,
+    });
+    assert!(
+        matches!(admission, Admission::Accepted(_)),
+        "premise: the centre's inbox took the policy: {admission:?}"
+    );
+
+    let _watchdog = Watchdog::arm("the held policy reaching the loop");
+    let waited = std::time::Instant::now();
+    let mut second = 10;
+    // Premise: the worker has polled the centre that holds the policy.
+    while centre.served() == 0 {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE / 2,
+            "the worker's polls never reached the fenced loop"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Long enough that an unheld policy would have applied: the outage test
+    // above applies one within a handful of turns.
+    for _ in 0..40 {
+        decisions.turn(t(second))?;
+        second += 1;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "the cell applied a policy the fenced fabric could not journal"
+    );
+    assert!(
+        decisions.held_control() > 0,
+        "the loop let go of what it held"
+    );
+    Ok(())
+}

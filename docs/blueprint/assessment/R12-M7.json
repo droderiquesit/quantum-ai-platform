@@ -260,23 +260,26 @@
   {
     "id": "R12-DATA-7013",
     "status": "PARTIAL",
-    "current": "Training bucket in modules/ai and data module buckets exist; qip-storage has a GCS-backed BlobStore.",
+    "current": "modules/data declares google_storage_bucket.simulation (CMEK, unlocked 30-day retention policy; outputs/ deleted at 90 days, campaigns/ to COLDLINE at 90 and never deleted, manifests/ to NEARLINE at 365 and never deleted) beside the archive and model-artifact buckets; modules/ai holds the training bucket; qip-storage has a GCS-backed BlobStore. All gated on enable_cloud_storage, false everywhere; no deployed process writes a simulation output or campaign dataset to GCS.",
     "evidence": [
-      "infrastructure/terraform/modules/ai/main.tf:52 training bucket, :95 vertex metadata store, :113 vertex endpoint",
+      "infrastructure/terraform/modules/data/main.tf:297 google_storage_bucket.simulation",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl:220 the_simulation_bucket_bounds_outputs_and_keeps_campaigns_and_manifests",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:283 the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores",
+      "infrastructure/terraform/modules/ai/main.tf:52 training bucket",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs"
     ],
-    "gap": "No bucket set per artifact class (simulation outputs, campaign datasets) and no writer from a deployed process.",
+    "gap": "enable_cloud_storage is false in every committed environment (owner switch), so no committed plan renders the bucket; the model-artifact bucket still carries no retention policy; and no deployed process writes a simulation output, campaign dataset or manifest to GCS (the integration half of the verification).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan; integration test writing a manifest to GCS",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): simulation bucket added and BUCKET_CLASSES states its class. Mutations, each restored byte-for-byte: outputs/ kept 900 days failed 'Simulation outputs must be deleted at 90 days'; the campaigns/ rule turned to Delete failed 'No lifecycle rule may delete a campaign dataset'; manifests/ renamed failed the acceptance test 'names no lifecycle class for manifests/'. The acceptance test's training branch was conditional on a bucket that lives in modules/ai, so before this it asserted nothing about modules/data."
   },
   {
     "id": "R12-SEC-7014",
@@ -2523,12 +2526,14 @@
   {
     "id": "R12-RES-7113",
     "status": "PARTIAL",
-    "current": "Spool pressure gauge reads narrow before exhausted and the cell is built with the journal wire; no fabric quorum exists, and nothing tests that control changes stop on fabric loss.",
+    "current": "Spool pressure narrows sizing before exhausted and the cell is built with the journal wire. Since 2026-10-18 new control changes stop on fabric loss: while the outbox gauge reads exhausted (full, unwritable, stale or fenced), DecisionLoop::apply_mesh holds each poll's capital and policy in a bounded queue (backend/crates/apps/qip-edge-node/src/scheduler.rs held_control, MAX_INBOUND_CAPACITY; past it the worker waits on its own thread and nothing is dropped), applies the poll's halts at once through MeshInbound::apply_halts (src/mesh.rs), counts each hold on qip_edge_event_fabric_control_refused_total{reason=\"fabric_exhausted\"}, and applies the held remainder in arrival order once the gauge reads anything but exhausted. The cell continues from its cached signed policy and local journal meanwhile.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:449 with_journal_trimmed_on_ship().with_journal_wire()",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs:65 spool_pressure_reads_narrow_before_exhausted_and_a_fenced_producer_reads_exhausted"
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs apply_mesh 'let frozen' and held_control",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs MeshInbound::apply_halts, MeshWorker::take_inbound_at_most",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_centre_publishes_while_the_fabric_is_fenced_is_held_and_not_applied",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs::spool_pressure_reads_narrow_before_exhausted_and_a_fenced_producer_reads_exhausted"
     ],
-    "gap": "Control-change freeze on fabric loss; quorum (none exists).",
+    "gap": "No fabric quorum exists to lose (the managed log is not deployed), so the trigger is the node's own spool reading exhausted, not a quorum signal. The release path (held control applied once pressure clears) and a mesh halt applied under a fence have no test: a fence never clears by design and the rig has no drain to bring an over-budget spool back. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2538,10 +2543,10 @@
       "R12-FABRIC-7058"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test journal_pressure",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_policy_the_centre_publishes_while_the_fabric_is_fenced; cargo test -p qip-edge-node --test event_fabric_pressure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Spool now wired into the binary; quorum-loss behaviour unprovable."
+    "notes": "Re-graded 2026-10-18 by lane L09: control-change freeze implemented on the default loop path and proven for policy. Mutation: making 'frozen' always false applied sequence 2 under the fence and failed the test with 'the cell applied a policy the fenced fabric could not journal'; restored byte for byte. Kept PARTIAL: quorum, release-path test."
   },
   {
     "id": "R12-RES-7114",
@@ -4132,11 +4137,12 @@
   {
     "id": "R12-COVERAGE-7186",
     "status": "PARTIAL",
-    "current": "Levers, no-action baseline, adapters after simulation+gate tested; competing world models not used.",
+    "current": "Stage::Simulate now consults every competing structural model the request declares, and the act stage uses authority only when all of them agree: engine::counterfactually_supported (engine.rs:454, called at :338) withholds a narrow-reversible pass whose chosen plan any (model, scenario) branch says does not move the objective toward the goal, naming it weakly identified, with no adapter call; in shadow the same plan is simulated and shadowed. The models are the request's StructuralDecl models (generate.rs::Structural), not the deepbrain federation's members.",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/agency.rs:298,572,741,997,1093 no-action baseline, deceptive step infeasible, weakly identified plan never executed, adapter only after simulation+gate, default authority shadow"
+      "backend/crates/services/qip-agency/src/engine.rs:454",
+      "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps"
     ],
-    "gap": "Simulation against federation models.",
+    "gap": "The federation's competing views (qip_kernel::federation_stage) are not consulted: no WorldSimulator seam in qip-agency is implemented over federation members in qip-deepbrain (lane L04), and the deepbrain ambient door does not run engine::run's simulate stage.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4144,10 +4150,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L10): disagreement between competing models now withholds action (mutation fired: consulting only the first branch lets the contested pass Execute). Kept PARTIAL: the competing models are declared ones, not the federation's."
   },
   {
     "id": "R12-COVERAGE-7187",

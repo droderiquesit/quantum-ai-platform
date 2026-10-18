@@ -255,6 +255,12 @@ locals {
       plane         = "experience-and-identity"
       trust_zone    = "application-identity"
       traffic_class = "customer"
+      # The three contract fields every service owes (R12-ARCH-10061): who
+      # owns its state, how it scales, and what it does when it is degraded.
+      # `infrastructure.rs` refuses an entry that leaves one blank.
+      state_owner   = "none durable: per-process rate-limit counters and the cell registry; the ledger and the event log belong to the brains"
+      scaling       = "horizontal, 0 to 4 instances, request-driven; a second instance degrades per-process counters and never corrupts a record"
+      degraded_mode = "reads stay stateless; a cold or lost instance costs a start and no record"
       health_path   = "/api/v1"
       cpu           = "2"
       memory        = "1Gi"
@@ -424,6 +430,9 @@ locals {
       plane         = "capital-and-risk"
       trust_zone    = "intelligence"
       traffic_class = "trading"
+      state_owner   = "the hash-chained decision log, with this binary as its only writer"
+      scaling       = "none: exactly one instance, because a second one is a forked chain"
+      degraded_mode = "a lost instance stops the cycle until it is replaced; regional cells keep deciding inside their envelopes (ADR 0008)"
       health_path   = "/health"
       cpu           = "2"
       memory        = "2Gi"
@@ -530,6 +539,9 @@ locals {
       plane         = "cognition"
       trust_zone    = "cognition"
       traffic_class = "platform"
+      state_owner   = "the intelligence loop's hash-chained log, with this binary as its only writer"
+      scaling       = "none: exactly one instance, because a second one is a forked chain"
+      degraded_mode = "a lost instance stops research and the intelligence loop; the fast brain and the cells continue"
       health_path   = "/health"
       cpu           = "4"
       memory        = "8Gi"
