@@ -376,3 +376,69 @@ fn the_admin_commands_refuse_an_ungranted_identity_an_off_host_peer_and_a_missin
     .expect_err("a reason on a release is refused");
     assert!(error.to_string().contains("belongs to isolate"), "{error}");
 }
+
+/// R12-FABRIC-7042: an operator reads a consumer group's lag on a partition
+/// with the command, and the figures are the broker's own — the group's
+/// committed offset and the partition's high watermark, and their gap. A
+/// group that never committed is refused rather than reported caught up:
+/// no checkpoint is not a lag of zero.
+///
+/// Asserts its premise first: three records are on the partition and the
+/// group committed one, so the lag printed is a difference of two real
+/// figures and not a default.
+///
+/// Mutation (run, failed, restored): `lag::run` printing the committed
+/// offset where the lag belongs — the printed line no longer matches.
+#[test]
+fn the_lag_command_reports_a_groups_committed_offset_against_the_high_watermark() {
+    let fabric = Fabric::start("lag");
+    let mut producer = fabric.producer();
+    for tag in ["one", "two", "three"] {
+        producer.send(batch(tag)).expect("the cell may produce");
+    }
+    let high_watermark = fabric
+        .broker
+        .metadata(JOURNAL, own_partition())
+        .unwrap()
+        .high_watermark();
+    fabric
+        .broker
+        .commit_offset("audit", JOURNAL, own_partition(), 1)
+        .unwrap();
+    assert_eq!(high_watermark, 3, "premise: three records were written");
+
+    let arguments = |group: &str| -> Vec<String> {
+        let partition = own_partition().to_string();
+        [
+            "lag",
+            "--peer",
+            fabric.address.as_str(),
+            "--stream",
+            JOURNAL,
+            "--partition",
+            partition.as_str(),
+            "--group",
+            group,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    };
+    let reported = dispatch(&arguments("audit"), &fabric.environment(OPERATOR))
+        .expect("the operator may read lag");
+    assert_eq!(reported.code, 0);
+    assert_eq!(
+        reported.lines,
+        vec![format!(
+            "LAG {JOURNAL}:{} group audit: 2 (committed offset 1, high watermark 3)",
+            own_partition()
+        )]
+    );
+
+    let never = dispatch(&arguments("nobody"), &fabric.environment(OPERATOR))
+        .expect_err("a group with no checkpoint is refused, not reported caught up");
+    assert!(
+        never.to_string().contains("never committed"),
+        "the refusal says why: {never}"
+    );
+}
