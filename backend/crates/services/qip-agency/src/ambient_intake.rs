@@ -540,6 +540,11 @@ impl AmbientIntake {
                 .map(|evidence_id| EvidenceCitation {
                     source_id: AMBIENT_SOURCE.to_string(),
                     evidence_id: evidence_id.clone(),
+                    // No resolver stands behind this door: a signal's
+                    // evidence ids are the detectors' own labels (`up:...`,
+                    // an anomaly-cluster tag), not records of the evidence
+                    // fabric, so there is nothing to compare a claim with.
+                    claim: None,
                     // The router's own priority is the only graded number the
                     // mesh states about this detection; it is not a probability
                     // and the citation does not claim one.

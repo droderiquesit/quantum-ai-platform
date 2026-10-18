@@ -50,6 +50,10 @@ fn policy_document() -> Value {
                 "revocation_path": "operator removes it from this file"
             }]
         },
+        "evidence": [{
+            "id": "spread-series-1", "source_id": "venue-feed",
+            "statement": "quoted spreads on venue-a are wider than the desk target"
+        }],
         "eligibility": [
             {
                 "subject": {"kind": "venue", "id": "venue-a"},
@@ -130,6 +134,7 @@ fn request(window: u64) -> Value {
                 "sender_identity": "desk-agent",
                 "evidence_citations": [{
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
+                    "claim": "quoted spreads on venue-a are wider than the desk target",
                     "confidence_bps": 9000
                 }],
                 "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
@@ -633,6 +638,99 @@ fn the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_desc
     );
     assert_eq!(code, 1, "stdout {out} stderr {err}");
     assert!(err.contains("GBPUSD"), "{err}");
+}
+
+/// R12-AGENCY-1056 / 1057: the binary resolves every citation against the
+/// evidence the operator's policy holds. A requester who cites a record the
+/// operator never listed, claims what the record does not say, or declares an
+/// authorized source for evidence recorded under another is withheld, and a
+/// policy that lists no evidence withholds every pass.
+/// Mutation: in `Session::open`, build the guard with no `with_evidence` —
+/// every case below executes as before.
+#[test]
+fn the_binary_resolves_every_citation_against_the_operators_evidence_and_a_policy_with_none_withholds_every_pass()
+ {
+    let scratch = Scratch::new("citations");
+    let run = |name: &str, policy: &Value, pass: &Value| -> (String, i32) {
+        let policy = scratch.write(&format!("{name}-policy.json"), policy);
+        let pass = scratch.write(&format!("{name}-pass.json"), pass);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &pass],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        (format!("{out}{err}"), code)
+    };
+    let (out, code) = run("honest", &policy_document(), &request(1));
+    assert_eq!(code, 0, "premise: a resolving citation is shadowed: {out}");
+
+    let mut no_evidence = policy_document();
+    no_evidence.as_object_mut().unwrap().remove("evidence");
+    let (out, code) = run("none", &no_evidence, &request(1));
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("resolves to no evidence"), "{out}");
+
+    let mut unlisted = request(1);
+    unlisted["pass"]["communications"]["quoter"]["evidence_citations"][0]["evidence_id"] =
+        json!("spread-series-9");
+    let (out, code) = run("unlisted", &policy_document(), &unlisted);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("resolves to no evidence"), "{out}");
+
+    let mut misrecorded = policy_document();
+    misrecorded["evidence"][0]["source_id"] = json!("blog");
+    let (out, code) = run("forged", &misrecorded, &request(1));
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("the record names 'blog'"), "{out}");
+
+    let mut other_claim = request(1);
+    other_claim["pass"]["communications"]["quoter"]["evidence_citations"][0]["claim"] =
+        json!("quoted spreads on venue-a are tight");
+    let (out, code) = run("claim", &policy_document(), &other_claim);
+    assert_eq!(code, 3, "{out}");
+    assert!(
+        out.contains("is not the statement the record holds"),
+        "{out}"
+    );
+}
+
+/// R12-AGENCY-1066: the binary withholds a draft that names an instrument
+/// the operator's policy says the platform holds unless it carries a
+/// `position` disclosure. Mutation: in `Session::open`, build the guard with
+/// no `with_holdings` — the undisclosed promotion is shadowed.
+#[test]
+fn the_binary_withholds_a_draft_promoting_a_held_instrument_without_a_position_disclosure() {
+    let scratch = Scratch::new("holdings");
+    let mut policy = policy_document();
+    policy["holdings"] = json!(["venue-a bonds"]);
+    let policy = scratch.write("policy.json", &policy);
+    let run = |name: &str, pass: &Value| -> (String, i32) {
+        let pass = scratch.write(&format!("{name}.json"), pass);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &pass],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        (format!("{out}{err}"), code)
+    };
+    let mut promotional = request(1);
+    promotional["pass"]["communications"]["quoter"]["content"] =
+        json!("Quote 20 lots: venue-a bonds are the better risk on this tape");
+    let (out, code) = run("undisclosed", &promotional);
+    assert_eq!(code, 3, "{out}");
+    assert!(out.contains("undisclosed promotion"), "{out}");
+
+    promotional["pass"]["communications"]["quoter"]["disclosures"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "position", "text": "The desk holds venue-a bonds"}));
+    let (out, code) = run("disclosed", &promotional);
+    assert_eq!(
+        code, 0,
+        "premise: with the disclosure it is shadowed: {out}"
+    );
 }
 
 /// The conduct gate and the eligibility register run in the binary, and

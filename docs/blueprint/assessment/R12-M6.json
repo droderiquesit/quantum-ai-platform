@@ -2348,7 +2348,7 @@
       "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake",
       "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs::AmbientAgency::route"
     ],
-    "gap": "GoalSpec is one standing goal built at open, not per opportunity; no candidate generation or simulation on this path; it calls the drafting adapter, while the check demands no adapter call.",
+    "gap": "The ambient path journals a guarded draft against a per-opportunity decomposed sub-goal (R12-AGENCY-3002) but runs no engine::run: no levers, candidates, simulation or gate stage, so no shadowed plan is journaled before the drafting adapter. Running it needs a structural model of what a notice to a person changes; the ambient path declares none, and its own learning records the effect as unidentified. A model written per opportunity would restate the declaration (the fault R12-AGENCY-1056's audit named), so it needs an owner decision on what the draft's causal model is before code. The adapter is the outbox, which writes a draft and sends nothing.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2361,7 +2361,7 @@
     "verification": "cargo test (new integration)",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-read 2026-10-18 (lane L10) against qip-agency ambient_intake.rs::attempt and qip-deepbrain ambient_agency.rs: the sub-goal exists and is journaled; the engine stages do not run. Held PARTIAL with the reason above rather than a one-edge SCM invented to satisfy the check."
   },
   {
     "id": "R12-AGENCY-6106",
