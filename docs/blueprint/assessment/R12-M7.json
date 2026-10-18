@@ -2410,12 +2410,15 @@
   {
     "id": "R12-RES-7109",
     "status": "PARTIAL",
-    "current": "ToolRegistry::revoke refuses the next action and audits it; no pending-action stop, rotation or re-auth flow.",
+    "current": "ToolRegistry::revoke refuses the next action and audits it. ToolRegistry::reauthorise(tool, operator) is now the only way back: it is refused for a blank operator, an unregistered tool, or a tool not revoked, and it records who restored the tool. ActionGuard::reauthorise passes it through. AmbientIntake::revoke drops every draft held for a retry, returning each as Intake::Abandoned, so a later reauthorisation cannot send work authorised before the stop.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328",
-      "backend/crates/libs/qip-contracts/tests/action.rs:49,112,140 missing declarations refused; over-limit refused and audited; revoked tool refused"
+      "backend/crates/libs/qip-contracts/src/action.rs:477 is_revoked, :489 reauthorise, :510 reauthorised_by",
+      "backend/crates/services/qip-agency/src/guard.rs:295 ActionGuard::reauthorise",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:408 revoke drains the retry queue, :424 reauthorise",
+      "backend/crates/libs/qip-contracts/tests/action.rs:202 a_revoked_tool_stays_refused_until_a_named_operator_reauthorises_it",
+      "backend/crates/services/qip-agency/tests/ambient_intake.rs:573 revoking_the_drafting_tool_drops_every_held_draft_and_only_a_named_operator_restores_it"
     ],
-    "gap": "Stop pending actions, rotation, re-authorisation.",
+    "gap": "No production seam calls reauthorise or AmbientIntake::revoke. The deployed revocation is qip-cli agency.rs:281, which re-applies policy.revoked_tools at start, so deleting an entry from that list readmits the tool on the next start with no named operator and no attested identity. Closing the row needs that path to require a reauthorisation record carrying an authenticated operator (AutonomyController-style), journaled beside the guard's decisions. Credential rotation is Secret Manager work outside the crate.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2423,10 +2426,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo test -p qip-contracts --test action && cargo test -p qip-agency --test ambient_intake",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Narrowed 2026-10-18 (lane L12). Mutations: dropping the blank-operator refusal in reauthorise failed the contracts test (the tool was no longer revoked); mapping revoke over retry.iter().cloned() instead of draining it failed the intake test (pending() stayed 1). Both restored and passing. Kept PARTIAL: the stop and the re-authorisation exist in the library, but they do not run on a deployed path."
   },
   {
     "id": "R12-RES-7110",
