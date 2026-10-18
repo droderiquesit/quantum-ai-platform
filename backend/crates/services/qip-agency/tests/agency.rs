@@ -502,6 +502,7 @@ use qip_agency::engine::{
     ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn,
     learn_shadowed, run, run_with, widen,
 };
+use qip_agency::estimate::{Estimate, EstimatorKind, Experiment, correlation};
 use qip_agency::generate::StructuralDecl;
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
 use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory, Observed};
@@ -1670,6 +1671,155 @@ fn a_withheld_plan_is_kept_with_its_reasons_and_the_alternative_is_the_plan_with
     let blocked = report.blocked.expect("retained");
     assert_eq!(blocked.offending.len(), 2);
     assert!(matches!(blocked.alternative, Alternative::NoAction(_)));
+}
+
+// ---- R12-COVERAGE-7188: an experiment this crate runs, and one it does not --------
+
+fn cells() -> Vec<String> {
+    (0..12).map(|i| format!("cell-{i:02}")).collect()
+}
+
+/// An outcome per cell: held-out cells drift around 1.0, treated ones 4.0.
+fn spreads(experiment: &Experiment) -> BTreeMap<String, f64> {
+    cells()
+        .into_iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let base = if experiment.treated().contains(&cell) {
+                4.0
+            } else {
+                1.0
+            };
+            (cell, base + (i % 3) as f64 * 0.1)
+        })
+        .collect()
+}
+
+/// An attribution that claims exactly what `estimate` shows.
+fn attributing(estimate: &Estimate) -> EffectAttribution {
+    let mut a = attribution(Method::Market, estimate.identification().clone(), 0.7);
+    if *estimate.identification() == Identification::NotIdentified {
+        a.identifiability = 0.0;
+    }
+    a.effect.mean = estimate.effect();
+    a
+}
+
+#[test]
+fn a_hold_out_drawn_here_earns_the_experiment_label_and_a_correlation_of_the_same_cells_widens_nothing()
+ {
+    let units = cells();
+    let experiment = Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    assert_eq!(experiment.control().len(), 3, "premise: a quarter held out");
+    assert_eq!(experiment.treated().len(), 9);
+    assert!(
+        experiment.treated().is_disjoint(experiment.control()),
+        "premise: no cell on both sides"
+    );
+    // Pure in the seed and the units; and the seed matters, or the operator
+    // could pick the split by choosing nothing.
+    assert_eq!(
+        experiment,
+        Experiment::design("seed-2026-10-18", &units, 2500).unwrap()
+    );
+    let splits: BTreeSet<Vec<String>> = (0..8)
+        .map(|n| {
+            Experiment::design(&format!("seed-{n}"), &units, 2500)
+                .unwrap()
+                .control()
+                .iter()
+                .cloned()
+                .collect()
+        })
+        .collect();
+    assert!(splits.len() > 1, "eight seeds drew one split: {splits:?}");
+
+    let estimate = experiment.analyse(&spreads(&experiment)).unwrap();
+    assert_eq!(estimate.kind(), EstimatorKind::HoldOutExperiment);
+    assert_eq!(*estimate.identification(), Identification::Experiment);
+    assert!(
+        estimate.effect() > 2.9 && estimate.effect() < 3.1,
+        "{}",
+        estimate.effect()
+    );
+
+    // The experimental attribution widens; the observational one over the
+    // same cells does not, and cannot borrow the label either.
+    let mut policy = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
+    let experimental = attributing(&estimate);
+    estimate.supports(&experimental).unwrap();
+    policy.widen(&experimental, &operator()).unwrap();
+    assert_eq!(policy.authority(), Authority::NarrowReversible);
+
+    let outcomes = spreads(&experiment);
+    let (x, y): (Vec<f64>, Vec<f64>) = units
+        .iter()
+        .map(|u| (f64::from(experiment.treated().contains(u)), outcomes[u]))
+        .unzip();
+    let observed = correlation(&x, &y).unwrap();
+    assert_eq!(*observed.identification(), Identification::NotIdentified);
+    let mut fresh = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
+    let err = fresh
+        .widen(&attributing(&observed), &operator())
+        .unwrap_err();
+    assert!(err.to_string().contains("not identified"), "{err}");
+    assert_eq!(fresh.authority(), Authority::Shadow);
+    assert!(
+        observed.supports(&experimental).is_err(),
+        "the label is earned by the method"
+    );
+
+    // Per horizon, every figure identified by the same assignment.
+    let horizons = BTreeMap::from([(60, spreads(&experiment)), (3_600, spreads(&experiment))]);
+    let per = experiment.analyse_horizons(&horizons).unwrap();
+    assert_eq!(per.len(), 2);
+    assert!(
+        per.values()
+            .all(|e| *e.identification() == Identification::Experiment)
+    );
+}
+
+#[test]
+fn an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_not_match_the_design()
+ {
+    let units = cells();
+    assert!(Experiment::design("", &units, 2500).is_err(), "blank seed");
+    assert!(Experiment::design("s", &units, 0).is_err(), "no hold-out");
+    assert!(
+        Experiment::design("s", &units, 10_000).is_err(),
+        "all held out"
+    );
+    assert!(
+        Experiment::design("s", &units[..3], 5000).is_err(),
+        "one side under two"
+    );
+    let mut twice = units.clone();
+    twice.push(units[0].clone());
+    assert!(
+        Experiment::design("s", &twice, 2500).is_err(),
+        "a unit twice"
+    );
+
+    let experiment = Experiment::design("s", &units, 2500).unwrap();
+    let full = spreads(&experiment);
+    assert!(
+        experiment.analyse(&full).is_ok(),
+        "premise: the full set is analysed"
+    );
+    let mut dropped = full.clone();
+    let unit = experiment.control().iter().next().unwrap().clone();
+    dropped.remove(&unit);
+    assert!(
+        experiment.analyse(&dropped).is_err(),
+        "a held-out cell dropped after the fact"
+    );
+    let mut extra = full;
+    extra.insert("cell-99".into(), 9.0);
+    assert!(
+        experiment.analyse(&extra).is_err(),
+        "an outcome for a cell never assigned"
+    );
+    assert!(experiment.analyse_horizons(&BTreeMap::new()).is_err());
 }
 
 // ---- R12-AGENCY-6108: for whom, and with what delay -------------------------

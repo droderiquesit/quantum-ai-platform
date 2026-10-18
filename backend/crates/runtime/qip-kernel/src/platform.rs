@@ -93,7 +93,8 @@ use qip_capital_fabric::tolerance::{
     class_for_desk_cash,
 };
 use qip_capital_fabric::wallet::{
-    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, VenueAsset,
+    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, ReconciliationOutcome,
+    VenueAsset,
 };
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
@@ -1216,6 +1217,11 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// reported on the cycle, because evicting the oldest waiting path would
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
+
+/// The `control` an order refused for a wallet reconciliation halt is counted
+/// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
+/// source literal, so the label has exactly one value for this refusal.
+const WALLET_HALT_CONTROL: &str = "wallet-halt";
 
 /// Why no proposal is signed while the desk's feed to the ledger cannot take
 /// another record (R12-RES-7098). One sentence for the cycle report; the
@@ -18359,6 +18365,13 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
+        // not traded into. Before the pre-trade routing on purpose: the
+        // desk's own books disagree with the custodian's about this asset,
+        // and no limit computed from them is a limit on what is really held.
+        if let Some(reason) = self.wallet_halt_for(order.object_id.as_str(), order.side) {
+            return self.refuse_for_wallet_halt(&order, reason, now);
+        }
         // R12-RISK-3022: the pre-trade check is routed through the cost router
         // as a decision that must be deterministic, and the order does not go
         // further without that routing. `Router::determine` returns a type that
@@ -18434,6 +18447,81 @@ impl Platform {
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
         }
+    }
+
+    /// Why the desk may not send this order into the book its custodian
+    /// statement disagrees with, or `None` when nothing halts it
+    /// (R12-ASSET-4074).
+    ///
+    /// The wallet reconciliation halts a *venue-asset* and says so in the
+    /// fabric's latest outcome for it; this is where the desk side reads that
+    /// outcome. Two scopes, and only these two: an instrument the desk's venue
+    /// halted refuses every order in that instrument, and a halted settlement
+    /// cash refuses a *buy* anywhere at that venue, because a buy spends the
+    /// balance nobody can vouch for while a sell does not. Other venues and
+    /// other instruments are untouched, which is the same scoping
+    /// `CentralPlane::record_halt` gives a cell. The latest outcome per
+    /// venue-asset is what is read, so a later clean reconciliation lifts the
+    /// halt without a latch to clear.
+    pub fn wallet_halt_for(&self, object_id: &str, side: Side) -> Option<String> {
+        let desk_venue = VenueId::new(self.broker.name());
+        self.fabric
+            .state()
+            .reconciliations()
+            .values()
+            .find_map(|outcome| {
+                let ReconciliationOutcome::Halt {
+                    venue,
+                    asset,
+                    alert,
+                    ..
+                } = outcome
+                else {
+                    return None;
+                };
+                if *venue != desk_venue {
+                    return None;
+                }
+                let cash = asset.as_str() == SETTLEMENT_CURRENCY.to_string();
+                let applies = if cash {
+                    matches!(side, Side::Buy)
+                } else {
+                    asset.as_str() == object_id
+                };
+                applies.then(|| {
+                    format!(
+                        "{venue} {asset} is halted by the wallet reconciliation: {}",
+                        alert.message
+                    )
+                })
+            })
+    }
+
+    /// Put an order the wallet halt stopped on the record and refuse it.
+    fn refuse_for_wallet_halt(
+        &mut self,
+        order: &Order,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        let correlation = self.correlation_for(now);
+        self.telemetry.metrics.count(
+            names::ORDERS_REFUSED,
+            labels([("control", WALLET_HALT_CONTROL)]),
+        );
+        let _ = self.capture(
+            now,
+            &correlation,
+            order.object_id.clone(),
+            Action::Rejected {
+                order_id: order.order_id.clone(),
+                gate: WALLET_HALT_CONTROL.to_string(),
+                reason: reason.clone(),
+            },
+            RealisedOutcome::nothing_happened(now),
+            reason.clone(),
+        );
+        Err(Error::denied(reason))
     }
 
     /// The strategy, capital policy, risk rule set and execution path an
