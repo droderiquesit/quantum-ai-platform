@@ -44,6 +44,10 @@ pub enum Origin {
     AnomalyCluster,
     /// A discrepancy that persisted for several consecutive sweeps.
     PersistentDiscrepancy,
+    /// A production model whose inputs drifted past its own threshold.
+    ModelDrift,
+    /// A hosted model refusing or garbling its replies past a stated rate.
+    ModelErrorRate,
 }
 
 impl Origin {
@@ -58,6 +62,8 @@ impl Origin {
             Self::Coverage => "detector:coverage",
             Self::AnomalyCluster => "detector:anomaly_cluster",
             Self::PersistentDiscrepancy => "detector:persistent_discrepancy",
+            Self::ModelDrift => "detector:model_drift",
+            Self::ModelErrorRate => "detector:model_error_rate",
         }
     }
 }
@@ -204,6 +210,65 @@ pub fn repeated_vetoes(declines: &[Decline], min_regrets: usize) -> Result<Vec<O
             )
         })
         .collect())
+}
+
+/// One gap per model reference that drifted past its threshold. Without
+/// it the learning round retired a drifted model and the curriculum never
+/// heard that the slot it filled now needs a successor fitted. A reference
+/// listed twice is one model, so it raises one gap, not two.
+pub fn model_drift(drifted: &[String]) -> Vec<Observation> {
+    let distinct: BTreeSet<&str> = drifted.iter().map(String::as_str).collect();
+    distinct
+        .into_iter()
+        .map(|reference| {
+            observe(
+                Origin::ModelDrift,
+                GapTrigger::ModelDrift,
+                Wanting::Model,
+                format!("model `{reference}` drifted past its threshold"),
+                "models",
+                vec![format!("model:{reference}")],
+                1.0,
+            )
+        })
+        .collect()
+}
+
+/// A hosted model whose refused or malformed replies exceed `max_rate` of at
+/// least `min_replies`, as one surprise wanting a specialist: a model that
+/// hallucinates is a question for whoever owns that seat, not a reason to
+/// trust its next answer. Below `min_replies` nothing is raised, because a
+/// rate over three calls is noise.
+pub fn model_error_rate(
+    model: &str,
+    replies: u64,
+    failed: u64,
+    min_replies: u64,
+    max_rate: f64,
+) -> Result<Option<Observation>> {
+    let max_rate = fraction("max_rate", max_rate)?;
+    if min_replies == 0 || failed > replies {
+        return Err(Error::invalid(format!(
+            "an error rate needs at least one reply and no more failures than replies, not \
+             {failed} of {replies} with a minimum of {min_replies}"
+        )));
+    }
+    if replies < min_replies {
+        return Ok(None);
+    }
+    let rate = failed as f64 / replies as f64;
+    if rate <= max_rate {
+        return Ok(None);
+    }
+    Ok(Some(observe(
+        Origin::ModelErrorRate,
+        GapTrigger::Surprise,
+        Wanting::Specialist,
+        format!("model `{model}` refused or garbled {failed} of {replies} replies"),
+        "models",
+        vec![format!("model:{model}")],
+        rate,
+    )))
 }
 
 /// As [`repeated_vetoes`], with each decline's counterfactual earnings beside
