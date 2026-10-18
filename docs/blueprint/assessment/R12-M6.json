@@ -1681,13 +1681,16 @@
   },
   {
     "id": "R12-EXPAND-6076",
-    "status": "PARTIAL",
-    "current": "Model cards carry dataset name and digest and rollback predecessor; no campaign or code-version lineage.",
+    "status": "COMPLETE",
+    "current": "ModelCard carries campaign_id (the research campaign whose window the model was fitted on) and code_version (the kernel's code_version(): crate version plus the source commit the build was stamped with). EvolutionEngine::maybe_learn notes both on the learning desk before learn_window, the desk stamps every card the round registers, and an engine-owned desk (requiring_provenance) refuses in promote_candidate to promote a card with neither or either missing.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:126 register_fit copies dataset name",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:605"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::campaign_id, code_version, provenance_gap",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs maybe_learn (note_provenance), LearningDesk::new(..).requiring_provenance()",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs stamp_provenance, promote_candidate",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_card_the_engine_registers_names_its_campaign_and_the_build_that_fitted_it",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_desk_requiring_provenance_refuses_a_fit_with_no_campaign_or_code_version"
     ],
-    "gap": "Campaign and code lineage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1695,10 +1698,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test serving",
+    "verification": "cargo test -p qip-deepbrain --lib -- a_desk_requiring_provenance a_card_the_engine_registers",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: removing the note_provenance call leaves the engine-registered card with no campaign (engine test fails); the provenance_gap refusal filtered to nothing promotes the unattributed fit (desk test fails). qip-ai and qip-deepbrain suites report no failures; clippy -D warnings clean. Differs from the triage closure in two places: the stamp is written by the learning desk rather than register_fit, because the campaign id exists only in the engine's round and register_fit is also called by tests and the API with none; and the refusal is the desk's, switched on by the engine, so a desk driven alone in a test, or a card registered elsewhere, is not blocked. code_version is read through qip_kernel::decision_record::code_version(), a compile-time stamp, so no std::env read is added outside apps."
   },
   {
     "id": "R12-EXPAND-6077",

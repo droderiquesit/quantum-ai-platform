@@ -302,6 +302,15 @@ pub struct ModelCard {
     /// feature, and a learning desk refuses to promote a card missing any.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub feature_lineage: BTreeMap<String, FeatureOrigin>,
+    /// The research campaign whose window the model was fitted on
+    /// (R12-EXPAND-6076): the id of the campaign manifest the platform
+    /// journaled, so the data behind the fit can be found from the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_id: Option<String>,
+    /// The build that fitted it, as the kernel names itself in a decision
+    /// record (`qip-kernel <version> (<source commit>)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_version: Option<String>,
 }
 
 /// Where one feature's values came from (R12-MODEL-4016): enough for a
@@ -408,6 +417,22 @@ impl ModelCard {
             validated_regimes: BTreeSet::new(),
             training_bounds: BTreeMap::new(),
             feature_lineage: BTreeMap::new(),
+            campaign_id: None,
+            code_version: None,
+        }
+    }
+
+    /// What is missing to trace this card back to the campaign and the code
+    /// that fitted it, if anything.
+    pub fn provenance_gap(&self) -> Option<String> {
+        let blank = |field: &Option<String>| field.as_deref().is_none_or(|v| v.trim().is_empty());
+        match (blank(&self.campaign_id), blank(&self.code_version)) {
+            (false, false) => None,
+            (true, false) => Some("it records no research campaign".to_string()),
+            (false, true) => Some("it records no code version".to_string()),
+            (true, true) => {
+                Some("it records neither a research campaign nor a code version".to_string())
+            }
         }
     }
 
