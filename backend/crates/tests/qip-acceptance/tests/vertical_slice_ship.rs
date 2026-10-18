@@ -33,9 +33,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration as StdDuration, Instant};
 
+use qip_capital::allocation::StrategyProposal;
+use qip_capital::capacity::CapacityModel;
+use qip_contracts::feature::FeatureKey;
+use qip_contracts::gate::GateStage;
+use qip_contracts::governance::Approval;
 use qip_contracts::ledger::Account;
+use qip_contracts::ledger_operation::OperationKind;
 use qip_contracts::reflex::Decision;
+use qip_contracts::signal::{SignalKind, StrategyId};
+use qip_contracts::venue::VenueId;
+use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::Result;
+use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, Context, Decimal, ManualClock, ObjectId, SystemClock, dec, sha256_hex};
 use qip_events::event_fabric::bindings::REFLEX_OUTCOMES_STREAM;
@@ -50,19 +60,32 @@ use qip_financial::asset_class::{InstrumentType, Sector};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
+use qip_kernel::central::{CentralPlane, StrategyCandidate};
 use qip_kernel::desk_ledger::{DESK_CELL, DESK_OUTBOX_CAPACITY, DeskOutcome};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_ledgerd::consumer::Connect;
 use qip_ledgerd::{Running, start};
+use qip_lifecycle::evidence::{
+    CrossValidationRun, DatasetManifest, FeatureTiming, HoldoutEvidence, KillCondition,
+    LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
+    StrategyEvidence,
+};
+use qip_lifecycle::trials::StrategyFamily;
 use qip_market::bar::{Bar, Interval};
 use qip_market::quote::Tick;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{MetricValue, Metrics, names};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
+use qip_risk_engine::autonomy::OperatorIdentity;
+use qip_simulation_engine::validation::PurgedSplit;
 use qip_storage::MemoryBlobStore;
 use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::SegmentLogConfig;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
+use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
+use qip_strategy::program::Program;
 use qip_streaming::event_fabric::broker::Broker;
 use qip_streaming::event_fabric::service::{SegmentConfigFor, Service};
 use qip_transport::event_fabric::auth::{self, BearerToken, IdentityTable};
@@ -1892,4 +1915,365 @@ fn a_shipper_refuses_operations_from_another_desks_chain() {
         0,
         "an operation from another chain reached the broker"
     );
+}
+
+// --- a capital grant's funding (ADR 0123, R12-LEDGER-5016) ---------------------
+//
+// The centre issues a grant through the operators' own intent,
+// `Platform::issue_capital`, and the kernel funds the grant's book at the
+// ledger as a `CapitalGrantFunded` operation on the same path the treasury
+// funding takes. The fixture below is the one `region_share.rs` and the
+// kernel's `central.rs` use to stand a strategy at pilot: a compiled one-rule
+// strategy with evidence that passes every gate, so the ladder and not the
+// evidence decides whether a grant is issued.
+
+const GRANT_CELL: &str = "cell-lon-1";
+
+fn grant_strategy() -> StrategyId {
+    StrategyId::new("ship-momentum")
+}
+
+fn grant_venue() -> VenueId {
+    VenueId::new("XNYS")
+}
+
+fn registrable(id: &str) -> Result<(CompiledStrategy, Program)> {
+    let pressure = FeatureKey::new("book_pressure", acme()).with("levels", 5);
+    let mut catalogue = FeatureCatalogue::new();
+    catalogue.declare(pressure.clone(), Type::Statistic)?;
+    let spec = StrategySpec::new(StrategyId::new(id), acme(), Duration::from_millis(250))
+        .with_rule(Rule::new(
+            "enter",
+            SignalKind::Enter,
+            Expr::feature(pressure).greater_than(Expr::Statistic(0.4)),
+            Expr::Exact(Decimal::from_int(100)),
+            Expr::Statistic(0.62),
+            500,
+        ));
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
+
+fn good_returns(seed: u64, n: usize, drift: f64) -> Vec<f64> {
+    let mut rng = Xoshiro256::seeded(seed);
+    (0..n)
+        .map(|_| {
+            let u = rng.next_f64() + rng.next_f64() - 1.0;
+            drift + u * 0.01
+        })
+        .collect()
+}
+
+fn honest_cross_validation(observations: usize) -> Result<CrossValidationRun> {
+    let (folds, label_horizon, embargo) = (5, 10, 5);
+    let splits = PurgedSplit::new(folds, label_horizon, embargo)?.split(observations)?;
+    Ok(CrossValidationRun {
+        folds,
+        label_horizon,
+        embargo,
+        observations,
+        purged: splits.iter().map(|s| s.purged).sum(),
+        embargoed: splits.iter().map(|s| s.embargoed).sum(),
+    })
+}
+
+fn dual_approval(subject: &str, when: Timestamp, rationale: &str) -> Result<Approval> {
+    Approval::new(subject, "alice.chen", when, rationale)?.countersigned_by("bram.oduya")
+}
+
+fn full_evidence(id: &StrategyId, cell: &str) -> Result<StrategyEvidence> {
+    let start = start_time();
+    let scaled_at = start.saturating_add(Duration::from_days(120));
+    let observations = 400;
+    let holdout = HoldoutEvidence {
+        holdout_returns: good_returns(1, observations, 0.0018),
+        in_sample_folds: (0..5).map(|f| good_returns(10 + f, 80, 0.0020)).collect(),
+        out_of_sample_folds: (0..5).map(|f| good_returns(20 + f, 80, 0.0018)).collect(),
+        trials: 12,
+        periods_per_year: 252.0,
+        cross_validation: honest_cross_validation(observations)?,
+        leakage: LeakageAudit {
+            timings: (0..8)
+                .map(|i| FeatureTiming {
+                    feature: format!("feature-{i}"),
+                    known_at: start,
+                    used_at: start.saturating_add(Duration::from_hours(1)),
+                })
+                .collect(),
+            restated_without_snapshots: Vec::new(),
+        },
+    };
+    let paper = PaperEvidence {
+        against_live_data: true,
+        assumed_cost_bps: 8.0,
+        realised_cost_bps: (0..400).map(|i| 7.0 + f64::from(i % 5) * 0.2).collect(),
+        peak_participation: 0.04,
+        modelled_participation_limit: 0.10,
+        unfillable_orders: 4,
+        filled_orders: 400,
+    };
+    let shadow = ShadowEvidence {
+        decisions: (0..400)
+            .map(|i| ShadowDecision {
+                at: start.saturating_add(Duration::from_mins(i)),
+                object_id: ObjectId::from_string(format!("obj-{}", i % 20)),
+                live: SignalKind::Enter,
+                predicted: SignalKind::Enter,
+                live_quantity: dec!("100"),
+                predicted_quantity: dec!("100"),
+            })
+            .collect(),
+        orders_reached_a_venue: false,
+        decision_latency_p99: Duration::from_millis(40),
+    };
+    let pilot = PilotEvidence {
+        approval: Some(dual_approval(
+            &format!("{id} pilot"),
+            start,
+            "shadow agreement held at 100% over 400 decisions",
+        )?),
+        envelope: Some(CapitalEnvelope::new(
+            id.clone(),
+            cell,
+            dec!("250000"),
+            dec!("250000"),
+            dec!("250000"),
+            vec![grant_venue()],
+            start,
+            start.saturating_add(Duration::from_days(14)),
+            "alice.chen",
+            "proposed-not-issued",
+        )?),
+        kill_conditions: vec![
+            KillCondition::RealisedLoss(dec!("25000")),
+            KillCondition::Drawdown(0.08),
+            KillCondition::ConsecutiveLosingDays(5),
+        ],
+    };
+    let scaled = ScaledEvidence {
+        pilot_returns: good_returns(99, 120, 0.0030),
+        pilot_started_at: start,
+        pilot_utilisation: Utilisation {
+            gross_committed: dec!("180000"),
+            realised_loss: dec!("0"),
+            orders_sent: 5_400,
+        },
+        proposed_notional: dec!("1000000"),
+        modelled_capacity: dec!("4000000"),
+        pilot_approval: Some(dual_approval(
+            &format!("{id} pilot"),
+            start,
+            "shadow agreement held at 100% over 400 decisions",
+        )?),
+        scaling_approval: Some(dual_approval(
+            &format!("{id} scaling"),
+            scaled_at,
+            "ninety days at pilot returned a 0.7 Sharpe inside a quarter of capacity",
+        )?),
+    };
+    Ok(StrategyEvidence::new()
+        .with_holdout(holdout)
+        .with_simulation(DatasetManifest::new(
+            "obj-ACME",
+            "XNYS",
+            2_000,
+            start.saturating_sub(Duration::from_days(2_000)),
+            start,
+            sha256_hex(b"recorded bars"),
+        )?)
+        .with_paper(paper)
+        .with_shadow(shadow)
+        .with_pilot(pilot)
+        .with_scaled(scaled))
+}
+
+fn proposal(id: &StrategyId, cell: &str) -> Result<StrategyProposal> {
+    Ok(StrategyProposal {
+        strategy: id.clone(),
+        cell: cell.to_string(),
+        venue: grant_venue(),
+        expected_sharpe: 1.8,
+        sharpe_standard_error: 0.05,
+        capacity: CapacityModel::new(
+            qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 4.0),
+            qip_financial::costs::TransactionCostModel::listed(4.0),
+            45.0,
+            dec!("100"),
+            0.5,
+        )?,
+        capacity_uncertainty: 0.2,
+    })
+}
+
+/// Register `id` at `cell` and walk it to pilot, the first rung that holds
+/// capital, collecting a dual approval where the rung demands one.
+fn register_at_pilot(plane: &mut CentralPlane, id: &StrategyId, cell: &str) -> Result<()> {
+    let (compiled, program) = registrable(id.as_str())?;
+    let candidate = StrategyCandidate::new(
+        compiled,
+        program,
+        StrategyFamily::new("vertical-slice-ship")?,
+        cell,
+        grant_venue(),
+        start_time(),
+    )?
+    .with_evidence(full_evidence(id, cell)?)
+    .with_model("microprice-distilled@3")
+    .with_evidence_artifacts(vec![
+        format!("sha256:holdout-{id}"),
+        format!("sha256:shadow-{id}"),
+    ]);
+    plane.factory_mut().register(candidate)?;
+    plane.set_proposal(proposal(id, cell)?);
+    for rung in [
+        GateStage::Holdout,
+        GateStage::Paper,
+        GateStage::Shadow,
+        GateStage::Pilot,
+    ] {
+        let approval = if rung.requires_human_approval() {
+            Some(dual_approval(
+                id.as_str(),
+                start_time(),
+                "every gate check passed with the evidence attached",
+            )?)
+        } else {
+            None
+        };
+        plane
+            .factory_mut()
+            .promote(id, approval, "the gate passed", start_time())?;
+    }
+    Ok(())
+}
+
+fn operator(name: &str, at: Timestamp) -> OperatorIdentity {
+    OperatorIdentity::verified(name, "hardware-token", at)
+}
+
+/// Two operators issue a grant through the platform's intent, and the
+/// grant's whole deployable capital reaches the authoritative ledger as a
+/// funding of the grant's book — Dr `trading:<cell>/<strategy>`, Cr the
+/// central treasury — through the broker and the consumer's operation arm,
+/// beside the desk's own treasury funding. A restart, which holds no
+/// envelope in the plane, re-queues the funding record from the log and
+/// sends it again; the ledger books it once.
+///
+/// Mutation: in `Platform::issue_capital`, skip `fund_capital_grant` — the
+/// premise that two operations are queued fails, and the book is never
+/// funded. Mutation: in `Platform::requeue_capital_grant_fundings`, rebuild
+/// the operation at the restart's clock instead of replaying the record —
+/// the resend carries a second digest under the same id, the ledger refuses
+/// it as a conflict and the "noted no refusal" assertion fails.
+#[test]
+fn a_capital_grants_funding_reaches_the_ledger_once_across_restarts() {
+    let fabric = Fabric::start();
+    let path = log_file("grant-funding");
+    let ledger = fabric.start_ledger(&temp_dir("ledger-grant-funding"));
+    let id = grant_strategy();
+    let (gross, equity) = {
+        let mut platform = warm_platform_at(&path).unwrap();
+        register_at_pilot(platform.central_mut(), &id, GRANT_CELL).unwrap();
+        assert_eq!(
+            platform.pending_desk_operations().len(),
+            1,
+            "premise: only the treasury funding is queued before the grant"
+        );
+        let first_at = later();
+        let second_at = later().saturating_add(Duration::from_mins(2));
+        platform
+            .issue_capital(
+                &id,
+                &operator("alice.chen", first_at),
+                first_at,
+                "the pilot gate passed and the allocator sized it inside the budget",
+                first_at,
+            )
+            .unwrap();
+        let issued = platform
+            .issue_capital(
+                &id,
+                &operator("bram.oduya", second_at),
+                second_at,
+                "reviewed the allocation and the pilot evidence independently",
+                second_at,
+            )
+            .unwrap();
+        assert_eq!(issued.outcome, "issued", "{issued:?}");
+        let gross = issued
+            .gross_limit
+            .expect("an issued grant states its gross limit");
+        assert!(gross.is_positive(), "premise: the grant is of something");
+        let operations = platform.pending_desk_operations();
+        assert_eq!(
+            operations.len(),
+            2,
+            "premise: the treasury funding and the grant's funding are queued: {operations:?}"
+        );
+        let OperationKind::CapitalGrantFunded { grant, .. } = &operations[1].kind else {
+            panic!("the second operation is not the grant's funding: {operations:?}");
+        };
+        assert_eq!(grant.deployable(), gross, "the envelope reserves nothing");
+        let mut shipper = fabric.shipper();
+        ship_all(&mut shipper, &mut platform);
+        assert!(platform.pending_desk_operations().is_empty());
+        (gross, platform.config().initial_equity)
+    };
+    let book = Account::Trading {
+        cell: GRANT_CELL.to_string(),
+        strategy: id.as_str().to_string(),
+    };
+    let treasury = Account::Treasury {
+        treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string(),
+    };
+    wait_until("the ledger funded the grant's book", || {
+        ledger.store().balance(&book, "USD").unwrap() == gross
+    });
+    assert_eq!(
+        ledger.store().balance(&treasury, "USD").unwrap(),
+        -(equity + gross),
+        "the treasury was not charged both fundings"
+    );
+
+    // The restart, an hour on: the plane holds no envelope, and the log
+    // re-queues both fundings as written.
+    let mut resumed = warm_platform_assembled_at(
+        PlatformConfig::default().with_event_log_file(&path),
+        start_time().saturating_add(Duration::from_hours(1)),
+    )
+    .unwrap();
+    assert!(
+        resumed.central().envelope(GRANT_CELL, &id).is_none(),
+        "premise: the plane's envelopes do not survive a restart"
+    );
+    assert_eq!(
+        resumed.pending_desk_operations().len(),
+        2,
+        "premise: both fundings are re-queued from the log: {:?}",
+        resumed.pending_desk_operations()
+    );
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut resumed);
+    wait_until("the broker holds both resends", || {
+        fabric.desk_operations() == 4
+    });
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(
+        ledger.store().balance(&book, "USD").unwrap(),
+        gross,
+        "the restart funded the grant's book twice"
+    );
+    assert_eq!(
+        ledger.store().balance(&treasury, "USD").unwrap(),
+        -(equity + gross)
+    );
+    let notes = ledger.store().journal().unwrap();
+    assert!(
+        !notes.iter().any(|note| note.event == "operation_refused"),
+        "a resend was refused as a conflict: a funding's digest changed across a restart: {notes:?}"
+    );
+    let trial = ledger.store().trial_balance().unwrap();
+    assert!(trial.values().all(|total| total.is_zero()), "{trial:?}");
+    ledger.stop();
 }

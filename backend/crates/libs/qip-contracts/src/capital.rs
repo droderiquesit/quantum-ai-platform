@@ -435,6 +435,15 @@ impl CapitalEnvelope {
         self.expires_at
     }
 
+    /// When the grant took effect. Part of the signed payload, and the one
+    /// instant that tells two grants to the same book apart: the ledger
+    /// funding an envelope becomes (`ledger_operation::OperationKind::CapitalGrantFunded`)
+    /// is keyed on it, so a renewal is a second funding and a resend of the
+    /// same grant is the same record.
+    pub fn granted_at(&self) -> Timestamp {
+        self.granted_at
+    }
+
     pub fn is_live(&self, now: Timestamp) -> bool {
         now >= self.granted_at && now < self.expires_at
     }

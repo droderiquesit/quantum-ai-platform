@@ -4042,6 +4042,127 @@ pub struct DeskTreasuryFunded {
 /// The producer of [`DeskTreasuryFunded`].
 const DESK_TREASURY_ORIGIN: &str = "kernel/desk-treasury";
 
+/// The journalled record that the central treasury funded the book a
+/// capital grant names (ADR 0123): the whole
+/// [`qip_contracts::ledger_operation::LedgerOperation`] the ledger books,
+/// written in [`Platform::issue_capital`] the moment the plane issued the
+/// envelope and before the operation is queued for the shipper.
+///
+/// The operation itself is journalled, not the facts it was built from,
+/// because a restart cannot rebuild it: the plane's envelope map is
+/// in-process state (`central/plane.rs`, `envelopes`) and is empty after a
+/// restart, and the ledger deduplicates by digest — a funding rebuilt from
+/// the grant entry at the restart's clock would be a second digest under the
+/// same id, which the ledger refuses as a conflict. Replaying the record as
+/// written re-sends the bytes the first process sent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalGrantFunded {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`CapitalGrantFunded`]. Distinct from
+/// [`CAPITAL_GRANT_ORIGIN`], whose every record decodes as a
+/// [`CapitalGrantEntry`] and whose readers would otherwise meet a body they
+/// never wrote.
+const CAPITAL_GRANT_FUNDING_ORIGIN: &str = "kernel/capital-grant-funding";
+
+/// The region a capital grant's funding record carries when the centre has
+/// never heard from the cell the grant was sized at, and so holds no region
+/// for it (`CentralPlane::last_heard`). A literal rather than a blank the
+/// contract would refuse, and rather than a region guessed from the cell's
+/// name: the ledger's postings read the cell and the strategy, not the
+/// region, so the funding is booked and the record says what the centre did
+/// not know. The same literal `ingest_cell_report` charts an unnamed venue
+/// under.
+const UNKNOWN_REGION: &str = "unknown";
+
+/// The mandate a capital grant's funding is made under: the desk's own, the
+/// ceiling [`qip_capital::ledger::MandateRegistry`] holds under
+/// [`DESK_USER`] and gives no other name. A literal for the same reason
+/// [`DESK_USER`] is one.
+const DESK_MANDATE: &str = "desk";
+
+impl EventBody for CapitalGrantFunded {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The §24.9/§27 [`qip_contracts::capital::CapitalGrant`] an issued
+/// [`qip_contracts::CapitalEnvelope`] states, for the funding record
+/// [`Platform::fund_capital_grant`] writes; that method's documentation says
+/// which fields the envelope states and how the three it does not are
+/// written. Refused, never adjusted, wherever the envelope's figures do not
+/// make a grant — a loss limit that is not a whole number of basis points of
+/// the capital, or above it — because a funding record that disagrees with
+/// the envelope it cites is worse than none.
+fn capital_grant_of(
+    envelope: &qip_contracts::CapitalEnvelope,
+    venue: &VenueId,
+    region: String,
+) -> Result<qip_contracts::capital::CapitalGrant> {
+    use qip_contracts::capital::{CapitalGrantFields, CollateralClass, GrantMode};
+    use qip_contracts::validated::{Contract, MAX_BP};
+    let capital = envelope.gross_limit();
+    // The loss limit as a share of the capital, in basis points — exact or
+    // refused. `Decimal::ONE.raw()` is one unit at the decimal's scale.
+    let one = Decimal::ONE.raw();
+    let scaled = envelope
+        .loss_limit()
+        .checked_mul(Decimal::from_int(i64::from(MAX_BP)))
+        .and_then(|scaled| scaled.checked_div(capital))
+        .ok_or_else(|| {
+            Error::numeric(format!(
+                "the loss limit {} over the capital {capital} of {}'s grant does not compute in \
+                 basis points",
+                envelope.loss_limit(),
+                envelope.strategy()
+            ))
+        })?;
+    if scaled.raw() % one != 0 {
+        return Err(Error::invalid(format!(
+            "the loss limit {} is not a whole number of basis points of the capital {capital} \
+             of {}'s grant; the funding record cannot state the drawdown stop exactly",
+            envelope.loss_limit(),
+            envelope.strategy()
+        )));
+    }
+    let max_drawdown_bp = u32::try_from(scaled.raw() / one).map_err(|_| {
+        Error::invalid(format!(
+            "the loss limit {} of {}'s grant is not within its capital {capital}",
+            envelope.loss_limit(),
+            envelope.strategy()
+        ))
+    })?;
+    let max_leverage = envelope
+        .exposure()
+        .map(|exposure| exposure.max_leverage)
+        .unwrap_or(Decimal::ONE);
+    qip_contracts::validated::Validated::new(CapitalGrantFields {
+        schema_version: CapitalGrantFields::SCHEMA_VERSION,
+        grant_id: format!(
+            "{}@{}@{}",
+            envelope.strategy().as_str(),
+            envelope.cell(),
+            envelope.granted_at().as_secs()
+        ),
+        mode: GrantMode::Paper,
+        owner: DESK_USER.to_string(),
+        mandate: DESK_MANDATE.to_string(),
+        strategy: envelope.strategy().clone(),
+        region,
+        venue: venue.clone(),
+        amount: capital,
+        collateral: CollateralClass::Cash,
+        max_leverage,
+        risk_budget: envelope.loss_limit(),
+        max_drawdown_bp,
+        liquidity_reserve: Decimal::ZERO,
+        max_adv_share_bp: MAX_BP,
+        granted_at: envelope.granted_at(),
+        expires_at: envelope.expires_at(),
+    })
+}
+
 /// The treasury that funds every desk's book, as the ledger names it.
 pub const CENTRAL_TREASURY: &str = "central";
 
@@ -5165,6 +5286,11 @@ impl Platform {
         // ledger is the authority for (ADR 0123). Journaled once, so every
         // restart re-derives the same operation with the same digest.
         platform.queue_treasury_funding(now)?;
+        // Every capital grant this log funded, re-queued as written: the
+        // plane's envelopes do not survive a restart but the ledger's debt to
+        // the books they funded does, and the ledger answers a resend with a
+        // duplicate rather than a second funding.
+        platform.requeue_capital_grant_fundings()?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -8161,7 +8287,14 @@ impl Platform {
                     }
                 }
                 self.journal_record(entry.clone(), CAPITAL_GRANT_ORIGIN, now)?;
-                outcome?;
+                let (issued, _) = outcome?;
+                // The grant's deployable capital, funded into its book at the
+                // authoritative ledger (ADR 0123). After the entry, so the
+                // log reads decision, envelope, funding in the order the acts
+                // happened; a failure here is returned, not swallowed, because
+                // a grant the ledger never hears of is a book the ledger says
+                // is empty while the cell spends against it.
+                self.fund_capital_grant(&issued, now)?;
                 Ok(entry)
             }
         }
@@ -19015,6 +19148,115 @@ impl Platform {
             },
         })?;
         self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Fund the book a freshly issued capital grant names, at the ledger
+    /// (ADR 0123, R12-LEDGER-5016): the grant's deployable capital, Dr the
+    /// grant's `trading:<cell>/<strategy>` account, Cr the central treasury,
+    /// as one `CapitalGrantFunded` operation journalled under
+    /// [`CAPITAL_GRANT_FUNDING_ORIGIN`] and then queued on the desk's
+    /// operation path, so `qip-desk-ship` carries it with the treasury
+    /// funding and the chain records.
+    ///
+    /// The operation's id is `<chain>:capital-grant-funded:<grant id>`, the
+    /// grant id being `<strategy>@<cell>@<granted-at seconds>` — the three
+    /// facts the envelope's signed payload keys a grant on — so a restart
+    /// that replays the journalled record re-sends the same id and the same
+    /// digest, and the ledger answers a duplicate; a renewal of the same book
+    /// an hour later is a different instant and so a second funding. Its
+    /// `sequence` is one more than the fundings this log already holds and
+    /// never zero, which the treasury funding carries on the same origin.
+    ///
+    /// # What is observed and what is stated
+    ///
+    /// The contract this funds a book through is the §24.9/§27
+    /// [`qip_contracts::capital::CapitalGrant`]; the plane issues a
+    /// [`qip_contracts::CapitalEnvelope`]. Every field of the grant is taken
+    /// from the envelope and its allocation where the envelope states it —
+    /// strategy, cell, venue, the capital (the gross limit, which is also
+    /// the equity its exposure bounds are backed by), the leverage bound,
+    /// the loss limit as the risk budget, and the window. Three it does not
+    /// state are written as what the envelope says about them rather than
+    /// guessed: the liquidity reserve is zero (every unit of the gross limit
+    /// may be committed, so nothing is held back and the deployable capital
+    /// is the whole grant), the drawdown stop is the loss limit over the
+    /// capital in basis points (the one loss at which the cell stops this
+    /// strategy on its own authority), and the ADV share is the whole of it
+    /// (the envelope bounds participation in *visible depth* per order and
+    /// states no bound on average daily volume; a bound it does not state is
+    /// not invented here). The owner and mandate are the desk's, the one
+    /// user and mandate the per-user ledger holds; the collateral is cash,
+    /// the unit the book is kept in. The region is the one the cell last
+    /// reported, or [`UNKNOWN_REGION`].
+    fn fund_capital_grant(
+        &mut self,
+        issued: &crate::central::plane::IssuedCapital,
+        now: Timestamp,
+    ) -> Result<()> {
+        use qip_contracts::ledger_operation::{LedgerOperationFields, OperationKind};
+        let envelope = issued.envelope();
+        let cell = issued.allocation().cell.clone();
+        let region = self
+            .central
+            .last_heard()
+            .get(&cell)
+            .map(|heard| heard.region.trim())
+            .filter(|region| !region.is_empty())
+            .unwrap_or(UNKNOWN_REGION)
+            .to_string();
+        let grant = capital_grant_of(envelope, &issued.allocation().venue, region)?;
+        let chain = self.desk_ledger.chain().to_string();
+        let sequence = self.capital_grant_fundings_in_log()?.len() as u64 + 1;
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:capital-grant-funded:{}", grant.grant_id),
+            origin: chain,
+            sequence,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::CapitalGrantFunded {
+                treasury: CENTRAL_TREASURY.to_string(),
+                cell,
+                unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                grant,
+            },
+        })?;
+        self.journal_record(
+            CapitalGrantFunded {
+                operation: operation.clone(),
+            },
+            CAPITAL_GRANT_FUNDING_ORIGIN,
+            now,
+        )?;
+        self.desk_operations.push(operation);
+        Ok(())
+    }
+
+    /// Every capital-grant funding this log holds, in the order it was
+    /// written.
+    fn capital_grant_fundings_in_log(
+        &self,
+    ) -> Result<Vec<qip_contracts::ledger_operation::LedgerOperation>> {
+        let mut fundings = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer != CAPITAL_GRANT_FUNDING_ORIGIN
+                || record.event.topic != CapitalGrantFunded::TOPIC
+            {
+                continue;
+            }
+            let frame = StreamEnvelope::from_frame(&record.event)?;
+            fundings.push(frame.decode::<CapitalGrantFunded>()?.body.operation);
+        }
+        Ok(fundings)
+    }
+
+    /// Re-queue every capital-grant funding the log holds, as written, at
+    /// assembly. See [`CapitalGrantFunded`] for why the record and not the
+    /// grant is what is replayed.
+    fn requeue_capital_grant_fundings(&mut self) -> Result<()> {
+        let fundings = self.capital_grant_fundings_in_log()?;
+        self.desk_operations.extend(fundings);
         Ok(())
     }
 

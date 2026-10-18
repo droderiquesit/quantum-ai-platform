@@ -24,8 +24,13 @@ any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
 Recounted **2026-10-18** with `python3 -I` over `docs/blueprint/assessment/*.json`:
-COMPLETE 249, PARTIAL 1122, MISSING 114, BLOCKED 31, INCORRECT 1,
-NEEDS-VALIDATION 1 (= 1518). On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
+COMPLETE 250, PARTIAL 1121, MISSING 114, BLOCKED 31, INCORRECT 1,
+NEEDS-VALIDATION 1 (= 1518). Later on 2026-10-18 LEDGER-5016 was promoted
+(249 to 250) by the lane that gave capital grants a ledger funding producer
+(ADR 0123 decision 6), after a full workspace run and five mutations fired;
+LEDGER-1197, LEDGER-10179, CONTRACT-6115 and CONTRACT-7066 had their text
+corrected and stayed PARTIAL with the unmet clause named. Earlier that day it
+was COMPLETE 249, PARTIAL 1122. On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
 MISSING 159: eleven independent graders read 980 rows (ran nothing), 88
 were proposed COMPLETE, eleven were held back (nine TICK rows reachable only
 with `QIP_DEEPBRAIN_TICK_EVERY` set, which needs a licensing decision;
