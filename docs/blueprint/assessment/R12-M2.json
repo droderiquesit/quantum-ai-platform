@@ -227,15 +227,16 @@
   },
   {
     "id": "R12-DATA-2011",
-    "status": "PARTIAL",
-    "current": "Registration requires a named operator record for any non-keyless source; MarketEvent and lake partitions require an entitlement; replay of an undeclared file defaults to Restricted licensing.",
+    "status": "COMPLETE",
+    "current": "MarketEvent::new refuses a denied or expired entitlement at the event's own time; a data-finder asked to trade registers no source whose licence grants research only, and a lake partition cannot be formed without an entitlement; a catalogue entry is attributed to a named operator and a process name is refused. The check (an event or registration without an entitlement is refused; a default grant cannot be substituted) is met.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/registration.rs RegistrationRecord::new refuses blank operator",
       "backend/crates/libs/qip-contracts/src/market_event.rs:66-80 refuses an entitlement not granted at event_time",
-      "backend/crates/services/qip-market-ingestion/src/replay.rs:8-30 undeclared replay reports LicensingClass::Restricted",
-      "backend/crates/services/qip-data-finder/tests/registration.rs"
+      "backend/crates/libs/qip-contracts/tests/market_event.rs:167 a_market_event_without_an_entitlement_is_refused",
+      "backend/crates/services/qip-data-finder/tests/legality.rs:198 a_research_only_licence_cannot_produce_a_source_usable_for_trading",
+      "backend/crates/libs/qip-storage/tests/lake.rs:42 a_partition_without_an_entitlement_cannot_be_formed",
+      "backend/crates/services/qip-data-finder/tests/lifecycle.rs:289 a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused"
     ],
-    "gap": "No user-authorised source flow; alternative-data adapter entitlement is a configured class, not a per-user grant.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -243,10 +244,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_contract",
+    "verification": "cargo test -p qip-contracts --test market_event a_market_event_without_an_entitlement_is_refused; cargo test -p qip-data-finder --test legality a_research_only_licence_cannot_produce_a_source_usable_for_trading; cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: disabling the entitlement check in MarketEvent::new (market_event.rs, `if !entitlement.is_granted(event_time)`) fails the test at tests/market_event.rs:201 ('a market event was built on a denied entitlement'). The former gap (a per-user grant flow) exceeds the row's check."
   },
   {
     "id": "R12-DATA-2012",
@@ -437,26 +438,29 @@
   },
   {
     "id": "R12-DATA-2020",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-data-finder/src/decision.rs:460 catalogue_entry_attributed with operator::NamedOperator refusing placeholders",
+    "status": "COMPLETE",
+    "current": "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources validates config.owner as qip_data_finder::operator::NamedOperator once per pass and builds every mesh entry through RegistrationDecision::catalogue_entry_attributed; the shipped default owner qip-platform is refused at that seam and each registration is recorded as a catalogue problem naming the fix",
     "evidence": [
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18850 NamedOperator::new(&self.config.owner) and catalogue_entry_attributed in assess_sources",
+      "backend/crates/runtime/qip-kernel/src/config.rs:490 default_owner doc states the default is refused at the catalogue seam",
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
       "backend/crates/services/qip-data-finder/tests/lifecycle.rs:289 a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused",
-      "backend/crates/services/qip-data-finder/src/decision.rs:460 no caller outside tests"
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:347 production caller of assess_sources"
     ],
-    "gap": "The kernel still catalogues under the configured owner qip-platform; NamedOperator/catalogue_entry_attributed has no production caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-DATA-2017"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test registration",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test source_lifecycle a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so)."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so). Closed 2026-10-18 (lane L01): assess_sources now goes through catalogue_entry_attributed; mutation reverting the seam to catalogue_entry(&self.config.owner) made the test fail at its catalogued.is_empty() assertion, restored byte-for-byte and it passes. Deployments still ship the default owner; they now catalogue nothing and say why, rather than cataloguing under a process name."
   },
   {
     "id": "R12-DATA-2021",

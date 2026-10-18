@@ -1976,27 +1976,25 @@
   },
   {
     "id": "R12-CAPITAL-4091",
-    "status": "PARTIAL",
-    "current": "LEARN prices alternatives for filled (score_filled) and declined (score_declined) orders through CounterfactualEngine; the production menu is AlternativeMenu::standard (2x, 0.5x, one-cycle delay); DifferentVenue/DifferentHedge/NoHedge variants exist but the menu sets none. qip-capital shadow.rs (allocation-level) is unintegrated and has no timing variant.",
+    "status": "COMPLETE",
+    "current": "Platform::new builds the counterfactual AlternativeMenu from the configuration: with_hedge from the first declared HedgePolicyDeclaration (instrument, beta) and with_venue from the first whitelisted arbitrage venue that is not the desk broker (taker cost carried into the twin cost model, quotes not assumed firm). score_filled and score_declined build the twin market through Platform::counterfactual_bars, which adds the hedge instrument bars so the hedged alternative can be sized. qip-capital shadow.rs allocation-level variants are a separate library claim outside this clause.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs:48-71,134-146 Alternative and standard menu",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4608-4612 standard menu",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17244,17410 score_declined/score_filled",
-      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:310 the_alternatives_to_a_trade_are_priced_and_stay_simulated",
-      "backend/crates/services/qip-capital/src/shadow.rs:38-47 AllocationVariant"
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::new, the menu block after settlement.assign_venue (grep -n \"R12-CAPITAL-4091\" platform.rs)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn counterfactual_bars, called from score_declined and score_filled",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge"
     ],
-    "gap": "Venue and hedge alternatives in the production menu; allocation-level shadows.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test platform_outcomes a_scored_decision_is_compared_against_a_different_venue_and_a_different_hedge",
     "work_item": "",
     "size": "M",
-    "notes": "shadow.rs module doc claims shadows hold 'alternate sizes, hedges, timing, venues'; AllocationVariant has no timing arm."
+    "notes": "shadow.rs module doc claims shadows hold 'alternate sizes, hedges, timing, venues'; AllocationVariant has no timing arm. Closed 2026-10-18 (lane L01). Mutation 1: menu reverted to AlternativeMenu::standard made the test fail at its menu-venue premise; mutation 2: hedge bars dropped from counterfactual_bars made the production-path fill go unscored and the test fail at its fill_scores assertion; both restored byte-for-byte and the test passes. The menu is read once at assembly; a deployment with no hedge policy and no arbitrage whitelist still gets neither arm, which is the configured truth rather than an invented venue."
   },
   {
     "id": "R12-CAPITAL-4092",

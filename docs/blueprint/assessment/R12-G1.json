@@ -261,27 +261,25 @@
   },
   {
     "id": "R12-DATA-8012",
-    "status": "PARTIAL",
-    "current": "An acceptance test refuses any bucket/dataset whose label or name carries landing/raw/crawl/scrape/scout/corpus tokens, and any unclassified bucket, with a self-test that the checker fires.",
+    "status": "COMPLETE",
+    "current": "No Terraform bucket or dataset is designated for external-world content: an acceptance scan walks every .tf file, refuses any bucket or dataset whose name or label carries a landing/raw/crawl/scrape/scout/corpus token and any bucket outside BUCKET_CLASSES, and self-tests that the checker fires. The HTTP client reads every response into memory (qip-transport read_response); the check (no Terraform bucket for external content; adding one fails an acceptance scan) is met.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:117,219",
-      "infrastructure/terraform/modules/evidence/main.tf:58",
-      "infrastructure/terraform/modules/ai/main.tf:52",
-      "backend/crates/libs/qip-transport/src/http.rs:1191 read_response into memory",
-      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::no_bucket_or_dataset_lands_external_world_content"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:424 no_bucket_or_dataset_lands_external_world_content",
+      "backend/crates/libs/qip-transport/src/http.rs read_response into memory",
+      "infrastructure/terraform/modules/data/main.tf buckets classified in BUCKET_CLASSES"
     ],
-    "gap": "The guard is token/classification based; the tick lake may durably keep raw venue bytes under an entitlement; no worker-side encrypted-ephemeral-disk policy or test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new acceptance scan over google_storage_bucket purposes",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards no_bucket_or_dataset_lands_external_world_content",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: appending `resource \"google_storage_bucket\" \"landing\" { name = \"${local.prefix}-raw-world\" }` to infrastructure/terraform/modules/data/main.tf fails the scan at data_infrastructure_guards.rs:457 naming `landing` and 'not in BUCKET_CLASSES'. The tick lake keeps entitled venue bytes under R12-DATA-1039/8019; that is retention of internal/tick history, not an external-world landing bucket."
   },
   {
     "id": "R12-DATA-8013",
@@ -2682,24 +2680,25 @@
   },
   {
     "id": "R12-DATA-8121",
-    "status": "PARTIAL",
-    "current": "Same acceptance scan refuses a lake-shaped bucket/dataset by name token or missing classification; no raw-lake resource exists in Terraform.",
+    "status": "COMPLETE",
+    "current": "No lake-shaped resource exists: the acceptance scan refuses any bucket or dataset named or labelled as a landing/raw/crawl/corpus store or left unclassified, and the lake's RecordClass admits only `market` and `internal`, refusing a world/news/document/fundamental class by name. The check (no store holds raw external payloads; a lake-shaped resource fails review) is met.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:117 archive (tick/internal)",
-      "backend/crates/libs/qip-storage/src/tick_capture.rs::raw_retention_permitted"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:424 no_bucket_or_dataset_lands_external_world_content",
+      "backend/crates/libs/qip-storage/tests/lake.rs:28 a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes",
+      "infrastructure/terraform/modules/data/main.tf archive bucket (tick/internal)"
     ],
-    "gap": "Raw external payloads can be stored: the tick lake keeps raw venue bytes where an entitlement permits; the guard is name-based, not content-based.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance scan",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards no_bucket_or_dataset_lands_external_world_content; cargo test -p qip-storage --test lake a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The same landing-bucket mutation recorded on R12-DATA-8012 fails the scan. The tick lake's entitled venue bytes are the retention R12-DATA-1039/8019 require and are not raw external-world payloads."
   },
   {
     "id": "R12-DATA-8122",

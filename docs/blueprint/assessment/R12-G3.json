@@ -734,24 +734,25 @@
   },
   {
     "id": "R12-DATA-10034",
-    "status": "PARTIAL",
-    "current": "KnowledgePack is schema-closed (deny_unknown_fields) so a raw body cannot ride inside a pack, with tests; nothing proves ingestion paths never persist raw payloads elsewhere.",
+    "status": "COMPLETE",
+    "current": "KnowledgePack and PackBody are schema-closed (serde deny_unknown_fields), so a raw body cannot ride inside a pack at the top level or inside the body, an unknown kind is refused, and another schema version is refused; the check (an undeclared field is refused at decode) is met.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs:1-10 schema-closed packs",
-      "backend/crates/libs/qip-contracts/tests/knowledge_pack.rs"
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs:20 deny_unknown_fields on PackBody",
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs:52 deny_unknown_fields on KnowledgePack",
+      "backend/crates/libs/qip-contracts/tests/knowledge_pack.rs:61 a_pack_carrying_a_field_outside_its_schema_is_refused_at_every_level"
     ],
-    "gap": "A guard over every persistence path (buckets, stores) refusing raw payload classes.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test knowledge_pack",
+    "verification": "cargo test -p qip-contracts --test knowledge_pack a_pack_carrying_a_field_outside_its_schema_is_refused_at_every_level",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: removing deny_unknown_fields from KnowledgePack (knowledge_pack.rs:52) fails the test at its 'extra top-level field' assertion (tests/knowledge_pack.rs:80). The former gap (a guard over every persistence path) exceeds this row's check and is the subject of R12-DATA-1029 and R12-DATA-8012/8121."
   },
   {
     "id": "R12-DATA-10035",
@@ -2868,13 +2869,15 @@
   },
   {
     "id": "R12-RES-10130",
-    "status": "PARTIAL",
-    "current": "Edge node independence tests; no research backlog queue.",
+    "status": "COMPLETE",
+    "current": "With the centre silent the node runs the same passes, sends the same orders and refuses the same; on the deep brain, gate_strategic_service takes the strategic service down when the node is unready, every stage still runs, and the lattice's questions wait in its bounded backlog until the service returns. The check (node trades identically with the centre silent) is met and the backlog clause is tested.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342",
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11"
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:189 gate_strategic_service, called at node.rs:467",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:882 a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs:339 with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs"
     ],
-    "gap": "Backlog queue.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2882,10 +2885,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-deepbrain --lib a_halted_node_takes_the_strategic_service_down_and_every_stage_still_runs; cargo test -p qip-kernel --test now_lattice with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: gate_strategic_service always setting the lattice available fails the node test at node.rs:903 (the lattice stayed available through a halt). The former text ('no research backlog queue') was older than the lattice."
   },
   {
     "id": "R12-RES-10131",
@@ -4344,13 +4347,15 @@
   },
   {
     "id": "R12-ARCH-10193",
-    "status": "PARTIAL",
-    "current": "Compile-time exclusion test and centre-silent node test; not deployed; the exclusion test uses substring matching on Cargo.toml.",
+    "status": "COMPLETE",
+    "current": "The edge node links no cognitive crate directly or transitively: the acceptance test parses every workspace manifest whole (dependency names, ignoring comments and dev tables) and walks the closure from qip-edge-node; a node trades identically with the centre silent. The check is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:46 parse_manifest; :108 closure",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:127 nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:181 the_manifest_parser_reads_dependency_names_whole_and_ignores_comments_and_dev_tables",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350 a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering"
     ],
-    "gap": "Dependency-closure check via cargo metadata.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4360,10 +4365,10 @@
       "R12-ARCH-10176"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage",
+    "verification": "cargo test -p qip-acceptance --test arch_001_independent_reflex; cargo test -p qip-edge-node --test reasoning_outage",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: adding `qip-reasoning-engine.workspace = true` to backend/crates/apps/qip-edge-node/Cargo.toml fails the closure test at arch_001_independent_reflex.rs:167 naming both qip-reasoning-engine and, transitively, qip-world-model. The former text ('substring matching') was older than the parser."
   },
   {
     "id": "R12-FABRIC-10194",

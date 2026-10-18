@@ -207,7 +207,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
-    EstimationMethod,
+    EstimationMethod, VenueOption,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -4997,11 +4997,8 @@ impl Platform {
         } else {
             Duration::from_mins(5)
         };
-        let counterfactuals = CounterfactualEngine::new(
-            config.seed,
-            AlternativeMenu::standard(delay),
-            delay + CAPITAL_HORIZON,
-        )?;
+        // The menu is widened below, once the desk's broker exists to name
+        // the venue the alternatives must differ from.
 
         let quarter_book = initial_equity
             .checked_div(Decimal::from_int(4))
@@ -5032,6 +5029,41 @@ impl Platform {
             SettlementCalendar::weekday(SettlementConvention::T1)?,
         )?;
         settlement.assign_venue(VenueId::new(broker.name()), CapitalRegion::new(HOME_REGION))?;
+        // R12-CAPITAL-4091: the counterfactual menu names a different venue
+        // and a different hedge structure where the deployment has configured
+        // one, so a scored decision is compared against "somewhere else" and
+        // "hedged differently" and not only against its own size and timing.
+        // `AlternativeMenu::standard` sets both to `None`, and every scored
+        // fill and refusal used to carry neither arm, which read as "no
+        // regret on venue or hedge" when the question had never been asked.
+        // The venue is the first whitelisted arbitrage venue that is not the
+        // desk's own; its proportional taker cost is the whitelist's, the
+        // rest of the model is the desk's, and its quotes are not assumed
+        // firm. The hedge is the first declared policy's instrument and beta
+        // — the structure the hedge review would have proposed.
+        let mut menu = AlternativeMenu::standard(delay);
+        if let Some(policy) = config.hedge_policies.first() {
+            menu = menu.with_hedge(policy.instrument.clone(), policy.beta);
+        }
+        if let Some(arbitrage) = &config.central.arbitrage
+            && let Some((name, venue)) = arbitrage
+                .venues
+                .iter()
+                .find(|(name, _)| name.as_str() != broker.name())
+        {
+            let mut costs = CostModel::liquid_equity();
+            // The whitelist states the cost as a fraction of notional; the
+            // twin's model states it in basis points. Statistics, not money,
+            // crosses here: the fraction becomes an `f64` rate.
+            costs.commission_bps = venue.taker_cost.to_f64() * 10_000.0;
+            menu = menu.with_venue(VenueOption {
+                venue: VenueId::new(name.clone()),
+                costs,
+                firm_quotes: false,
+            });
+        }
+        let counterfactuals =
+            CounterfactualEngine::new(config.seed, menu, delay + CAPITAL_HORIZON)?;
         let pre_positioner = PrePositioningPlanner::new(
             CapitalAllocator::new(
                 AllocationLimits::new(initial_equity, quarter_book, half_book, half_book)?,
@@ -18844,11 +18876,31 @@ impl Platform {
         }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
+        // The owner is validated once, as a `NamedOperator`, before any entry
+        // is built (R12-DATA-2020). The configured default is the process's
+        // own name, and a catalogue entry owned by a process names nobody who
+        // can be asked about the source later; such an owner is refused here,
+        // and every registration this pass produced is recorded as a
+        // catalogue problem naming the fix, rather than catalogued under a
+        // placeholder or quietly dropped. The finder's registry still holds
+        // the registration, so the pass is not lost — only the mesh entry is.
+        let operator = qip_data_finder::operator::NamedOperator::new(&self.config.owner);
         for decision in &decisions {
             if !decision.is_registered() {
                 continue;
             }
-            match decision.catalogue_entry(&self.config.owner) {
+            let operator = match &operator {
+                Ok(operator) => operator,
+                Err(error) => {
+                    catalogue_problems.push(format!(
+                        "source.{}: not catalogued: {}",
+                        decision.source_id(),
+                        error.message()
+                    ));
+                    continue;
+                }
+            };
+            match decision.catalogue_entry_attributed(operator) {
                 Ok(registration) => {
                     let dataset = registration.dataset.clone();
                     match self.catalog.register(registration) {
@@ -19624,6 +19676,31 @@ impl Platform {
         &self.counterfactuals
     }
 
+    /// The bars a counterfactual market over `object_id` is built from: the
+    /// instrument's own history, and the menu's hedge instrument's history
+    /// where the menu names one and this platform holds it.
+    ///
+    /// The twin refuses to plan a hedged alternative it cannot size, so a
+    /// market built from the traded instrument alone would make every set
+    /// fail the moment a hedge policy was declared — and the declared hedge
+    /// is exactly the alternative R12-CAPITAL-4091 asks the twin to price.
+    /// A hedge instrument with no held bars still reaches the twin and is
+    /// refused there by name rather than silently priced unhedged.
+    fn counterfactual_bars(&self, object_id: &ObjectId) -> Result<Vec<Bar>> {
+        let mut bars = self
+            .bar_history
+            .get(object_id.as_str())
+            .cloned()
+            .ok_or_else(|| Error::not_found(format!("no bars are held for {object_id}")))?;
+        if let Some((hedge, _)) = &self.counterfactuals.menu().hedge
+            && hedge != object_id
+            && let Some(hedge_bars) = self.bar_history.get(hedge.as_str())
+        {
+            bars.extend(hedge_bars.iter().cloned());
+        }
+        Ok(bars)
+    }
+
     /// Price every alternative to one order the platform sent, or to one a
     /// control refused.
     ///
@@ -19800,10 +19877,7 @@ impl Platform {
                 )
             };
             let priced = self
-                .bar_history
-                .get(object_id.as_str())
-                .cloned()
-                .ok_or_else(|| Error::not_found(format!("no bars are held for {object_id}")))
+                .counterfactual_bars(&object_id)
                 .and_then(|bars| {
                     TwinMarket::new(
                         bars,
@@ -19958,10 +20032,7 @@ impl Platform {
                 .fill_calibration
                 .cost_model(&CostModel::liquid_equity(), path.venue.as_str());
             let priced = self
-                .bar_history
-                .get(path.object_id.as_str())
-                .cloned()
-                .ok_or_else(|| Error::not_found(format!("no bars are held for {}", path.object_id)))
+                .counterfactual_bars(&path.object_id)
                 .and_then(|bars| TwinMarket::new(bars, cost_model, COUNTERFACTUAL_IMPACT_WINDOW))
                 .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
             // Priced or refused, the path leaves the queue, as a declined

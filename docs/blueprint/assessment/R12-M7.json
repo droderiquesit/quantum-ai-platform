@@ -1027,13 +1027,13 @@
   },
   {
     "id": "R12-FABRIC-7047",
-    "status": "PARTIAL",
-    "current": "No datagram transport exists; the policy refuses an at-most-once profile on durable classes (fabricd refuses to start).",
+    "status": "COMPLETE",
+    "current": "No datagram transport exists in the fabric; the one delivery profile that would carry a datagram's guarantee (acknowledgement `none`, at-most-once) is refused at StreamPolicy::new for any class whose floor is stronger, and qip-fabricd refuses to start on a catalogue that gives a durable class that profile. The check (a durable class configured for datagram delivery is refused) is met on the broker's real start path.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1528",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_transport_and_integrity.rs:47-85 fabric_036 asserts only on locally built tuples (vacuous; would pass with the fabric deleted)"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:467 ack profile weaker than the class floor is refused",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1542 a_broker_does_not_start_on_a_catalogue_that_gives_a_durable_class_an_at_most_once_profile"
     ],
-    "gap": "Datagram transport absent; requirement is satisfied vacuously.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1043,10 +1043,10 @@
       "R12-FABRIC-7046"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-fabricd --test broker",
+    "verification": "cargo test -p qip-fabricd --test broker a_broker_does_not_start_on_a_catalogue_that_gives_a_durable_class_an_at_most_once_profile",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: disabling the `spec.ack_profile < floor` comparison in StreamPolicy::new fails the test at broker.rs:1550 (the broker started). The fabric_036 fixture test in qip-acceptance event_fabric_transport_and_integrity.rs:47-85 asserts only on locally built tuples and is not cited as evidence."
   },
   {
     "id": "R12-FABRIC-7048",

@@ -488,6 +488,13 @@ pub struct PlatformConfig {
 }
 
 /// The owner recorded against anything this deployment registers.
+///
+/// This is the process's own name, and `Platform::assess_sources` refuses to
+/// catalogue under it: a deployment that has not configured an accountable
+/// person or desk registers its sources and catalogues none of them, each
+/// recorded as a catalogue problem naming the fix (R12-DATA-2020). The
+/// default is kept so a configuration file that omits `owner` still parses;
+/// it is not kept so that it is ever written to the mesh.
 fn default_owner() -> String {
     "qip-platform".to_string()
 }
