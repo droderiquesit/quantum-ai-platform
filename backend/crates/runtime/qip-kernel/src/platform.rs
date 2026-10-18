@@ -14314,6 +14314,7 @@ impl Platform {
                 realised_move_bps: outcome.realised_move_bps,
                 realised_pnl: outcome.realised_pnl,
                 expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
+                fills: self.fills_expressing(&outcome.hypothesis_id),
             });
             episode.known_at = now;
             if let Some(lesson) = self.write_research_memory(&episode, now) {
@@ -14323,6 +14324,33 @@ impl Platform {
             remembered += 1;
         }
         Ok((remembered, lessons))
+    }
+
+    /// The venue's fills on every remembered order that expressed
+    /// `hypothesis`, so an episode says what the platform did about its claim
+    /// and not only what it claimed. Matched through the attribution
+    /// lineage's belief key, which is stamped when the order is accepted; an
+    /// order whose lineage was evicted is not found, and the episode then
+    /// records no fill rather than a guessed one.
+    fn fills_expressing(&self, hypothesis: &str) -> Vec<qip_ai::memory::EpisodeFill> {
+        use qip_learning_engine::keyed_attribution::Dimension;
+        let orders: BTreeSet<String> = self
+            .attribution_lineage
+            .keys()
+            .into_iter()
+            .filter(|(_, keys)| keys.values(Dimension::Belief).contains(&hypothesis))
+            .map(|(order, _)| order)
+            .collect();
+        self.orders()
+            .fills()
+            .into_iter()
+            .filter(|fill| orders.contains(fill.order_id.as_str()))
+            .map(|fill| qip_ai::memory::EpisodeFill {
+                order_id: fill.order_id.to_string(),
+                quantity: fill.quantity,
+                price: fill.price,
+            })
+            .collect()
     }
 
     /// Write one resolved episode into the research organisation's memory,
@@ -29768,6 +29796,7 @@ mod episodic_slot_tests {
                 realised_move_bps: 12.0,
                 realised_pnl: 250.0,
                 expected_move_bps: None,
+                fills: Vec::new(),
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,

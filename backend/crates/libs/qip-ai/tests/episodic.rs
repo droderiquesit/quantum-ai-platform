@@ -72,6 +72,7 @@ fn episode(id: &str, instrument: &str, market: &str, at: Timestamp, move_bps: f6
             realised_move_bps: move_bps,
             realised_pnl: 0.0,
             expected_move_bps: None,
+            fills: Vec::new(),
         }),
         at,
         known_at: at.saturating_add(Duration::from_days(1)),
@@ -808,6 +809,7 @@ fn graded(
         realised_move_bps: realised_bps,
         realised_pnl: 0.0,
         expected_move_bps: Some(expected_bps),
+        fills: Vec::new(),
     });
     episode
 }
