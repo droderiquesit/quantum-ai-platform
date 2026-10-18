@@ -1544,7 +1544,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:19-24 assemble step",
       "backend/crates/services/qip-lifecycle/src/evidence.rs:38,50 LeakageAudit"
     ],
-    "gap": "No structural guard that a feature row's knowable time precedes its label anchor across the tick pipeline.",
+    "gap": "The tick labelling pipeline has no production caller: qip-training microstructure::build_examples is called only from tests (the deep brain's tick desk replays decisions without labelling), so there is no default-path tick dataset to guard. build_examples sorts each instrument's observations by knowable instant before windowing, so a feature later than its label anchor is structurally unreachable there and a refusal could never fire. The bar pipeline on the default path already refuses look-ahead (qip-deepbrain learning.rs audit_features_as_of).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1557,7 +1557,7 @@
     "verification": "cargo test -p qip-training --test labels",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there."
   },
   {
     "id": "R12-TICK-2067",

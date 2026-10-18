@@ -26,6 +26,118 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// The capacity a job may be placed on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capacity {
+    /// Capacity that is not reclaimed mid-run.
+    #[default]
+    OnDemand,
+    /// Preemptible capacity, billed at a discount and reclaimed without
+    /// notice. Safe only for a job whose loss costs a rerun and nothing else.
+    Spot,
+}
+
+/// How much a late or lost job costs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobPriority {
+    /// A retraining something live is waiting on: a model past its drift
+    /// bound, a rollback candidate. Losing it mid-run leaves the stale model in
+    /// place for however long the rerun takes.
+    Critical,
+    /// Research and scheduled refreshes, which a preemption only delays.
+    #[default]
+    Standard,
+}
+
+/// Where a job queues, on what capacity, and how urgent it is.
+///
+/// Carried on every [`TrainingSpec`] so a job's placement is stated by the
+/// spec that asked for it, recorded with the job, and validated before any
+/// provider sees it, rather than chosen by whichever provider happens to run
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobScheduling {
+    /// The named queue the job's quota is charged to.
+    pub queue: String,
+    pub capacity: Capacity,
+    pub priority: JobPriority,
+}
+
+/// The queue a spec is charged to when it names none.
+pub const DEFAULT_QUEUE: &str = "research";
+
+impl Default for JobScheduling {
+    fn default() -> Self {
+        Self {
+            queue: DEFAULT_QUEUE.to_string(),
+            capacity: Capacity::OnDemand,
+            priority: JobPriority::Standard,
+        }
+    }
+}
+
+impl JobScheduling {
+    /// Refuse a placement that is unsafe or unchargeable.
+    pub fn validate(&self) -> Result<()> {
+        if self.queue.trim().is_empty() {
+            return Err(Error::invalid(
+                "a training job names the queue its quota is charged to; a job in no queue is \
+                 a job no quota can bound",
+            ));
+        }
+        if self.capacity == Capacity::Spot && self.priority == JobPriority::Critical {
+            return Err(Error::invalid(format!(
+                "a critical job in queue {} may not run on Spot capacity: a preemption mid-fit \
+                 leaves the model it replaces in service for as long as the rerun takes. Run \
+                 it on demand, or mark it standard if a delay is genuinely harmless",
+                self.queue
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// How many unfinished jobs each queue may hold at once.
+///
+/// Declared, not discovered: a provider holding quotas refuses a submit into
+/// a full queue, and a submit into a queue it holds no quota for, rather than
+/// letting the provider's own capacity error arrive after the request was
+/// sent and billed. A provider holding no quotas at all bounds nothing, and
+/// says so by being constructed without them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueQuotas(BTreeMap<String, usize>);
+
+impl QueueQuotas {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// At most `unfinished` jobs queued or running in `queue`.
+    pub fn with(mut self, queue: impl Into<String>, unfinished: usize) -> Self {
+        self.0.insert(queue.into(), unfinished);
+        self
+    }
+
+    /// Refuse a job into `queue` when `active` unfinished jobs already fill it.
+    pub fn admit(&self, queue: &str, active: usize) -> Result<()> {
+        let Some(&limit) = self.0.get(queue) else {
+            return Err(Error::denied(format!(
+                "no quota is declared for queue {queue}; a provider that bounds its queues \
+                 does not run a job in one it has no bound for"
+            )));
+        };
+        if active >= limit {
+            return Err(Error::denied(format!(
+                "queue {queue} holds {active} unfinished job(s) against a quota of {limit}; \
+                 the job is refused here rather than sent to fail on the provider's capacity"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// What to fit, on what, and how the result will be governed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrainingSpec {
@@ -48,6 +160,10 @@ pub struct TrainingSpec {
     /// The stream any stochastic part of the fit draws from. Recorded so a fit
     /// can be reproduced.
     pub seed: u64,
+    /// Queue, capacity and priority. Defaults to the research queue, on
+    /// demand, standard priority.
+    #[serde(default)]
+    pub scheduling: JobScheduling,
 }
 
 impl TrainingSpec {
@@ -69,7 +185,13 @@ impl TrainingSpec {
             horizon: Horizon::ShortTerm,
             holdout_fraction: 0.25,
             seed: 0x5EED_0000_0000_0001,
+            scheduling: JobScheduling::default(),
         }
+    }
+
+    pub fn with_scheduling(mut self, scheduling: JobScheduling) -> Self {
+        self.scheduling = scheduling;
+        self
     }
 
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
@@ -128,7 +250,7 @@ impl TrainingSpec {
                 self.holdout_fraction
             )));
         }
-        Ok(())
+        self.scheduling.validate()
     }
 }
 
@@ -241,6 +363,7 @@ pub struct LocalTrainingProvider {
     trainer: LocalTrainer,
     ids: IdGenerator,
     jobs: BTreeMap<String, LocalJob>,
+    quotas: Option<QueueQuotas>,
 }
 
 impl LocalTrainingProvider {
@@ -250,7 +373,14 @@ impl LocalTrainingProvider {
             trainer: LocalTrainer::new(),
             ids: IdGenerator::new(seed),
             jobs: BTreeMap::new(),
+            quotas: None,
         }
+    }
+
+    /// Bound each queue's unfinished jobs; a submit beyond is refused.
+    pub fn with_quotas(mut self, quotas: QueueQuotas) -> Self {
+        self.quotas = Some(quotas);
+        self
     }
 
     pub fn job_count(&self) -> usize {
@@ -288,6 +418,15 @@ impl TrainingProvider for LocalTrainingProvider {
         spec.validate()?;
         if data.arity() == 0 {
             return Err(Error::invalid("a training job needs at least one feature"));
+        }
+        if let Some(quotas) = &self.quotas {
+            let queue = spec.scheduling.queue.as_str();
+            let active = self
+                .jobs
+                .values()
+                .filter(|r| !r.job.state.is_terminal() && r.job.spec.scheduling.queue == queue)
+                .count();
+            quotas.admit(queue, active)?;
         }
         let id: JobId = self.ids.generate(at);
         let job = TrainingJob {

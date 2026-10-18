@@ -51,10 +51,27 @@ pub enum ModelClass {
     ReasonerGraph,
     /// Symbolic reasoner — causal shock propagation.
     ReasonerCausal,
+    /// A general-purpose pretrained model (a language or embedding model).
+    /// Recorded so its use is attributable; never decision-eligible, because
+    /// nothing in this registry measured it on the decision it would inform.
+    Foundation,
+    /// A learned policy that maps state to action. Decision-eligible only
+    /// with a named benchmark, since a policy that beats nothing it was
+    /// compared to has shown nothing (ADR 0006).
+    Policy,
+    /// A combination of member models. Decision-eligible only with a named
+    /// benchmark, for the same reason: an ensemble is judged against the
+    /// best of its members, or it is a more expensive member.
+    Ensemble,
+    /// A distilled student small enough for a reflex path. The one class
+    /// besides `Generic` admitted to the hot lane, and decision-eligible only
+    /// with a resource budget: a model admitted to a latency path with no
+    /// stated ceiling has no ceiling anything can hold it to.
+    Reflex,
 }
 
 impl ModelClass {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 16] = [
         Self::Generic,
         Self::SpecialistRegime,
         Self::SpecialistEventProb,
@@ -67,6 +84,10 @@ impl ModelClass {
         Self::SpecialistSupply,
         Self::ReasonerGraph,
         Self::ReasonerCausal,
+        Self::Foundation,
+        Self::Policy,
+        Self::Ensemble,
+        Self::Reflex,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -83,13 +104,41 @@ impl ModelClass {
             Self::SpecialistSupply => "specialist_supply",
             Self::ReasonerGraph => "reasoner_graph",
             Self::ReasonerCausal => "reasoner_causal",
+            Self::Foundation => "foundation",
+            Self::Policy => "policy",
+            Self::Ensemble => "ensemble",
+            Self::Reflex => "reflex",
         }
     }
 
     /// Whether this model may be used at hot/reflex latency (lane 0).
-    /// Specialist and reasoner models are too expensive for reflex paths.
+    /// Specialist, reasoner, foundation, policy and ensemble models are too
+    /// expensive for reflex paths; a reflex student is what they distil to.
     pub const fn allowed_in_hot_lane(self) -> bool {
-        matches!(self, Self::Generic)
+        matches!(self, Self::Generic | Self::Reflex)
+    }
+
+    /// What this class needs on its card before it may inform a decision,
+    /// beyond what every card needs. `Err` names the missing piece.
+    fn class_eligibility(self, card: &ModelCard) -> std::result::Result<(), String> {
+        match self {
+            Self::Foundation => Err(
+                "a foundation model is recorded for attribution and never decides: nothing \
+                 here measured it on the decision it would inform"
+                    .into(),
+            ),
+            Self::Policy | Self::Ensemble if card.benchmarks.is_empty() => Err(format!(
+                "a {} model names no benchmark it was judged against; without one there is \
+                 no evidence it beats anything",
+                self.as_str()
+            )),
+            Self::Reflex if card.resource_budget.is_none() => Err(
+                "a reflex model carries no resource budget; a model admitted to a latency path \
+                 with no stated ceiling cannot be held to one"
+                    .into(),
+            ),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -430,7 +479,7 @@ impl ModelCard {
                 self.drift_score, self.drift_threshold
             ));
         }
-        Ok(())
+        self.class.class_eligibility(self)
     }
 }
 
@@ -913,8 +962,8 @@ impl ModelRegistry {
             Ok(())
         } else {
             Err(Error::denied(format!(
-                "{} is {}, which is not allowed in hot-lane (lane 0) packages; \
-                 specialist and reasoner models are too latency-sensitive for reflex paths",
+                "{} is {}, which is not allowed in hot-lane (lane 0) packages; only generic \
+                 and reflex models are light enough for reflex paths",
                 reference,
                 card.class.as_str()
             )))
