@@ -17,7 +17,7 @@ use qip_financial::costs::LiquidityProfile;
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
-use qip_kernel::asset_class_registry::AssetClassRegistry;
+use qip_kernel::asset_class_registry::{AssetClassRegistry, LifecycleEngine};
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
@@ -168,6 +168,60 @@ fn withdrawing_a_class_makes_admit_refuse_its_instruments_and_no_other_class() -
     assert!(
         withdrawn >= 2,
         "premise: more than one class is withdrawable, got {withdrawn}"
+    );
+    Ok(())
+}
+
+/// R12-ASSET-1015: every class carries one of the three lifecycle engines,
+/// the engine matches what the class is, and a class with no record has none
+/// rather than a guessed one. Mutation: map `PrivateMarket` to
+/// `PortfolioStages` in `LifecycleEngine::for_class` — the private-class
+/// assertion below fails.
+#[test]
+fn every_asset_class_resolves_its_lifecycle_engine_and_an_unregistered_class_is_refused()
+-> Result<()> {
+    let registry = AssetClassRegistry::shipped()?;
+    let mut seen = std::collections::BTreeSet::new();
+    for class in AssetClass::ALL {
+        let engine = registry.lifecycle_of(class)?;
+        assert_eq!(registry.get(class).expect("registered").lifecycle(), engine);
+        seen.insert(engine);
+    }
+    // Premise: the three engines are all in use, or the loop proves one.
+    assert_eq!(seen.len(), 3, "{seen:?}");
+    assert_eq!(
+        registry.lifecycle_of(AssetClass::Equity)?,
+        LifecycleEngine::PortfolioStages
+    );
+    assert_eq!(
+        registry.lifecycle_of(AssetClass::PrivateMarket)?,
+        LifecycleEngine::PrivateStages
+    );
+    assert_eq!(
+        registry.lifecycle_of(AssetClass::PhysicalProduct)?,
+        LifecycleEngine::CommerceLedger
+    );
+    assert_eq!(LifecycleEngine::PortfolioStages.opens_with(), "discover");
+    assert_eq!(LifecycleEngine::PrivateStages.opens_with(), "committed");
+    // A class can be withdrawn only where no sibling is hedged into it, so
+    // take the first the registry lets go.
+    let (withdrawn, narrowed) = AssetClass::ALL
+        .into_iter()
+        .find_map(|class| {
+            AssetClassRegistry::shipped()
+                .ok()?
+                .without(class)
+                .ok()
+                .map(|r| (class, r))
+        })
+        .expect("at least one class is withdrawable");
+    let refused = narrowed
+        .lifecycle_of(withdrawn)
+        .expect_err("an unregistered class resolved an engine");
+    assert!(
+        refused.message().contains(withdrawn.as_str()),
+        "{}",
+        refused.message()
     );
     Ok(())
 }

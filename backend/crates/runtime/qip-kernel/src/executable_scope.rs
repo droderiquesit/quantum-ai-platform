@@ -64,12 +64,30 @@ pub(crate) struct Routing {
 
 impl Platform {
     /// The executable scope: the instruments the platform was assembled with.
+    ///
+    /// When [`Platform::license_jurisdictions`] has been called the scope
+    /// also carries the licence, with each instrument's governing
+    /// jurisdictions read from its regulatory constraints, so an instrument
+    /// the platform may price and size but not trade is shadow.
     pub fn executable_scope(&self) -> ExecutableScope {
-        ExecutableScope::new(
-            self.market_view()
-                .universe
-                .ids()
-                .map(|id| id.as_str().to_string()),
+        let universe = &self.market_view().universe;
+        let scope = ExecutableScope::new(universe.ids().map(|id| id.as_str().to_string()));
+        let Some(licensed) = self.licensed_jurisdictions() else {
+            return scope;
+        };
+        scope.with_jurisdictions(
+            licensed.iter().map(|j| j.as_str().to_string()),
+            universe.iter().map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    object
+                        .regulatory
+                        .jurisdictions
+                        .iter()
+                        .map(|j| j.as_str().to_string())
+                        .collect(),
+                )
+            }),
         )
     }
 

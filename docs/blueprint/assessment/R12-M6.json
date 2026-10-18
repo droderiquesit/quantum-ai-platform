@@ -72,14 +72,14 @@
   {
     "id": "R12-MODEL-6004",
     "status": "PARTIAL",
-    "current": "Declined and filled orders are priced by the twin in LEARN (shared cap); hedged and unwound opportunities are not replayed.",
+    "current": "Declined and filled orders are priced by the twin in LEARN (shared cap), and a partly filled order is scored as partial (FillScore.unfilled, 2026-10-18); hedged and unwound opportunities are not replayed.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:826 declined and filled share one cap"
     ],
-    "gap": "No counterfactual for hedged or unwound positions; partial fills are not distinguished from full fills.",
+    "gap": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged path's alternative is (the unhedged hold? the held-to-horizon position?) before a queue and a twin arm can be built. The partial-fill half is closed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -90,7 +90,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Narrowed 2026-10-18 (lane L01): partial fills distinguished in score_filled (a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left); hedged/unwound remain."
   },
   {
     "id": "R12-MODEL-6005",
@@ -194,7 +194,7 @@
       "backend/crates/runtime/qip-kernel/tests/serving.rs:649",
       "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:734 retirement terminal, re-proposal required"
     ],
-    "gap": "Strategy rollback to a last known-good version is absent.",
+    "gap": "Strategy rollback is a design decision, not an addition: the lifecycle ledger keys strategies by StrategyId and records stage moves only, so no strategy version or passing digest exists to restore (the model path restores a registered digest, which strategies do not have); and retirement is terminal by test (lifecycle.rs:734), so un-retiring one is a change to a standing decision that needs an ADR. A restore to any rung that holds capital would also have to go through AuthorisedPromotion's dual approval, never around it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -205,7 +205,7 @@
     "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: a rollback_strategy that re-admitted a retired strategy at a rung without the promotion path would weaken the one-path-to-capital property qip-evolution and the ledger are built around. Kept PARTIAL."
   },
   {
     "id": "R12-EXPAND-6010",
@@ -1111,7 +1111,7 @@
     "evidence": [
       "backend/crates/services/qip-expansion/tests/loop.rs:475 a_campaign_refuses_a_stage_out_of_order_and_one_with_no_provenance"
     ],
-    "gap": "Delegable decision D18 (design-decisions-2026-10-18.json), ADR not yet written: Define the shadow environment for a paper platform as a candidate run beside the paper book without acting. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0142 (accepted 2026-10-18): Shadow is a forward window where the candidate is scored and provably not installed; paper is a later disjoint window where it is installed and acts; ORDER becomes Historical, Simulated, Shadow, Paper. Code left: the reordered Environment::ORDER, the disjoint-window check, the two-phase fill-bias campaign with installation and withdrawal records, and a loop.rs test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1122,7 +1122,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D18; gap before it: No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D18; gap before it: No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills. ADR lane 2026-10-18: gap re-graded against ADR 0142; gap before it: Delegable decision D18 (design-decisions-2026-10-18.json), ADR not yet written: Define the shadow environment for a paper platform as a candidate run beside the paper book without acting. Needs that ADR, then the code."
   },
   {
     "id": "R12-EXPAND-6051",
@@ -1565,7 +1565,7 @@
       "backend/crates/services/qip-agency/src/autonomy.rs:87 widen",
       "backend/crates/services/qip-agency/tests/agency.rs:1153"
     ],
-    "gap": "Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0141 (accepted 2026-10-18): Agency authority is a typed schedule widen reads, with evidence, rollback and approvers per level; nothing above NarrowReversible is granted, and External and Capital stay refused by ADR 0114 D8 and ADR 0003/0021/0108. Code left: the schedule table in autonomy.rs, widen reading it, the two ungranted variants, and tests/agency.rs asserting each level refuses lesser evidence and names the record that refuses it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1576,7 +1576,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule. ADR lane 2026-10-18: gap re-graded against ADR 0141; gap before it: Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code."
   },
   {
     "id": "R12-EXPAND-6072",
