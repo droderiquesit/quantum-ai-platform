@@ -299,7 +299,7 @@ impl ExpansionDesk {
         let class_open = self.lineage.values().filter(|l| l.class == class).count();
         let kind = task_kind(class);
         let action = AcquisitionAction::for_class(class);
-        let (tool, tool_kind) = action.tool();
+        let tools = action.tools();
         let cost = declared_cost(kind);
         let criteria = criteria_for(
             &raised,
@@ -310,14 +310,14 @@ impl ExpansionDesk {
             },
         );
         let derivation = Derivation::of(&question, &raised);
-        let plan = ResearchPlan::synthesise(&question, class, self.tools.get(tool).is_some());
+        let plan = ResearchPlan::synthesise_with(&question, class, |t| self.tools.get(t).is_some());
         let candidate = Candidate {
             kind,
             item: CurriculumItem {
                 research_question: question.clone(),
                 expected_information_value: raised.signal.severity,
                 expected_economic_value: raised.signal.economic_value,
-                tools_and_data: vec![tool.to_string()],
+                tools_and_data: tools.iter().map(|(t, _)| (*t).to_string()).collect(),
                 budget: cost,
                 owner: self.config.owner.clone(),
                 evaluation_suite: "the nine criteria of promotion::Criterion, across historical, simulated, paper and shadow".to_string(),
@@ -328,11 +328,14 @@ impl ExpansionDesk {
             },
             criteria,
             origin: Some(raised),
-            needs: vec![Need::Tool {
-                name: tool.to_string(),
-                kind: tool_kind,
-                permission: ToolPermission::Read,
-            }],
+            needs: tools
+                .iter()
+                .map(|(name, kind)| Need::Tool {
+                    name: (*name).to_string(),
+                    kind: *kind,
+                    permission: ToolPermission::Read,
+                })
+                .collect(),
             jurisdiction: self.config.jurisdiction.clone(),
         };
         let bounds = Bounds {
