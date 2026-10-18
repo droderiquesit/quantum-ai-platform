@@ -80,10 +80,45 @@ fn content_hash_hex(hash: &ContentHash) -> Option<String> {
 struct ManagedSeat {
     log: Arc<dyn ManagedLog>,
     holder: String,
+    /// This instance's name without the leader epoch, which is what the
+    /// rendezvous placement is computed over.
+    instance: String,
+    placement: Option<Placement>,
     leases: Mutex<BTreeMap<(String, u32), Lease>>,
 }
 
+/// ADR 0111 Amendment 1 §2: the instances of the region and how long a
+/// partition's non-preferred instances wait after its lease has expired.
+#[derive(Debug)]
+struct Placement {
+    instances: Vec<String>,
+    grace_ms: u64,
+    /// Until this broker-clock instant a non-preferred instance only follows
+    /// a partition it holds no lease on, even when no lease row exists yet:
+    /// a vacant row has no expiry to count a grace from, and without this the
+    /// first instance up would lead everything.
+    settled_at_ns: i64,
+}
+
 impl ManagedSeat {
+    /// What this instance defers to for `(stream, partition)`: the grace it
+    /// waits after the lease has expired and the instant before which it only
+    /// follows. `None` for the rendezvous-preferred leader, and without a
+    /// placement.
+    fn deferral(&self, stream: &str, partition: u32) -> Option<(u64, i64)> {
+        let placement = self.placement.as_ref()?;
+        let names: Vec<&str> = placement.instances.iter().map(String::as_str).collect();
+        match partition::leader_for(stream, partition, &names) {
+            Ok(preferred) if preferred != self.instance => {
+                Some((placement.grace_ms, placement.settled_at_ns))
+            }
+            // The preferred leader contends at once. An error is unreachable
+            // once `with_placement` has validated the set; contending at once
+            // is then the pre-placement behaviour.
+            _ => None,
+        }
+    }
+
     fn lease(&self, stream: &str, partition: u32) -> Option<Lease> {
         self.leases
             .lock()
@@ -527,7 +562,49 @@ impl Broker {
         self.managed = Some(ManagedSeat {
             log,
             holder: format!("{instance}#{}", self.leader_epoch),
+            instance: instance.to_string(),
+            placement: None,
             leases: Mutex::new(BTreeMap::new()),
+        });
+        Ok(self)
+    }
+
+    /// Prefer rendezvous placement of managed partitions over `instances`
+    /// (ADR 0111 Amendment 1 §2, R12-FABRIC-8085): this instance contends at
+    /// once only for the partitions [`partition::leader_for`] names it for,
+    /// and for any other waits `grace_ms` after the lease has expired. The
+    /// lease still decides who holds, so a wrong or stale instance list
+    /// changes where leaders settle and never who may commit.
+    ///
+    /// Refuses a broker not seated at a managed log, a set that does not
+    /// include this instance, and an empty, blank or repeated name.
+    pub fn with_placement(mut self, instances: Vec<String>, grace_ms: u64) -> Result<Self> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("placement was asked of a broker with no managed log; seat it first")
+        })?;
+        if !instances.contains(&seat.instance) {
+            return Err(Error::invalid(format!(
+                "the placement set {instances:?} does not include this instance '{}'; an \
+                 instance outside its own set would never be preferred for anything",
+                seat.instance
+            )));
+        }
+        let names: Vec<&str> = instances.iter().map(String::as_str).collect();
+        partition::leader_for("placement", 0, &names)?;
+        let settled_at_ns = i64::try_from(grace_ms)
+            .ok()
+            .and_then(|ms| ms.checked_mul(1_000_000))
+            .and_then(|ns| self.clock.now().as_nanos().checked_add(ns))
+            .ok_or_else(|| {
+                Error::invalid(format!("a placement grace of {grace_ms} ms overflows"))
+            })?;
+        let seat = self.managed.as_mut().ok_or_else(|| {
+            Error::invalid("placement was asked of a broker with no managed log; seat it first")
+        })?;
+        seat.placement = Some(Placement {
+            instances,
+            grace_ms,
+            settled_at_ns,
         });
         Ok(self)
     }
@@ -1227,9 +1304,33 @@ impl Broker {
         for (stream, partition) in self.managed_partitions() {
             let key = (stream.clone(), partition);
             let reference = PartitionRef::new(stream.clone(), partition);
+            let deferral = seat.deferral(&stream, partition);
+            if let Some((_, settled_at_ns)) = deferral
+                && self.clock.now().as_nanos() < settled_at_ns
+                && seat.lease(&stream, partition).is_none()
+            {
+                // Settling: the preferred instance has had no time yet to
+                // take what is vacant, so this one follows and leaves it.
+                match self.follow_partition(seat, &stream, partition) {
+                    Ok(()) => {
+                        report
+                            .following
+                            .insert(key, "(deferring to the preferred leader)".to_string());
+                    }
+                    Err(error) => {
+                        report.failed.insert(key, error.to_string());
+                    }
+                }
+                continue;
+            }
             let outcome = seat
                 .log
-                .acquire(&reference, &seat.holder, ttl_ms)
+                .acquire_after_expiry(
+                    &reference,
+                    &seat.holder,
+                    ttl_ms,
+                    deferral.map_or(0, |(grace_ms, _)| grace_ms),
+                )
                 .and_then(|outcome| {
                     let state = self.partition_state(&stream, partition)?;
                     let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
@@ -1264,6 +1365,17 @@ impl Broker {
         Ok(report)
     }
 
+    /// Follow `(stream, partition)`'s committed log into this instance's own
+    /// without asking the database for a lease.
+    fn follow_partition(&self, seat: &ManagedSeat, stream: &str, partition: u32) -> Result<()> {
+        let state = self.partition_state(stream, partition)?;
+        let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
+        // Not leading: a later promotion must catch up afresh.
+        cursor.caught_up_epoch = None;
+        self.catch_up(seat, stream, partition, &state, &mut cursor)?;
+        Ok(())
+    }
+
     /// One pass of a draining instance: follow every managed partition's
     /// committed log into this instance's own, without asking the database
     /// for a lease.
@@ -1287,14 +1399,9 @@ impl Broker {
         let mut report = LeaseReport::default();
         for (stream, partition) in self.managed_partitions() {
             let key = (stream.clone(), partition);
-            let outcome = self.partition_state(&stream, partition).and_then(|state| {
-                let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
-                // Not leading: a later promotion must catch up afresh.
-                cursor.caught_up_epoch = None;
-                self.catch_up(seat, &stream, partition, &state, &mut cursor)
-            });
+            let outcome = self.follow_partition(seat, &stream, partition);
             match outcome {
-                Ok(_) => {
+                Ok(()) => {
                     report
                         .following
                         .insert(key, "(not read while draining)".to_string());
