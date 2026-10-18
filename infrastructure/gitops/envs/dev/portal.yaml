@@ -144,6 +144,13 @@ spec:
       # ingress, so this address answers nobody from the internet.
       - name: QIP_API_BASE_URL
         value: https://qip-dev-api-101249892564.us-east4.run.app
+      # The audience the identity token is minted for: the API's own URL and
+      # nothing else, which is the value above. Left unset the console sends
+      # no Google identity token at all and Cloud Run's front end answers
+      # every gateway call 403, a fault that reads as a missing invoker grant
+      # (ADR 0094, ADR 0112). It is a URL, not a secret.
+      - name: QIP_API_AUDIENCE
+        value: https://qip-dev-api-101249892564.us-east4.run.app
       # The `viewer` credential the gateway proxies with, as a path. Viewer is
       # the whole entitlement: POST /api/v1/cycle is analyst and both
       # directions of the kill switch are operator, so a console compromise
