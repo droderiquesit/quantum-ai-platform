@@ -957,7 +957,7 @@
       "backend/crates/services/qip-world-model/src/federation.rs:91 WorldModelSpec",
       "backend/crates/services/qip-world-model/src/spawning.rs:15 WorldModelBranch"
     ],
-    "gap": "Incremental-value benchmark and spawn path.",
+    "gap": "BranchSpawner (WorldModelSpawner) still has no caller. Spawning needs a residual the lattice can state per instrument, a branch lifecycle in lattice_stage scorecards that scores a branch against its parent, and a bound on live branches; federation_stage now opens competing branches of its own (R12-WORLD-3041) but those are federation members, not spawned WorldModelBranch values.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -968,7 +968,7 @@
     "verification": "cargo test (crate producing WorldModelSpec / WorldModelBranch)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-EXPAND-6044",
@@ -1641,7 +1641,7 @@
       "backend/crates/runtime/qip-kernel/tests/models.rs:386",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:2605"
     ],
-    "gap": "Calibration-under-stress gate.",
+    "gap": "require_calibrated_baseline (central/models.rs) still checks one calibration on the baseline's card. The scoreboard slice the closure names is not at learning.rs:2605 any more, and the training datasets carry no regime label, so 'the stressed-regime slice' has no definition to calibrate on; closing it needs that definition (for example the worst-decile targets or the regime_context label), a stress calibration recorded on the card by register_fit, and a decision that a baseline without one is refused - a policy change that would refuse every baseline registered today.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1652,7 +1652,7 @@
     "verification": "cargo test -p qip-kernel --test models",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-REFLEX-6075",
@@ -2663,7 +2663,7 @@
       "libs/qip-compliance/tests/eligibility.rs::deployment_and_enablement_are_refused_naming_every_subject_without_a_record",
       "backend/crates/runtime/qip-kernel/src/platform.rs:6230"
     ],
-    "gap": "Call admit_deployment at strategy promotion and admit_enablement wherever a venue or instrument becomes executable, from a composition root, with an integration test proving refusal.",
+    "gap": "EligibilityRegister::admit_deployment and admit_enablement exist and are exercised by qip-compliance tests and loaded only by qip-cli's agency policy. Neither is called from the kernel promotion seams (central/learning.rs promote_strategies_with_evidence, central/factory.rs promote) or CellConfig::with_venue, and no committed eligibility records exist for a composition root to load: a fail-closed gate would refuse every promotion until an operator commits records, which is a regulatory input this lane does not hold. Wiring it optional (no register, no gate) would be a gate that runs nowhere by default.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2676,7 +2676,7 @@
     "verification": "cargo test -p qip-kernel (new)",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The gate is library-only; grep finds no non-test caller of admit_deployment/admit_enablement."
+    "notes": "Round-2 independent audit, 2026-10-11: The gate is library-only; grep finds no non-test caller of admit_deployment/admit_enablement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-GOV-6119",
