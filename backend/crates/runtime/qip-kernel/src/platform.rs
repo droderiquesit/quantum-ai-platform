@@ -183,7 +183,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
-use qip_risk::limits::{LimitSet, RiskState};
+use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
@@ -18398,13 +18398,40 @@ impl Platform {
                 SETTLEMENT_CURRENCY,
             ) {
                 Ok(review) => {
-                    let required = review.maintenance_required - review.unobserved_maintenance();
-                    state.margin_utilisation = Some(if !required.is_positive() {
-                        0.0
-                    } else if review.cover_observed.is_positive() {
-                        required.to_f64() / review.cover_observed.to_f64()
-                    } else {
-                        f64::INFINITY
+                    // Each observed venue is its own isolated domain with
+                    // rehypothecation forbidden, so the figure is the worst
+                    // single venue: pooling cover let a surplus at one prime
+                    // hide a call at another. The same per-venue cover and
+                    // debit go to the limit as a basis, so it can charge the
+                    // order under check; this figure is the book as it stands.
+                    let model = MarginModel::default();
+                    let mut venues = BTreeMap::new();
+                    let mut worst = 0.0_f64;
+                    for coverage in &review.coverage {
+                        worst = worst.max(coverage.utilisation());
+                        // The coverage carries maintenance whole; the debit is
+                        // what is left once the rated gross is taken out, the
+                        // inverse of `cross_margin::requirement`.
+                        let gross = figures
+                            .axis_exposures()
+                            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+                            .and_then(|axis| axis.get(coverage.venue.as_str()))
+                            .copied()
+                            .filter(|gross| gross.is_positive())
+                            .unwrap_or(Decimal::ZERO);
+                        let debit = coverage.maintenance - gross * model.maintenance_rate;
+                        venues.insert(
+                            coverage.venue.as_str().to_string(),
+                            VenueMargin {
+                                cover: coverage.effective(),
+                                debit,
+                            },
+                        );
+                    }
+                    state.margin_utilisation = Some(worst);
+                    state.margin_basis = Some(MarginBasis {
+                        maintenance_rate: model.maintenance_rate,
+                        venues,
                     });
                 }
                 Err(error) => {
