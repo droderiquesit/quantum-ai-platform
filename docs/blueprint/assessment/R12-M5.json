@@ -861,15 +861,17 @@
   {
     "id": "R12-REFLEX-5038",
     "status": "PARTIAL",
-    "current": "Books: qip-orderbook VenueState (L2/L3); funding/borrow: backend/crates/edge/qip-edge/src/funding.rs; venue health: qip_routing::health::HealthTracker (backend/crates/edge/qip-routing/src/health.rs:325) armed in backend/crates/apps/qip-edge-node/src/lib.rs:167; reservations: RegionAllocation (backend/crates/edge/qip-edge/src/reservation.rs:121); inventory targets from policy.",
+    "current": "Books: qip-orderbook VenueState (L2/L3); funding/borrow: backend/crates/edge/qip-edge/src/funding.rs, held on the Cell (Cell::set_funding_rate, Cell::set_borrow_availability) and read by nothing; venue health: qip_routing::health::HealthTracker armed in qip-edge-node; reservations: RegionAllocation; inventory measured from confirmed fills: Cell::confirm writes the venue-facing positions map and each contributor's strategy_positions from every venue-reported fill, and Cell::position reads it.",
     "evidence": [
       "backend/crates/edge/qip-orderbook/src/venue.rs",
       "backend/crates/edge/qip-edge/src/funding.rs",
+      "backend/crates/edge/qip-edge/src/cell.rs:6537 confirm adds each fill's signed quantity to positions, and to strategy_positions per contributor share",
+      "backend/crates/edge/qip-edge/tests/fills.rs:254 an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one asserts position() moves only on the reported fill",
       "backend/crates/apps/qip-edge-node/src/lib.rs:167 with_venue_health",
       "backend/crates/edge/qip-edge/src/reservation.rs:370 reserve",
       "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs:262"
     ],
-    "gap": "Funding/borrow state has no feed in the deployed node; inventory is target-only (no measured inventory from settled fills).",
+    "gap": "Funding and borrow have no producer and no consumer: nothing in qip-edge-node (feed.rs SimulatedFeed or any decoder) calls Cell::set_funding_rate or set_borrow_availability, and no gate in qip-edge reads FundingState, so a sale needing borrow the venue says is unavailable is not refused on it. The inventory half of the old gap was wrong: positions are measured from confirmed fills.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -880,7 +882,7 @@
     "verification": "cargo test -p qip-edge --test reservation; cargo test -p qip-edge-node --test feed_recovery",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here."
   },
   {
     "id": "R12-REFLEX-5039",
@@ -1006,7 +1008,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:9053",
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:1"
     ],
-    "gap": "Expected-edge-after-costs check applies to arbitrage cycles; compiled-strategy intents are not gated on net edge after costs (only fixed cost fraction, cell.rs:7251).",
+    "gap": "Compiled-strategy intents carry no expected edge to gate: qip_contracts::signal::Signal holds strategy, instrument, kind, conviction, desired quantity, validity and inputs (signal.rs:130-143) and Intent likewise, so a GATE_NET_EDGE on them would compare costs to a number nobody computed. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (a contract change across qip-contracts, qip-strategy and every Signal constructor), then the cell's cost model subtracted from it before an order exists. The fixed cost fraction (cell.rs, feasibility::fixed_cost_fraction) is applied only inside cycle admission.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1017,7 +1019,7 @@
     "verification": "cargo test -p qip-edge --test feasibility",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The triage closure (add GATE_NET_EDGE in the feasibility gate) cannot be met without inventing the edge; feasibility.rs's module doc (the paragraph on directional intents) states the same refusal. The old gap's 'only fixed cost fraction' for compiled strategies was also wrong: that fraction is charged to cycle legs only."
   },
   {
     "id": "R12-EXEC-5045",
@@ -1577,13 +1579,17 @@
   {
     "id": "R12-MESH-5069",
     "status": "PARTIAL",
-    "current": "Latency deduction (netedge.rs:20-24) and residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (peer.rs:167-192). Coordination latency between regions is not an input.",
+    "current": "Latency deduction (netedge.rs latency_deduction) is now priced over the round trip plus EdgeAssumptions::coordination_latency, the cross-region wait for a peer region to agree the epoch, and its basis names both; residual exposure budget in LegPlanner (plan.rs); epoch unwind_loss per leg and max_recovery_loss (qip-mesh peer.rs). The only production construction of EdgeAssumptions, qip-edge-node's desk_from_whitelist_with, uses the default, whose coordination latency is zero: the node's desk trades cycles inside its own cell.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:20",
       "backend/crates/edge/qip-arbitrage/src/plan.rs",
-      "backend/crates/services/qip-mesh/src/peer.rs:426"
+      "backend/crates/services/qip-mesh/src/peer.rs:426",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:116 EdgeAssumptions::coordination_latency",
+      "backend/crates/edge/qip-arbitrage/src/netedge.rs:410 latency priced over round trip + coordination",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs:447 raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:317 EdgeAssumptions::default() (zero coordination)"
     ],
-    "gap": "Cross-region coordination latency as a priced input.",
+    "gap": "Coordination latency is a priced input and proven to refuse a cycle, but nothing sets it: no cross-region cycle is assembled anywhere, and the edge-node desk prices its own-cell cycles with zero. Closing needs the cross-region cycle builder (or the whitelist cycle entry in qip-contracts policy.rs, lane L11's territory) to carry the measured peer round trip from qip-mesh into EdgeAssumptions::coordination_latency.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1591,10 +1597,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-arbitrage --test edge_costs raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Lane L24 2026-10-18: coordination latency added to the net-edge calculator (serde default zero for records written before it). Mutation: pricing the latency deduction over the round trip alone fails the test at the first step (50 ms did not lower the net edge). Kept PARTIAL: no running path supplies a non-zero value."
   },
   {
     "id": "R12-MESH-5070",
@@ -1622,13 +1628,15 @@
   {
     "id": "R12-EXEC-5071",
     "status": "PARTIAL",
-    "current": "VenueAdapter trait (backend/crates/services/qip-brokers/src/adapter.rs:353-400: connect, authenticate, heartbeat, market_data, submit_order, cancel_order, requirements) with NativeExtension (:312); implemented by simulated exchange and DEX simulator only.",
+    "current": "VenueAdapter (backend/crates/services/qip-brokers/src/adapter.rs:353) with NativeExtension and the submit_native door (native_extensions :495, submit_native_order :505) is implemented by two adapters: SimulatedExchange (exchange.rs:1042), which declares and carries its native post-only order (exchange.rs:1161-1191), and RestOrderEntryAdapter (rest.rs:1275), which declares none. There is no DEX simulator adapter: qip-brokers/src/dex.rs holds DexVenue, a feasibility and cost model, not a VenueAdapter.",
     "evidence": [
       "backend/crates/services/qip-brokers/src/adapter.rs:353 VenueAdapter",
-      "backend/crates/services/qip-brokers/src/exchange.rs",
-      "backend/crates/services/qip-brokers/src/dex.rs"
+      "backend/crates/services/qip-brokers/src/adapter.rs:495-515 native_extensions / submit_native_order defaults",
+      "backend/crates/services/qip-brokers/src/exchange.rs:1161-1191 post-only native extension",
+      "backend/crates/services/qip-brokers/src/rest.rs:1275 RestOrderEntryAdapter declares no extension",
+      "backend/crates/services/qip-brokers/src/dex.rs:76 DexVenue is a cost model"
     ],
-    "gap": "Real venue adapters (blocked for live order entry); capability descriptors per venue.",
+    "gap": "The clause is 'each adapter exposes its native extension'. RestOrderEntryAdapter exposes none, so either it declares and carries one native instruction its wire protocol supports (with a test whose mutation removing the declaration fails), or the row records that a generic REST adapter has no native feature to keep. A DEX venue adapter does not exist to extend; the triage closure assumed one. Real venue adapters remain refused by ADR 0003/0021.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1639,7 +1647,7 @@
     "verification": "cargo test -p qip-brokers",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: triage closure (DexSimulator native extension) not applicable — no such type. Not changed in code: RestOrderEntryAdapter is on the order path the order_placement_paths acceptance suite pins, which is beyond an S row."
   },
   {
     "id": "R12-EXEC-5072",

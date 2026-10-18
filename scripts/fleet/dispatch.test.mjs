@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_TASKS, dispatch, planDispatch, settingsFrom } from "./dispatch.mjs";
+import { MAX_TASKS, dispatch, goalFromInput, planDispatch, settingsFrom } from "./dispatch.mjs";
 
 const ARGV = [
   "--packets", "/packets",
@@ -276,4 +276,81 @@ test("a refused dispatch runs nothing even under --execute, and says so", async 
   // A command line that is itself refused does not even ask for a token.
   const bad = await dispatch({ argv: ["--run", "a,b=c"], exec: () => assert.fail("gcloud was run"), say: () => {}, log: () => {} });
   assert.equal(bad, 1);
+});
+
+const GAP_ROW = {
+  id: "R12-MESH-1190",
+  status: "PARTIAL",
+  current: "Peer mesh spawned only when env vars are set.",
+  gap: "Default-on peer link with measured latency recorded.",
+  evidence: ["backend/crates/services/qip-mesh/src/peer.rs:88 Lane", "docs/blueprint/lanes/README.md:3-9", "backend/crates/edge/qip-peer-link/src/host.rs:12"],
+  verification: "cargo test -p qip-mesh",
+};
+const FINDING = { kind: "aiops", series: "qip_central_cell_halts_total", window_start: "2026-10-18T01:00:00Z", window_end: "2026-10-18T02:00:00Z", score: 11.5 };
+
+test("an assessment gap row becomes a findings-only scout packet the dispatcher itself admits, carrying the row's verification command", () => {
+  const goal = goalFromInput({ kind: "assessment-gap", row: GAP_ROW });
+  assert.equal(goal.problems, undefined, "premise: the row yields a goal");
+  assert.equal(goal.packet.packet_id, "gap-r12-mesh-1190");
+  assert.equal(goal.packet.role, "scout");
+  assert.deepEqual(goal.packet.paths, []);
+  assert.deepEqual(goal.acceptanceCommands, ["cargo test -p qip-mesh"]);
+  assert.ok(goal.packet.task.includes(GAP_ROW.gap), goal.packet.task);
+  assert.ok(goal.packet.acceptance.includes("cargo test -p qip-mesh"), goal.packet.acceptance);
+  // Evidence under reserved source is named and withheld; the rest is sent, stripped to a path.
+  assert.deepEqual(goal.packet.source_paths, ["backend/crates/services/qip-mesh/src/peer.rs", "docs/blueprint/lanes/README.md"]);
+  assert.ok(goal.packet.context.includes("backend/crates/edge/qip-peer-link/src/host.rs"), goal.packet.context);
+  const plan = planDispatch({ settings, packets: [{ file: "/packets/goal.json", packet: goal.packet }], halted: false, runHasPackets: false, dayTotalMicro: 0 });
+  assert.deepEqual(plan.problems, []);
+});
+
+test("an aiops finding becomes a goal that names the series, its window and the commands that check the answer", () => {
+  const goal = goalFromInput(FINDING);
+  assert.equal(goal.problems, undefined, "premise: the finding yields a goal");
+  assert.equal(goal.packet.packet_id, "aiops-qip-central-cell-halts-total");
+  for (const needle of [FINDING.series, FINDING.window_start, FINDING.window_end, "11.5"]) {
+    assert.ok(goal.packet.task.includes(needle), `${needle} missing from ${goal.packet.task}`);
+  }
+  assert.deepEqual(goal.acceptanceCommands, [`grep -rn '${FINDING.series}' backend/crates --include=*.rs`, `git log --oneline -S '${FINDING.series}'`]);
+});
+
+test("an input with no gap source, a finished row or an unknown kind yields no packet and says why", () => {
+  const refused = [
+    [{ kind: "assessment-gap", row: { ...GAP_ROW, gap: "" } }, "non-empty gap"],
+    [{ kind: "assessment-gap", row: { ...GAP_ROW, status: "COMPLETE" } }, "COMPLETE"],
+    [{ kind: "aiops", series: "x" }, "window_start"],
+    [{ kind: "page" }, "'page' is not one of"],
+    [[], "not a JSON object"],
+  ];
+  for (const [input, expected] of refused) {
+    const goal = goalFromInput(input);
+    assert.equal(goal.packet, undefined, `a packet was built for ${expected}`);
+    assert.ok(goal.problems.some((problem) => problem.includes(expected)), `${expected} not in ${goal.problems}`);
+  }
+});
+
+test("the goal subcommand prints the packet for a trigger file and starts nothing, and refuses a file that yields none", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goal-"));
+  try {
+    const run = async (name, body) => {
+      const file = join(directory, name);
+      writeFileSync(file, JSON.stringify(body));
+      const said = [];
+      const refused = [];
+      const code = await dispatch({ argv: ["goal", "--from", file], exec: () => assert.fail("a command ran"), say: (line) => said.push(line), log: (line) => refused.push(line) });
+      return { code, said, refused };
+    };
+    const made = await run("gap.json", { kind: "assessment-gap", row: GAP_ROW });
+    assert.equal(made.code, 0, made.refused.join("\n"));
+    assert.equal(JSON.parse(made.said[0]).packet_id, "gap-r12-mesh-1190");
+    assert.deepEqual(made.said.slice(1), ["# acceptance: cargo test -p qip-mesh"]);
+    const none = await run("done.json", { kind: "assessment-gap", row: { ...GAP_ROW, status: "COMPLETE" } });
+    assert.equal(none.code, 1);
+    assert.deepEqual(none.said, [], "a packet was printed for a finished row");
+    assert.ok(none.refused[0].includes("COMPLETE"), none.refused.join("\n"));
+    const missing = await dispatch({ argv: ["goal"], exec: () => assert.fail("a command ran"), say: () => {}, log: () => {} });
+    assert.equal(missing, 1);
+  } finally {
+    rmSync(directory, { recursive: true });
+  }
 });

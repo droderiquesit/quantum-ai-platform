@@ -357,3 +357,64 @@ fn a_bid_below_the_value_floor_is_declined_with_budget_to_spare() {
     );
     assert!(round.grants.is_empty());
 }
+
+/// R12-AMBIENT-9034: an agent's compute budget is a bound, not advice. The
+/// agent bidding as `execution` may be charged three units; its first bid
+/// wants five and gets three, and its second bid — a different question,
+/// so not redundant, worth less per unit than the first bid's third — is
+/// declined `OverAgentBudget`, while another agent's bid in the same round
+/// is unaffected. The failure prevented: one
+/// well-reputed agent outbids every other for the whole round, because the
+/// per-resource budget bounds the platform and nothing bounded the agent.
+///
+/// Mutation: in `allocate_within`, delete the agent-budget check, and the
+/// first bid is granted five units and the second is granted too.
+#[test]
+fn an_agent_bid_over_its_compute_budget_is_refused() {
+    let hungry = bid("hungry", 9_000, 1, 5);
+    let late = bid("late", 1_000, 1, 5);
+    let mut other = bid("other", 9_000, 1, 2);
+    other.reputation = key("macro");
+    let bids = [hungry, late, other];
+
+    let unbounded = market().allocate(&bids, &cpu(100), now()).unwrap();
+    let units = |round: &qip_expansion::meta::AllocationRound, id: &str| {
+        round
+            .grant(id)
+            .and_then(|g| g.charged.get(&ComputeResourceType::Cpu).copied())
+    };
+    assert!(
+        units(&unbounded, "hungry") > Some(Decimal::from_int(3)),
+        "premise: unbounded, the agent takes more than its budget: {unbounded:?}"
+    );
+
+    let agents = BTreeMap::from([(key("execution"), Decimal::from_int(3))]);
+    let round = market()
+        .allocate_within(&bids, &cpu(100), &agents, now())
+        .unwrap();
+    assert_eq!(
+        units(&round, "hungry"),
+        Some(Decimal::from_int(3)),
+        "{round:?}"
+    );
+    assert_eq!(units(&round, "late"), None, "{round:?}");
+    assert!(
+        round
+            .declined
+            .contains(&("late".to_string(), Decline::OverAgentBudget)),
+        "the bid past the budget is declined by name: {round:?}"
+    );
+    assert_eq!(
+        units(&round, "other"),
+        Some(Decimal::from_int(2)),
+        "{round:?}"
+    );
+
+    let negative = BTreeMap::from([(key("execution"), Decimal::from_int(-1))]);
+    assert!(
+        market()
+            .allocate_within(&bids, &cpu(100), &negative, now())
+            .is_err(),
+        "a negative agent budget is refused, not read as zero"
+    );
+}
