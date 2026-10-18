@@ -117,12 +117,14 @@
   {
     "id": "R12-MODEL-4006",
     "status": "PARTIAL",
-    "current": "Deep brain fits a linear baseline and a boosted-stump challenger each round and registers the challenger only where its precedent in the current regime beats the baseline (regime-conditioned class selection). No ensemble produces calibrated uncertainty.",
+    "current": "The deep brain still fits a linear baseline and a boosted-stump challenger each round and registers the challenger only where its precedent in the current regime beats the baseline (choose_class). Every card it registers now also records a split-conformal prediction interval: qip_training::ConformalInterval::calibrate takes the ceil((n+1)(1-alpha))-th smallest absolute error of the chosen teacher on the holdout tail the fit never saw, alpha 0.1, and the card carries conformal_alpha, conformal_half_width and conformal_calibration_rows (or a stated limitation when the holdout is too small for the coverage). No ensemble combines the two classes.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:254 choose_class by regime scoreboard",
-      "backend/crates/services/qip-training/src/local.rs boosted stumps teacher"
+      "backend/crates/services/qip-training/src/conformal.rs ConformalInterval::calibrate",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs the ConformalInterval block after registration, choose_class",
+      "backend/crates/services/qip-training/tests/training.rs a_conformal_interval_covers_the_requested_share_of_fresh_outcomes",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_registered_card_records_a_calibrated_prediction_interval"
     ],
-    "gap": "No ensemble output with calibrated uncertainty; selection is between two classes, not ensemble members.",
+    "gap": "Calibrated uncertainty is recorded; the ensemble is not built. Selection is still between two classes, and the interval is for the one registered teacher, not for a blend of ridge and stump members whose weights follow the regime. Exchangeability of the holdout and new rows is assumed, so under a regime change realised coverage falls below 0.9.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -130,10 +132,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "integration test of an ensemble's interval calibration by regime",
+    "verification": "cargo test -p qip-training --test training conformal && cargo test -p qip-deepbrain --lib a_registered_card_records_a_calibrated",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the median error instead of the ceil((n+1)(1-alpha))-th gives about half coverage (coverage test fails); the largest error gives an interval several times the noise (same test fails on width); removing the rank-past-the-end refusal panics on a 30-row calibration for 99% (refusal test fails); replacing the calibrate call in the desk leaves the card with no half-width. qip-training and qip-deepbrain suites report no failures, clippy -D warnings clean. Kept PARTIAL: the ensemble and regime-weighted member selection the clause names are not built."
   },
   {
     "id": "R12-MODEL-4007",

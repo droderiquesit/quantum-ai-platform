@@ -135,6 +135,7 @@
 
 pub mod cadence;
 pub mod campaign;
+pub mod conformal;
 pub mod dataset;
 pub mod distill;
 pub mod estimators;
@@ -146,6 +147,7 @@ pub mod serve;
 pub mod vertex;
 
 pub use cadence::{AuthorisedUpdate, TrainingCadence, UpdatePayload, UpdateScope};
+pub use conformal::ConformalInterval;
 pub use dataset::TrainingDataset;
 pub use distill::{Distillation, FidelityPolicy, FidelityReport, StudentForm, distil};
 pub use job::{

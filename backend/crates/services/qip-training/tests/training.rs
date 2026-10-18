@@ -1779,3 +1779,75 @@ fn a_student_over_its_memory_or_failure_mode_budget_is_refused_by_name() -> Resu
     );
     Ok(())
 }
+
+// --- R12-MODEL-4006: a predictive interval with a coverage guarantee ---------
+
+/// A fitted linear teacher's conformal interval, calibrated on one noisy draw,
+/// covers about nine in ten realised values on a fresh draw from the same
+/// process, and is not the trivial interval that covers everything.
+///
+/// Mutation: take the median calibration error instead of the
+/// `⌈(n+1)(1−α)⌉`-th in `ConformalInterval::calibrate` — coverage falls to
+/// about one half and the lower-bound assertion fails. Mutation: take the
+/// largest error — the interval is far wider than the noise and the width
+/// assertion fails.
+#[test]
+fn a_conformal_interval_covers_the_requested_share_of_fresh_outcomes() -> Result<()> {
+    use qip_training::ConformalInterval;
+    let sigma = 0.3;
+    let training = linear_dataset("train", 400, 0.1, &[1.5, -0.75], sigma, 301)?;
+    let teacher = fit(ModelFamily::Linear { ridge: 0.0 }, &training)?;
+    let calibration = linear_dataset("calibration", 500, 0.1, &[1.5, -0.75], sigma, 302)?;
+    let fresh = linear_dataset("fresh", 4_000, 0.1, &[1.5, -0.75], sigma, 303)?;
+
+    let interval = ConformalInterval::calibrate(&teacher, &calibration, 0.1)?;
+    assert_eq!(interval.calibration_rows(), 500);
+    let predictions = teacher.predict_all(&fresh)?;
+    let covered = predictions
+        .iter()
+        .zip(fresh.targets())
+        .filter(|(prediction, target)| {
+            let (low, high) = interval.around(**prediction);
+            low <= **target && **target <= high
+        })
+        .count();
+    let coverage = covered as f64 / fresh.len() as f64;
+    assert!(
+        coverage >= 0.87,
+        "a 90% interval covered {coverage:.3} of fresh outcomes"
+    );
+    // Noise of sigma gives a 90% two-sided half-width near 1.645 sigma; an
+    // interval several times that is covering by being useless.
+    assert!(
+        interval.half_width() < 2.2 * sigma,
+        "the interval is {} wide either side for noise of {sigma}",
+        interval.half_width()
+    );
+    assert!(interval.half_width() > 1.2 * sigma);
+    Ok(())
+}
+
+#[test]
+fn a_conformal_interval_is_refused_for_an_alpha_out_of_range_or_too_few_calibration_rows()
+-> Result<()> {
+    use qip_training::ConformalInterval;
+    let training = linear_dataset("train", 200, 0.0, &[1.0, 0.0], 0.1, 311)?;
+    let teacher = fit(ModelFamily::Linear { ridge: 0.0 }, &training)?;
+    let calibration = linear_dataset("calibration", 30, 0.0, &[1.0, 0.0], 0.1, 312)?;
+    assert!(
+        ConformalInterval::calibrate(&teacher, &calibration, 0.1).is_ok(),
+        "premise: 30 rows support a 90% interval (rank 28)"
+    );
+    for alpha in [0.0, 1.0, -0.1, 1.5, f64::NAN] {
+        assert!(ConformalInterval::calibrate(&teacher, &calibration, alpha).is_err());
+    }
+    // 30 rows cannot support 99%: ceil(31 * 0.99) = 31 > 30.
+    let refusal = ConformalInterval::calibrate(&teacher, &calibration, 0.01)
+        .expect_err("30 rows cannot bound a 99% interval");
+    assert!(
+        refusal.message().contains("unbounded"),
+        "{}",
+        refusal.message()
+    );
+    Ok(())
+}
