@@ -209,6 +209,7 @@ dependencies = [
  "qip-events",
  "qip-execution-engine",
  "qip-financial",
+ "qip-investment-agents",
  "qip-kernel",
  "qip-lifecycle",
  "qip-market",
