@@ -54,8 +54,9 @@ use crate::causal::SimulationResult;
 use crate::engine::{Learning, LearningOutcome, Outcome, Report};
 use crate::estimate::EstimatorKind;
 use crate::guard::Voice;
-use crate::memory::ActionOutcome;
+use crate::memory::{ActionOutcome, FailureEpisode};
 use qip_contracts::action::{ExecutionRecord, GoalApproval, Method, PlanApproval, ToolAudit};
+use qip_contracts::action_intent::ActionIntent;
 use qip_core::lineage::Lineage;
 use qip_core::{CorrelationId, Decimal, Error, EventId, Timestamp};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
@@ -134,6 +135,15 @@ pub enum AgencyRecord {
         pass: u64,
         voice: Voice,
     },
+    /// The §27 intent of one step the guard cleared, shadowed or sent
+    /// (R12-CONTRACT-7082): the record another brain or an auditor reads
+    /// to know what was intended, through which channel, on whose
+    /// authority. Decoded strictly, so an edited payload on the journal is
+    /// refused when it is read back.
+    IntentRecorded {
+        pass: u64,
+        intent: ActionIntent,
+    },
     /// The observe-effect, attribute and update stages ran on this outcome.
     Learned {
         pass: u64,
@@ -149,6 +159,10 @@ pub enum AgencyRecord {
         predicted_side_effects: Vec<String>,
         authority_before: Authority,
         authority_after: Authority,
+        /// The failure episode the drift filed, with its stop and roll-back
+        /// (R12-RES-7111). Absent on a record written before episodes were.
+        #[serde(default)]
+        failure: Option<Box<FailureEpisode>>,
     },
     /// Nothing was learned from this pass, and why.
     LearningWithheld {
@@ -183,6 +197,7 @@ impl AgencyRecord {
             | Self::Executed { pass, .. }
             | Self::ToolDecision { pass, .. }
             | Self::VoiceReleased { pass, .. }
+            | Self::IntentRecorded { pass, .. }
             | Self::Learned { pass, .. }
             | Self::LearningWithheld { pass, .. }
             | Self::PassConcluded { pass, .. } => *pass,
@@ -199,6 +214,7 @@ impl AgencyRecord {
             Self::Executed { .. } => "executed",
             Self::ToolDecision { .. } => "tool",
             Self::VoiceReleased { .. } => "voice",
+            Self::IntentRecorded { .. } => "intent",
             Self::Learned { .. } => "learned",
             Self::LearningWithheld { .. } => "learning-withheld",
             Self::PassConcluded { .. } => "concluded",
@@ -393,6 +409,15 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
             )?;
         }
     }
+    for intent in &report.intents {
+        w.write(
+            AgencyRecord::IntentRecorded {
+                pass,
+                intent: intent.clone(),
+            },
+            intent.created_at,
+        )?;
+    }
     for decision in report.audit.iter().skip(audit_from) {
         w.write(
             AgencyRecord::ToolDecision {
@@ -423,6 +448,7 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
                 predicted_side_effects: learned.predicted_side_effects.iter().cloned().collect(),
                 authority_before: learned.before,
                 authority_after: learned.after,
+                failure: learned.failure.clone().map(Box::new),
             },
             at,
         )?,
@@ -543,6 +569,8 @@ pub struct PassLineage {
     pub execution: Option<ExecutionRecord>,
     pub tool_decisions: Vec<ToolAudit>,
     pub released: Vec<Voice>,
+    /// The §27 intents of the pass's cleared steps (R12-CONTRACT-7082).
+    pub intents: Vec<ActionIntent>,
     pub attribution: Option<EffectAttribution>,
     /// The concluded outcome label, once the pass concluded.
     pub outcome: Option<String>,
@@ -591,6 +619,16 @@ impl PassLineage {
         if self.execution.is_none() && !self.released.is_empty() {
             return broken("a released voice: a message went out with no execution record");
         }
+        if let Some(intent) = self.intents.iter().find(|intent| {
+            self.plan_approval
+                .as_ref()
+                .is_none_or(|plan| !intent.audit_lineage.contains(&plan.id))
+        }) {
+            return broken(&format!(
+                "intent `{}`: it cites no plan approval this pass made",
+                intent.intent_id
+            ));
+        }
         if self.attribution.is_some()
             && (self.goal_approval.is_none() || self.plan_approval.is_none())
         {
@@ -623,6 +661,7 @@ pub fn lineages(log: &EventLog) -> Result<BTreeMap<u64, PassLineage>, Error> {
             AgencyRecord::Executed { record, .. } => entry.execution = Some(record),
             AgencyRecord::ToolDecision { decision, .. } => entry.tool_decisions.push(decision),
             AgencyRecord::VoiceReleased { voice, .. } => entry.released.push(voice),
+            AgencyRecord::IntentRecorded { intent, .. } => entry.intents.push(intent),
             AgencyRecord::Learned { attribution, .. } => entry.attribution = Some(*attribution),
             AgencyRecord::PassConcluded { outcome, .. } => entry.outcome = Some(outcome),
             AgencyRecord::Widened { .. }

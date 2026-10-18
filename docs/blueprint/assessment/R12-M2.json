@@ -302,13 +302,16 @@
   {
     "id": "R12-DATA-2014",
     "status": "PARTIAL",
-    "current": "ConnectorFeed's poll path keeps only the digest; a canary test proves the body reaches no journal, record or digest. The tick lake's RecordClass has no world-document variant.",
+    "current": "ConnectorFeed's poll path keeps only the digest; a canary test proves the body reaches no journal, record or digest. Since 2026-10-18 the narrative, REST and alternative-data adapters each have the equivalent proof: a canary in the served body (an article body; a field no decoder reads) crosses the socket and reaches no emitted record, debug or serialised, and nothing the adapter holds. The tick lake's RecordClass has no world-document variant.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:850-880 a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll",
-      "backend/crates/libs/qip-storage/src/lake.rs:1-6 closed RecordClass (market, internal)",
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:1015 a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll",
+      "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs:1499 a_canary_in_a_narrative_body_is_found_in_no_record_the_adapter_emits",
+      "backend/crates/services/qip-market-ingestion/tests/rest_feed.rs:999 a_canary_in_a_rest_body_is_found_in_no_record_the_adapter_emits",
+      "backend/crates/services/qip-market-ingestion/tests/alternative_data.rs:1281 a_canary_in_an_alternative_data_body_is_found_in_no_record_the_adapter_emits",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:201 the REST adapter's production construction",
       "backend/crates/libs/qip-storage/tests/lake.rs:28 a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes"
     ],
-    "gap": "Only the connector runtime path is canary-tested; the narrative, REST and alternative-data adapters have no equivalent proof.",
+    "gap": "The REST adapter runs in qip-fastbrain; the narrative and alternative-data adapters are constructed by no binary (only qip-cli's demo), so their proof stands at the adapter's record boundary and no deployed journal downstream of them exists to check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -316,10 +319,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --lib connector_feed",
+    "verification": "cargo test -p qip-market-ingestion --lib connector_feed && cargo test -p qip-market-ingestion --test narrative_feed --test rest_feed --test alternative_data a_canary",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - news headline built from headline plus wire body; whole REST body written into the trade's trade_id; whole alternative-data body written into the reading's metric: each failed 'a record carried the body'."
   },
   {
     "id": "R12-DATA-2015",
@@ -1544,7 +1547,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:19-24 assemble step",
       "backend/crates/services/qip-lifecycle/src/evidence.rs:38,50 LeakageAudit"
     ],
-    "gap": "No structural guard that a feature row's knowable time precedes its label anchor across the tick pipeline.",
+    "gap": "The tick labelling pipeline has no production caller: qip-training microstructure::build_examples is called only from tests (the deep brain's tick desk replays decisions without labelling), so there is no default-path tick dataset to guard. build_examples sorts each instrument's observations by knowable instant before windowing, so a feature later than its label anchor is structurally unreachable there and a refusal could never fire. The bar pipeline on the default path already refuses look-ahead (qip-deepbrain learning.rs audit_features_as_of).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1557,7 +1560,7 @@
     "verification": "cargo test -p qip-training --test labels",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there."
   },
   {
     "id": "R12-TICK-2067",

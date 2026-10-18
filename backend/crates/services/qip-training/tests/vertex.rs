@@ -22,7 +22,10 @@ mod server;
 use qip_core::error::Result;
 use qip_core::{JobId, Timestamp};
 use qip_training::dataset::TrainingDataset;
-use qip_training::job::{JobState, TrainingJob, TrainingProvider, TrainingSpec};
+use qip_training::job::{
+    Capacity, JobPriority, JobScheduling, JobState, QueueQuotas, TrainingJob, TrainingProvider,
+    TrainingSpec,
+};
 use qip_training::local::ModelFamily;
 use qip_training::vertex::{
     VertexAccessToken, VertexAiConfig, VertexAiProvider, VertexTransport, VertexWorkload,
@@ -685,6 +688,110 @@ fn a_port_with_no_transport_still_refuses_every_call() -> Result<()> {
         service.served(),
         0,
         "a port that reports itself unavailable must open no connection at all"
+    );
+    Ok(())
+}
+
+// --- placement: Spot and quota (R12-MODEL-10064) ------------------------------
+
+fn spot(priority: JobPriority) -> JobScheduling {
+    JobScheduling {
+        queue: "research".to_string(),
+        capacity: Capacity::Spot,
+        priority,
+    }
+}
+
+fn strategy_of(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value["jobSpec"]["scheduling"]["strategy"]
+        .as_str()
+        .map(str::to_string)
+}
+
+/// An interruptible job reaches Vertex as `SPOT` and a default one as
+/// `STANDARD`; a critical job on Spot is refused before any request.
+///
+/// Mutation: map `Capacity::Spot` to `"STANDARD"` in `request_body` — the Spot
+/// assertion fails. Mutation: drop the Spot-and-critical refusal in
+/// `JobScheduling::validate` — the critical job is sent and the request count
+/// assertion fails.
+#[test]
+fn an_interruptible_job_asks_vertex_for_spot_and_a_critical_one_is_never_placed_there() -> Result<()>
+{
+    let service = TestService::routed(vec![Route::new(
+        "POST",
+        &jobs_path(),
+        Action::json(200, job_body("992", "JOB_STATE_QUEUED")),
+    )]);
+    let mut provider = connected(&service.url())?;
+    assert!(provider.is_available(), "{}", provider.requirement());
+
+    provider.submit(spec(), &dataset()?, at())?;
+    provider.submit(
+        spec().with_scheduling(spot(JobPriority::Standard)),
+        &dataset()?,
+        at(),
+    )?;
+    let submits = service.requests_to("POST", &jobs_path());
+    assert_eq!(submits.len(), 2, "premise: both jobs were sent");
+    assert_eq!(strategy_of(&submits[0].body).as_deref(), Some("STANDARD"));
+    assert_eq!(strategy_of(&submits[1].body).as_deref(), Some("SPOT"));
+
+    let refused = provider
+        .submit(
+            spec().with_scheduling(spot(JobPriority::Critical)),
+            &dataset()?,
+            at(),
+        )
+        .expect_err("a critical job was placed on Spot capacity");
+    assert_eq!(refused.code(), "invalid", "{}", refused.message());
+    assert_eq!(
+        service.requests_to("POST", &jobs_path()).len(),
+        2,
+        "the refused job reached Vertex"
+    );
+    Ok(())
+}
+
+/// A declared queue quota refuses the submit that would exceed it, and a
+/// queue with no declared quota, before a request is sent.
+///
+/// Mutation: in `QueueQuotas::admit`, compare `active > limit` — the second
+/// job is admitted and the refusal assertion fails.
+#[test]
+fn a_submit_beyond_its_queue_quota_is_refused_before_any_request() -> Result<()> {
+    let service = TestService::routed(vec![Route::new(
+        "POST",
+        &jobs_path(),
+        Action::json(200, job_body("993", "JOB_STATE_QUEUED")),
+    )]);
+    let mut provider =
+        connected(&service.url())?.with_quotas(QueueQuotas::new().with("research", 1));
+    let first = provider.submit(spec(), &dataset()?, at())?;
+    assert_eq!(
+        first.state,
+        JobState::Queued,
+        "premise: the first job fits the quota"
+    );
+
+    let second = provider
+        .submit(spec(), &dataset()?, at())
+        .expect_err("a second unfinished job was admitted to a queue of one");
+    assert_eq!(second.code(), "denied", "{}", second.message());
+
+    let elsewhere = JobScheduling {
+        queue: "unbudgeted".to_string(),
+        ..JobScheduling::default()
+    };
+    let undeclared = provider
+        .submit(spec().with_scheduling(elsewhere), &dataset()?, at())
+        .expect_err("a job in a queue with no declared quota was admitted");
+    assert_eq!(undeclared.code(), "denied", "{}", undeclared.message());
+    assert_eq!(
+        service.requests_to("POST", &jobs_path()).len(),
+        1,
+        "a refused job reached Vertex"
     );
     Ok(())
 }
