@@ -100,6 +100,11 @@ pub enum Trigger {
     Disagreement,
     OutOfDistribution,
     RegimeMismatch,
+    /// The evidence the centre sizes on has aged past its horizon or was
+    /// never produced (§6.2's causal-graph, belief and self-model rows).
+    /// Read only for a capital grant: a construction already takes the same
+    /// multiplier directly in `Platform::size_construction`.
+    EvidenceFreshness,
 }
 
 impl Trigger {
@@ -109,6 +114,7 @@ impl Trigger {
             Self::Disagreement => "disagreement",
             Self::OutOfDistribution => "out_of_distribution",
             Self::RegimeMismatch => "regime_mismatch",
+            Self::EvidenceFreshness => "evidence_freshness",
         }
     }
 }
