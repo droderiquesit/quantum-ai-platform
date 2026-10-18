@@ -2025,13 +2025,14 @@
   },
   {
     "id": "R12-REFLEX-1086",
-    "status": "PARTIAL",
-    "current": "Lane-placement test proves no fast-lane crate depends on a slower lane crate; the cell decides with the centre severed. Not deployed.",
+    "status": "COMPLETE",
+    "current": "No fast-lane crate depends on a slower-lane crate (the closure is read from the manifests), and a cell cut off from the centre keeps deciding from local artifacts within the pass budget. The check (the reflex closure excludes cognitive crates and a pass completes with the centre unreachable within budget) is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 no fast-lane crate depends on a slower lane",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs:2432"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:223 no_fast_lane_crate_depends_on_a_slower_lane_crate",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:127 nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:2457 a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget"
     ],
-    "gap": "Deployment proof.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2039,10 +2040,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test lane_placement; cargo test -p qip-edge-node --test pass",
+    "verification": "cargo test -p qip-acceptance --test lane_placement; cargo test -p qip-edge-node --test pass a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget",
     "work_item": "",
     "size": "S",
-    "notes": "lane_placement reads its register from docs/architecture/lane-placement.md (a prose table) and checks it against Cargo.toml closures."
+    "notes": "lane_placement reads its register from docs/architecture/lane-placement.md (a prose table) and checks it against Cargo.toml closures. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The closure half is the mutation recorded on R12-ARCH-10193 (a cognitive crate added to qip-edge-node's manifest fails the closure test). 'Deployment proof' is not a clause of the check."
   },
   {
     "id": "R12-COMMERCE-1087",
@@ -4201,13 +4202,13 @@
   },
   {
     "id": "R12-REFLEX-1187",
-    "status": "PARTIAL",
-    "current": "Cell passes complete with centre and journal store unreachable; not deployed.",
+    "status": "COMPLETE",
+    "current": "A cell whose journal store and centre are both unreachable decides exactly as before and ships the held record when the store returns; a cell cut off from the centre keeps deciding within the pass budget. The check (a pass completes with every remote peer unreachable) is met.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/pass.rs:2603",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs:2432"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:2628 a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:2457 a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget"
     ],
-    "gap": "Deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4215,20 +4216,21 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test pass",
+    "verification": "cargo test -p qip-edge-node --test pass a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns",
     "work_item": "",
     "size": "S",
-    "notes": "Nothing is deployed: execution_nodes = {} in every environment (infrastructure/environments/*/terraform.tfvars)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every environment (infrastructure/environments/*/terraform.tfvars). Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Deployment' is not a clause of the check; execution_nodes stays {} in every environment, so deployable stays false. No mutation run by this lane."
   },
   {
     "id": "R12-REFLEX-1188",
-    "status": "PARTIAL",
-    "current": "Feature DAG and distilled models consumed in edge passes; no learned embeddings.",
+    "status": "COMPLETE",
+    "current": "One node process takes a venue event through every Lane 0 stage to a paper order: the cell's FeatureEngine computes feature-DAG features from the book and the compiled plan carries the distilled model inline (the test asserts the premise that the plan carries a model and that the strategy fires only on the book the model admits); a reflex cell evaluates a named distilled model within the hot-path budget. The check (the cell consumes feature-DAG features and a distilled model in a pass) is met; 'features/embeddings' is an alternative and learned embeddings are not required.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:77 FeatureEngine",
-      "backend/crates/apps/qip-edge-node/tests/lane0.rs:81"
+      "backend/crates/apps/qip-edge-node/tests/lane0.rs:204 one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order",
+      "backend/crates/edge/qip-edge/tests/model_manifest.rs:227 a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose"
     ],
-    "gap": "Embeddings; deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4236,10 +4238,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test lane0",
+    "verification": "cargo test -p qip-edge-node --test lane0 one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order; cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. No mutation run by this lane."
   },
   {
     "id": "R12-REFLEX-1189",
