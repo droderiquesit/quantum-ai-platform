@@ -2714,7 +2714,7 @@
       "backend/crates/libs/qip-contracts/src/capital.rs:266",
       "libs/qip-contracts/tests/authority_bounds.rs"
     ],
-    "gap": "The cell admits only through admit_bounded and refuses an envelope without AuthorityBounds; the centre issues bounded envelopes (ADR 0008 amendment, 2026-10-11).",
+    "gap": "The cell admits through the unbounded CapitalEnvelope::admit and no issuer signs a bounded envelope, and the switch the owner decision describes cannot be made on the cell's side alone because admit_bounded takes three inputs nothing in the tree produces: a product class for the order's instrument, the order's leverage, and the regulated function it performs. grep finds no product class or regulated-function concept outside capital.rs, so the cell would refuse every order for want of an argument to pass, not because a bound was breached. Closing it needs those three facts defined and produced per order (an instrument taxonomy and a leverage measure in the cell), the centre signing bounded envelopes (CentralPlane at its three issue sites, a kernel-lane change), and then admit_bounded behind a CellConfig switch in the register of with_exposure_bounds_required so unbounded test envelopes are not all refused at once.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2725,7 +2725,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Defect worth flagging: an envelope with no bounds still admits through CapitalEnvelope::admit, which the cell uses. In production, leverage, product class and regulated function are therefore not governed by any signed bound. The bounds are signed metadata that nothing enforces."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: an envelope with no bounds still admits through CapitalEnvelope::admit, which the cell uses. Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (swap the three envelope.admit sites to admit_bounded) refuses every order today because the product-class, leverage and regulated-function arguments have no producer; a refusal-everything gate is the failure the infrastructure rules call out ('admits a good one')."
   },
   {
     "id": "R12-GOV-6121",

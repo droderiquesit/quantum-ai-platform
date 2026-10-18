@@ -109,11 +109,85 @@ fn the_dependency_rows_have_names_and_survive_a_round_trip() {
         .iter()
         .map(|capability| capability.as_str())
         .collect();
-    assert_eq!(names, ["ledger", "custody", "clock", "fabric"]);
+    assert_eq!(
+        names,
+        [
+            "ledger",
+            "custody",
+            "clock",
+            "fabric",
+            "feed",
+            "venue_session"
+        ]
+    );
     let state = with(Capability::Ledger, Freshness::Stale);
     let text = serde_json::to_string(&state).unwrap();
     assert!(text.contains("\"ledger\":\"stale\""));
     let back: DegradationState = serde_json::from_str(&text).unwrap();
     assert_eq!(back, state);
     assert_eq!(back.narrowed().len(), 1);
+}
+
+#[test]
+fn every_dependency_declares_what_its_loss_does_to_size() {
+    // The envelope each dependency of a reflex cell carries, stated as the
+    // multiplier its stale and unavailable readings compound to. A partial
+    // loss of the per-venue rows is one because the cell's per-venue gates
+    // already act on it; the total loss is zero because nothing is left to
+    // trade against. A dependency absent from this table would be one whose
+    // loss the platform had not decided anything about.
+    let declared = [
+        (Capability::Ledger, dec!("0.5"), dec!("0")),
+        (Capability::Custody, dec!("0.75"), dec!("0.5")),
+        (Capability::Clock, dec!("0.75"), dec!("0.5")),
+        (Capability::Fabric, dec!("1"), dec!("1")),
+        (Capability::Feed, dec!("1"), dec!("0")),
+        (Capability::VenueSession, dec!("1"), dec!("0")),
+    ];
+    assert_eq!(
+        declared.len(),
+        Capability::dependencies().len(),
+        "a dependency has no declared envelope"
+    );
+    for capability in Capability::dependencies() {
+        let (_, stale, unavailable) = declared
+            .iter()
+            .find(|(declared, _, _)| *declared == capability)
+            .unwrap_or_else(|| panic!("{} has no declared envelope", capability.as_str()));
+        assert_eq!(
+            with(capability, Freshness::Stale).dependency_multiplier(),
+            *stale,
+            "{} stale",
+            capability.as_str()
+        );
+        assert_eq!(
+            with(capability, Freshness::Unavailable).dependency_multiplier(),
+            *unavailable,
+            "{} unavailable",
+            capability.as_str()
+        );
+        assert_eq!(
+            with(capability, Freshness::Fresh).dependency_multiplier(),
+            dec!("1"),
+            "{} fresh",
+            capability.as_str()
+        );
+    }
+}
+
+#[test]
+fn a_clock_that_was_observed_degraded_pauses_cross_venue_ordering_and_one_never_observed_does_not()
+{
+    let healthy = DegradationState::nothing_known();
+    // The premise: the clock really is unobserved here, so `freshness` reads
+    // it unavailable and a pause on that reading would pause everything.
+    assert_eq!(healthy.observed(Capability::Clock), None);
+    assert_eq!(healthy.freshness(Capability::Clock), Freshness::Unavailable);
+    assert!(!healthy.pauses_cross_venue_ordering());
+
+    assert!(!with(Capability::Clock, Freshness::Fresh).pauses_cross_venue_ordering());
+    assert!(with(Capability::Clock, Freshness::Stale).pauses_cross_venue_ordering());
+    assert!(with(Capability::Clock, Freshness::Unavailable).pauses_cross_venue_ordering());
+    // Another dependency's loss is not a clock fault.
+    assert!(!with(Capability::Feed, Freshness::Unavailable).pauses_cross_venue_ordering());
 }

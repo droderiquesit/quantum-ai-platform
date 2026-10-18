@@ -444,13 +444,13 @@
   {
     "id": "R12-DATA-7021",
     "status": "PARTIAL",
-    "current": "data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite.",
+    "current": "data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite. The connector path (ConnectorArm over a Platform) is proven to retain no fetched body in the event log, journal KV, knowledge-pack or tick-lake stores by a canary test.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src",
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos (data-refetch-health)",
-      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:526 a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_the_platform"
     ],
-    "gap": "Not verified that no ingestion path persists raw content.",
+    "gap": "The canary test covers the connector path only (ConnectorArm, one shipped connector). The other ingestion paths - the narrative/news adapters and the REST market-data adapter - have no equivalent canary test; the register's 'every ingestion path' is not yet verified.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -461,7 +461,7 @@
     "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L08 2026-10-18. Kept PARTIAL: closure's cross-store canary test landed (see R12-DATA-1029 for the mutation, which fired) but covers one path of several."
   },
   {
     "id": "R12-MODEL-7022",
@@ -2315,12 +2315,14 @@
   {
     "id": "R12-RES-7103",
     "status": "PARTIAL",
-    "current": "MarketEvent carries uncertainty; streaming processing refuses skew beyond tolerance; no clock-health signal disabling strategies.",
+    "current": "A clock-health signal now exists in the cell and disables ordering-sensitive strategies: Cell::narrowing derives Capability::Clock from the lead each venue's feed shows over the cell's capture time (fresh, stale while some venue is skewed, unavailable while all are), DegradationState::pauses_cross_venue_ordering pauses the arbitrage desk under GATE_CLOCK_SKEW, a skewed venue gets no order, and the pass compounds the clock row's 0.75/0.5 multiplier into its size.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_event.rs:42-46",
-      "backend/crates/services/qip-streaming/src/processing.rs:67,542"
+      "backend/crates/edge/qip-edge/src/cell.rs:432 GATE_CLOCK_SKEW; :4017 observe_clock_lead measures each batch's venue time against capture time; :4045 clock_skewed; :4068 venue_withheld refuses a skewed venue; :2867 Cell::narrowing observes Clock, Feed and VenueSession; :7945 scan_cycles pauses the desk",
+      "backend/crates/libs/qip-contracts/src/degradation.rs:895 pauses_cross_venue_ordering",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells"
     ],
-    "gap": "Clock-health input and strategy/label gating.",
+    "gap": "Two halves of the clause are not done: the cell does not widen a MarketEvent's uncertainty from the clock row (qip_contracts::captured_event carries uncertainty for storage and research; nothing feeds it the cell's clock reading), and precision-sensitive labels and replay are not blocked from promotion by it (a centre and research-lane control).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2328,10 +2330,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "edge test with degraded clock",
+    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: the cell-side disable closed on the default path, PARTIAL kept for uncertainty widening and label promotion. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
   },
   {
     "id": "R12-RES-7104",

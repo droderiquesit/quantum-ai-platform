@@ -505,3 +505,124 @@ fn no_bucket_or_dataset_lands_external_world_content() {
     let violations = landing_violations(&resources);
     assert!(violations.is_empty(), "{violations:#?}");
 }
+
+/// R12-DATA-1029 / R12-DATA-7021. The raw body a connector fetched is
+/// discarded once evidence and knowledge are extracted. The unit test beside
+/// `ConnectorFeed` proves it for the digest and the journal of one feed; this
+/// drives the node's own arm (`ConnectorArm`, the type `qip-deepbrain`'s
+/// `main` builds) through a `Platform` and looks in every durable store the
+/// arm writes: the platform's hash-chained event log, the journal's key-value
+/// store, the knowledge-pack blob store and the tick lake's blob store.
+///
+/// The canary rides in the JSON-LD `@context` of the served document, a field
+/// no connector keeps. The premises matter as much as the denial: a platform
+/// that recorded nothing, or stores that stayed empty, would pass `!contains`
+/// for a source that never carried the canary.
+///
+/// Mutated by building `FetchDigest::of`'s `locator` as the locator followed
+/// by the lossy-UTF-8 body: the reference the platform journals then carries
+/// the body and the event-log assertion fails; restored byte for byte.
+#[test]
+fn a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_the_platform() {
+    use qip_core::{Context, Timestamp};
+    use qip_data_finder::registration::RegistrationRegistry;
+    use qip_deepbrain::connectors::{ConnectorArm, TICK_LAKE_RETENTION_VARIABLE, TickLakeSettings};
+    use qip_financial::universe::Universe;
+    use qip_kernel::config::PlatformConfig;
+    use qip_kernel::platform::Platform;
+    use qip_market_ingestion::connector::emulator::SourceEmulator;
+    use qip_market_ingestion::connectors::NwsStationObservationsConnector;
+    use qip_market_ingestion::connectors::nws_station_observations::FIXTURE;
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+    use qip_storage::{BlobStore, KeyValueStore, MemoryBlobStore, MemoryKeyValueStore};
+    use std::sync::Arc;
+
+    const CANARY: &str = "CANARY-5d2a8e41-not-for-retention";
+    let served = FIXTURE.replace(
+        r#"\"city\": \"s:addressLocality\""#,
+        &format!(r#"\"city\": \"s:addressLocality-{CANARY}\""#),
+    );
+    assert!(
+        served.contains(CANARY) && served != FIXTURE,
+        "premise: the canary was planted in the document the source serves"
+    );
+
+    // 2026-09-19T05:55:00Z, the horizon the arm's own pack test polls at.
+    let horizon = Timestamp::from_secs(1_789_797_300);
+    let mut manifest = NwsStationObservationsConnector::shipped_manifest().expect("manifest");
+    manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+    let entitlement = format!("{:?}", manifest.licensing).to_ascii_lowercase();
+
+    let kv = Arc::new(MemoryKeyValueStore::default());
+    let packs = Arc::new(MemoryBlobStore::new());
+    let lake = Arc::new(MemoryBlobStore::new());
+    let lookup = |name: &str| {
+        (name == TICK_LAKE_RETENTION_VARIABLE).then(|| format!("{entitlement}=canonical+raw"))
+    };
+    let settings = TickLakeSettings::from_lookup(&lookup)
+        .expect("the retention variable parses")
+        .expect("a retention right was configured");
+    let mut arm = ConnectorArm::over_transport(
+        Box::new(NwsStationObservationsConnector::new(manifest.clone()).expect("connector")),
+        manifest,
+        Box::new(SourceEmulator::from_json(&served).expect("the emulator parses")),
+        &RegistrationRegistry::shipped(),
+        7,
+        horizon,
+    )
+    .expect("the arm opens through the catalogue")
+    .with_knowledge_packs(packs.clone())
+    .with_tick_lake(settings.writer(lake.clone()).expect("the lake opens"));
+    arm.journal_to(kv.clone()).expect("a journal opens");
+
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(horizon, config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .expect("the platform builds");
+    let before = platform.event_log().records().len();
+
+    let released = arm.poll(&mut platform, horizon).expect("the poll delivers");
+    arm.shutdown(horizon).expect("the arm flushes and closes");
+    assert!(!released.is_empty(), "premise: the arm released readings");
+
+    let log = platform.event_log().records();
+    assert!(
+        log.len() > before,
+        "premise: the fetch was referenced on the log"
+    );
+    assert!(
+        !format!("{log:?}").contains(CANARY),
+        "the event log retained the fetched body"
+    );
+
+    let keys = kv.keys_with_prefix("").expect("the journal lists");
+    assert!(!keys.is_empty(), "premise: the journal wrote something");
+    for key in keys {
+        let value = kv.get(&key).expect("reads").expect("listed key exists");
+        assert!(
+            !value.to_string().contains(CANARY),
+            "the journal key {key} retained the body"
+        );
+    }
+
+    for (name, store) in [("knowledge-pack", &packs), ("tick-lake", &lake)] {
+        let blobs = store.list("").expect("the store lists");
+        if name == "knowledge-pack" {
+            assert!(!blobs.is_empty(), "premise: a pack was kept");
+        }
+        for key in blobs {
+            let bytes = store.get(&key).expect("reads").expect("listed key exists");
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(CANARY),
+                "the {name} store retained the body under {key}"
+            );
+        }
+    }
+}

@@ -17,14 +17,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::degradation::{Capability, Freshness};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
-    Cell, CellConfig, ExecutionReport, FeedLossPlaybook, GATE_CROSS_SOURCE, GATE_SILENT_FEED,
-    GATE_VENUE_QUARANTINE, Placer, PricingPolicy, WorkReport,
+    Cell, CellConfig, ExecutionReport, FeedLossPlaybook, GATE_CLOCK_SKEW, GATE_CROSS_SOURCE,
+    GATE_SILENT_FEED, GATE_VENUE_QUARANTINE, Placer, PricingPolicy, WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -85,8 +86,20 @@ impl Decoder for LineDecoder {
         let mut messages = Vec::new();
         for line in text.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
-            let [sequence, name, side, price, size] = fields[..] else {
-                return Err(Error::invalid("a line has five fields"));
+            // A sixth field is how many milliseconds ahead of the cell's
+            // capture instant the venue stamps the message.
+            let (sequence, name, side, price, size, lead_ms) = match fields[..] {
+                [sequence, name, side, price, size] => (sequence, name, side, price, size, 0),
+                [sequence, name, side, price, size, lead] => (
+                    sequence,
+                    name,
+                    side,
+                    price,
+                    size,
+                    lead.parse::<i64>()
+                        .map_err(|_| Error::invalid("a lead is a number of milliseconds"))?,
+                ),
+                _ => return Err(Error::invalid("a line has five or six fields")),
             };
             let side = match side {
                 "B" => BookSide::Bid,
@@ -105,7 +118,7 @@ impl Decoder for LineDecoder {
                     quantity: d(size),
                     order_count: None,
                 },
-                captured_at,
+                captured_at.saturating_add(Duration::from_millis(lead_ms)),
                 captured_at,
             ));
         }
@@ -1489,5 +1502,239 @@ fn a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_off
     let (mut cell, mut gateway, _) = blind_position(FeedLossPlaybook::Withdraw)?;
     cell.work(t(16), &mut gateway)?;
     assert!(hedges(&cell).is_empty(), "{:?}", hedges(&cell));
+    Ok(())
+}
+
+fn clock_skews(cell: &Cell) -> Vec<(String, bool)> {
+    journaled(cell, |decision, _| match decision {
+        Decision::ClockSkew { venue, skewed, .. } => Some((venue.clone(), *skewed)),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again()
+-> Result<()> {
+    // The failure this prevents: a venue time later than the instant the cell
+    // captured the message is not latency, it is a clock fault on one side,
+    // and a price that cannot be placed in time was being traded against as
+    // if it could. Nothing read the clock before this.
+    let mut cell = fed_cell(&[(XLON, "obj-ACME"), (XPAR, "obj-BETA")])?;
+    let mut gateway = Gateway::default();
+    let tolerance = CellConfig::new(CELL, REGION).max_clock_skew;
+    assert_eq!(tolerance, Duration::from_millis(500), "the premise failed");
+
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99\t500\n2\tobj-ACME\tA\t101\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-BETA\tB\t49\t500\n2\tobj-BETA\tA\t51\t400",
+        t(10),
+    )?;
+    // Premise: a lead inside the tolerance (and none at all) changes nothing.
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XLON, "obj-ACME"), (XPAR, "obj-BETA")],
+        "the premise failed: {:?}",
+        report.refusals
+    );
+    feed(&mut cell, XLON, "3\tobj-ACME\tB\t99\t510\t400", t(11))?;
+    assert!(
+        clock_skews(&cell).is_empty(),
+        "a lead within the bound was journaled"
+    );
+
+    // XLON now leads by two seconds; XPAR's feed is level.
+    feed(&mut cell, XLON, "4\tobj-ACME\tB\t99\t520\t2000", t(12))?;
+    cell.feed_heartbeat(&venue(XPAR), t(12));
+    let report = cell.work(t(12), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XPAR, "obj-BETA")],
+        "the skewed venue still received an order, or the level one stopped"
+    );
+    let refusals = refused_under(&report, GATE_CLOCK_SKEW);
+    assert_eq!(refusals.len(), 1, "{:?}", report.refusals);
+    assert!(
+        refusals[0].contains("XLON stamped messages 2000 ms ahead of this cell's clock"),
+        "{}",
+        refusals[0]
+    );
+    assert_eq!(
+        clock_skews(&cell),
+        vec![("XLON".to_string(), true)],
+        "the transition was not journaled once"
+    );
+
+    // A second skewed batch is the same episode, not a second entry.
+    feed(&mut cell, XLON, "5\tobj-ACME\tB\t99\t530\t3000", t(13))?;
+    assert_eq!(clock_skews(&cell).len(), 1);
+
+    // A batch that shows the venue level again restores it, journaled.
+    feed(&mut cell, XLON, "6\tobj-ACME\tB\t99\t540", t(14))?;
+    cell.feed_heartbeat(&venue(XPAR), t(14));
+    let report = cell.work(t(14), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XLON, "obj-ACME"), (XPAR, "obj-BETA")],
+        "the venue did not resume once its clock was level: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        clock_skews(&cell),
+        vec![("XLON".to_string(), true), ("XLON".to_string(), false)]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering() -> Result<()>
+{
+    let mut cell = fed_cell(&[(XLON, "obj-ACME"), (XPAR, "obj-BETA")])?;
+    // Premise: before any message the cell has measured nothing, so the row
+    // is unobserved and nothing pauses on a number nobody computed.
+    assert_eq!(cell.narrowing(t(10)).observed(Capability::Clock), None);
+    assert!(!cell.narrowing(t(10)).pauses_cross_venue_ordering());
+
+    feed(&mut cell, XLON, "1\tobj-ACME\tB\t99\t500", t(10))?;
+    feed(&mut cell, XPAR, "1\tobj-BETA\tB\t49\t500", t(10))?;
+    let level = cell.narrowing(t(10));
+    assert_eq!(level.observed(Capability::Clock), Some(Freshness::Fresh));
+    assert!(!level.pauses_cross_venue_ordering());
+
+    feed(&mut cell, XLON, "2\tobj-ACME\tB\t99\t510\t2000", t(11))?;
+    let one = cell.narrowing(t(11));
+    assert_eq!(one.observed(Capability::Clock), Some(Freshness::Stale));
+    assert!(one.pauses_cross_venue_ordering());
+
+    // Every measured venue skewed: the clock is no longer a thing the cell
+    // can place anything against.
+    feed(&mut cell, XPAR, "2\tobj-BETA\tB\t49\t510\t2000", t(11))?;
+    let both = cell.narrowing(t(11));
+    assert_eq!(
+        both.observed(Capability::Clock),
+        Some(Freshness::Unavailable)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_clock_skew_tolerance_that_refuses_every_venue_stops_assembly() {
+    let mut config = CellConfig::new(CELL, REGION).with_venue(venue(XLON));
+    config.max_clock_skew = Duration::ZERO;
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let error = Cell::new(config, features).expect_err("a zero tolerance assembled a cell");
+    assert!(
+        error.message().contains("clock-skew tolerance of 0 ms"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn a_cell_whose_feed_goes_silent_reads_its_feed_row_stale_then_unavailable() -> Result<()> {
+    let mut cell = fed_cell(&[(XLON, "obj-ACME"), (XPAR, "obj-BETA")])?;
+    assert_eq!(cell.narrowing(t(10)).observed(Capability::Feed), None);
+    feed(&mut cell, XLON, "1\tobj-ACME\tB\t99\t500", t(10))?;
+    feed(&mut cell, XPAR, "1\tobj-BETA\tB\t49\t500", t(10))?;
+    assert_eq!(
+        cell.narrowing(t(11)).observed(Capability::Feed),
+        Some(Freshness::Fresh)
+    );
+    // XLON goes quiet past the five-second bound; XPAR is heard again.
+    cell.feed_heartbeat(&venue(XPAR), t(16));
+    let some = cell.narrowing(t(16));
+    assert_eq!(some.observed(Capability::Feed), Some(Freshness::Stale));
+    assert_eq!(some.dependency_multiplier(), Decimal::ONE);
+    let all = cell.narrowing(t(30));
+    assert_eq!(all.observed(Capability::Feed), Some(Freshness::Unavailable));
+    assert_eq!(all.dependency_multiplier(), Decimal::ZERO);
+    Ok(())
+}
+
+fn xpar_quantity(report: &WorkReport) -> Decimal {
+    let sent: Vec<Decimal> = report
+        .orders
+        .iter()
+        .filter(|order| order.venue.as_str() == XPAR)
+        .map(|order| order.quantity)
+        .collect();
+    assert_eq!(sent.len(), 1, "the premise failed: {:?}", report.refusals);
+    sent[0]
+}
+
+#[test]
+fn a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed() -> Result<()> {
+    let books = |cell: &mut Cell, xlon_lead: &str| -> Result<()> {
+        feed(
+            cell,
+            XLON,
+            &format!("1\tobj-ACME\tB\t99\t500\t{xlon_lead}\n2\tobj-ACME\tA\t101\t400"),
+            t(10),
+        )?;
+        feed(
+            cell,
+            XPAR,
+            "1\tobj-BETA\tB\t49\t500\n2\tobj-BETA\tA\t51\t400",
+            t(10),
+        )?;
+        Ok(())
+    };
+    let mut level = fed_cell(&[(XLON, "obj-ACME"), (XPAR, "obj-BETA")])?;
+    books(&mut level, "0")?;
+    let whole = xpar_quantity(&level.work(t(10), &mut Gateway::default())?);
+
+    let mut skewed = fed_cell(&[(XLON, "obj-ACME"), (XPAR, "obj-BETA")])?;
+    books(&mut skewed, "2000")?;
+    let narrowed = xpar_quantity(&skewed.work(t(10), &mut Gateway::default())?);
+
+    assert!(whole.is_positive(), "the premise failed: nothing was sized");
+    // 0.75 is the clock row's stale multiplier in `qip_contracts::degradation`;
+    // read from the table and not restated, so a change to the row moves both.
+    let expected = whole
+        .checked_mul(
+            skewed
+                .narrowing(t(10))
+                .dependency_row_multiplier(Capability::Clock),
+        )
+        .expect("a product of two small decimals");
+    assert!(
+        expected < whole,
+        "the premise failed: the clock row narrows nothing"
+    );
+    assert_eq!(narrowed, expected);
+    Ok(())
+}
+
+#[test]
+fn a_cell_reads_its_venue_session_row_from_how_many_venues_are_quarantined() -> Result<()> {
+    let down = |name: &str| Gateway {
+        down: vec![venue(name)],
+        ..Gateway::default()
+    };
+    let session = |cell: &Cell, at: i64| cell.narrowing(t(at)).observed(Capability::VenueSession);
+
+    let mut some = quarantining_cell(&[XLON, XPAR])?;
+    assert_eq!(session(&some, 9), Some(Freshness::Fresh));
+    let mut gateway = down(XLON);
+    for now in [10, 11, 12] {
+        assert!(some.work(t(now), &mut gateway).is_err());
+    }
+    assert_eq!(session(&some, 13), Some(Freshness::Stale));
+    // The cooldown lapses at t(72); the row follows the quarantine back.
+    assert_eq!(session(&some, 73), Some(Freshness::Fresh));
+
+    let mut all = quarantining_cell(&[XLON])?;
+    let mut gateway = down(XLON);
+    for now in [10, 11, 12] {
+        assert!(all.work(t(now), &mut gateway).is_err());
+    }
+    assert_eq!(session(&all, 13), Some(Freshness::Unavailable));
     Ok(())
 }
