@@ -1870,14 +1870,14 @@
   },
   {
     "id": "R12-WORLD-3083",
-    "status": "PARTIAL",
-    "current": "lattice::constrain flags narrowing and median-outside inconsistencies across adjacent horizons each cycle (LATTICE_INCONSISTENCIES_TOTAL); NOW latent return feeds lattice targets.",
+    "status": "COMPLETE",
+    "current": "Every cycle LatticeStage::run checks each target's freshly issued horizon chain with qip_world_model::lattice::constrain, journals the findings in LatticeReview::inconsistencies and Platform counts them on qip_lattice_inconsistencies_total{kind}. Flagging never repairs: the forecasts are journaled as issued. Over the calm test history the first cycle flags the hours-days median outside the weeks-months 80% interval for both instruments.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/horizons.rs:868 HorizonRegister",
-      "backend/crates/services/qip-lifecycle/src/horizon.rs:304 HorizonAssurance",
-      "backend/crates/services/qip-world-model/src/lattice.rs::constrain"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::run (constrain)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (LATTICE_INCONSISTENCIES_TOTAL count)",
+      "runtime/qip-kernel/tests/now_lattice.rs::a_forecast_outside_its_longer_neighbours_interval_is_flagged_in_the_review_and_on_the_counter"
     ],
-    "gap": "Flagged, not reconciled into any forecast; microstructure (microsecond) forecasts are never issued, so they constrain nothing.",
+    "gap": "",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1887,10 +1887,10 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations: skipping the constrain call -> 'premise: calm history leaves a short-horizon median outside the longer interval'; draining the platform's counter loop -> counter left 0 right 2; both restored (now_lattice: 10 passed). Not claimed: reconciliation of the flagged pair into the forecasts and the microsecond row stay WORLD-7197's gap; only the horizons due in a pass are compared, so a fresh short row against a still-current longer row is not checked until the longer one re-issues."
   },
   {
     "id": "R12-WORLD-3084",

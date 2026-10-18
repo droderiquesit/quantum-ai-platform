@@ -2913,13 +2913,14 @@
   },
   {
     "id": "R12-TICK-1128",
-    "status": "PARTIAL",
-    "current": "distil used by deepbrain learning desk; artefacts consumed by edge strategies.",
+    "status": "COMPLETE",
+    "current": "The replay digest now covers the distillation stage: a student is distilled (qip_training::distill::distil, the call the deep brain's learning desk makes every round) from features the recorded session's replayed book yields at every step (spread, touch imbalance; target microprice minus mid), and the digest hashes the student's serialised form plus its score at every step. The same bytes give the same digest twice, a student with one weight nudged gives another, and the digest is pinned.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:135",
-      "backend/crates/services/qip-training/tests/training.rs:942"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs a_mutated_distillation_stage_changes_the_digest_of_the_replay_it_learned_from",
+      "backend/crates/services/qip-training/src/distill.rs distil",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:135"
     ],
-    "gap": "Implement/integrate reflex-model distillation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2930,7 +2931,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutation, fired and restored: fitting the student to the observed labels instead of the teacher's soft targets (distill.rs relabelled = probe.clone()) moves the digest to b93351d1... and the test fails on the pinned constant. Premises asserted first: at least eight two-sided steps, features reproducible across two full runs, nudged weight changes digest. tick_replay: 4 passed, 0 failed. The register's 'reflex-model distillation' size L text was wider than its unmet clause; the clause is what this closes."
   },
   {
     "id": "R12-WORLD-1129",
