@@ -1049,14 +1049,20 @@
   },
   {
     "id": "R12-QUANT-9046",
-    "status": "PARTIAL",
-    "current": "No hot-path dependency (architecture tests) and classical verification (ClassicalValidator) hold; HostedConfig carries a per-job cost but there is no budgeted queue.",
+    "status": "COMPLETE",
+    "current": "The quantum arm runs in a budgeted queue: RoutingPolicy::quantum_spend_budget_micros is a cumulative ceiling checked in ComputeRouter::estimate against every job the router has billed, and a job that would pass it is refused and the classical baseline stands. The ledger is rebuilt from the journal (ComputeDecision::quantum_billed_micros folded by ComputeRouter::replay, which qip-kernel compute_routing::resume calls at start-up), so a restart does not reset it. A per-job cap above the budget is refused at validate. No hot-path dependency and classical verification hold as before.",
     "evidence": [
+      "backend/crates/services/qip-optimization-engine/src/router.rs:415 quantum_spend_budget_micros",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1623 cumulative ceiling in estimate",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:823 replay folds billed spend",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:534 cap above budget refused",
+      "backend/crates/runtime/qip-kernel/src/compute_routing.rs:185 resume",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1688 a_per_job_cap_above_the_cumulative_budget_is_refused",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1389,1430,1462",
-      "backend/crates/libs/qip-quantum/src/benchmark.rs:153 validate",
-      "backend/crates/libs/qip-quantum/src/provider.rs:208 HostedConfig"
+      "backend/crates/libs/qip-quantum/src/benchmark.rs:153 validate"
     ],
-    "gap": "Budgeted queue.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1066,10 +1072,10 @@
       "R12-QUANT-9040"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture",
+    "verification": "cargo test -p qip-optimization-engine --test optimization the_quantum_arm_stops_at_its_cumulative_spend_ceiling",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L19. Mutations: deleting the ceiling arm in estimate makes the third cycle submit; deleting the replay fold of quantum_billed_micros makes the restarted router submit. Runs wherever the quantum arm is attached (qip-deepbrain with QIP_QUANTUM_PROVIDER=simulated from the dev/test catalogue); nothing is deployed."
   },
   {
     "id": "R12-CAPITAL-9047",
