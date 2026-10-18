@@ -636,7 +636,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings",
       "backend/crates/runtime/qip-kernel/src/compute_routing.rs::ComputeSettings"
     ],
-    "gap": "ProviderSolver and IbmQuantumSolver remain public synchronous solve_qubo paths, not refused; only the absence of a caller keeps them off the cycle.",
+    "gap": "IbmQuantumSolver's QuboSolver::solve already refuses unconditionally (solver.rs:911, Error::unavailable; transport_present is hard-coded false), so the open seam is ProviderSolver::solve (solver.rs:1010), which calls QuantumProvider::solve_qubo inline for any provider, a hosted QPU included. It cannot simply be refused: qip-quantum/tests/hosted.rs::a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline benchmarks a connected HostedProvider through it and proves the device answer is re-scored against the classical baseline. Closing needs a benchmark entrant built from a QuantumGateway-collected QaoaResult (submit, poll, then enter the result), the hosted test moved onto it, and ProviderSolver refusing a provider whose capabilities().simulated is false with Error::denied naming QuantumGateway::submit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -647,7 +647,7 @@
     "verification": "test: router with a slow/hosted provider returns the classical decision without blocking",
     "work_item": "",
     "size": "M",
-    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S)."
   },
   {
     "id": "R12-QUANT-4030",

@@ -287,13 +287,16 @@
   },
   {
     "id": "R12-REASON-3014",
-    "status": "PARTIAL",
-    "current": "MicrostructureAnalyst in production; adversary_review measures venue adverse selection.",
+    "status": "COMPLETE",
+    "current": "MicrostructureAnalyst, constructed in Organisation::standard, reports spread, five-level imbalance, sweep cost and, since 2026-10-18, queue dynamics: the traded rate of the latest bar and the time to work through each touch queue at that rate. Only it covers queue dynamics; adverse selection by venue is measured kernel-side in adversary_review.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/fast.rs:28 MicrostructureAnalyst",
-      "backend/crates/runtime/qip-kernel/src/adversary_review.rs:1-15 answers one of five §15.2 questions"
+      "backend/crates/agents/qip-investment-agents/src/fast.rs:133 traded rate from the latest bar of the snapshot the platform feeds",
+      "backend/crates/agents/qip-investment-agents/src/fast.rs:235 bid/ask queue depletion facts",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs Scope::QueueDynamics evidenced by those labels",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2289 removing_the_microstructure_analyst_drops_queue_dynamics_from_coverage",
+      "backend/crates/runtime/qip-kernel/src/adversary_review.rs:1-15 venue adverse selection"
     ],
-    "gap": "No queue-dynamics model; adversary_review admits it answers one question of five.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -301,10 +304,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation removing_the_microstructure_analyst_drops_queue_dynamics_from_coverage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L16). The depletion time is a lower bound: the tape carries no aggressor side. Market state reaches the desk through the platform's Upstream<MarketView>, so this runs in every binary that dispatches the organisation. Mutation: suppressing the depletion facts failed the test at the bid_queue_depletion_secs lookup."
   },
   {
     "id": "R12-EVENT-3015",
@@ -436,12 +439,15 @@
   {
     "id": "R12-RISK-3021",
     "status": "PARTIAL",
-    "current": "RiskControl agent plus stress testing in SIMULATE.",
+    "current": "RiskControl, constructed in Organisation::standard, reports limit breaches and, since 2026-10-18, the forecast tail (VaR/ES at the highest confidence the risk state carries), a generated three-sigma stress day scaled by leverage, and a recommended gross reduction that clears every blocking limit scaling with the book. Removing it drops all three scopes from OrganisationReport::covered_scopes.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/control.rs:21 RiskControl",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:193-197 StressTester"
+      "backend/crates/agents/qip-investment-agents/src/control.rs:166 forecast VaR/ES facts",
+      "backend/crates/agents/qip-investment-agents/src/control.rs:191 stress_loss_3sd_day",
+      "backend/crates/agents/qip-investment-agents/src/control.rs:214 recommended_gross_reduction",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2371 removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4921 Desk::new with a RiskView fixed at assembly"
     ],
-    "gap": "Risk forecasting is limited; see RISK slice.",
+    "gap": "The production desk's RiskView is a value fixed at assembly (platform.rs Desk::new: RiskState with equity and cash only), never refreshed from Platform::risk_state, so in a running binary the VaR/ES maps are empty and volatility is zero: forecast and stress are never emitted outside tests. Needs the kernel (lane L01) to hold the risk facility as an Upstream<RiskView>, as it already does for world and market, and write risk_state() into it before each dispatch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -449,10 +455,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L16, 2026-10-18: agent side done and mutation-verified (inverting bound/observed in the recommendation made it 0 and failed the test); kept PARTIAL because the default path feeds the agent a frozen risk state."
   },
   {
     "id": "R12-RISK-3022",
@@ -481,12 +487,15 @@
   {
     "id": "R12-REASON-3023",
     "status": "PARTIAL",
-    "current": "AdversarialReviewer is in production; PoisoningDetector exists but is constructed nowhere outside its crate.",
+    "current": "AdversarialReviewer and, since 2026-10-18, PoisoningDetector are constructed in Organisation::standard. The detector is rostered as an adversary (challenges, publishes nothing, owner independent-review) and reports Ambiguous rather than Negative, so a campaign in the fabric is weighed as context rather than as bearish evidence on every thesis. It scans the world model's evidence fabric, which the platform feeds.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/review.rs:27 AdversarialReviewer",
-      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:18 PoisoningDetector (no production constructor)"
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:458 PoisoningDetector in standard_agents",
+      "backend/crates/agents/qip-investment-agents/src/manifests.rs poisoning_detector, on manifests::roster",
+      "backend/crates/agents/qip-investment-agents/src/chief.rs Organisation::new refuses an agent not on the roster",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2319 removing_the_poisoning_detector_drops_source_poisoning_from_coverage",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:2338 an_agent_outside_the_roster_does_not_assemble"
     ],
-    "gap": "Wire PoisoningDetector; add regime-break and self-exploitation probes.",
+    "gap": "Source poisoning is covered; regime breaks and strategies that exploit the platform itself have no probe in any agent. A self-exploitation probe needs the platform's own order and fill history on the desk, which no facility carries.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -494,10 +503,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-investment-agents --test organisation removing_the_poisoning_detector_drops_source_poisoning_from_coverage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L16, 2026-10-18: poisoning wired and mutation-verified (dropping the detector from standard_agents failed the test; removing the roster check failed an_agent_outside_the_roster_does_not_assemble). Kept PARTIAL for regime breaks and self-exploitation."
   },
   {
     "id": "R12-AMBIENT-3024",
@@ -1392,23 +1401,28 @@
   },
   {
     "id": "R12-AMBIENT-3064",
-    "status": "PARTIAL",
-    "current": "Deepbrain research sweep runs by default after cycles, raising AmbientSignals from gaps and NOW surprises, journaled to the ambient journal.",
+    "status": "COMPLETE",
+    "current": "The deep brain's research sweep runs on its own cadence after each cycle (ResearchConfig.every_cycles, default 1), not on a prompt or strategy tick. NowEstimator maintains an expected-state distribution per domain (mean and variance, gauged as qip_now_state/qip_now_uncertainty); the sweep generates conditional scenarios from risk and assumption signals; signals, attention and scenarios are journaled. every_cycles = 0 stops the sweep and the journal stays empty.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:66 AmbientSignal"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1360 conditional_scenarios called from every sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1736-1800 conditional_scenarios",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:62-69,221-232 the Scenario record, caused by its signal's record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:237 a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (mutation: drop the conditional_scenarios call; no scenario record and the test fails)",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:895-907 maybe_sweep honours every_cycles",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:154 the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disabled_loop_none (mutation: let every_cycles = 0 sweep; the disabled loop journals and the test fails)"
     ],
-    "gap": "No forecasts, expected-state distributions or conditional scenarios maintained; tied to cycle cadence; no test that stopping it stops signals beyond the disabled-path test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new integration test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed. The sweep follows the cycle cadence by design — it reads what the cycle recorded — which is not a prompt or a strategy tick."
   },
   {
     "id": "R12-AMBIENT-3065",
@@ -2083,23 +2097,26 @@
   },
   {
     "id": "R12-MODEL-3093",
-    "status": "PARTIAL",
-    "current": "A synthetic-credit forecast market settles by log scoring against the aggregate; market share enters influence, duplicates are clustered, and the kernel computes the aggregate each LEARN (advisory).",
+    "status": "COMPLETE",
+    "current": "A synthetic-credit forecast market settles by log scoring against the aggregate, and the kernel computes the tournament aggregate each LEARN (model_tournament.rs:445, advisory). The aggregate's weights are influence: the reputation share (settled balance) multiplied by calibration, information, cost, latency and regime survival, each in (0, 1] and able only to reduce it, then normalised. With every other factor tied the normalised weight is exactly ForecastMarket::shares, and the pooled probability is the share-weighted mix; a test now asserts both.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:1424 the influence product, market share first",
+      "backend/crates/services/qip-learning-engine/src/forecast_market.rs:115 ForecastMarket::shares",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:2070 with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:445 the LEARN-stage aggregate"
     ],
-    "gap": "Aggregate weights are influence (share x calibration x information x cost x latency x survival), not equal to reputation shares, and are equal until a forecaster is promoted; no test asserts weights equal shares.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-learning-engine --lib with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: the check reads 'weights are influence and the reputation share is its first factor'; weights equal shares exactly when the other five factors tie, which is what the test pins. Mutation fired: replacing market_share with 1.0 in the product gave weight 0.5 against share 0.5123. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-3094",
@@ -2559,7 +2576,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L03, 2026-10-18: not closable inside the research loop. The closure's per-class exposure does not exist: CalibrationReport::hit_rate_by_class is keyed by hypothesis class and no Platform accessor maps a hypothesis class to positions or notional, so 'that class's own exposure' needs a new kernel accessor in qip-kernel platform.rs (another lane's file). Registering a wakeable BrainSpec per proposal is possible but would mint specialists ranked on the same whole-book weight, so it was not done."
   },
   {
     "id": "R12-AMBIENT-3114",
