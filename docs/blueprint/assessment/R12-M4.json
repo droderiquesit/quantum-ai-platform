@@ -1635,7 +1635,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital",
       "backend/crates/services/qip-capital/src/treasury.rs:52 CapitalBook (unintegrated)"
     ],
-    "gap": "Integrate the uncommitted-reserve floor.",
+    "gap": "The uncommitted-reserve floor is already carried by the survival kernel: SurvivalGovernor builds the waterfall (emergency reserve as a fraction of equity, margin, collateral, settlement, funding maturity, stressed-liquidity reserve) and installs what is left as the gross ceiling the risk state carries (RiskState.survival_gross_ceiling, seeded by seed_survival_ceiling), so building qip_capital::treasury::CapitalBook in deployable_capital would state the same floor a second time and two claims about one fact will disagree. Needs a design decision: either CapitalBook becomes the journal of commitments against the survival floor (floor read from the governor, never configured separately), or it is retired in favour of the governor's budget. No code was changed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1646,7 +1646,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01) after reading survival.rs and deployable_capital."
   },
   {
     "id": "R12-CAPITAL-4076",
@@ -1701,7 +1701,7 @@
     "evidence": [
       "backend/crates/services/qip-capital/src/bank.rs:449 route_idle_cash"
     ],
-    "gap": "Integration as a paper record; real routing BLOCKED (ADR 0003/0021).",
+    "gap": "route_idle_cash needs a shelf of YieldInstrument (custodian offerings with class, realisation and capacity) and nothing in the kernel, its config or any feed supplies one, so a call from DECIDE would route nothing. Also needs the uncommitted floor (see R12-CAPITAL-4075: one floor, not two). Needs a decision on where the shelf comes from (config, a custodian statement, a data source with a licence) before the paper routing record can be journalled.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1712,7 +1712,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01): the blocker is the missing shelf, not the missing call."
   },
   {
     "id": "R12-CAPITAL-4079",
@@ -1722,7 +1722,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:143,797 LiquidityLadder",
       "backend/crates/services/qip-capital/src/dated_ladder.rs:76 DatedLadder (unintegrated)"
     ],
-    "gap": "Dated treasury ladder and withdrawal/reserve forecast in the cycle.",
+    "gap": "DatedLadder needs dated inflows and outflows, and the kernel dates only unfunded commitments (CommitmentBook) and the survival governor's CapitalObligations; no withdrawal or redemption event was found in the kernel (grep of platform.rs for withdraw/redemption finds only data-source and venue withdrawals), so a withdrawal/reserve forecast cannot be built from facts the platform holds. Needs a design decision on the withdrawal signal (mandate terms? an operator declaration?) before the ladder can be fed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1733,7 +1733,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-CAPITAL-4080",

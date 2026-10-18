@@ -3780,12 +3780,15 @@
   {
     "id": "R12-COVERAGE-7168",
     "status": "PARTIAL",
-    "current": "Quantum and cognition are structurally absent from reflex; degradation table partial.",
+    "current": "qip-contracts degradation.rs now has Ledger, Custody, Clock and Fabric Capability variants (Capability::dependencies) with multipliers from the v12 failure table: ledger unavailable sizes to nothing (new exposure halts, cancels continue), ledger stale 0.5, custody 0.75/0.5, clock 0.75/0.5, fabric 1 (cells decide alone; the loss narrows through the TTL-governed policy rows). DegradationState::dependency_multiplier compounds only observed dependency rows and permits_new_exposure reads it. Cell::narrowing records Ledger from the journal wire (Normal/Narrow/Exhausted = Fresh/Stale/Unavailable) and Fabric from the held policy; the pass keeps sizing by the journal wire own multiplier so the ledger fact is charged once.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:64-142,693-725 Capability/Freshness/DegradationState (absence = unavailable; multipliers compound)"
+      "backend/crates/libs/qip-contracts/src/degradation.rs Capability::dependencies / dependency_multiplier / permits_new_exposure",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::narrowing (Ledger, Fabric rows)",
+      "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs an_unavailable_fabric_still_permits_a_sized_pass_while_an_unavailable_ledger_halts_new_exposure",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs the_ledger_row_follows_the_journal_wire_and_agrees_with_it_on_halting_new_exposure",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs a_cell_holding_no_policy_records_an_unavailable_fabric_and_still_sizes_its_pass"
     ],
-    "gap": "Degraded modes for every dependency (ledger, custody, clock, fabric).",
+    "gap": "Custody and Clock have a multiplier but no reading anywhere: no cell or centre path observes either row, so they never narrow a pass. The cell compounds no dependency_multiplier into its size (Ledger is carried by the journal wire own multiplier, Fabric by design is 1), the dependency rows are not in the chain narrowed list (it is hashed and the ledger row moves with the wire) and have no telemetry series. Needs a custody/treasury balance-freshness reading and a clock-sync reading from the node, and an edge series for the new rows.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3793,10 +3796,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test journal_pressure",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: swapping the ledger-unavailable and fabric multipliers failed the contracts test; mapping Exhausted to Fresh failed the ledger-row test; dropping observe(Fabric) failed the fabric test. Unobserved dependency rows read unavailable from freshness() but contribute one to dependency_multiplier: scaling every unwired plane by a number nobody measured is the failure the module refuses elsewhere."
   },
   {
     "id": "R12-COVERAGE-7169",
@@ -4708,7 +4711,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn",
       "backend/crates/runtime/qip-kernel/tests/learning.rs"
     ],
-    "gap": "Rejected-by-risk and edge-refusal outcomes in learning; desk outcome records not consumed by any learner.",
+    "gap": "Desk risk-limit vetoes are already learned from: capture_submission records Action::Rejected with gate, rules and readings and queues the sizing-evidence refusals for score_declined. Not learned from: edge-cell refusals, which reach the centre as DeltaRefusal { gate, reason, venue } with no instrument, side or size (see R12-MESH-5068 for the wire change), and desk outcome records, which DeskShipper carries to the ledger stream and no learner consumes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4719,7 +4722,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged. Gap corrected 2026-10-18 (lane L01): the desk half of 'rejected-by-risk' is done and tested; the edge half needs the cell wire to carry the refused intent."
   },
   {
     "id": "R12-FABRIC-7211",

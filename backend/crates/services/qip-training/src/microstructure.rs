@@ -306,6 +306,86 @@ pub fn build_examples(
     Ok(out)
 }
 
+/// A venue fill whose simulated entry the twin got wrong, as the training
+/// side needs to know it: where, in what, when, and by how much.
+///
+/// The learning round already scores every fill against the twin
+/// (`qip_venue_fill_error_bps`) and charts it. A chart is not a training
+/// set: until [`join_fill_residuals`] the error entered no row a model is
+/// fitted or evaluated on, so the microstructure models were judged on
+/// replayed books alone and never on the fills the platform actually got.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillResidualObservation {
+    pub venue: String,
+    pub instrument: String,
+    /// When the venue reported the fill.
+    pub filled_at: Timestamp,
+    /// Signed basis points, as `FillScore::trade_error_bps`: negative where
+    /// the twin filled better than the venue did.
+    pub error_bps: f64,
+}
+
+/// A labelled decision instant tied to the real fill that followed it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResidualExample {
+    /// The example drawn at the last instant at or before the fill, on the
+    /// same venue and instrument: never one drawn after, which would hand
+    /// the row the fill's own aftermath as a feature.
+    pub example: MicroExample,
+    pub filled_at: Timestamp,
+    pub error_bps: f64,
+}
+
+/// What [`join_fill_residuals`] produced.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ResidualSet {
+    pub rows: Vec<ResidualExample>,
+    /// Residuals with no example at or before their fill on that venue and
+    /// instrument — a fill on a venue the replayed history does not cover.
+    /// Counted, never matched to a neighbour: a row joined across venues
+    /// would attribute one venue's queue to another's.
+    pub unmatched: usize,
+}
+
+/// Join each residual to the example it follows, as of the fill.
+///
+/// Refuses a residual whose error is not a finite number rather than
+/// dropping it: a fill that cannot be scored is a measurement problem the
+/// caller should see, not a row that is quietly absent.
+pub fn join_fill_residuals(
+    examples: &[MicroExample],
+    residuals: &[FillResidualObservation],
+) -> Result<ResidualSet> {
+    if let Some(bad) = residuals.iter().find(|r| !r.error_bps.is_finite()) {
+        return Err(Error::invalid(format!(
+            "the fill residual on {} at {} is not a finite number; refuse it upstream",
+            bad.venue, bad.filled_at
+        )));
+    }
+    let mut out = ResidualSet::default();
+    for residual in residuals {
+        // The latest instant at or before the fill; at that instant the
+        // shortest horizon, so one residual is one row.
+        let matched = examples
+            .iter()
+            .filter(|e| {
+                e.venue == residual.venue
+                    && e.instrument == residual.instrument
+                    && e.at <= residual.filled_at
+            })
+            .max_by(|a, b| a.at.cmp(&b.at).then_with(|| b.horizon.cmp(&a.horizon)));
+        match matched {
+            Some(example) => out.rows.push(ResidualExample {
+                example: example.clone(),
+                filled_at: residual.filled_at,
+                error_bps: residual.error_bps,
+            }),
+            None => out.unmatched += 1,
+        }
+    }
+    Ok(out)
+}
+
 /// The last `holdout_fraction` of examples in time, and the rest. Examples
 /// sharing an instant fall on one side together.
 pub fn split_in_time(

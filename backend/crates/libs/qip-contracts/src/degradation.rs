@@ -80,6 +80,17 @@ pub enum Capability {
     /// the cell has no such model — and the edge's sizing deliberately does
     /// not compound it; see [`DegradationState::central_sizing_multiplier`].
     SelfModel,
+    /// The authoritative ledger. Blueprint v12 failure table, "Ledger
+    /// degraded". A *dependency* row, not a cognitive one: see
+    /// [`Capability::dependencies`].
+    Ledger,
+    /// Custody and treasury. "Custody/treasury unavailable".
+    Custody,
+    /// Clock synchronisation. "Clock synchronization degraded".
+    Clock,
+    /// The event fabric. Its loss narrows nothing by itself: see
+    /// [`FABRIC_MULTIPLIER`].
+    Fabric,
 }
 
 impl Capability {
@@ -91,9 +102,18 @@ impl Capability {
             Self::BeliefState => "belief_state",
             Self::CounterfactualScoring => "counterfactual_scoring",
             Self::SelfModel => "self_model",
+            Self::Ledger => "ledger",
+            Self::Custody => "custody",
+            Self::Clock => "clock",
+            Self::Fabric => "fabric",
         }
     }
 
+    /// The six cognitive rows of §6.2, which every plane holds a reading of
+    /// and which read unavailable until reported. The four infrastructure
+    /// rows are [`Self::dependencies`]; they are not here because a plane
+    /// that has not wired a dependency has no row to narrow on, and listing
+    /// them would make every unwired plane report four capabilities lost.
     pub const fn all() -> [Self; 6] {
         [
             Self::Ingestion,
@@ -103,6 +123,24 @@ impl Capability {
             Self::CounterfactualScoring,
             Self::SelfModel,
         ]
+    }
+
+    /// The four infrastructure dependencies of the v12 failure table. A row
+    /// narrows only once a plane has observed it: [`Self::freshness`] still
+    /// reads unavailable for an unobserved one, but
+    /// [`DegradationState::dependency_multiplier`] compounds only what a
+    /// plane measured, because an unmeasured plane scaling its size by a
+    /// number nobody computed is the failure this module rejects elsewhere.
+    pub const fn dependencies() -> [Self; 4] {
+        [Self::Ledger, Self::Custody, Self::Clock, Self::Fabric]
+    }
+
+    /// Whether this is one of [`Self::dependencies`].
+    pub const fn is_dependency(&self) -> bool {
+        matches!(
+            self,
+            Self::Ledger | Self::Custody | Self::Clock | Self::Fabric
+        )
     }
 
     /// Whether losing this capability may change a trading decision at all.
@@ -253,6 +291,44 @@ const SELF_MODEL_STALE_MULTIPLIER: (i128, u32) = (75, 2);
 /// merely thin model would size a platform that has never checked itself as
 /// if it had.
 const SELF_MODEL_UNAVAILABLE_MULTIPLIER: (i128, u32) = (50, 2);
+
+/// The multiplier applied while the ledger is stale: accounting is committing
+/// late, so new exposure is halved while it catches up.
+const LEDGER_STALE_MULTIPLIER: (i128, u32) = (50, 2);
+
+/// The multiplier applied while the ledger is unavailable: **zero**. The v12
+/// failure table is explicit that new money-risking actions halt when
+/// authoritative accounting cannot be committed, and that safe cancels and
+/// flattening continue under the local journal's rules. Exposure that cannot
+/// be booked is exposure the platform could not later explain, so no size is
+/// the only size that does not create it.
+const LEDGER_UNAVAILABLE_MULTIPLIER: (i128, u32) = (0, 0);
+
+/// Custody or treasury reads stale: balances may lag, so size against less.
+const CUSTODY_STALE_MULTIPLIER: (i128, u32) = (75, 2);
+
+/// Custody or treasury is unavailable: trading is constrained to available
+/// settled capital and may not rely on a transfer. Half, not zero: a cell
+/// holding settled capital may still trade it, which is the table's wording.
+const CUSTODY_UNAVAILABLE_MULTIPLIER: (i128, u32) = (50, 2);
+
+/// Clock synchronisation is degraded: temporal uncertainty widens and
+/// strategies that need precise cross-venue ordering are disabled elsewhere,
+/// so what remains is sized down by a quarter.
+const CLOCK_STALE_MULTIPLIER: (i128, u32) = (75, 2);
+
+/// Clock synchronisation is lost.
+const CLOCK_UNAVAILABLE_MULTIPLIER: (i128, u32) = (50, 2);
+
+/// The multiplier for a fabric that is stale or unavailable: **one**, on
+/// purpose. Cells decide alone (ADR 0008) and a node whose fabric is gone
+/// continues under its last valid package until that package's TTL runs out;
+/// the loss narrows through the policy-fed rows that TTL governs
+/// ([`Capability::CausalGraph`], [`Capability::BeliefState`]). Narrowing here
+/// as well would charge the same fact twice, and would let a broker outage
+/// stop every cell at once, which is the correlation the regional split
+/// exists to remove.
+pub const FABRIC_MULTIPLIER: (i128, u32) = (1, 0);
 
 /// How old the self-model's newest graded outcome may be before the row is
 /// stale.
@@ -698,7 +774,10 @@ impl DegradationState {
     /// Every capability fresh. The state a healthy platform reports.
     pub fn fully_available() -> Self {
         let mut freshness = BTreeMap::new();
-        for capability in Capability::all() {
+        for capability in Capability::all()
+            .into_iter()
+            .chain(Capability::dependencies())
+        {
             freshness.insert(capability, Freshness::Fresh);
         }
         Self { freshness }
@@ -842,6 +921,64 @@ impl DegradationState {
         }
     }
 
+    /// Whether the dependency rows leave any room to size new exposure.
+    ///
+    /// False only when [`Self::dependency_multiplier`] is zero, which today
+    /// means the ledger is unavailable. This is not [`Self::halts`]: cancels,
+    /// withdrawals and flattening continue, and nothing here stops the
+    /// platform. It says that a size computed under this state is nothing.
+    pub fn permits_new_exposure(&self) -> bool {
+        self.dependency_multiplier().is_positive()
+    }
+
+    /// The multiplier the four dependency rows apply to size, compounded and
+    /// covering only the rows a plane has observed.
+    ///
+    /// Not part of [`Self::sizing_multiplier`] or
+    /// [`Self::central_sizing_multiplier`], whose values are pinned by the
+    /// cognitive table; a plane compounds this beside them. A dependency
+    /// nobody observed contributes one — see [`Capability::dependencies`] for
+    /// why — and the one reading that contributes zero is the ledger being
+    /// unavailable.
+    pub fn dependency_multiplier(&self) -> Decimal {
+        let mut multiplier = Decimal::from_int(1);
+        for capability in Capability::dependencies() {
+            let Some(freshness) = self.freshness.get(&capability).copied() else {
+                continue;
+            };
+            let constant = match (capability, freshness) {
+                (_, Freshness::Fresh) => continue,
+                (Capability::Ledger, Freshness::Stale) => LEDGER_STALE_MULTIPLIER,
+                (Capability::Ledger, Freshness::Unavailable) => LEDGER_UNAVAILABLE_MULTIPLIER,
+                (Capability::Custody, Freshness::Stale) => CUSTODY_STALE_MULTIPLIER,
+                (Capability::Custody, Freshness::Unavailable) => CUSTODY_UNAVAILABLE_MULTIPLIER,
+                (Capability::Clock, Freshness::Stale) => CLOCK_STALE_MULTIPLIER,
+                (Capability::Clock, Freshness::Unavailable) => CLOCK_UNAVAILABLE_MULTIPLIER,
+                (Capability::Fabric, _) => FABRIC_MULTIPLIER,
+                // A cognitive row is not a dependency; `dependencies()` never
+                // yields one. Written out so a new variant must be placed.
+                (
+                    Capability::Ingestion
+                    | Capability::CausalGraph
+                    | Capability::EpisodicMemory
+                    | Capability::BeliefState
+                    | Capability::CounterfactualScoring
+                    | Capability::SelfModel,
+                    _,
+                ) => continue,
+            };
+            multiplier = Self::scaled(constant, multiplier);
+        }
+        multiplier
+    }
+
+    /// What a plane has said about one capability, or `None` if it has said
+    /// nothing. [`Self::freshness`] turns that silence into `Unavailable`;
+    /// this keeps the two apart for the dependency rows.
+    pub fn observed(&self, capability: Capability) -> Option<Freshness> {
+        self.freshness.get(&capability).copied()
+    }
+
     /// Whether the platform halts.
     ///
     /// Always false, and it is a method rather than an absence so that the
@@ -854,11 +991,18 @@ impl DegradationState {
         false
     }
 
-    /// Every capability that is not fresh, in a deterministic order.
+    /// Every capability that is not fresh, in a deterministic order: the
+    /// cognitive rows, unobserved ones included, and the dependency rows a
+    /// plane has observed.
     pub fn narrowed(&self) -> BTreeMap<Capability, Freshness> {
         Capability::all()
             .into_iter()
             .map(|capability| (capability, self.freshness(capability)))
+            .chain(
+                Capability::dependencies()
+                    .into_iter()
+                    .filter_map(|capability| Some((capability, self.observed(capability)?))),
+            )
             .filter(|(_, freshness)| !freshness.is_fresh())
             .collect()
     }
