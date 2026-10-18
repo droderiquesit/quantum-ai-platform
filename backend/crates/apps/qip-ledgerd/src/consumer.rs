@@ -370,6 +370,11 @@ pub struct PartitionWorker {
     seeked: bool,
     joined: bool,
     failures: u32,
+    /// Whether group commits are held until this worker is caught up,
+    /// because the broker refused one. See [`Self::commit_group`].
+    commit_deferred: bool,
+    /// The last batch this worker applied, committed when a deferral ends.
+    last_batch: Option<u64>,
 }
 
 impl std::fmt::Debug for PartitionWorker {
@@ -422,6 +427,8 @@ impl PartitionWorker {
             seeked: false,
             joined: false,
             failures: 0,
+            commit_deferred: false,
+            last_batch: None,
         };
         worker.report(None);
         Ok(worker)
@@ -518,6 +525,37 @@ impl PartitionWorker {
         }
     }
 
+    /// Commit `batch` as the group's checkpoint: the broker's view of the
+    /// ledger's lag. Advisory: a refusal makes the worker rejoin; the
+    /// store's own offset is what resumes.
+    ///
+    /// A store rebuilt from the stream (a lost store, a fresh directory)
+    /// replays batches the group already committed past, and the broker
+    /// refuses to move a group's checkpoint back. The transport retries that
+    /// refusal and its circuit counts every attempt, so before this each
+    /// replayed batch opened the circuit and a rebuild crawled at one batch
+    /// per cool-down (24 batches in 53 seconds). A refusal now defers
+    /// commits until the worker is caught up, when the last batch it
+    /// applied is at or past anything the group can hold, and commits that
+    /// once.
+    fn commit_group(&mut self, batch: u64) {
+        match self.consumer.commit(batch) {
+            Ok(_) => {
+                self.commit_deferred = false;
+                self.report(None);
+            }
+            Err(error) => {
+                self.commit_deferred = true;
+                self.joined = false;
+                self.report(Some(format!(
+                    "applied {} batch {batch} but the group commit was refused; rejoining, and \
+                     holding commits until caught up: {error}",
+                    self.label
+                )));
+            }
+        }
+    }
+
     /// One step: join if needed, fetch one batch from the current position,
     /// apply what it holds. Never moves past a record it did not apply.
     pub fn step(&mut self) -> Step {
@@ -536,6 +574,11 @@ impl PartitionWorker {
             Ok(None) => {
                 self.failures = 0;
                 self.report(None);
+                if self.commit_deferred
+                    && let Some(batch) = self.last_batch
+                {
+                    self.commit_group(batch);
+                }
                 return Step::Idle;
             }
             Err(error) => {
@@ -610,16 +653,11 @@ impl PartitionWorker {
                 )));
             }
         }
-        // The broker's view of the ledger's lag. Advisory: a refusal makes
-        // the worker rejoin; the store's own offset is what resumes.
-        if let Err(error) = self.consumer.commit(batch.base_offset) {
-            self.joined = false;
-            self.report(Some(format!(
-                "applied {} batch {} but the group commit was refused; rejoining: {error}",
-                self.label, batch.base_offset
-            )));
-        } else {
+        self.last_batch = Some(batch.base_offset);
+        if self.commit_deferred {
             self.report(None);
+        } else {
+            self.commit_group(batch.base_offset);
         }
         // Once per applied batch, not per record: a snapshot of the
         // registry is the cost, and the objective moves only on a commit.

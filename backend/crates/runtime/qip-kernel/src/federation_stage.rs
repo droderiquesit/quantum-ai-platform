@@ -71,6 +71,17 @@ pub const MOMENTUM: &str = "markets.momentum.global.micro";
 pub const REVERSION: &str = "markets.reversion.global.meso";
 pub const STRESS_SCENARIO: &str = "markets.stress-world.global.macro";
 pub const STANDING_ASIDE: &str = "markets.standing-aside.global.meso";
+/// The rare-regime member (WORLD-3051): what an instrument does on the day
+/// after one of its own tail moves, read from the tape's history of them.
+pub const RARE_REGIME: &str = "markets.rare-regime.global.macro";
+/// The alternate-future member (WORLD-3051): the stress world's inverse — the
+/// future in which the shock the stress member applies does not arrive and
+/// its opposite does.
+pub const ALTERNATE_FUTURE: &str = "markets.alternate-future.global.macro";
+/// The share of an instrument's largest absolute moves the rare-regime
+/// member treats as its rare days. One in twenty is the tail the stress
+/// member's shock is drawn from, so the two read the same regime.
+pub const RARE_REGIME_TAIL: f64 = 0.05;
 pub const SELF_SYSTEM: &str = "self.operational-health.global";
 pub const ON_CHAIN: &str = "crypto-onchain.flows.global";
 /// The regional member's id is `markets.microstructure.<region>.micro`.
@@ -119,7 +130,23 @@ pub struct SystemView {
     pub expired_manifests: usize,
     /// Instruments priced but below the history a member needs: a blind spot.
     pub thin_subjects: usize,
+    /// The slowest stage of the previous cycle on the platform's clock
+    /// (WORLD-3052), as [`FederationStage::observe_cycle`] last recorded it;
+    /// `None` before the first cycle has finished. Absent on a record
+    /// written before the field existed.
+    #[serde(default)]
+    pub slowest_stage: Option<Duration>,
+    /// Central capabilities the degradation table holds as anything but
+    /// fresh (WORLD-3052); `None` when the table could not be read, which
+    /// the member counts as unknown health rather than good health.
+    #[serde(default)]
+    pub degraded_capabilities: Option<usize>,
 }
+
+/// A stage slower than this is a platform the self/system member reads as
+/// at risk: a cycle is daily, and a stage that takes a minute of it is a
+/// process waiting on something it should not be (WORLD-3052).
+pub const SELF_STAGE_LATENCY_BUDGET: Duration = Duration::from_secs(60);
 
 /// What the on-chain member reads (ASSET-3017's federation half).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +315,8 @@ pub struct FederationStage {
     asset_classes: BTreeMap<String, String>,
     /// Classes whose domain member has been declared.
     domain_members: BTreeSet<String>,
+    /// The previous cycle's slowest stage ([`Self::observe_cycle`]).
+    slowest_stage: Option<Duration>,
 }
 
 /// Hand one view to `model`; true when the federation took it. A refusal is
@@ -367,6 +396,28 @@ fn share_positive(xs: &[f64]) -> f64 {
     xs.iter().filter(|r| **r > 0.0).count() as f64 / xs.len() as f64
 }
 
+/// The rare-regime member's reading: the share of positive returns on the
+/// day after a move in the largest [`RARE_REGIME_TAIL`] of absolute moves,
+/// and how many such days there were. Zero days — the only tail move is the
+/// latest, with no day after it yet — is reported as zero, not guessed.
+fn after_tail_moves(xs: &[f64]) -> (f64, usize) {
+    let mut magnitudes: Vec<f64> = xs.iter().map(|x| x.abs()).collect();
+    magnitudes.sort_by(f64::total_cmp);
+    let rank = ((magnitudes.len() as f64) * (1.0 - RARE_REGIME_TAIL)).floor() as usize;
+    let Some(threshold) = magnitudes.get(rank.min(magnitudes.len().saturating_sub(1))) else {
+        return (0.5, 0);
+    };
+    let after: Vec<f64> = xs
+        .windows(2)
+        .filter(|pair| pair[0].abs() >= *threshold)
+        .map(|pair| pair[1])
+        .collect();
+    if after.is_empty() {
+        return (0.5, 0);
+    }
+    (share_positive(&after), after.len())
+}
+
 fn tail(xs: &[f64]) -> &[f64] {
     &xs[xs.len().saturating_sub(20)..]
 }
@@ -415,6 +466,17 @@ impl FederationStage {
     }
 
     /// The id of the domain member for `class`.
+    /// Record a finished cycle's slowest stage, for the next pass's
+    /// self/system member to read.
+    pub fn observe_cycle(&mut self, slowest_stage: Duration) {
+        self.slowest_stage = Some(slowest_stage);
+    }
+
+    /// The slowest stage [`Self::observe_cycle`] last recorded.
+    pub fn slowest_stage(&self) -> Option<Duration> {
+        self.slowest_stage
+    }
+
     pub fn domain_member(class: &str) -> String {
         format!("{DOMAIN_PREFIX}{class}.global.meso")
     }
@@ -550,6 +612,28 @@ impl FederationStage {
                 0.3,
             ),
             declare(
+                RARE_REGIME.into(),
+                "markets",
+                "global",
+                10,
+                Abstraction::Macro,
+                "rare-regime",
+                ModelKind::Scenario,
+                &["sense:bar-closes"],
+                0.3,
+            ),
+            declare(
+                ALTERNATE_FUTURE.into(),
+                "markets",
+                "global",
+                20,
+                Abstraction::Macro,
+                "alternate-future",
+                ModelKind::Counterfactual,
+                &["sense:bar-closes"],
+                0.3,
+            ),
+            declare(
                 STANDING_ASIDE.into(),
                 "markets",
                 "global",
@@ -650,8 +734,9 @@ impl FederationStage {
                 // Microstructure unmeasured: the member says it barely knows.
                 _ => 0.7,
             };
+            let (after_tail, tail_days) = after_tail_moves(r);
             let at = now;
-            let views: [(&str, f64, f64, f64, f64); 5] = [
+            let views: [(&str, f64, f64, f64, f64); 7] = [
                 (
                     MOMENTUM,
                     logistic(0.5 * z_momentum),
@@ -674,6 +759,27 @@ impl FederationStage {
                     microstructure_uncertainty,
                 ),
                 (STRESS_SCENARIO, share_positive(&stressed), fit, 0.4, 0.6),
+                // No tail day with a day after it is no rare-regime
+                // evidence at all: the member says it knows nothing.
+                (
+                    RARE_REGIME,
+                    after_tail,
+                    fit,
+                    0.4,
+                    if tail_days == 0 {
+                        1.0
+                    } else {
+                        (2.0 * (after_tail * (1.0 - after_tail) / tail_days as f64).sqrt())
+                            .clamp(0.1, 1.0)
+                    },
+                ),
+                (
+                    ALTERNATE_FUTURE,
+                    1.0 - share_positive(&stressed),
+                    fit,
+                    0.3,
+                    0.6,
+                ),
                 (
                     STANDING_ASIDE,
                     base,
@@ -739,12 +845,25 @@ impl FederationStage {
         // halted? A tripped switch is sticky, so it says yes; otherwise the
         // risk rises with the capabilities the organisation holds and may not
         // use. Its view is the platform's own failure state as a forecast.
+        // WORLD-3052: latency and data health are the platform's own state
+        // too. A stage past its budget or a capability the degradation table
+        // holds stale each raise the risk; health nobody could read is
+        // counted as one degraded capability and widens the uncertainty,
+        // because unknown health is not good health.
         let system = &inputs.system;
+        let slow = system
+            .slowest_stage
+            .is_some_and(|d| d > SELF_STAGE_LATENCY_BUDGET);
+        let capabilities = qip_contracts::degradation::Capability::all().len();
+        let degraded = system.degraded_capabilities.unwrap_or(1).min(capabilities);
         let halted_p = if system.halted {
             0.9
         } else {
             0.05 + 0.1 * (system.expired_manifests.min(5) as f64 / 5.0)
+                + if slow { 0.1 } else { 0.0 }
+                + 0.1 * (degraded as f64 / capabilities as f64)
         };
+        let health_known = system.slowest_stage.is_some() && system.degraded_capabilities.is_some();
         let proposition = halted_proposition(inputs.cycle);
         if feed(
             &mut self.federation,
@@ -754,7 +873,11 @@ impl FederationStage {
                 probability: halted_p,
                 evidence_fit: 1.0,
                 causal_coherence: 0.6,
-                uncertainty: if system.halted { 0.1 } else { 0.3 },
+                uncertainty: match (system.halted, health_known) {
+                    (true, _) => 0.1,
+                    (false, true) => 0.3,
+                    (false, false) => 0.45,
+                },
                 at: now,
             },
             &mut fed,
@@ -1028,6 +1151,8 @@ mod tests {
                 live_authority: false,
                 expired_manifests: 0,
                 thin_subjects: 0,
+                slowest_stage: Some(Duration::from_secs(1)),
+                degraded_capabilities: Some(0),
             },
             chain: chain.map(|confirmed_trades| ChainView { confirmed_trades }),
         }
@@ -1042,7 +1167,7 @@ mod tests {
         let mut stage = FederationStage::new();
         let review = stage.run(&inputs(1, 100.0, day(0), Some(3)), day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 7, "{review:?}");
+        assert_eq!(review.population.len(), 9, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1052,10 +1177,107 @@ mod tests {
         assert_eq!(spanned.kinds.len(), 3);
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
-        // One instrument proposition with five views, plus self and chain.
+        // One instrument proposition with seven views, plus self and chain.
         assert_eq!(review.arbitrations.len(), 3);
         let instrument = &review.arbitrations[0];
-        assert_eq!(instrument.disagreement.views.len(), 5);
+        assert_eq!(instrument.disagreement.views.len(), 7);
+        // WORLD-3051: the rare-regime and alternate-future members are in
+        // the population and each produced a view on the instrument.
+        for member in [RARE_REGIME, ALTERNATE_FUTURE] {
+            assert!(
+                review.population.iter().any(|m| m.id == member),
+                "{member} not in the population"
+            );
+            assert!(
+                instrument
+                    .disagreement
+                    .views
+                    .iter()
+                    .any(|v| v.model == member),
+                "{member} produced no view: {:?}",
+                instrument.disagreement.views
+            );
+        }
+    }
+
+    /// WORLD-3052: the self/system member's state carries latency and data
+    /// health. A slow stage alone, and a stale capability alone, each raise
+    /// its forecast that the platform is found halted. Mutation: ignore the
+    /// two inputs — all three forecasts are equal.
+    #[test]
+    fn a_slow_stage_or_a_stale_capability_moves_the_self_system_members_state() {
+        let forecast = |slowest: Duration, degraded: usize| {
+            let mut stage = FederationStage::new();
+            let mut inputs = inputs(1, 100.0, day(0), None);
+            inputs.system.slowest_stage = Some(slowest);
+            inputs.system.degraded_capabilities = Some(degraded);
+            let review = stage.run(&inputs, day(0));
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == halted_proposition(1))
+                .and_then(|a| a.disagreement.views.iter().find(|v| v.model == SELF_SYSTEM))
+                .map(|v| v.probability)
+                .expect("the self/system member forecast the halt")
+        };
+        let healthy = forecast(Duration::from_secs(1), 0);
+        // Premise: the slow stage is past the budget and the healthy one is
+        // inside it, so the comparison is about the budget being read.
+        let past = Duration::from_secs(61);
+        assert!(
+            past > SELF_STAGE_LATENCY_BUDGET && Duration::from_secs(1) < SELF_STAGE_LATENCY_BUDGET
+        );
+        let slow = forecast(past, 0);
+        let stale = forecast(Duration::from_secs(1), 2);
+        assert!(slow > healthy, "slow {slow} vs healthy {healthy}");
+        assert!(stale > healthy, "stale {stale} vs healthy {healthy}");
+    }
+
+    /// WORLD-3051: the rare-regime member reads the day after the tape's own
+    /// tail moves, and the alternate-future member is the stress world's
+    /// inverse. The tape's two largest moves are each followed by a rise,
+    /// so the rare-regime view is a rise for certain while the tape as a
+    /// whole is a coin flip. Mutation: feed the rare-regime member the
+    /// whole tape's share of rises — its view falls to about one half.
+    #[test]
+    fn the_rare_regime_member_reads_the_day_after_tail_moves_and_the_alternate_future_inverts_the_stress_world()
+     {
+        let mut stage = FederationStage::new();
+        let mut inputs = inputs(1, 100.0, day(0), None);
+        let mut returns = series(40, 0.0);
+        returns[10] = 0.08;
+        returns[11] = 0.02;
+        returns[25] = -0.09;
+        returns[26] = 0.03;
+        // A late run of rises, smaller than either tail move, so the stress
+        // world is not the coin flip its inverse would equal.
+        for r in &mut returns[36..] {
+            *r = 0.03;
+        }
+        // Premise: the whole tape is not one-sided, so a rise for certain
+        // can only come from reading the days after the tail moves.
+        let whole = share_positive(&returns);
+        assert!(whole > 0.3 && whole < 0.7, "{whole}");
+        inputs.instruments[0].returns = returns;
+        let review = stage.run(&inputs, day(0));
+        let views = &review.arbitrations[0].disagreement.views;
+        let view = |model: &str| {
+            views
+                .iter()
+                .find(|v| v.model == model)
+                .unwrap_or_else(|| panic!("{model} produced no view: {views:?}"))
+        };
+        assert!((view(RARE_REGIME).probability - 1.0).abs() < 1e-12);
+        assert!((view(RARE_REGIME).uncertainty - 0.1).abs() < 1e-12);
+        let stress = view(STRESS_SCENARIO).probability;
+        assert!(
+            (view(ALTERNATE_FUTURE).probability - (1.0 - stress)).abs() < 1e-12,
+            "alternate {} vs stress {stress}",
+            view(ALTERNATE_FUTURE).probability
+        );
+        // Premise for the inversion to mean anything: the stress view is
+        // not one half, where a view and its inverse coincide.
+        assert!((stress - 0.5).abs() > 1e-9, "{stress}");
     }
 
     /// MODEL-4009: a domain member per named asset class is declared and

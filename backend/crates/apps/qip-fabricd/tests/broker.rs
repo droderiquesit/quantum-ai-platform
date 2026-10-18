@@ -1834,3 +1834,56 @@ fn a_configured_hot_window_removes_segments_past_it_and_archived_history_is_stil
         "every trimmed journal batch is still served, from the archive"
     );
 }
+
+/// OBS-9147: the partition-lag series moves because a consumer group
+/// committed through the served broker. `FabricdTelemetry::group_lag` had
+/// no caller outside its own unit test, so a group could fall arbitrarily
+/// far behind with nothing charted.
+///
+/// Mutation: delete the `self.telemetry.group_lag(..)` call in
+/// `DataPlane::record` — no `qip_event_fabric_group_lag` line is exposed
+/// after the commit and the lookup panics naming it.
+#[test]
+fn a_group_commit_through_the_served_broker_moves_the_partition_lag_series() {
+    let fabric = Fabric::start("group-lag");
+    let mut producer = fabric.producer(RESEARCHER, RESEARCH, 0, QosClass::P3Research);
+    producer.init().unwrap();
+    for tag in ["a", "b", "c"] {
+        producer
+            .send(batch_of(QosClass::P3Research, tag, &[b"x".to_vec()]))
+            .unwrap();
+    }
+    let (_, exposition) = fabric.health("/metrics");
+    assert!(
+        !exposition.contains("qip_event_fabric_group_lag{"),
+        "premise: no lag before any group commits:\n{exposition}"
+    );
+
+    let mut consumer = fabric.consumer(RESEARCHER, RESEARCH, 0, "lagging");
+    consumer.join().unwrap();
+    consumer.commit(0).unwrap();
+    let (status, exposition) = fabric.health("/metrics");
+    assert_eq!(status, 200);
+    let line = exposition
+        .lines()
+        .find(|line| {
+            line.starts_with("qip_event_fabric_group_lag{")
+                && line.contains(r#"group="lagging""#)
+                && line.contains(&format!(r#"stream="{RESEARCH}""#))
+                && line.contains(r#"partition="0""#)
+        })
+        .unwrap_or_else(|| panic!("the commit charts the group's lag:\n{exposition}"));
+    // Three batches at offsets 0..=2, committed through 0: two behind.
+    assert_eq!(line.rsplit(' ').next(), Some("2"), "{line}");
+
+    consumer.commit(2).unwrap();
+    let (_, exposition) = fabric.health("/metrics");
+    assert!(
+        exposition
+            .lines()
+            .any(|line| line.starts_with("qip_event_fabric_group_lag{")
+                && line.contains(r#"group="lagging""#)
+                && line.ends_with(" 0")),
+        "a caught-up commit charts zero:\n{exposition}"
+    );
+}
