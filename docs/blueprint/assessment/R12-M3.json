@@ -1527,7 +1527,7 @@
       "backend/crates/runtime/qip-kernel/src/falsification.rs:1-12",
       "backend/crates/runtime/qip-kernel/tests/falsification.rs:213"
     ],
-    "gap": "Covers thesis falsifiers only, once per cycle; strategy and risk-model premises unchecked.",
+    "gap": "Covers thesis falsifiers only, once per cycle. Two premises stay unchecked, and the first has no stored side to check: (1) risk-model premise: Platform::stress_the_book re-estimates every beta and specific variance from the retained price history each cycle (qip_risk::market_factor::MarketFactor::estimate), so the model's assumption is the recent tape by construction and nothing remembers the fit it sized under; a premise check needs a stored fit snapshot (betas, market volatility, stressed correlation) with a stated horizon and band, and the bands are a risk-desk decision. (2) strategy premise: no per-strategy premise is recorded to falsify. The route onward exists: qip_expansion::detectors::model_drift raises a GapTrigger::ModelDrift observation, which deepbrain research.rs::signal_class files as SignalClass::Assumption, fed through node.rs note_drifted_models.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1538,7 +1538,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure compares RiskState assumed volatility with realised, but RiskState.volatility is a measurement and carries no assumed counterpart."
   },
   {
     "id": "R12-AMBIENT-3069",
