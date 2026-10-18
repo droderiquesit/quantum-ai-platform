@@ -294,6 +294,46 @@ fn tail_threshold(returns: &[f64]) -> Option<f64> {
         .filter(|t| *t > 0.0)
 }
 
+/// The quantiles every forecast on a question states over the realised move,
+/// in basis points — the value a question resolves with.
+pub const MOVE_QUANTILES: [f64; 3] = [0.1, 0.5, 0.9];
+
+/// The standard normal's 90th percentile: the spread [`MOVE_QUANTILES`] sit
+/// at either side of the centre, in units of the subject's deviation.
+const Z_90: f64 = 1.281_551_565_545;
+
+/// A forecaster's distribution over the realised move, so its quantile
+/// accuracy is scored beside its direction (R12-MODEL-6018).
+///
+/// The centre is the mean of the two-point move the claim states — up its
+/// `expected_move_bps` with the forecaster's own `p_up`, down by the same with
+/// the rest — so a forecaster that leans harder on the claim is centred
+/// further along it, and one that disagrees is centred against it. The spread
+/// is the subject's own one-period return deviation; it is not scaled to the
+/// horizon, so it understates a multi-bar horizon's spread, which the pinball
+/// loss then charges every forecaster for alike rather than favouring one.
+///
+/// `None` — no quantiles, and the forecast scored on direction alone — when
+/// the claim states no finite, non-zero move (the platform reads zero where
+/// no prediction carried a claim) or the subject has no measurable deviation:
+/// a distribution invented without either would be scored as if someone had
+/// stated it.
+fn move_quantiles(p_up: f64, expected_move_bps: f64, returns: &[f64]) -> Option<Vec<(f64, f64)>> {
+    let magnitude = expected_move_bps.abs();
+    if !(magnitude.is_finite() && magnitude > 0.0 && p_up.is_finite()) {
+        return None;
+    }
+    let spread = deviation(returns)
+        .map(|sd| sd * 10_000.0)
+        .filter(|sd| sd.is_finite() && *sd > 0.0)?;
+    let centre = (2.0 * p_up.clamp(0.0, 1.0) - 1.0) * magnitude;
+    Some(vec![
+        (MOVE_QUANTILES[0], centre - Z_90 * spread),
+        (MOVE_QUANTILES[1], centre),
+        (MOVE_QUANTILES[2], centre + Z_90 * spread),
+    ])
+}
+
 fn up_bp(probability: f64) -> u32 {
     // In range by construction (a probability), so the rounded value fits.
     (probability * 10_000.0).round() as u32
@@ -376,7 +416,7 @@ impl TournamentStage {
             target: target.clone(),
             issued_at: now,
             probabilities_bp: Some(binary(up_bp(detector_up))),
-            quantiles: None,
+            quantiles: move_quantiles(detector_up, observation.expected_move_bps, &rets),
             cost: 0.0,
             latency: Duration::from_nanos(0),
         });
@@ -404,7 +444,7 @@ impl TournamentStage {
                 target: target.clone(),
                 issued_at: now,
                 probabilities_bp: Some(binary(up_bp(p_up))),
-                quantiles: None,
+                quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
                 cost: run.map_or(0.0, |run| run.spend.cost_micros as f64),
                 latency: run.map_or(Duration::from_nanos(0), |run| run.duration()),
             });
