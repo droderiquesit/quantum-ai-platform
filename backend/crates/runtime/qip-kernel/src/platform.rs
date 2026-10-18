@@ -10744,6 +10744,9 @@ impl Platform {
             halted: self.autonomy.kill_switch().is_globally_tripped(),
         };
 
+        if let Some(slowest) = report.stages.iter().map(|o| o.elapsed).max() {
+            self.federation.observe_cycle(slowest);
+        }
         for outcome in &report.stages {
             let stage = labels([("stage", outcome.stage.as_str())]);
             let mut ran = stage.clone();
@@ -12050,6 +12053,13 @@ impl Platform {
                 live_authority: level.is_live(),
                 expired_manifests: self.expired_manifests(now).len(),
                 thin_subjects,
+                slowest_stage: self.federation.slowest_stage(),
+                degraded_capabilities: self.central_degradation(now).ok().map(|d| {
+                    qip_contracts::degradation::Capability::all()
+                        .into_iter()
+                        .filter(|c| d.freshness(*c) != qip_contracts::degradation::Freshness::Fresh)
+                        .count()
+                }),
             },
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
@@ -13343,6 +13353,16 @@ impl Platform {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
+                } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
+                    // Approved on review and still not queued: a thesis whose
+                    // only ground is the return it expects never reaches
+                    // DECIDE, so no intent is formed on profit alone
+                    // (R12-GOV-6127). Recorded under its own words, because
+                    // "could not be sized" and "had no reason but profit" send
+                    // an operator to different places.
+                    outcome = outcome
+                        .with_problem(format!("approved but not justified: {}", refusal.message()));
+                    DecisionTaken::NotSizeable
                 } else {
                     match self.thesis_from(&opportunity, &reasoned) {
                         Ok(thesis) => {
@@ -22210,6 +22230,30 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
     universe
 }
 
+/// The grounds a queued thesis stands on, checked by
+/// [`qip_contracts::action::check_justification`] before DECIDE may size it.
+///
+/// Every thesis carries an expected return, so `ExpectedProfit` is always a
+/// ground; the independent grounds are the hypothesis's *supporting*
+/// evidence, each named by the record it can be re-read from. Contradicting
+/// and contextual items are not reasons to act. Until R12-GOV-6127 the check
+/// ran only in the agency's `ActionGuard::preflight`, so the kernel's own
+/// order path could form an intent on a hypothesis review approved with no
+/// supporting evidence at all — the red team raises a missing primary source
+/// as serious, not fatal, and a tolerant policy lets one through.
+fn justify_thesis(evidence: &qip_reasoning_engine::evidence::EvidenceSet) -> Result<()> {
+    use qip_contracts::action::{Ground, check_justification};
+    use qip_reasoning_engine::evidence::Stance;
+    let mut grounds = vec![Ground::ExpectedProfit];
+    grounds.extend(
+        evidence
+            .with_stance(Stance::Supports)
+            .into_iter()
+            .map(|item| Ground::Evidence(item.record_id.clone())),
+    );
+    check_justification(&grounds)
+}
+
 #[cfg(test)]
 mod decide_tests {
     //! The decide stage stops being a stub: unit tests, because the seam
@@ -22221,6 +22265,49 @@ mod decide_tests {
     use qip_observability::Telemetry;
     use qip_portfolio_engine::construction::ApprovedThesis;
     use qip_risk::limits::LimitSet;
+
+    /// R12-GOV-6127: REASON queues no thesis whose only ground is profit.
+    /// The red team raises a missing primary source as serious rather than
+    /// fatal, so a tolerant policy can approve a hypothesis that no
+    /// supporting item stands behind; `justify_thesis` is what stops that
+    /// approval becoming an order intent.
+    #[test]
+    fn a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted() {
+        use qip_core::ids::EvidenceId;
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
+        let at = Timestamp::from_secs(1_760_000_000);
+        let item = |id: &str, stance: Stance| {
+            Evidence::new(
+                EvidenceId::from_string(id),
+                EvidenceKind::Filing,
+                stance,
+                "the filing says so",
+                format!("filing/{id}"),
+                "issuer",
+                at,
+                at,
+            )
+        };
+
+        let mut against = EvidenceSet::new();
+        against.push(item("E-against", Stance::Contradicts));
+        against.push(item("E-context", Stance::Contextual));
+        // The premise: the set is not empty, so a refusal below is about the
+        // stance of what it holds and not about holding nothing.
+        assert_eq!(against.len(), 2);
+        for (case, evidence) in [("empty", EvidenceSet::new()), ("no support", against)] {
+            let refusal = justify_thesis(&evidence)
+                .expect_err(&format!("{case}: a profit-only thesis was admitted"));
+            assert!(
+                matches!(refusal, Error::Denied(_)),
+                "{case}: refused as {refusal:?}, not as a denial"
+            );
+        }
+
+        let mut supported = EvidenceSet::new();
+        supported.push(item("E-for", Stance::Supports));
+        assert!(justify_thesis(&supported).is_ok());
+    }
 
     fn platform() -> Platform {
         let config = PlatformConfig::default();

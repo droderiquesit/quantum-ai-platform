@@ -613,6 +613,330 @@ fn aligned_tail(
     ))
 }
 
+/// Lagged correlation of sampled log returns: `subject` at each sample
+/// against `other` `lag` samples earlier (R12-TICK-2063, lead/lag).
+///
+/// High at a positive lag means `other` leads: what it did one grid step ago
+/// is what `subject` does now. Aligned on the sampling grid like
+/// [`RollingCorrelation`], and for the same reason — pairing the *n*th
+/// updates of two instruments correlates two different stretches of the
+/// session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeadLagCorrelation {
+    subject: ObjectId,
+    other: ObjectId,
+    window: usize,
+    lag: usize,
+}
+
+impl LeadLagCorrelation {
+    pub const NAME: &'static str = "lead_lag_correlation";
+
+    pub fn new(subject: ObjectId, other: ObjectId, window: usize, lag: usize) -> Self {
+        Self {
+            subject,
+            other,
+            window: window.max(2),
+            lag: lag.max(1),
+        }
+    }
+
+    pub fn key(subject: &ObjectId, other: &ObjectId, window: usize, lag: usize) -> FeatureKey {
+        FeatureKey::new(Self::NAME, subject.clone())
+            .with("leader", other.as_str())
+            .with("window", window.max(2))
+            .with("lag", lag.max(1))
+    }
+}
+
+impl FeatureDefinition for LeadLagCorrelation {
+    fn key(&self) -> FeatureKey {
+        Self::key(&self.subject, &self.other, self.window, self.lag)
+    }
+
+    fn subjects(&self) -> Vec<ObjectId> {
+        vec![self.subject.clone(), self.other.clone()]
+    }
+
+    fn reads(&self) -> MarketReads {
+        MarketReads::TOUCH
+    }
+
+    fn value_kind(&self) -> ValueKind {
+        ValueKind::Statistic
+    }
+
+    fn compute(&self, ctx: &FeatureContext<'_>) -> Result<FeatureValue> {
+        let (Some(left), Some(right)) = (ctx.fresh(&self.subject), ctx.fresh(&self.other)) else {
+            return Ok(FeatureValue::Undefined);
+        };
+        let Some((left_mids, right_mids)) =
+            aligned_tail(left.samples(), right.samples(), self.window + self.lag + 1)
+        else {
+            return Ok(FeatureValue::Undefined);
+        };
+        let left_returns = stats::log_returns(&left_mids);
+        let right_returns = stats::log_returns(&right_mids);
+        // The follower's last `window` returns against the leader's returns
+        // `lag` steps before each of them.
+        let follower = &left_returns[self.lag..];
+        let leader = &right_returns[..right_returns.len() - self.lag];
+        if stats::stddev(follower) <= 0.0 || stats::stddev(leader) <= 0.0 {
+            return Ok(FeatureValue::Undefined);
+        }
+        Ok(FeatureValue::Statistic(stats::correlation(
+            follower, leader,
+        )))
+    }
+}
+
+/// Mid of `other` less mid of `subject`, in basis points of `subject`'s mid
+/// (R12-TICK-2063, cross-venue).
+///
+/// For the same instrument listed on two venues this is the dislocation an
+/// arbitrage would close; positive means `other` is the richer listing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrossVenueSpread {
+    subject: ObjectId,
+    other: ObjectId,
+}
+
+impl CrossVenueSpread {
+    pub const NAME: &'static str = "cross_venue_spread_bps";
+
+    pub fn new(subject: ObjectId, other: ObjectId) -> Self {
+        Self { subject, other }
+    }
+
+    pub fn key(subject: &ObjectId, other: &ObjectId) -> FeatureKey {
+        FeatureKey::new(Self::NAME, subject.clone()).with("against", other.as_str())
+    }
+}
+
+impl FeatureDefinition for CrossVenueSpread {
+    fn key(&self) -> FeatureKey {
+        Self::key(&self.subject, &self.other)
+    }
+
+    fn subjects(&self) -> Vec<ObjectId> {
+        vec![self.subject.clone(), self.other.clone()]
+    }
+
+    fn reads(&self) -> MarketReads {
+        MarketReads::TOUCH
+    }
+
+    fn value_kind(&self) -> ValueKind {
+        ValueKind::Statistic
+    }
+
+    fn compute(&self, ctx: &FeatureContext<'_>) -> Result<FeatureValue> {
+        let (Some(home), Some(away)) = (ctx.fresh(&self.subject), ctx.fresh(&self.other)) else {
+            return Ok(FeatureValue::Undefined);
+        };
+        let (Some(home_mid), Some(away_mid)) = (home.book().mid(), away.book().mid()) else {
+            return Ok(FeatureValue::Undefined);
+        };
+        if !home_mid.is_positive() {
+            return Ok(FeatureValue::Undefined);
+        }
+        // Prices are exact; a basis-point ratio is a statistic, and this is
+        // where the one becomes the other.
+        Ok(FeatureValue::Statistic(
+            (away_mid - home_mid).to_f64() / home_mid.to_f64() * 10_000.0,
+        ))
+    }
+}
+
+/// Which side of the touch a [`TouchQueueDepth`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueSide {
+    Bid,
+    Ask,
+}
+
+impl QueueSide {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Bid => "bid",
+            Self::Ask => "ask",
+        }
+    }
+}
+
+/// The quantity resting at the best price on one side (R12-TICK-2063,
+/// queue): what a passive order joining that price waits behind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TouchQueueDepth {
+    subject: ObjectId,
+    side: QueueSide,
+}
+
+impl TouchQueueDepth {
+    pub const NAME: &'static str = "touch_queue_depth";
+
+    pub fn new(subject: ObjectId, side: QueueSide) -> Self {
+        Self { subject, side }
+    }
+
+    pub fn key(subject: &ObjectId, side: QueueSide) -> FeatureKey {
+        FeatureKey::new(Self::NAME, subject.clone()).with("side", side.as_str())
+    }
+}
+
+impl FeatureDefinition for TouchQueueDepth {
+    fn key(&self) -> FeatureKey {
+        Self::key(&self.subject, self.side)
+    }
+
+    fn reads(&self) -> MarketReads {
+        MarketReads::TOUCH
+    }
+
+    fn value_kind(&self) -> ValueKind {
+        ValueKind::Exact
+    }
+
+    fn compute(&self, ctx: &FeatureContext<'_>) -> Result<FeatureValue> {
+        let Some(state) = ctx.fresh(&self.subject) else {
+            return Ok(FeatureValue::Undefined);
+        };
+        let level = match self.side {
+            QueueSide::Bid => state.book().best_bid(),
+            QueueSide::Ask => state.book().best_ask(),
+        };
+        // An empty side has no queue to join, which is not a queue of zero.
+        Ok(level.map_or(FeatureValue::Undefined, |level| {
+            FeatureValue::Exact(level.size)
+        }))
+    }
+}
+
+/// Volume-synchronised order-flow toxicity over the last `window` signed
+/// prints, in `[0, 1]` (R12-TICK-2063, toxicity).
+///
+/// `|buy volume - sell volume| / (buy volume + sell volume)`: the VPIN
+/// estimator on one bucket. Near one, the flow is one-sided — informed
+/// traders are taking liquidity and a market maker is being picked off.
+/// Prints with no established sign are left out of both sums rather than
+/// guessed into one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowToxicity {
+    subject: ObjectId,
+    window: usize,
+}
+
+impl FlowToxicity {
+    pub const NAME: &'static str = "flow_toxicity";
+
+    pub fn new(subject: ObjectId, window: usize) -> Self {
+        Self {
+            subject,
+            window: window.max(1),
+        }
+    }
+
+    pub fn key(subject: &ObjectId, window: usize) -> FeatureKey {
+        FeatureKey::new(Self::NAME, subject.clone()).with("window", window.max(1))
+    }
+}
+
+impl FeatureDefinition for FlowToxicity {
+    fn key(&self) -> FeatureKey {
+        Self::key(&self.subject, self.window)
+    }
+
+    fn reads(&self) -> MarketReads {
+        MarketReads::TRADES
+    }
+
+    fn value_kind(&self) -> ValueKind {
+        ValueKind::Statistic
+    }
+
+    fn compute(&self, ctx: &FeatureContext<'_>) -> Result<FeatureValue> {
+        let Some(state) = ctx.fresh(&self.subject) else {
+            return Ok(FeatureValue::Undefined);
+        };
+        let trades = state.trades();
+        if trades.len() < self.window {
+            return Ok(FeatureValue::Undefined);
+        }
+        let (mut buys, mut sells) = (Decimal::ZERO, Decimal::ZERO);
+        for print in &trades[trades.len() - self.window..] {
+            match print.sign {
+                1 => buys += print.quantity,
+                -1 => sells += print.quantity,
+                _ => {}
+            }
+        }
+        let gross = buys + sells;
+        if !gross.is_positive() {
+            return Ok(FeatureValue::Undefined);
+        }
+        Ok(FeatureValue::Statistic(
+            ((buys - sells).abs().to_f64() / gross.to_f64()).clamp(0.0, 1.0),
+        ))
+    }
+}
+
+/// What it costs, in basis points of the mid, to take `quantity` on one side
+/// (R12-TICK-2063, liquidity).
+///
+/// Undefined when the book cannot fill the quantity: a liquidity limit is a
+/// constraint, not a number to extrapolate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepCost {
+    subject: ObjectId,
+    side: Side,
+    quantity: Decimal,
+}
+
+impl SweepCost {
+    pub const NAME: &'static str = "sweep_cost_bps";
+
+    pub fn new(subject: ObjectId, side: Side, quantity: Decimal) -> Self {
+        Self {
+            subject,
+            side,
+            quantity,
+        }
+    }
+
+    pub fn key(subject: &ObjectId, side: Side, quantity: Decimal) -> FeatureKey {
+        FeatureKey::new(Self::NAME, subject.clone())
+            .with("side", side.as_str())
+            .with("quantity", quantity)
+    }
+}
+
+impl FeatureDefinition for SweepCost {
+    fn key(&self) -> FeatureKey {
+        Self::key(&self.subject, self.side, self.quantity)
+    }
+
+    fn reads(&self) -> MarketReads {
+        MarketReads::DEPTH
+    }
+
+    fn value_kind(&self) -> ValueKind {
+        ValueKind::Statistic
+    }
+
+    fn compute(&self, ctx: &FeatureContext<'_>) -> Result<FeatureValue> {
+        let Some(state) = ctx.fresh(&self.subject) else {
+            return Ok(FeatureValue::Undefined);
+        };
+        if !self.quantity.is_positive() {
+            return Ok(FeatureValue::Undefined);
+        }
+        Ok(state
+            .book()
+            .sweep_cost_bps(self.side, self.quantity)
+            .map_or(FeatureValue::Undefined, FeatureValue::Statistic))
+    }
+}
+
 /// Nanoseconds since the last print that updated the last sale.
 ///
 /// The one feature that moves with the clock rather than with the message
@@ -745,5 +1069,10 @@ pub fn standard_suite(subject: &ObjectId) -> Vec<Box<dyn FeatureDefinition>> {
         Box::new(TradeSignAutocorrelation::new(subject.clone(), 20, 1)),
         Box::new(TimeSinceLastTrade::new(subject.clone())),
         Box::new(SpreadPercentile::new(subject.clone(), 20)),
+        Box::new(TouchQueueDepth::new(subject.clone(), QueueSide::Bid)),
+        Box::new(TouchQueueDepth::new(subject.clone(), QueueSide::Ask)),
+        Box::new(FlowToxicity::new(subject.clone(), 20)),
+        Box::new(SweepCost::new(subject.clone(), Side::Buy, Decimal::ONE)),
+        Box::new(SweepCost::new(subject.clone(), Side::Sell, Decimal::ONE)),
     ]
 }

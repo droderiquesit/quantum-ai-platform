@@ -2838,14 +2838,14 @@
   {
     "id": "R12-GOV-6127",
     "status": "PARTIAL",
-    "current": "check_justification refuses profit/price-impact-only grounds in preflight before any adapter call; reached only from the CLI shadow pass when a guard is supplied, and not in front of market-facing order paths.",
+    "current": "The kernel order path now consults check_justification: stage_reason refuses to queue an approved thesis unless its hypothesis carries at least one supporting evidence item (grounds = ExpectedProfit plus Evidence(record_id) per supporting item, via justify_thesis), recording \"approved but not justified\" and DecisionTaken::NotSizeable; DECIDE sizes only queued theses, so no intent forms on profit alone. The agency path still checks in ActionGuard::preflight.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:299 no guard + acting authority refused; :311 guard.preflight; :330 authorise before adapter.call",
-      "backend/crates/services/qip-agency/src/guard.rs:141 check_justification, registry lookup, approval chain",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 only production caller: engine::run with no action policy (shadow) and an adapter that refuses every call",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 each_guard_check_alone_withholds_the_plan_before_any_adapter_call"
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_reason: else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) (grep -n justify_thesis)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn justify_thesis builds grounds from Stance::Supports items and calls qip_contracts::action::check_justification",
+      "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
+      "backend/crates/services/qip-agency/src/guard.rs check_justification in ActionGuard::preflight"
     ],
-    "gap": "Apply ahead of any real market-facing action; guard mandatory in production.",
+    "gap": "No test drives an approved hypothesis with no supporting evidence through stage_reason, so the call site in stage_reason is proven by reading, not by a mutated test; only justify_thesis itself is mutation-proven. Closing needs a kernel fixture that queues an opportunity whose reasoning outcome is approved with zero supporting items (red-team serious_tolerance >= 1) and asserts no thesis is queued and DECIDE forms no intent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2853,9 +2853,9 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test."
   }
 ]
