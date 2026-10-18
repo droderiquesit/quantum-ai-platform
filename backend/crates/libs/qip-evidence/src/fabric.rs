@@ -908,6 +908,32 @@ impl EvidenceFabric {
                 ProvenanceNode::Claim(id.clone()),
             );
         }
+        // Both relations are symmetric, and are recorded on both claims: the
+        // earlier claim learned nothing of a later one that agreed or
+        // disagreed with it, so reading the earlier record — the one a
+        // contest was opened on — showed it uncontested (R12-EVID-2032).
+        for id in &corroborates {
+            self.graph.link(
+                ProvenanceNode::Claim(id.clone()),
+                ProvenanceEdge::Corroborates,
+                claim.clone(),
+            );
+        }
+        for id in &contradicts {
+            self.graph.link(
+                ProvenanceNode::Claim(id.clone()),
+                ProvenanceEdge::Contradicts,
+                claim.clone(),
+            );
+        }
+        for held in self.held.iter_mut() {
+            if corroborates.contains(&held.record.id) {
+                held.record.corroborates.push(record.id.clone());
+            }
+            if contradicts.contains(&held.record.id) {
+                held.record.contradicts.push(record.id.clone());
+            }
+        }
 
         let mut record = record;
         record.temporal_consistency = Some(temporal.clone());
@@ -982,6 +1008,12 @@ impl EvidenceFabric {
             };
             let id = oldest.record.id;
             self.graph.forget_claim(&id);
+            // The relation was recorded on both claims; the survivor must not
+            // name a claim the fabric no longer holds.
+            for held in self.held.iter_mut() {
+                held.record.corroborates.retain(|other| *other != id);
+                held.record.contradicts.retain(|other| *other != id);
+            }
             self.contests.retain(|_, contest| {
                 for ids in contest.hypotheses.values_mut() {
                     ids.remove(&id);
