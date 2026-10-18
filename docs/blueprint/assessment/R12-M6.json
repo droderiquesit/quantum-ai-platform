@@ -243,7 +243,7 @@
       "backend/crates/services/qip-expansion/tests/loop.rs:69 no competent specialist",
       "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
     ],
-    "gap": "Contradictory evidence and missing causal links share one detector over price-direction readings; nothing reads the evidence fabric's contested claims or the causal graph for missing links.",
+    "gap": "Contradictory evidence and missing causal links share one detector over price-direction readings. Neither replacement has an input the deep brain can read: the kernel's evidence intake (qip-kernel evidence_intake.rs EvidenceIntake) retains only a count of contested claims, not the KnowledgeDelta.contested ClaimKeys, and Platform::world().causal().edges() names causal variables, not the subject ids the sweep's detectors key on, so a missing-link detector would have to guess the mapping. Closing it needs the kernel to retain a bounded list of contested keys and a stated variable-to-subject map first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -254,7 +254,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Detectors now run from the deep brain; two of six kinds are conflated in one proxy."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: gap corrected after reading evidence_intake.rs and the world model's causal edges; no detector added, because one with no honest input would read as coverage."
   },
   {
     "id": "R12-REFLEX-6012",
@@ -1457,7 +1457,7 @@
     "evidence": [
       "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence"
     ],
-    "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies; the queued item triggers no specialist, simulator, feed or model family.",
+    "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies, and no per-subject belief level exists to compare a price against: Platform::calibration() is a CalibrationReport of hit rates by class and agent, and the belief priors (qip-contracts policy.rs BeliefPriors, issued through &mut Platform::issue_belief_priors) are probabilities per key, not price levels. Closing it needs the kernel to expose a read-only belief price per subject first; the queued item also triggers no specialist, simulator, feed or model family (6049's executor work).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1468,7 +1468,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: a persistence trigger exists and runs; it is not a belief discrepancy."
+    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed."
   },
   {
     "id": "R12-EXPAND-6068",
