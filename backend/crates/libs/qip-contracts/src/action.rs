@@ -396,6 +396,10 @@ pub struct ToolAudit {
 struct Slot {
     reg: ToolRegistration,
     revoked: bool,
+    /// The operator who last restored the tool after a revocation, if one
+    /// has. Kept so the registry can say on whose authority a tool that was
+    /// once withdrawn is acting again.
+    reauthorised_by: Option<String>,
     window: u64,
     in_window: u64,
     spent: u64,
@@ -450,6 +454,7 @@ impl ToolRegistry {
             Slot {
                 reg,
                 revoked: false,
+                reauthorised_by: None,
                 window: 0,
                 in_window: 0,
                 spent: 0,
@@ -466,6 +471,44 @@ impl ToolRegistry {
             .ok_or_else(|| Error::not_found(format!("tool {tool} is not registered")))?;
         slot.revoked = true;
         Ok(())
+    }
+
+    /// Whether the tool is registered and revoked.
+    pub fn is_revoked(&self, tool: &str) -> bool {
+        self.tools.get(tool).is_some_and(|slot| slot.revoked)
+    }
+
+    /// Restore a revoked tool, on a named operator's authority. This is the
+    /// only way back from [`Self::revoke`]: re-registering under the same
+    /// name is refused, and nothing clears the flag on its own. The
+    /// revocation path is a stop, and a stop that lifts itself is not one.
+    ///
+    /// Refused for an unregistered tool, for a tool that is not revoked (a
+    /// reauthorisation that changes nothing would put an operator's name on
+    /// a decision nobody made), and for a blank operator.
+    pub fn reauthorise(&mut self, tool: &str, operator: &str) -> Result<()> {
+        if blank(operator) {
+            return Err(Error::denied(format!(
+                "reauthorising tool {tool} needs the operator who authorises it; name one"
+            )));
+        }
+        let slot = self
+            .tools
+            .get_mut(tool)
+            .ok_or_else(|| Error::not_found(format!("tool {tool} is not registered")))?;
+        if !slot.revoked {
+            return Err(Error::invalid(format!(
+                "tool {tool} is not revoked; there is nothing to reauthorise"
+            )));
+        }
+        slot.revoked = false;
+        slot.reauthorised_by = Some(operator.to_string());
+        Ok(())
+    }
+
+    /// The operator who last reauthorised the tool, if any did.
+    pub fn reauthorised_by(&self, tool: &str) -> Option<&str> {
+        self.tools.get(tool)?.reauthorised_by.as_deref()
     }
 
     /// The registration a tool was admitted under, if it was.

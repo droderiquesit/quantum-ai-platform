@@ -455,7 +455,23 @@ pub fn plan(inputs: &HedgeBrainInputs<'_>) -> HedgeBrainReport {
         report.refused = Some("the book has no positive equity to measure a floor against".into());
         return report;
     }
-    let library = library_shocks();
+    let mut library = library_shocks();
+    // The adversarial world is composed from the library's own factors and
+    // carries its shocks, so a candidate's move in it is computable. Leaving
+    // it out made every candidate `DoesNotProtect` it, and since the search
+    // must protect every failing world, a book whose adversarial sequence
+    // breached could never be planned a hedge at all.
+    if let Some(sequence) = &stress.adversarial {
+        library.insert(
+            sequence.scenario.name.clone(),
+            sequence
+                .scenario
+                .shocks
+                .iter()
+                .map(|shock| (shock.factor.clone(), shock.magnitude))
+                .collect(),
+        );
+    }
     let mut candidates = Vec::new();
     for declaration in inputs.declarations {
         match declaration.resolve(inputs.universe, inputs.snapshot, &library) {
@@ -599,6 +615,14 @@ pub struct HedgePlanned {
     pub refusals: Vec<SearchRefusal>,
     #[serde(default)]
     pub unresolved: Vec<String>,
+    /// The six §14.1 measures of the chosen plan (R12-RISK-4109) — cost,
+    /// basis risk, convexity, liquidity decay, counterparty risk and unwind
+    /// feasibility — as the search computed them. The §24.9 contract carries
+    /// only cost and liquidity, so without this a reader of the log could
+    /// not check the other four the choice was made on. `None` when no plan
+    /// was chosen; omitted then, so a record without one reads as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measures: Option<qip_risk::hedge_search::HedgeMeasures>,
 }
 
 impl HedgePlanned {
@@ -633,6 +657,11 @@ impl HedgePlanned {
             protected,
             refusals,
             unresolved: report.unresolved.clone(),
+            measures: report
+                .search
+                .as_ref()
+                .and_then(|search| search.plan.as_ref())
+                .map(|solution| solution.measures.clone()),
         })
     }
 }

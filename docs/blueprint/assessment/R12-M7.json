@@ -2384,7 +2384,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-RES-7108",
@@ -2410,12 +2410,15 @@
   {
     "id": "R12-RES-7109",
     "status": "PARTIAL",
-    "current": "ToolRegistry::revoke refuses the next action and audits it; no pending-action stop, rotation or re-auth flow.",
+    "current": "ToolRegistry::revoke refuses the next action and audits it. ToolRegistry::reauthorise(tool, operator) is now the only way back: it is refused for a blank operator, an unregistered tool, or a tool not revoked, and it records who restored the tool. ActionGuard::reauthorise passes it through. AmbientIntake::revoke drops every draft held for a retry, returning each as Intake::Abandoned, so a later reauthorisation cannot send work authorised before the stop.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328",
-      "backend/crates/libs/qip-contracts/tests/action.rs:49,112,140 missing declarations refused; over-limit refused and audited; revoked tool refused"
+      "backend/crates/libs/qip-contracts/src/action.rs:477 is_revoked, :489 reauthorise, :510 reauthorised_by",
+      "backend/crates/services/qip-agency/src/guard.rs:295 ActionGuard::reauthorise",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:408 revoke drains the retry queue, :424 reauthorise",
+      "backend/crates/libs/qip-contracts/tests/action.rs:202 a_revoked_tool_stays_refused_until_a_named_operator_reauthorises_it",
+      "backend/crates/services/qip-agency/tests/ambient_intake.rs:573 revoking_the_drafting_tool_drops_every_held_draft_and_only_a_named_operator_restores_it"
     ],
-    "gap": "Stop pending actions, rotation, re-authorisation.",
+    "gap": "No production seam calls reauthorise or AmbientIntake::revoke. The deployed revocation is qip-cli agency.rs:281, which re-applies policy.revoked_tools at start, so deleting an entry from that list readmits the tool on the next start with no named operator and no attested identity. Closing the row needs that path to require a reauthorisation record carrying an authenticated operator (AutonomyController-style), journaled beside the guard's decisions. Credential rotation is Secret Manager work outside the crate.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2423,10 +2426,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo test -p qip-contracts --test action && cargo test -p qip-agency --test ambient_intake",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Narrowed 2026-10-18 (lane L12). Mutations: dropping the blank-operator refusal in reauthorise failed the contracts test (the tool was no longer revoked); mapping revoke over retry.iter().cloned() instead of draining it failed the intake test (pending() stayed 1). Both restored and passing. Kept PARTIAL: the stop and the re-authorisation exist in the library, but they do not run on a deployed path."
   },
   {
     "id": "R12-RES-7110",
@@ -2857,23 +2860,27 @@
   },
   {
     "id": "R12-OBS-7129",
-    "status": "PARTIAL",
-    "current": "data-lineage-completeness SLO defined.",
+    "status": "COMPLETE",
+    "current": "Platform::count_lineage counts every received record under qip_data_lineage_records_total{outcome}: linked when observe_with_lineage appended it to the event log under its ingestion correlation id (fast brain via bus_bridge, qip-api via observe_fresh), unlinked when it arrived bare through Platform::observe or its append failed; qip_data_lineage_completeness carries the same counts as a ratio. The data-provenance-lineage-completeness critical path is now a CounterOutcome rule on that counter, and the deep brain evaluates every critical path over the platform telemetry each iteration (operations.rs critical_paths::evaluate), so the objective is measured in a deployed binary rather than reading unmeasured.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos"
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn count_lineage, called from observe_with_lineage and observe (grep -n count_lineage)",
+      "backend/crates/libs/qip-observability/src/critical_paths.rs data-provenance-lineage-completeness on names::DATA_LINEAGE_RECORDS, CounterOutcome good=linked",
+      "backend/crates/libs/qip-observability/src/metrics.rs DATA_LINEAGE_RECORDS",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs critical_paths::evaluate(&metrics.snapshot()) over platform.telemetry().metrics",
+      "backend/crates/runtime/qip-kernel/tests/kernel.rs lineage_completeness_counts_records_logged_under_a_lineage_against_records_handed_in_bare"
     ],
-    "gap": "Evaluation from a deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "slo test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test kernel lineage_completeness_counts_records_logged_under_a_lineage_against_records_handed_in_bare",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutations: lineage path counting every record unlinked failed the test at (0, 30) vs (30, 30); bare observe left uncounted failed it at the (30, 40) assertion; both restored byte-for-byte, passes. The deep brain absorbs connector records through bare Platform::observe (evolution.rs absorb), so its objective now reads measured and missed, which is the finding rather than a defect of the measurement."
   },
   {
     "id": "R12-OBS-7130",
@@ -3355,9 +3362,11 @@
     "status": "PARTIAL",
     "current": "qip-data-finder assesses/registers/quarantines sources.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/decision.rs"
+      "backend/crates/services/qip-data-finder/src/decision.rs",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Autonomous discovery and retirement end to end.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Autonomous discovery and retirement end to end.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3368,7 +3377,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-COVERAGE-7152",
@@ -3753,7 +3762,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-COVERAGE-7170",
@@ -3818,7 +3827,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-COVERAGE-7173",
@@ -4029,7 +4038,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-COVERAGE-7183",

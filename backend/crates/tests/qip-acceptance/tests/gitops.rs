@@ -3241,6 +3241,125 @@ impl TerraformNetworks {
     }
 }
 
+/// The plain switches of a catalogue entry: each `var.x == null ? {} : {` arm
+/// of its `env` merge whose every line is `QIP_Y = var.x`, as `(x, QIP_Y)`. An
+/// arm that transforms the value — the deep brain's connector `join`s a list
+/// and carries a second key — is left out, because its rendering is not the
+/// tfvars value and comparing the two would assert a coincidence.
+fn catalogue_plain_switches(body: &str) -> Vec<(String, String)> {
+    /// The arm being read: its root variable, the keys it renders from that
+    /// variable unchanged, and whether every line so far has been one.
+    struct Arm {
+        variable: String,
+        keys: Vec<(String, String)>,
+        plain: bool,
+    }
+    let mut switches = Vec::new();
+    let mut arm: Option<Arm> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(condition) = trimmed.strip_suffix("== null ? {} : {") {
+            let variable = condition.trim().strip_prefix("var.").map(str::to_string);
+            arm = variable.map(|variable| Arm {
+                variable,
+                keys: Vec::new(),
+                plain: true,
+            });
+            continue;
+        }
+        let Some(Arm {
+            variable,
+            keys,
+            plain,
+        }) = arm.as_mut()
+        else {
+            continue;
+        };
+        if trimmed == "}," {
+            if *plain && !keys.is_empty() {
+                switches.append(keys);
+            }
+            arm = None;
+            continue;
+        }
+        match trimmed.split_once('=') {
+            Some((key, value))
+                if key.trim().starts_with("QIP_") && value.trim() == format!("var.{variable}") =>
+            {
+                keys.push((variable.clone(), key.trim().to_string()));
+            }
+            _ => *plain = false,
+        }
+    }
+    switches
+}
+
+/// A switch an environment commits in its tfvars reaches the service, and one
+/// it leaves null does not.
+///
+/// The parity walk above skips every conditional variable on purpose — an
+/// environment that leaves the root variable null renders none of them — and
+/// in skipping them it stopped checking them at all. A switch set in
+/// `environments/dev/terraform.tfvars` and never written into
+/// `gitops/envs/dev/` passed every suite here: Terraform plans the value,
+/// Argo CD applies the manifest, and the running binary reads its own
+/// default, so the tfvars line reads as configuration the process never
+/// received. The converse is the same lie the other way: a manifest carrying
+/// a switch its tfvars leaves null runs a value no reviewed variable set.
+#[test]
+fn every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value() {
+    let mut committed = 0usize;
+    let mut withheld = 0usize;
+    for environment in environment_directories() {
+        for (key, entry, service, _) in run_services(&environment) {
+            let Some(entry) = entry else { continue };
+            let describe = service.describe();
+            let env = container_env(workload_container(&service, &key));
+            for (variable, name) in catalogue_plain_switches(&entry) {
+                let set = tfvars_value(&environment, &variable).filter(|value| value != "null");
+                let rendered = env
+                    .iter()
+                    .find(|(entry_name, _, _)| *entry_name == name)
+                    .map(|(_, value, _)| value.clone());
+                match set {
+                    Some(value) => {
+                        committed += 1;
+                        assert_eq!(
+                            rendered,
+                            Some(Some(value.clone())),
+                            "{environment}'s tfvars set `{variable} = \"{value}\"`, which the \
+                             catalogue renders as {name}, and {describe} does not carry \
+                             {name}={value}; the binary would run its own default under a \
+                             tfvars line that says otherwise"
+                        );
+                    }
+                    None => {
+                        withheld += 1;
+                        assert!(
+                            rendered.is_none(),
+                            "{describe} sets {name}, and {environment}'s tfvars leave \
+                             `{variable}` null; the value runs without a reviewed variable \
+                             behind it"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Both halves have a case, or the walk proved nothing: no committed switch
+    // means the arm parse found nothing to compare, and no withheld one means
+    // the absence half never ran.
+    assert!(
+        committed > 0,
+        "no environment commits a plain catalogue switch; the arm parse has drifted from \
+         catalogue.tf's shape"
+    );
+    assert!(
+        withheld > 0,
+        "every plain switch is committed in every environment; the absence half never ran"
+    );
+}
+
 /// Every RunService's network interface names the VPC network Terraform
 /// created its subnetwork on.
 ///
