@@ -734,24 +734,26 @@
   },
   {
     "id": "R12-CICD-8033",
-    "status": "PARTIAL",
-    "current": "An agent service account exists in Terraform; deploy is gated by workflows and Binary Authorization. No test shows the agent identity lacks direct deploy rights.",
+    "status": "COMPLETE",
+    "current": "google_service_account.agent_identity exists in the root module and no *_iam_member, *_iam_binding or *_iam_policy resource anywhere under infrastructure/terraform names it (by resource reference, by account id or by its email output); the acceptance suite scans every IAM grant in the tree and refuses the first one, and refuses a second reader of the identity in the root module beyond its output.",
     "evidence": [
-      "infrastructure/terraform/main.tf:1309 google_service_account.agent_identity",
+      "infrastructure/terraform/main.tf:1398 google_service_account.agent_identity",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13385 the_agent_identity_holds_no_run_deploy_or_actas_role",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:12723 the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resources",
       ".github/workflows/deploy.yml"
     ],
-    "gap": "Acceptance test asserting the agent identity has no run.admin/deploy role.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance scan of IAM bindings for agent_identity",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_agent_identity_holds_no_run_deploy_or_actas_role",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02) by inspection, which is the check: the identity holds no grant, so a direct deploy by it is refused by IAM with no role to evaluate. Mutation: appended a google_project_iam_member granting roles/run.admin to the identity in main.tf; the test failed naming the resource; restored byte-for-byte. Not shown: a live refusal, because nothing is deployed."
   },
   {
     "id": "R12-GCP-8034",
@@ -2918,42 +2920,46 @@
   {
     "id": "R12-LEDGER-8132",
     "status": "PARTIAL",
-    "current": "google_spanner_instance with multi-region config nam-eur-asea, 100 PU, no edition attribute; gated off.",
+    "current": "google_spanner_instance.global pins edition = \"ENTERPRISE_PLUS\" with the nam-eur-asea multi-region config and 100 processing units; terraform validate and the module tftests pass with the attribute; the acceptance suite refuses its absence or a regional config. Still gated by enable_spanner, false in every environment, so no plan renders it.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:380-395"
+      "infrastructure/terraform/modules/data/main.tf:380-402 (edition at :395)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration"
     ],
-    "gap": "edition = ENTERPRISE_PLUS, enable, adapter.",
+    "gap": "enable_spanner is false in every committed environment, so the plan the check asks for renders no instance; enabling it is a paid-resource decision for the owner (and the ledger adapter against a live instance is unproven).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration; cd infrastructure/terraform/modules/data && terraform validate && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 (lane L02): edition added; terraform 1.9.8 validate: Success; terraform test: 6 passed, 0 failed. Mutation: deleted the edition line; the test failed \"does not pin edition\"; restored byte-for-byte. Kept PARTIAL because the check is a plan and nothing plans the instance."
   },
   {
     "id": "R12-LEDGER-8133",
-    "status": "PARTIAL",
-    "current": "One Spanner instance 'global' with a 'positions' database; no graph database.",
+    "status": "COMPLETE",
+    "current": "One Spanner instance (global) with the positions database and no graph instance or database: ADR 0113 refuses Spanner Graph (\"Bigtable, AlloyDB and Spanner Graph are not admitted by this record\") and routes the world graph through the event log instead (ADR 0114 Amendment 1, R12-EVID-8108), so there is no graph workload to separate; the acceptance suite refuses a graph or world database landing on the ledger instance.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:380,397"
+      "docs/adr/0113-the-ledger-of-record-moves-to-spanner-the-tick-lake-codec-waits-on-measurement-and-the-organisation-splits-into-projects-at-the-second-region.md:57",
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md:178",
+      "infrastructure/terraform/modules/data/main.tf:380,404",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13188 the_ledger_spanner_instance_holds_only_the_positions_database"
     ],
-    "gap": "Ledger instance + separate graph instance.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_holds_only_the_positions_database",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L02): the separation holds because the owner decision in ADR 0113 admits no graph instance at all, and the guard test keeps a graph from being added to the ledger instance; a plan showing two instances would require a graph the ADR refuses. Mutation shared with R12-LEDGER-10197 (a second database resource fails the test)."
   },
   {
     "id": "R12-LEDGER-8134",

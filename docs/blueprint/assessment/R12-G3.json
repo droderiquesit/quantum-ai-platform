@@ -146,17 +146,17 @@
   },
   {
     "id": "R12-GCP-10008",
-    "status": "PARTIAL",
-    "current": "modules/network creates reflex, fabric and service VPCs plus data and engineering VPCs, each with a deny-ingress firewall; module network is instantiated unconditionally.",
+    "status": "COMPLETE",
+    "current": "modules/network declares five VPCs (reflex, fabric, service from local.networks; data_vpc and engineering_vpc standalone), each bound to a catch-all INGRESS deny (protocol all, 0.0.0.0/0, priority 65534); the module tftests plan them and the acceptance suite walks the map and both standalone resources and pairs every network with its deny rule.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:26-31 networks reflex/fabric/service",
-      "infrastructure/terraform/modules/network/main.tf:73 data_vpc",
-      "infrastructure/terraform/modules/network/main.tf:134 engineering_vpc",
+      "infrastructure/terraform/modules/network/main.tf:26-31,33,44 planes and deny_ingress",
+      "infrastructure/terraform/modules/network/main.tf:78,86 data_vpc and its deny",
+      "infrastructure/terraform/modules/network/main.tf:139,147 engineering_vpc and its deny",
       "infrastructure/terraform/modules/network/tests/three-networks.tftest.hcl",
       "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10844 trust_zones_are_not_one_flat_vpc_gcp_024"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13278 the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule"
     ],
-    "gap": "data_vpc and engineering_vpc (network/main.tf:73,134) are empty and their outputs consumed nowhere; the acceptance test checks only the trust-zone map.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -164,10 +164,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform test in modules/network; cargo test -p qip-acceptance --test infrastructure trust_zones_are_not_one_flat_vpc_gcp_024",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule; terraform test in infrastructure/terraform/modules/network",
     "work_item": "",
     "size": "S",
-    "notes": "Networks are provisioned in dev; no workload is attached to reflex/fabric VPCs because nothing is deployed there. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: data_vpc and engineering_vpc (network/main.tf:73,134) are empty and their outputs consumed nowhere; the acceptance test checks only the trust-zone map."
+    "notes": "Closed 2026-10-18 (lane L02) on the clause as written: five networks exist, each deny-by-default on ingress, now proven by an acceptance test rather than the trust-zone map alone. Mutation: changed engineering_vpc_deny_ingress to protocol = \"tcp\"; the test failed \"not a catch-all ingress deny\"; restored byte-for-byte. The 2026-10-11 spot-check finding stands as a fact and is not this constraint: data_vpc and engineering_vpc still carry no tenant and their outputs are consumed nowhere (integrated stays false); a tenant belongs to the rows that place a workload on those planes."
   },
   {
     "id": "R12-GCP-10009",
@@ -4435,23 +4435,25 @@
   },
   {
     "id": "R12-LEDGER-10197",
-    "status": "PARTIAL",
-    "current": "Only one Spanner database ('positions') is declared, so no sharing exists today; no guard test prevents adding other domains to it.",
+    "status": "COMPLETE",
+    "current": "modules/data declares one Spanner instance (global) holding exactly one database (positions); the acceptance suite refuses a second instance, a second database on the ledger instance, and any database named graph/memory/service/world beside it.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:397"
+      "infrastructure/terraform/modules/data/main.tf:380 google_spanner_instance.global",
+      "infrastructure/terraform/modules/data/main.tf:404 google_spanner_database.positions",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13188 the_ledger_spanner_instance_holds_only_the_positions_database"
     ],
-    "gap": "Guard test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance scan of Spanner databases",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_holds_only_the_positions_database",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02). Mutation: appended a google_spanner_database \"graph\" resource to modules/data/main.tf; the test failed naming [\"positions\", \"graph\"]; restored byte-for-byte. The instance is still behind enable_spanner = false everywhere (R12-LEDGER-8132), so the guard is on the committed configuration, not a plan."
   },
   {
     "id": "R12-RISK-10198",
@@ -4498,25 +4500,28 @@
   },
   {
     "id": "R12-REFLEX-10200",
-    "status": "PARTIAL",
-    "current": "No LB/mesh hop (tested) and the node runs with no proxy sidecar; but the execution-node module can place the node's venue egress behind its own Cloud NAT (create_egress_nat) with no benchmark record.",
+    "status": "COMPLETE",
+    "current": "No LB/mesh/proxy hop (tested, unchanged); create_egress_nat defaults to false at all three declarations (root variables.tf execution_nodes type, modules/edge-cells-deployment, modules/execution-node) and every committed node sets it false, so no NAT exists on any venue path; the acceptance suite pins the defaults and refuses a tfvars entry that flips it true, naming the benchmark record that must land in the same diff.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3890",
-      "infrastructure/terraform/modules/execution-node/main.tf:149-180 optional NAT",
+      "infrastructure/terraform/variables.tf:313 create_egress_nat = optional(bool, false)",
+      "infrastructure/terraform/modules/execution-node/variables.tf:703",
+      "infrastructure/terraform/modules/edge-cells-deployment/variables.tf:52",
+      "infrastructure/environments/dev/terraform.tfvars:247 create_egress_nat = false",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13452 no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_benchmark",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else"
     ],
-    "gap": "Benchmark or remove NAT on the venue path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_benchmark",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02): the clause binds a NAT to a benchmark, and today there is no NAT; the test is what makes the first one carry its record. Mutation: set dev newyork-1 create_egress_nat = true; the test failed naming dev/terraform.tfvars; restored byte-for-byte."
   },
   {
     "id": "R12-SEC-10201",

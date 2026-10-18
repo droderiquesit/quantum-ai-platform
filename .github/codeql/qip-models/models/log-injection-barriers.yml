@@ -1,0 +1,28 @@
+# Barriers for CodeQL's `log-injection` flow kind, which `rust/cleartext-logging`
+# tracks (rust-all `CleartextLoggingExtensions.qll`, `ModelsAsDataBarrier`).
+#
+# Each row names one function whose return value the analyser classifies as
+# sensitive from its *name* alone (`SensitiveData.qll`: `account`, `secret`,
+# `cert`, `api_key`) and from which taint then spreads to the whole object the
+# caller builds, because `f()?` carries the Result's taint to the enclosing
+# function's return value and a tainted struct taints every field read. A row
+# here says: the value this call returns carries no secret bytes in any form
+# that `Debug`, `Display` or a format string can print. README.md gives the
+# evidence for each claim, file and line, and the rule for adding one.
+#
+# Columns: canonical path, output, flow kind, provenance. Paths were read from
+# the database with `Function.getCanonicalPath()`, not guessed; the trait
+# declaration row is needed because a default method's `self.authenticate(..)`
+# resolves to the trait, not to any one impl.
+extensions:
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: barrierModel
+    data:
+      - ["<qip_edge_node::gateway::SimulatedGateway>::venue_account", "ReturnValue", "log-injection", "manual"]
+      - ["<qip_edge::cell::Cell>::observe_venue_account", "ReturnValue", "log-injection", "manual"]
+      - ["<qip_compliance::signing::SigningKey>::from_secret", "ReturnValue", "log-injection", "manual"]
+      - ["<qip_brokers::adapter::VenueAdapter>::authenticate", "ReturnValue", "log-injection", "manual"]
+      - ["<qip_brokers::rest::RestOrderEntryAdapter as qip_brokers::adapter::VenueAdapter>::authenticate", "ReturnValue", "log-injection", "manual"]
+      - ["qip_storage::gcp::workload_certificate::workload_certificate", "ReturnValue", "log-injection", "manual"]
+      - ["qip_fastbrain::config::live_feed", "ReturnValue", "log-injection", "manual"]

@@ -58,6 +58,11 @@ pub const HYPOTHESIS_LIFECYCLE_VERSION: u32 = 1;
 /// Paths of an intervention kept in the record; the count is kept whole.
 pub const INTERVENTION_PATHS_KEPT: usize = 16;
 
+/// How many abduced causes a derivation explains counterfactually, best
+/// first. Bounded so the record stays bounded; the abduction beneath it is
+/// already bounded by its own candidate cap.
+pub const COUNTERFACTUALS_KEPT: usize = 4;
+
 /// What every derivation's idempotency key starts with.
 pub const IDEMPOTENCY_PREFIX: &str = "symbolic:";
 
@@ -159,6 +164,33 @@ pub struct InterventionSummary {
     pub paths: usize,
     /// The first [`INTERVENTION_PATHS_KEPT`] paths, with their evidence.
     pub kept: Vec<CausalPath>,
+    /// The counterfactual explanations of the surprise (REASON-3056): for
+    /// each abduced cause that was seen to move, best first and at most
+    /// [`COUNTERFACTUALS_KEPT`], what the subject would have been had that
+    /// cause not moved, by [`CausalGraph::counterfactual`] over every path
+    /// the graph holds from the cause to the subject. Absent on a record
+    /// written before the field existed, which decodes as none rather than
+    /// refusing the whole derivation.
+    #[serde(default)]
+    pub counterfactuals: Vec<CounterfactualExplanation>,
+}
+
+/// "Had `cause` not moved, the subject would have been
+/// `counterfactual_subject` rather than what was observed": one abduced
+/// cause's counterfactual, as the derivation keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CounterfactualExplanation {
+    pub cause: String,
+    /// What the cause was seen to do.
+    pub observed_move: f64,
+    /// The subject's observed move, as the anomaly reported it.
+    pub observed_subject: f64,
+    /// The subject's move the graph implies had the cause stayed flat.
+    pub counterfactual_subject: f64,
+    /// Signed transmission from the cause to the subject over every path.
+    pub total_effect: f64,
+    /// How many paths that transmission was summed over.
+    pub paths: usize,
 }
 
 /// One hypothesis's symbolic derivation, as the log keeps it.
@@ -562,6 +594,42 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
         &input.moves,
         now,
     ));
+    // The counterfactual half of an explanation: an abduction says which
+    // cause best accounts for the surprise; the counterfactual says what the
+    // subject would have done had that cause stayed flat, over every path
+    // and not only the edge the candidate was ranked on. A cause nobody saw
+    // move has no observed value to hold hypothetical, and a cause the
+    // graph refuses (a loop, no path) is left out rather than invented.
+    let counterfactuals: Vec<CounterfactualExplanation> = abduction
+        .derived()
+        .map(|a| {
+            a.candidates
+                .iter()
+                .filter_map(|c| c.observed_move.map(|m| (c.edge.cause.clone(), m)))
+                .filter_map(|(cause, observed_move)| {
+                    causal
+                        .counterfactual(
+                            &cause,
+                            observed_move,
+                            0.0,
+                            &input.subject,
+                            input.anomaly.observed,
+                            now,
+                        )
+                        .ok()
+                        .map(|cf| CounterfactualExplanation {
+                            cause,
+                            observed_move,
+                            observed_subject: cf.observed_outcome,
+                            counterfactual_subject: cf.counterfactual_outcome,
+                            total_effect: cf.total_effect,
+                            paths: cf.paths.len(),
+                        })
+                })
+                .take(COUNTERFACTUALS_KEPT)
+                .collect()
+        })
+        .unwrap_or_default();
     let intervention =
         Step::of(
             causal
@@ -570,6 +638,7 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
                     affected: i.affected,
                     paths: i.paths.len(),
                     kept: i.paths.into_iter().take(INTERVENTION_PATHS_KEPT).collect(),
+                    counterfactuals,
                 }),
         );
     SymbolicDerivation {
