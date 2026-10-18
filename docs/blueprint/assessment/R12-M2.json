@@ -833,18 +833,16 @@
   {
     "id": "R12-EVID-2036",
     "status": "PARTIAL",
-    "current": "Production evidence now declares its feed-sequence predecessor as cause, so the event-ordering check fires (runtime-level test) alongside postdating and impossible-timeline checks; verdicts are held on the record.",
+    "current": "Production evidence declares its feed-sequence predecessor as cause, so the event-ordering check fires alongside postdating and impossible-timeline checks; verdicts are held on the record. Since 2026-10-18 a connector can declare the source's own order for an event the record does not number (SourceConnector::feed_sequence, default None), and the shipped Coinbase connector declares trade_id, which Coinbase assigns per product in print order, so a print numbered later and dated earlier names its predecessor as cause and fails the check. An ordering violation is flagged and the record released, as the kernel's evidence_intake test requires; it is not made inadmissible.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/evidence.rs:189-250",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:646-653",
-      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:957-962",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:170-196",
-      "qip-evidence/src/evidence.rs::tests::a_claim_dated_after_its_source_was_published_is_flagged",
-      "qip-evidence/src/evidence.rs::tests::a_claim_that_precedes_its_cause_names_the_cause",
-      "qip-evidence/src/evidence.rs::tests::a_claim_ingested_before_its_source_published_violates_the_physical_timeline",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::sequence_predecessor"
+      "backend/crates/services/qip-market-ingestion/src/connector/mod.rs:225 SourceConnector::feed_sequence",
+      "backend/crates/services/qip-market-ingestion/src/connectors/coinbase_ticker.rs:195 Coinbase declares trade_id",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::feed_sequence_with",
+      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:366 a_coinbase_print_numbered_after_another_but_dated_before_it_violates_event_ordering",
+      "qip-kernel/tests/evidence_intake.rs::production::a_feed_message_dated_before_its_numbered_predecessor_violates_event_ordering"
     ],
-    "gap": "The cause comes only from the feed's own sequence, and the shipped connectors (Coinbase, Kalshi) set sequence None, so ordering cannot fire for them; results are in-memory only.",
+    "gap": "Kalshi's market list carries no vendor sequence (only updated_time), so ordering cannot fire for it, and it is a refused candidate source in any case. Results are in-memory only. Making an ordering violation inadmissible was tried and reverted: it quarantines out-of-order prints, contradicting the kernel test's premise that both are released and soak.rs's quarantine bound; that is a decision to take deliberately, not a side effect.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -854,10 +852,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --lib evidence",
+    "verification": "cargo test -p qip-market-ingestion --test evidence_stage && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: COMPLETE->PARTIAL: the prior COMPLETE overlooked that the 'before its declared cause' half is vacuous on the production path, the same reason EVID-2037 is PARTIAL. A PrecedesCause result is recorded but does not make a claim inadmissible (fabric.rs:648-651). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: mutation fired - Coinbase's feed_sequence forced to None left the second print's caused_by empty."
   },
   {
     "id": "R12-EVID-2037",

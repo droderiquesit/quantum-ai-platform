@@ -148,13 +148,23 @@ pub const META_STREAM: &str = "stream";
 /// and declaring a cause from it would call every late packet a violation of
 /// the source's own ordering.
 pub fn feed_sequence_of(record: &SensedRecord) -> Option<(String, u64)> {
+    feed_sequence_with(record, None)
+}
+
+/// [`feed_sequence_of`], falling back to `declared` — the position the
+/// connector read off the source for this event
+/// ([`super::SourceConnector::feed_sequence`]) — where the record carries
+/// none. The record's own number wins: it is what downstream consumers see.
+pub fn feed_sequence_with(record: &SensedRecord, declared: Option<u64>) -> Option<(String, u64)> {
     let (kind, venue, instrument, sequence) = match record {
         SensedRecord::Tick(t) => ("tick", &t.venue, t.object_id.as_str(), t.sequence),
         SensedRecord::Quote(q) => ("quote", &q.venue, q.object_id.as_str(), q.sequence),
         SensedRecord::Trade(t) => ("trade", &t.venue, t.object_id.as_str(), t.sequence),
         _ => return None,
     };
-    sequence.map(|n| (format!("{kind}@{venue}/{instrument}"), n))
+    sequence
+        .or(declared)
+        .map(|n| (format!("{kind}@{venue}/{instrument}"), n))
 }
 
 /// The claim this event's source ordered immediately before it, among
