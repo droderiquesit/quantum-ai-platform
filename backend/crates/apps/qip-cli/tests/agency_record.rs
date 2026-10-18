@@ -19,6 +19,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use qip_agency::autonomy::Authority;
+use qip_agency::estimate::{EstimateInput, stage_assignment};
 use qip_agency::journal::{self, AgencyRecord};
 use qip_agency::memory::Observed;
 use qip_core::Decimal;
@@ -482,6 +483,108 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
             })
             .collect();
         assert_eq!(widened, [method], "{name}: {out}");
+    }
+
+    // R12-AGENCY-6102: the matched, staged and Bayesian estimators run in the
+    // binary too. Each case's label is read from the library, so a label the
+    // binary hard-coded would not be what is tested; the effects of the first
+    // two are known by hand.
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let stage_of = stage_assignment("rollout-seed", &units, 3).unwrap();
+    let staged: serde_json::Map<String, Value> = (1..3)
+        .map(|period| {
+            let per_unit: serde_json::Map<String, Value> = units
+                .iter()
+                .map(|u| {
+                    (
+                        u.clone(),
+                        json!(if stage_of[u] < period { 3.0 } else { 1.0 }),
+                    )
+                })
+                .collect();
+            (period.to_string(), Value::Object(per_unit))
+        })
+        .collect();
+    let inputs = [
+        (
+            "matched",
+            "matched_control",
+            json!({"matched_control": {
+                "treated_covariates": [[1.0], [2.0], [3.0]],
+                "treated_outcomes": [11.0, 12.0, 13.0],
+                "pool_covariates": [[1.1], [2.1], [3.1], [9.0]],
+                "pool_outcomes": [1.0, 2.0, 3.0, 50.0],
+                "caliper": 0.5
+            }}),
+            Some(10.0),
+        ),
+        (
+            "staged",
+            "staged_experiment",
+            json!({"staged_experiment": {
+                "seed": "rollout-seed", "units": units, "stages": 3, "outcomes": staged
+            }}),
+            Some(2.0),
+        ),
+        (
+            "bayes",
+            "bayesian_causal",
+            json!({"bayesian_causal": {
+                "treatment": [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+                "covariates": [[3.0], [1.0], [5.0], [2.0], [7.0], [3.0], [8.0], [4.0]],
+                "outcome": [5.1, 1.4, 7.0, 2.1, 9.2, 2.4, 10.9, 3.1],
+                "prior_sd": 10.0
+            }}),
+            None,
+        ),
+    ];
+    for (name, method, evidence, known) in inputs {
+        let estimate = serde_json::from_value::<EstimateInput>(evidence.clone())
+            .unwrap()
+            .estimate()
+            .unwrap();
+        if let Some(known) = known {
+            assert!(
+                (estimate.effect() - known).abs() < 1e-9,
+                "{name}: {}",
+                estimate.effect()
+            );
+        }
+        let label = serde_json::to_value(estimate.identification()).unwrap();
+        let (out, _, journaled) = pass(
+            name,
+            &policy_document(),
+            &widening(attribution(label, estimate.effect()), evidence.clone()),
+        );
+        let widened: Vec<String> = journaled
+            .iter()
+            .filter_map(|r| match r {
+                AgencyRecord::Widened { estimator, .. } => serde_json::to_value(estimator)
+                    .unwrap()
+                    .as_str()
+                    .map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widened, [method], "{name}: {out}");
+        // The same data written up as an experiment widens nothing unless the
+        // method earned that label.
+        if estimate.identification() != &qip_agency::attribution::Identification::Experiment {
+            let (out, _, journaled) = pass(
+                &format!("{name}-relabelled"),
+                &policy_document(),
+                &widening(
+                    attribution(json!("experiment"), estimate.effect()),
+                    evidence,
+                ),
+            );
+            assert!(
+                !journaled
+                    .iter()
+                    .any(|r| matches!(r, AgencyRecord::Widened { .. })),
+                "{name}: {out}"
+            );
+        }
     }
 
     let (out, _, journaled) = pass(

@@ -2764,7 +2764,7 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:616 a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes, :675"
     ],
-    "gap": "Consumer inventory and migration tooling.",
+    "gap": "The schema gate (qip-cli schema_gate.rs) judges two locks and admits a version bump as the producer's deliberate break without asking who still reads the old version; qip_events::retirement::ConsumerInventory (survey, depend, migrate_off, retire refusing an unsurveyed or consumed version) is tested but nothing populates it from the tree and the lock rows carry no consumer list. Needs a committed per-topic consumer inventory the gate reads and a rule for what it admits, plus dual-read/write migration tooling.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2775,7 +2775,7 @@
     "verification": "cargo test -p qip-acceptance --test event_fabric_schema_lock",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's 'consumers computed from the dependency graph' is a heuristic (which crates decode a type is not recorded in Cargo metadata); a committed, reviewed inventory is the form retirement.rs already assumes. Kept PARTIAL."
   },
   {
     "id": "R12-SEC-9122",
@@ -3536,7 +3536,7 @@
       "backend/crates/tests/qip-acceptance/tests/slo.rs:67,149",
       "backend/crates/runtime/qip-kernel/tests/self_observation.rs:68"
     ],
-    "gap": "Wire to promotion.",
+    "gap": "Wire to promotion: Platform::release_decision (platform.rs:9457) is tested but no process serves its objective snapshot (apps/qip-api/src/routes.rs has no objective route), only 2 of 15 blueprint objectives are fed (blueprint_objectives.rs), and the promotion step is in .github/workflows/deploy.yml, a protected path a lane does not edit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3547,7 +3547,7 @@
     "verification": "cargo test -p qip-kernel --test self_observation",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: a qip-cli release-gate reading a snapshot nothing serves would be a gate that never blocks (an objective nothing fed never blocks, by design). Needs, in order: an API route serving the ObjectiveLedger snapshot, a qip-cli release-gate subcommand reading it, then the deploy.yml step (protected; patch for the owner). Kept PARTIAL."
   },
   {
     "id": "R12-OBS-9157",

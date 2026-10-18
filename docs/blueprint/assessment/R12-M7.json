@@ -1528,7 +1528,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
     ],
-    "gap": "No production seam constructs or consumes OpportunityToken (grep of OpportunityTokenFields outside qip-contracts finds nothing).",
+    "gap": "The Lane 1 frame carries no contract body: qip_peer::PeerMessage::Token holds only an OpportunityEpoch (qip-peer lib.rs:457), and qip-mesh has no seam that raises a multi-leg opportunity (the arbitrage desk that does is in qip-arbitrage and qip-edge-node). Carrying the contract OpportunityToken as the frame body is a wire change to the peer protocol under ADR 0116 (and MESH-013 forbids reflex crates from naming qip-peer), plus a construction site in the desk that knows legs, size, edge and reservations.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1539,7 +1539,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding OpportunityToken exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Lane L24 2026-10-18 re-graded: the closure placed construction in qip-mesh, which does not hold the fields (legs, size, reservations, unwind policy). Kept PARTIAL."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -2220,7 +2220,7 @@
       "backend/crates/services/qip-capital-fabric/src/gate.rs:273",
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:615"
     ],
-    "gap": "Custody-availability input to sizing.",
+    "gap": "No custody-availability signal exists to feed sizing: qip-capital-fabric's custody table (custody.rs) records who may move capital and under which agreement, not whether a custodian is reachable, and nothing in the tree marks custody down. Platform::survival_figures already withholds unsettled sale proceeds from sizing (unsettled_sale_proceeds), so settled-only sizing holds for the one settlement the platform models; a custody-down mode needs a source for the outage (an operator-asserted state through an authenticated route, or a custodian health read) and a decision on who may assert it before a gate input can be added.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2231,7 +2231,7 @@
     "verification": "capital-fabric integration test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: TransferGate::assess is veto-only and takes every input from its caller; adding a CustodyAvailability argument with no producer would be a gate input that is always 'available', the always-passing shape this repository refuses. Kept PARTIAL."
   },
   {
     "id": "R12-RES-7100",
@@ -3023,7 +3023,7 @@
       "backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs",
       "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs"
     ],
-    "gap": "Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code.",
+    "gap": "Decided by ADR 0143 (accepted 2026-10-18): A committed phase register lists each phase's exit capability and named tests, and an acceptance test refuses a phase entered over an unexited predecessor; no runtime feature flags. Code left: docs/architecture/phase-register.json populated from the blueprint phases and the acceptance test reading it, with its mutations.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -3034,7 +3034,7 @@
     "verification": "inspection",
     "work_item": "",
     "size": "M",
-    "notes": " ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates."
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D19; gap before it: Machine-checkable phase exit gates. ADR lane 2026-10-18: gap re-graded against ADR 0143; gap before it: Delegable decision D19 (design-decisions-2026-10-18.json), ADR not yet written: A phase register with recorded exit checks read by an acceptance test, without runtime feature gating. Needs that ADR, then the code."
   },
   {
     "id": "R12-ARCH-7135",
@@ -3711,23 +3711,26 @@
   },
   {
     "id": "R12-COVERAGE-7165",
-    "status": "PARTIAL",
-    "current": "LEARN stage calibrates resolved, scores declined and filled.",
+    "status": "COMPLETE",
+    "current": "LEARN calibrates resolved theses, prices every refused order against its gate (score_declined) and every filled order for size (score_filled); a partly filled order is now scored as such: FillScore.unfilled carries the quantity the venue left, from the order manager's own book, and is_partial() reads it, beside the existing PartiallyFilled capture record.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585,17244,17410 stage_learn, score_declined, score_filled"
+      "backend/crates/runtime/qip-kernel/src/platform.rs FilledPath.unfilled / FillScore.unfilled (grep -n 'unfilled' platform.rs)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:422 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_realises_nothing_twice"
     ],
-    "gap": "Partial fills and failures explicitly.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutation: recording Decimal::ZERO instead of the order manager's remainder in the FilledPath push failed the test at 'the score does not carry what the venue left unfilled'; restored byte-for-byte, it passes. Not covered, and not what this row asks: a resting remainder later cancelled or expired is not priced separately (see R12-MODEL-6004 for hedged/unwound paths)."
   },
   {
     "id": "R12-COVERAGE-7166",
@@ -3753,12 +3756,15 @@
   {
     "id": "R12-COVERAGE-7167",
     "status": "PARTIAL",
-    "current": "ExecutableScope keeps out-of-scope opportunities shadow.",
+    "current": "ExecutableScope::with_jurisdictions (qip-contracts action.rs) adds a licence half: an instrument is executable only if it names governing jurisdictions and all are authorised, research-class routes are not gated, and an unlicensed instrument routes to a ShadowRecord. Platform::executable_scope applies it from Platform::license_jurisdictions, reading each instrument governing jurisdictions from its regulatory constraints; PreActionGate check 8 still refuses an unauthorised jurisdiction for agency actions.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:188",
-      "backend/crates/libs/qip-contracts/tests/action.rs:31"
+      "backend/crates/libs/qip-contracts/src/action.rs ExecutableScope::with_jurisdictions / licensed",
+      "backend/crates/runtime/qip-kernel/src/executable_scope.rs Platform::executable_scope",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::license_jurisdictions",
+      "backend/crates/libs/qip-contracts/tests/action.rs the_same_opportunity_is_researched_and_kept_shadow_in_an_unlicensed_jurisdiction",
+      "backend/crates/runtime/qip-kernel/tests/executable_scope.rs an_instrument_in_an_unlicensed_jurisdiction_is_shadowed_by_the_kernels_scope_and_never_queued"
     ],
-    "gap": "Legal gate per jurisdiction.",
+    "gap": "No composition root states the licence: nothing calls Platform::license_jurisdictions, so the deployed scope runs ungated. The determination of which jurisdictions the platform may execute in is compliance input the repository has never been given (the same position as the product catalogue); until a binary reads it from configuration the gate is proven but not on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3766,10 +3772,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-contracts --test action; cargo test -p qip-kernel --test executable_scope",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: removing the licensed conjunct in route_with_class failed the contracts test; returning the scope before with_jurisdictions in Platform::executable_scope failed the kernel test. Unset is ungated rather than fail-closed because an empty default would shadow every opportunity on the deployed path; stating an empty set does license nothing."
   },
   {
     "id": "R12-COVERAGE-7168",
@@ -4029,24 +4035,24 @@
   },
   {
     "id": "R12-COVERAGE-7180",
-    "status": "PARTIAL",
-    "current": "Federation with branches and arbitration.",
+    "status": "COMPLETE",
+    "current": "An acceptance suite proves the composite through a real Platform: fourteen cycles of divergent members journal arbitrations whose spread is material and whose views differ (not averaged), a Branch decision whose branch later appears in a recorded Disagreement with its parent, trigger and depth 1, and no cycle's ACT stage released an order or moved the book. The register's 'numerous deployed models' gap was already stale: federation_stage.rs declares and runs the population every UNDERSTAND pass.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:246-275,641 Disagreement/Decision/Arbitration, arbitrate",
-      "backend/crates/services/qip-world-model/tests/federation.rs:204,243,472,509 keeps every view; branches stay live; material disagreement raises research task"
+      "backend/crates/tests/qip-acceptance/tests/federation_disagreement.rs divergent_members_journal_a_disagreement_with_branch_lineage_and_no_cycle_releases_an_order",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs act_on_decisions (the branch lineage)"
     ],
-    "gap": "Numerous deployed models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test federation_disagreement",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: PARTIAL->COMPLETE. Mutation fired: feeding only the momentum member in FederationStage::run -> 'no material disagreement was recorded'."
   },
   {
     "id": "R12-COVERAGE-7181",
@@ -4198,12 +4204,16 @@
   },
   {
     "id": "R12-COVERAGE-7188",
-    "status": "PARTIAL",
-    "current": "EffectAttribution multi-horizon; widen refuses unidentified.",
+    "status": "COMPLETE",
+    "current": "qip-agency draws a randomised hold-out itself (estimate::Experiment::design: units ranked by SHA-256 of seed and unit, the first share held out) and analyses outcomes per horizon into an Estimate labelled Identification::Experiment, so the assignment is a pure function of a committed seed and the operator cannot pick who is held out. The shipped shadow binary takes it as widening evidence (EstimateInput::HoldOutExperiment): ActionPolicy::widen accepts an attribution this estimate supports and still refuses a correlation of the same cells as not identified.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects"
+      "backend/crates/services/qip-agency/src/estimate.rs::Experiment, EstimatorKind::HoldOutExperiment, EstimateInput::HoldOutExperiment",
+      "backend/crates/services/qip-agency/src/autonomy.rs:112 (widen still refuses an unidentified attribution)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_hold_out_drawn_here_earns_the_experiment_label_and_a_correlation_of_the_same_cells_widens_nothing",
+      "backend/crates/services/qip-agency/tests/agency.rs::an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_not_match_the_design",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped"
     ],
-    "gap": "Experiment runner.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4211,10 +4221,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: correlation() labelled Experiment (the observational estimate then widens); the seed dropped from the ranking hash (eight seeds draw one split); the missing-outcome check replaced by a zero default (a held-out cell dropped after the fact is analysed, in the library and in the binary). Limits stated, not hidden: the platform is shadow-only and stages no intervention, so the operator runs the treatment in the cells Experiment names and supplies the outcomes; that the seed was committed before any outcome existed is the caller's ordering and nothing here proves it. Running estimators on observed post-intervention effects is R12-AGENCY-1184."
   },
   {
     "id": "R12-COVERAGE-7189",
