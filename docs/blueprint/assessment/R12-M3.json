@@ -27,7 +27,7 @@
     "current": "GoalSpec::decompose lives in qip-contracts expansion.rs and is tested (qip-agency tests/agency.rs); no non-test caller anywhere.",
     "evidence": [
       "backend/crates/services/qip-agency/src/goal.rs:132 GoalSpec::decompose",
-      "backend/crates/services/qip-agency/tests/agency.rs:50 a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field",
+      "backend/crates/services/qip-agency/tests/agency.rs:51 a_goal_missing_any_one_of_its_thirteen_declarations_is_refused_naming_that_field",
       "backend/crates/apps/qip-cli/src/agency.rs:1-40 shadow-only CLI entry",
       "backend/crates/libs/qip-contracts/src/expansion.rs::GoalSpec::decompose"
     ],
