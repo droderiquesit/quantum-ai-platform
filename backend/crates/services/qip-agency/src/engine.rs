@@ -265,10 +265,74 @@ pub enum Execution {
     },
 }
 
+/// What a withheld plan leaves behind (R12-RES-7110): the plan itself, the
+/// guard's reasons, the steps that could not clear on their own, and the
+/// option the platform would rather offer. A refusal that kept none of this
+/// would leave the next pass to propose the same plan again, and the desk
+/// nothing to read but a sentence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockedPlan {
+    /// Every step of the plan as the pass chose it.
+    pub steps: Vec<Step>,
+    /// The guard's refusal, verbatim: it names each check that failed.
+    pub reason: String,
+    /// The steps the guard refuses even when each is asked alone.
+    pub offending: Vec<Step>,
+    pub alternative: Alternative,
+}
+
+/// The truthful option sought after a plan was withheld. It is a proposal:
+/// it carries no approval and is never sent by the pass that found it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Alternative {
+    /// The plan without its offending steps, which the guard cleared when
+    /// asked read-only.
+    Reduced(Vec<Step>),
+    /// Nothing that remains clears, and the reason; the option left is the
+    /// no-action baseline every candidate set carries.
+    NoAction(String),
+}
+
+/// Ask the guard, read-only, what of a withheld plan can be said truthfully.
+fn blocked_plan(
+    guard: &ActionGuard,
+    goal: &GoalSpec,
+    priced: &[(Step, Decimal, Method)],
+    reason: &str,
+) -> BlockedPlan {
+    let steps: Vec<Step> = priced.iter().map(|(step, _, _)| step.clone()).collect();
+    let (clear, refused): (Vec<_>, Vec<_>) = priced
+        .iter()
+        .cloned()
+        .partition(|one| guard.preflight(goal, std::slice::from_ref(one)).is_ok());
+    let offending: Vec<Step> = refused.into_iter().map(|(step, _, _)| step).collect();
+    let alternative = if offending.is_empty() {
+        Alternative::NoAction(
+            "every step clears alone, so the refusal is of the plan as a whole; no subset is \
+             proposed"
+                .to_string(),
+        )
+    } else if clear.is_empty() {
+        Alternative::NoAction("no step of the plan clears alone".to_string())
+    } else if guard.preflight(goal, &clear).is_ok() {
+        Alternative::Reduced(crate::plan::without_steps(&steps, &offending))
+    } else {
+        Alternative::NoAction("the steps that clear alone do not clear together".to_string())
+    };
+    BlockedPlan {
+        steps,
+        reason: reason.to_string(),
+        offending,
+        alternative,
+    }
+}
+
 /// What [`execute`] returns: what it did, and the approval records it made.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Acted {
     pub execution: Execution,
+    /// The plan and its alternative, when the guard withheld it.
+    pub blocked: Option<BlockedPlan>,
     /// The goal and plan approvals, and the execution record once anything
     /// was sent. `None` when no guard was supplied, or it refused.
     pub approvals: Option<ApprovalChain>,
@@ -340,6 +404,7 @@ pub fn execute(
         log.fail(Stage::Act)?;
         return Ok(Acted {
             execution: Execution::Withheld(refusal.message().to_string()),
+            blocked: None,
             approvals: None,
             released: Vec::new(),
             intents: Vec::new(),
@@ -387,6 +452,7 @@ pub fn execute(
         log.shadow_act()?;
         return Ok(Acted {
             execution: Execution::Shadow(steps),
+            blocked: None,
             approvals: None,
             released: Vec::new(),
             intents: Vec::new(),
@@ -396,8 +462,10 @@ pub fn execute(
         Ok(passed) => passed,
         Err(refusal) => {
             log.fail(Stage::Act)?;
+            let blocked = blocked_plan(guard, gated.goal, &priced, refusal.message());
             return Ok(Acted {
                 execution: Execution::Withheld(refusal.message().to_string()),
+                blocked: Some(blocked),
                 approvals: None,
                 released: Vec::new(),
                 intents: Vec::new(),
@@ -409,6 +477,7 @@ pub fn execute(
         log.shadow_act()?;
         return Ok(Acted {
             execution: Execution::Shadow(steps),
+            blocked: None,
             approvals: Some(chain),
             released: Vec::new(),
             intents,
@@ -424,6 +493,7 @@ pub fn execute(
         if let Err(refusal) = sent {
             log.fail(Stage::Act)?;
             return Ok(Acted {
+                blocked: None,
                 execution: Execution::Refused {
                     reason: refusal.message().to_string(),
                     attempted: steps,
@@ -436,6 +506,7 @@ pub fn execute(
     }
     log.pass(Stage::Act)?;
     Ok(Acted {
+        blocked: None,
         execution: Execution::Executed(steps),
         approvals: Some(chain),
         released: guard.voices().skip(voices_from).cloned().collect(),
@@ -865,6 +936,9 @@ pub struct Report {
     /// The §27 intent of every step the guard cleared, in shadow as when
     /// acting (R12-CONTRACT-7082).
     pub intents: Vec<ActionIntent>,
+    /// The plan the guard withheld and the alternative sought
+    /// (R12-RES-7110); `None` when nothing was withheld.
+    pub blocked: Option<BlockedPlan>,
     /// A label per candidate, in index order: `proposal N` for the
     /// operator's, the steps for a generated one.
     pub candidates: Vec<String>,
@@ -899,6 +973,7 @@ fn report(
         audit: Vec::new(),
         released: Vec::new(),
         intents: Vec::new(),
+        blocked: None,
         candidates: Vec::new(),
         simulations: Vec::new(),
         eligibility: Vec::new(),
@@ -1262,6 +1337,7 @@ fn stages(
     done.approvals = acted.approvals;
     done.released = acted.released;
     done.intents = acted.intents;
+    done.blocked = acted.blocked;
     done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
     done.chosen = chosen;
     Ok(done)

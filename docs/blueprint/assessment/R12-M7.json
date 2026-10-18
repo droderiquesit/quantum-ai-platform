@@ -1971,16 +1971,18 @@
   {
     "id": "R12-CONTRACT-7088",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/knowledge_delta.rs:73 KnowledgeDelta = Validated<KnowledgeDeltaFields>, deny_unknown_fields decode and invariant checks",
+    "current": "qip_contracts KnowledgeDelta (strict decode, one-version step, no fast-forward over a known conflict) has a production producer: Platform::absorb_evidence (runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for), called every cycle by qip-fastbrain (node.rs:162), journals one validated delta per admitted claim on Topic::WorldModelUpdated as KnowledgeDeltaRecord, naming the claim and its document as provenance and the contested claim as a conflict under ReviewRequired. qip-evidence's own KnowledgeDelta remains the per-batch summary a poll reports, and is a different thing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/knowledge_delta.rs:73 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:856 a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:871 a_knowledge_delta_refuses_each_broken_invariant"
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs knowledge_delta_for and KnowledgeDeltaRecord",
+      "backend/crates/apps/qip-fastbrain/src/node.rs:162 platform.absorb_evidence",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:856 a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
     ],
-    "gap": "No production seam constructs or consumes KnowledgeDelta (grep of KnowledgeDeltaFields outside qip-contracts finds nothing). The ingestion path uses libs/qip-evidence/src/fabric.rs:375 KnowledgeDelta, a different type.",
+    "gap": "The delta is produced and journalled by the fast brain and decoded only by a test: no receiving brain (deep brain or another region) reads Topic::WorldModelUpdated knowledge-delta records and applies them under the merge policy. The grader's closure (convert qip-evidence's batch KnowledgeDelta) is the wrong seam: that type is a batch summary with no versions or merge policy.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1988,7 +1990,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding KnowledgeDelta exists and is tested; nothing in production constructs or decodes it."
+    "notes": "2026-10-18 lane L23: register text corrected - the earlier gap ('no production seam constructs it') was stale since evidence_intake landed. Kept PARTIAL for the missing receiver."
   },
   {
     "id": "R12-CONTRACT-7089",
@@ -2190,13 +2192,14 @@
   },
   {
     "id": "R12-RES-7098",
-    "status": "PARTIAL",
-    "current": "Edge cell halts new exposure on exhausted journal pressure while withdrawals continue; no coupling to central ledger (ledgerd) commit failure.",
+    "status": "COMPLETE",
+    "current": "Edge cell halts new exposure on exhausted journal pressure while withdrawals continue. The desk side halts too: Platform::stage_act_orders withholds every proposal signature while the desk's feed to the central ledger is full (DESK_OUTBOX_CAPACITY unacknowledged records) or its chain has advanced over a record it could not queue, counting qip_proposals_unsigned_total{control=\"ledger\"} and saying why on the ACT report; cancels, fill booking and the book following the venue are untouched, and signing resumes once the feed drains.",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/journal_pressure.rs:248,311 pressure narrows sizing before halting; exhausted journal halts new exposure while withdrawals continue",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs:208 PressureGauge"
+      "backend/crates/runtime/qip-kernel/src/platform.rs ledger_blocked / LEDGER_UNCOMMITTED_REASON in stage_act_orders (grep -n ledger_blocked)",
+      "backend/crates/runtime/qip-kernel/src/desk_ledger.rs a_desk_whose_ledger_feed_is_full_signs_nothing_new_until_the_feed_drains"
     ],
-    "gap": "Halt on central authoritative ledger commit failure.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2204,10 +2207,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test journal_pressure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_desk_whose_ledger_feed_is_full_signs_nothing_new_until_the_feed_drains",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). The trigger is non-acknowledgement, not an explicit ledgerd NACK, because a non-acknowledgement is the only commit failure the kernel can observe; a backlog of DESK_OUTBOX_CAPACITY records is the committed bound. Mutation: replacing `!ledger_blocked` with `true` in the signable expression failed the test at 'a desk with a full ledger feed still authorised new exposure'; restored byte-for-byte, it passes."
   },
   {
     "id": "R12-RES-7099",
@@ -2457,14 +2460,18 @@
   },
   {
     "id": "R12-RES-7110",
-    "status": "PARTIAL",
-    "current": "ConductGate blocks on any failing check; profit-only justification refused; deceptive step makes plan infeasible; no retained failed-plan record or alternative search.",
+    "status": "COMPLETE",
+    "current": "A plan the act stage's guard withholds is retained as a BlockedPlan (the plan's steps, the guard's refusal naming each failed check, the steps the guard refuses even alone) and a truthful alternative is sought: the plan without the offending steps, cleared read-only by the guard, or the no-action baseline when nothing remaining clears. Nothing in it is sent or approved. The record is journaled as AgencyRecord::PlanBlocked and the shadow binary prints it.",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:61-410 each check independently blocks",
-      "backend/crates/libs/qip-contracts/tests/action.rs:155",
-      "backend/crates/services/qip-agency/tests/agency.rs:572"
+      "backend/crates/services/qip-agency/src/engine.rs::BlockedPlan, Alternative, blocked_plan (called from execute's guard-refusal arm)",
+      "backend/crates/services/qip-agency/src/plan.rs::without_steps",
+      "backend/crates/services/qip-agency/src/journal.rs::AgencyRecord::PlanBlocked, record_pass",
+      "backend/crates/apps/qip-cli/src/agency.rs (plan withheld and kept / truthful alternative lines)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_withheld_plan_is_kept_with_its_reasons_and_the_alternative_is_the_plan_without_the_step_that_lied",
+      "backend/crates/services/qip-agency/tests/journal.rs::a_withheld_plan_is_journaled_with_its_reasons_and_the_alternative_sought",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses"
     ],
-    "gap": "Retention of failed plan and alternative search.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2472,10 +2479,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: treating every step as clearing alone in blocked_plan (offending empty, alternative wrong); dropping the PlanBlocked write in record_pass (record absent on the log); returning blocked None from the refusal arm (the binary prints no line and journals no record). The alternative is a proposal: it carries no approval, and a later pass must clear its own gates to send it. The ambient intake path withholds a draft in AmbientIntake, not through engine::execute, and does not use this record."
   },
   {
     "id": "R12-RES-7111",
@@ -3416,13 +3423,15 @@
   },
   {
     "id": "R12-COVERAGE-7152",
-    "status": "PARTIAL",
-    "current": "Lineage and trust scores exist; EvidencePacket missing.",
+    "status": "COMPLETE",
+    "current": "Every admitted claim is also stated as the §27 EvidencePacket: CheckedEvidence::packet builds it from the record (source, locator, retrieval instant, licence id and the uses the manifest's licensing class grants, confidence, contradiction links, SHA-256 of the body) and ConnectorRuntime::poll puts one in PollReport.packets per admitted record; a claim whose packet the contract refuses is quarantined as a validation failure rather than released without provenance. Runs on every poll of every connector, including the fastbrain connector feed.",
     "evidence": [
-      "backend/crates/libs/qip-core/src/lineage.rs",
-      "backend/crates/services/qip-reasoning-engine/src/trust_score.rs"
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::CheckedEvidence::packet and permitted_uses",
+      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs PollReport.packets, built where report.evidence is pushed",
+      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs every_admitted_claim_leaves_the_connector_as_an_evidence_packet_with_source_licence_and_hash",
+      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs a_checked_claim_whose_body_hash_is_not_a_digest_yields_no_packet"
     ],
-    "gap": "EvidencePacket and default distrust of scraped content.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3430,10 +3439,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-market-ingestion --test evidence_stage",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - Public's Redistribute grant dropped (licence assertion failed); the packet's content_hash replaced by a constant valid digest (hash equality failed and the not-a-digest refusal never fired). Limit: connector_feed drains CheckedEvidence only, so the packets live on PollReport and nothing downstream consumes one yet; the clause asked that a production path construct them."
   },
   {
     "id": "R12-COVERAGE-7153",
@@ -3722,23 +3731,24 @@
   },
   {
     "id": "R12-COVERAGE-7166",
-    "status": "PARTIAL",
-    "current": "Remediator library only.",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain/src/operations.rs runs the entity graph, timeline and runbook-only Remediator every cycle with CapabilitySwitch as its Effector; a level shift in iteration time opens an incident, the runbook step flips the node's own research switch and nothing else, and a runbook naming a foreign target is audited as failed with nothing flipped.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs:56 EntityGraph, :212 build_timeline, :235 Runbook, :341-372 Remediator, :409 release_gate"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs CapabilitySwitch, Operations::observe",
+      "backend/crates/tests/qip-acceptance/tests/aiops_remediation.rs"
     ],
-    "gap": "Wiring to effectors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test aiops_remediation",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Mutation: `if false && !CAPABILITIES.contains(&target)` in CapabilitySwitch::apply fails a_runbook_that_names_a_foreign_target_is_audited_as_failed_and_flips_nothing. The register text 'Remediator library only' was stale."
   },
   {
     "id": "R12-COVERAGE-7167",
@@ -4188,12 +4198,16 @@
   },
   {
     "id": "R12-COVERAGE-7188",
-    "status": "PARTIAL",
-    "current": "EffectAttribution multi-horizon; widen refuses unidentified.",
+    "status": "COMPLETE",
+    "current": "qip-agency draws a randomised hold-out itself (estimate::Experiment::design: units ranked by SHA-256 of seed and unit, the first share held out) and analyses outcomes per horizon into an Estimate labelled Identification::Experiment, so the assignment is a pure function of a committed seed and the operator cannot pick who is held out. The shipped shadow binary takes it as widening evidence (EstimateInput::HoldOutExperiment): ActionPolicy::widen accepts an attribution this estimate supports and still refuses a correlation of the same cells as not identified.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects"
+      "backend/crates/services/qip-agency/src/estimate.rs::Experiment, EstimatorKind::HoldOutExperiment, EstimateInput::HoldOutExperiment",
+      "backend/crates/services/qip-agency/src/autonomy.rs:112 (widen still refuses an unidentified attribution)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_hold_out_drawn_here_earns_the_experiment_label_and_a_correlation_of_the_same_cells_widens_nothing",
+      "backend/crates/services/qip-agency/tests/agency.rs::an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_not_match_the_design",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped"
     ],
-    "gap": "Experiment runner.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4201,10 +4215,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: correlation() labelled Experiment (the observational estimate then widens); the seed dropped from the ranking hash (eight seeds draw one split); the missing-outcome check replaced by a zero default (a held-out cell dropped after the fact is analysed, in the library and in the binary). Limits stated, not hidden: the platform is shadow-only and stages no intervention, so the operator runs the treatment in the cells Experiment names and supplies the outcomes; that the seed was committed before any outcome existed is the caller's ordering and nothing here proves it. Running estimators on observed post-intervention effects is R12-AGENCY-1184."
   },
   {
     "id": "R12-COVERAGE-7189",
