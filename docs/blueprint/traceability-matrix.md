@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 449 | 29.6% |
+| Blueprint completion (COMPLETE) | 451 | 29.7% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1224 | 80.6% |
-| Integrated (reached from a composition root) | 855 | 56.3% |
+| Integrated (reached from a composition root) | 856 | 56.4% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 19 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 449 |
-| PARTIAL | 922 |
+| COMPLETE | 451 |
+| PARTIAL | 920 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -42,7 +42,7 @@ register (ADR 0099), and there is no second one.
 | [EVID](#evid) | 25 | 3 | 22 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 17 | 77 | 3 | 0 | 0 | 93 | 82 | 1 |
 | [WORLD](#world) | 69 | 25 | 39 | 5 | 0 | 0 | 62 | 57 | 1 |
-| [REASON](#reason) | 41 | 13 | 26 | 2 | 0 | 0 | 39 | 39 | 0 |
+| [REASON](#reason) | 41 | 14 | 25 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 20 | 26 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 34 | 28 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 22 | 55 | 3 | 1 | 0 | 76 | 71 | 0 |
@@ -50,7 +50,7 @@ register (ADR 0099), and there is no second one.
 | [EXPAND](#expand) | 68 | 25 | 41 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
-| [GOV](#gov) | 26 | 11 | 10 | 3 | 2 | 0 | 21 | 21 | 2 |
+| [GOV](#gov) | 26 | 12 | 9 | 3 | 2 | 0 | 21 | 21 | 2 |
 | [SEC](#sec) | 57 | 20 | 33 | 4 | 0 | 0 | 50 | 41 | 0 |
 | [OBS](#obs) | 50 | 19 | 25 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
@@ -857,7 +857,7 @@ register (ADR 0099), and there is no second one.
 | R12-REASON-10099 | Cognitive compiler distills signed Reflex packages | DistilledModelContract in the policy contract and qip-training distill.rs; no signed OCI output. | PARTIAL | Signed package output and Reflex consumption. | R12-MODEL-10084 | P3 | cargo test -p qip-training |  |
 | R12-REASON-1004 | Neuro-symbolic fabric links neural output to symbolic checks | qip-reasoning-engine has rules, temporal, constraint, contradiction, bayes and trust_score modules; the kernel uses only engine/evidence/hypothesis. No proof-trace type exists anywhere in the workspace. | PARTIAL | Wire rules/temporal/constraint into the kernel's REASON stage as a verifier of neural proposals; add executable proof traces. |  | P2 | cargo test -p qip-kernel (new: a neural proposal rejected by a symbolic rule) |  |
 | R12-REASON-1024 | Symbolic layer verifies, combines or rejects neural proposals | Rule/constraint evaluators exist but are not on the path from a model output to a decision; no proof traces. | PARTIAL | Place symbolic verification between model output and decision; emit proof traces. | R12-REASON-1004 | P1 | cargo test -p qip-reasoning-engine |  |
-| R12-REASON-1131 | Symbolic fabric provides ontologies | OntologyRegistry. | PARTIAL | Integrate ontologies into the REASON stage. |  | P2 | cargo test -p qip-reasoning-engine |  |
+| R12-REASON-1131 | Symbolic fabric provides ontologies | Every hypothesis the REASON stage forms is derived symbolically on the default cycle (Platform::reason_symbolically), and the derivation now types its subject against symbolic_stage::platform_ontology, an OntologyRegistry seeded with every asset class (Asset family), the anomaly (Event) and the hypothesis lifecycle (Lifecycle). The class comes from the asset class the platform registered the instrument under; a subject with no class, or a class the ontology does not hold, is recorded as a refused typing, and replay re-types the subject and refuses a journaled typing the ontology does not reproduce. | COMPLETE |  |  | P2 | cargo test -p qip-kernel --test symbolic_federation the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused |  |
 | R12-REASON-1132 | Symbolic fabric provides causal graphs | CausalGraph::intervene runs per hypothesis subject in symbolic_stage::derive and is journaled; symbolic_stage::verify (called by replay) re-runs intervene on the recorded subject at the record's instant — point in time, so later edges are not walked — and refuses a record whose affected set, path count or kept paths' edge identities differ, or whose cited evidence is not a prefix of what the edge holds. | PARTIAL | Not coupled to a neural model: no neural model exists anywhere in the tree (grep -rli neural over qip-kernel and qip-reasoning-engine finds nothing). Recorded-and-reproducible is closed; the symbolic replay has no binary caller. |  | P2 | cargo test -p qip-kernel --test symbolic_federation |  |
 | R12-REASON-1133 | Symbolic fabric provides temporal/event logic | REASON runs symbolic_stage::derive for each hypothesis; the timeline orders anomaly before hypothesis and is journaled with the instants it was built from (TemporalInputs); symbolic_stage::verify rebuilds the timeline by the same construction at the record's instant and refuses a mismatch. | PARTIAL | Not coupled to a neural model: none exists in the tree. Recorded-and-reproducible is closed; a record written before TemporalInputs existed decodes with inputs None and its timeline is not rebuilt. |  | P2 | cargo test -p qip-kernel --test symbolic_federation |  |
 | R12-REASON-1134 | Symbolic fabric provides probabilistic logic | Bayesian network posterior computed per hypothesis in symbolic_stage::derive and journaled with its network; symbolic_stage::verify recomputes it over the recorded network_nodes with the panel evidence the recorded contested fact implies and refuses a mismatch. | PARTIAL | Not coupled to neural model outputs: none exists in the tree; no probabilistic logic beyond the network posterior. Recorded-and-reproducible is closed. |  | P2 | cargo test -p qip-kernel --test symbolic_federation |  |
@@ -1306,7 +1306,7 @@ register (ADR 0099), and there is no second one.
 |---|---|---|---|---|---|---|---|---|
 | R12-GOV-9067 | Planner agent cannot merge or deploy | scripts/agent-policy.json:37-44 registers planner roles (chief-orchestrator, product-manager, solution-architect) with empty or docs-only may_edit. dispatch_refused_for_agents lists deploy.yml, infra.yml, fleet.yml, image.yml, vendor.yml and branch-cleanup.yml. deploy.yml:113-127 runs `agent-guard.mjs dispatch` on github.actor and triggering_actor before authenticating, and the other refused workflows carry the same step (infra.yml:171, fleet.yml:71, image.yml:182, vendor.yml:68). agent-boundary.yml judges every PR against role paths and protected paths. The node tests run in ci.yml:475 (scripts/agent-guard.test.mjs: 'a planner role cannot land code', 'an agent identity may not start a deploying workflow and a person may'). | PARTIAL | Nothing refuses an agent merge: merge is a GitHub operation no workflow gates, and agent-boundary.yml says making the check required is a branch-protection setting this repository cannot create. Agent identity is detected only by commit/actor markers (agent-guard.mjs:30-33), not by role-scoped credentials. |  | P1 | inspection / cargo test -p qip-acceptance |  |
 | R12-GOV-9075 | Learning agent proposals still pass promotion gates | No learning agent turning incidents into proposals exists; strategy promotion is gated in qip-lifecycle but that is not this role. | MISSING | Build the role. |  | P2 | inspection / cargo test -p qip-acceptance |  |
-| R12-GOV-9079 | Architecture memory indexed for agents | Blueprint sources are held to the README's SHA-256 both ways; the other checks are existence-only: an ADR README, ADRs 0001-0003, 3 binary names in catalogue.tf, any .md file in docs/ops. | PARTIAL | No check that every ADR has an index row; 5 of 8 binaries unchecked; runbooks not enumerated; contracts and SLOs not indexed. |  | P2 | cargo test -p qip-acceptance --test architecture_memory_index |  |
+| R12-GOV-9079 | Architecture memory indexed for agents | The architecture memory index is complete and a missing entry fails: every docs/adr/0NNN-*.md file has exactly one index row in docs/adr/README.md and every row names a file (every_numbered_adr_has_exactly_one_index_row_and_every_row_names_a_file); all eight crates under backend/crates/apps are placed at a declared home in Terraform or named as not deployed, with a section in the per-binary runbook (every_binary_under_apps_is_catalogued_where_it_is_deployed_or_named_as_not_deployed); and every page under docs/ops and docs/ops/runbooks is linked from docs/ops/README.md, which gained an index for that purpose (every_operations_page_is_listed_in_the_ops_index). | COMPLETE |  |  | P2 | cd backend && cargo test -p qip-acceptance --test architecture_memory_index |  |
 | R12-GOV-9080 | Agents cite the rule they change when proposing an exception | The PR template carries '**Rule changed:** none'; ci.yml's rule-citation job runs scripts/rule-citation.mjs on PR events against changed paths and refuses a rule-file change not named; behaviour tested by scripts/rule-citation.test.mjs, wiring by the acceptance test. | COMPLETE | None for the requirement; not deployed. |  | P2 | cargo test -p qip-acceptance --test cicd_governance |  |
 | R12-GOV-10004 | Organization Policy enforces non-bypassable guardrails | Four project-scoped org policies in main.tf under project_key_policies_enabled: iam.disableServiceAccountKeyCreation, iam.disableServiceAccountKeyUpload, compute.vmExternalIpAccess (deny_all) and compute.requireShieldedVm, each asserted inside its own resource body by an acceptance test. ADR 0118's folder root (infrastructure/foundation/main.tf) enforces key creation/upload, storage.uniformBucketLevelAccess, compute.skipDefaultNetworkCreation and compute.vmExternalIpAccess at folder scope, which a project owner cannot override; dev sets project_key_policies_enabled = false because it sits in that folder. | PARTIAL | gcp.resourceLocations is declared at neither scope: it needs an allowed-locations value nobody has decided (the archive bucket is multi-region US while var.region is a single region, so no value derives from existing variables). compute.requireShieldedVm exists only at project scope, where a project owner can remove it; the folder copy is the owner's foundation root. Patch for the location variable is in notes. |  | P0 | cd backend && cargo test -p qip-acceptance --test infrastructure organization_policy |  |
 | R12-GOV-10005 | Cloud Asset Inventory records asset and change history | No cloud_asset resource in Terraform. | MISSING | Declare an asset feed/export for each project. |  | P2 | terraform plan shows google_cloud_asset_project_feed |  |

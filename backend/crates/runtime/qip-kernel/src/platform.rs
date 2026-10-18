@@ -13762,6 +13762,10 @@ impl Platform {
                     )),
                     crate::asset_class_registry::ClassSettlement::PeriodicStatement => None,
                 }),
+            subject_class: self
+                .asset_classes
+                .get(subject.as_str())
+                .map(|class| class.as_str().to_string()),
         };
         let derivation = {
             let world = self.world.read();

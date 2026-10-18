@@ -3005,23 +3005,26 @@
   },
   {
     "id": "R12-REASON-1131",
-    "status": "PARTIAL",
-    "current": "OntologyRegistry.",
+    "status": "COMPLETE",
+    "current": "Every hypothesis the REASON stage forms is derived symbolically on the default cycle (Platform::reason_symbolically), and the derivation now types its subject against symbolic_stage::platform_ontology, an OntologyRegistry seeded with every asset class (Asset family), the anomaly (Event) and the hypothesis lifecycle (Lifecycle). The class comes from the asset class the platform registered the instrument under; a subject with no class, or a class the ontology does not hold, is recorded as a refused typing, and replay re-types the subject and refuses a journaled typing the ontology does not reproduce.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:128 platform_ontology, type_subject, SubjectTyping on SymbolicDerivation, verify",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_symbolically passes subject_class from asset_classes",
+      "backend/crates/libs/qip-agents/src/registries.rs:21 OntologyRegistry",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:907 the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused"
     ],
-    "gap": "Integrate ontologies into the REASON stage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22. The shipped cycle's derivation for AAA (a common stock) records 'asset/equity v1'; a subject with no class and one under an unheld class are recorded refused, naming why, and the stage line says 'subject untyped'; a corrupted typing is refused on replay as 'the subject typing is not reproducible'. Mutations: pass subject_class: None from reason_symbolically - the shipped typing assertion fails; record Step::Derived whatever type_subject returns - the untyped subject reads typed and the refusal assertion fails; both restored. The typing is advisory, like the rest of the derivation: it reaches nothing that sizes or sends. Records written before the field decode with subject_type None."
   },
   {
     "id": "R12-REASON-1132",
