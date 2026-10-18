@@ -55,9 +55,11 @@
 //! * Retention is bounded: the retry queue holds `retry_capacity` entries and
 //!   a full queue abandons the new one on the record.
 
-use crate::conduct_brain::{CommunicationDraft, ConductPolicy, EvidenceCitation, MANDATORY_RULES};
+use crate::conduct_brain::{
+    CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation, MANDATORY_RULES,
+};
 use crate::goal::{GoalClass, GoalSpec, GoalSpecDraft};
-use crate::guard::{ActionGuard, ApprovalDecl, GuardPolicy, PassDecl};
+use crate::guard::{ActionGuard, ApprovalDecl, GuardPolicy, PassDecl, Voice, voice_fingerprint};
 use crate::outbox::{
     DRAFT_TOOL, DraftContext, DraftingAdapter, OUTBOX_CHANNEL, OutboxDraft, drafts,
 };
@@ -77,6 +79,16 @@ pub const AMBIENT_SOURCE: &str = "ambient-mesh";
 
 /// The audience an outbox draft addresses.
 pub const OUTBOX_AUDIENCE: &str = "research-desk";
+
+/// The one disclosure kind every outbox draft must carry, and the gate
+/// requires (R12-AGENCY-1059): that it is an internal draft nothing sends.
+/// A reader of the outbox sees on each record that it was never a
+/// publication, rather than inferring it from the channel name.
+pub const OUTBOX_DISCLOSURE: &str = "internal_draft";
+
+/// The text of that disclosure.
+pub const OUTBOX_DISCLOSURE_TEXT: &str =
+    "Internal draft for the research desk; nothing is sent outside the platform.";
 
 /// The variable the drafting step is "about"; carried only so a `Step` is whole.
 const OUTBOX_VARIABLE: &str = "outbox";
@@ -294,7 +306,7 @@ impl AmbientIntake {
             conduct: ConductPolicy {
                 authorized_sources: vec![AMBIENT_SOURCE.to_string()],
                 authorized_identities: vec![config.acting_identity.clone()],
-                required_disclosures: Vec::new(),
+                required_disclosures: vec![OUTBOX_DISCLOSURE.to_string()],
                 channel_policies: BTreeMap::from([(
                     OUTBOX_CHANNEL.to_string(),
                     vec![OUTBOX_AUDIENCE.to_string()],
@@ -318,11 +330,18 @@ impl AmbientIntake {
         let adapter = DraftingAdapter::open(outbox)?;
         let mut drafted = BTreeSet::new();
         let mut decisions = Vec::new();
+        let mut voices = Vec::new();
         for written in drafts(adapter.log())? {
             drafted.insert(written.origin_signal.clone());
             decisions.extend(written.tool_decisions);
+            voices.push(Voice {
+                tool: DRAFT_TOOL.to_string(),
+                identity: config.acting_identity.clone(),
+                fingerprint: voice_fingerprint(&written.content),
+            });
         }
         guard.resume(decisions)?;
+        guard.resume_voices(voices)?;
         let goal = GoalSpecDraft {
             class: Some(GoalClass::Research),
             target_state: Some(
@@ -478,7 +497,10 @@ impl AmbientIntake {
                     confidence_bps: i64::from(opportunity.priority_bp),
                 })
                 .collect(),
-            disclosures: Vec::new(),
+            disclosures: vec![Disclosure {
+                kind: OUTBOX_DISCLOSURE.to_string(),
+                text: OUTBOX_DISCLOSURE_TEXT.to_string(),
+            }],
             target_audience: OUTBOX_AUDIENCE.to_string(),
             jurisdiction: self.config.jurisdiction.clone(),
         };
