@@ -2005,13 +2005,14 @@
   {
     "id": "R12-FABRIC-8090",
     "status": "PARTIAL",
-    "current": "CI runs the schema-gate lock diff; broker refuses unregistered schema ids. Runtime registration registers only the per-class batch schema, not per-topic body schemas.",
+    "current": "CI runs the schema-gate lock diff; the broker refuses an unregistered batch schema id. At runtime Service::apply_catalogue now also registers each catalogue stream's body topics (Broker::register_body_topics), and Broker::produce_to refuses with SchemaRefused, before anything is appended, a batch carrying a record whose event topic the stream does not admit or whose body cannot be read. A stream the catalogue declares with no topics admits any, as before.",
     "evidence": [
-      ".github/workflows/ci.yml:94",
-      "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs:124 judge",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:870 an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs register_body_topics, require_admitted_topics",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs apply_catalogue",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_record_body_under_an_unregistered_topic_schema_is_refused_before_append",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
     ],
-    "gap": "Per-topic body schema registration at runtime.",
+    "gap": "The body's schema version and shape per topic are still not registered: the broker admits a topic by name and not by (SchemaId, version), because the service's SchemaRegistry is empty by design (the_schema_registry_is_a_production_caller_in_qip_fabricd asserts len 0) and qip-streaming holds no EventBody descriptors to take a topic's current version and shape from. A stream with an empty topic list in the catalogue is unrestricted.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2022,7 +2023,7 @@
     "verification": "cargo test -p qip-fabricd --test broker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: skipping the admitted-topic comparison appends the off-topic batch and the fetch returns two batches; the service registering nothing leaves the stream unrestricted. Existing suites pass: qip-streaming, qip-fabricd, qip-ledgerd, qip-edge-node, qip-transport, and the qip-acceptance event_fabric suites run. Kept PARTIAL: topic admission is the half that needs no descriptors; version and shape need the registry populated first."
   },
   {
     "id": "R12-FABRIC-8091",

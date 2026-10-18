@@ -958,6 +958,109 @@ fn an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it() {
         .expect("a deliberate version bump is admitted");
 }
 
+/// A record whose body is an event of `topic`, as a writer builds it.
+fn event_record(topic: qip_events::topic::Topic, tag: &str) -> Record {
+    let payload = serde_json::json!({ "tag": tag });
+    let at = qip_core::Timestamp::from_secs(1_790_000_000);
+    let event = qip_events::AnyEvent {
+        event_id: qip_core::EventId::from_string(tag.to_string()),
+        topic,
+        schema_version: 1,
+        occurred_at: at,
+        recorded_at: at,
+        sequence: 0,
+        lineage: qip_core::Lineage::root(
+            qip_core::CorrelationId::from_string("COR00000000000000000000009"),
+            "fabricd.test",
+        ),
+        idempotency_key: Some(tag.to_string()),
+        payload_hash: qip_core::sha256_hex(
+            qip_core::canonical::canonical_json(&payload).as_bytes(),
+        ),
+        payload,
+    };
+    Record::from_any_event(&event, PayloadCodec::CanonicalJson).unwrap()
+}
+
+fn batch_of_records(class: QosClass, records: Vec<Record>) -> Batch {
+    Batch::new(
+        MessageType::Data,
+        class.batch_schema_id(),
+        BATCH_SCHEMA_VERSION,
+        PayloadCodec::CanonicalJson,
+        records,
+    )
+    .unwrap()
+}
+
+/// R12-FABRIC-8090. A stream whose catalogue entry names topics admits a
+/// record of those topics and refuses one of any other, before anything is
+/// appended: the batch schema says the batch is well formed, not that what
+/// it carries belongs on the stream. A body that cannot be read is refused
+/// too, since its topic cannot be checked.
+///
+/// Mutation: `Broker::produce_to` skipping `require_admitted_topics` — the
+/// off-topic batch is acknowledged and the fetch below returns two batches.
+#[test]
+fn a_record_body_under_an_unregistered_topic_schema_is_refused_before_append() {
+    use qip_events::topic::Topic;
+    let catalogue = catalogue_json(&base_grants(), "archived");
+    let at = catalogue.find(r#""name":"journal.test""#).unwrap();
+    let (head, tail) = catalogue.split_at(at);
+    let catalogue = format!(
+        "{head}{}",
+        tail.replacen(
+            r#""topics":[]"#,
+            r#""topics":["reflex.journal_recorded"]"#,
+            1
+        )
+    );
+    assert!(
+        catalogue.contains(r#""topics":["reflex.journal_recorded"]"#),
+        "premise: the journal stream names its topic"
+    );
+    let fabric = Fabric::start_with("body-topics", &catalogue).unwrap();
+    let partition = own_partition(CELL_A);
+    let mut producer = fabric.producer(CELL_A, JOURNAL, partition, QosClass::P2MarketJournal);
+    producer.init().unwrap();
+    producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![event_record(Topic::ReflexJournalRecorded, "tick-1")],
+        ))
+        .expect("premise: a record of the stream's own topic is accepted");
+
+    let off_topic = producer
+        .send(batch_of_records(
+            QosClass::P2MarketJournal,
+            vec![
+                event_record(Topic::ReflexJournalRecorded, "tick-2"),
+                event_record(Topic::ReflexOutcomeRecorded, "alert-1"),
+            ],
+        ))
+        .expect_err("a batch carrying another topic is refused whole");
+    // The producer SDK words a `SchemaRefused` answer this way; the
+    // broker's own sentence (which topic, which stream) stays on its side.
+    let refused = "not compatible with the stream's registered schema";
+    assert!(off_topic.to_string().contains(refused), "{off_topic}");
+
+    let unreadable = producer
+        .send(batch_of(
+            QosClass::P2MarketJournal,
+            "raw",
+            &[b"not an event".to_vec()],
+        ))
+        .expect_err("a body that cannot be read cannot be admitted");
+    assert!(unreadable.to_string().contains(refused), "{unreadable}");
+
+    let fetched = fetch_all(&fabric, AUDITOR, JOURNAL, partition);
+    assert_eq!(
+        fetched.len(),
+        1,
+        "only the on-topic batch was appended: {fetched:?}"
+    );
+}
+
 // --- FABRIC-028 -----------------------------------------------------------------
 
 /// An operator isolates one partition: produce to it is refused naming the
