@@ -251,12 +251,13 @@
   {
     "id": "R12-DATA-2012",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:918 check_evidence admits each event through an EvidenceFabric before release; PollReport carries the knowledge delta",
+    "current": "Connector polls run an evidence check before release, forward evidence into the world model's fabric (Platform::absorb_evidence) in production, and derive a knowledge-delta pack the deep brain can store.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:45 every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence has no production caller"
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence has no production caller",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence"
     ],
-    "gap": "Evidence and knowledge deltas stop at the connector runtime: nothing forwards them to WorldModel::absorb_evidence or memory; each runtime holds its own fabric.",
+    "gap": "No memory/episode update from acquired facts; typed facts do not update world-model state beyond the evidence fabric; no test that bypassing a gate fails.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -269,7 +270,7 @@
     "verification": "cargo test -p qip-market-ingestion --test connector_runtime",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-2013",
@@ -342,17 +343,18 @@
   },
   {
     "id": "R12-DATA-2016",
-    "status": "PARTIAL",
-    "current": "queries_for and locations_for exist and are tested, but nothing outside the crate's tests calls them; no search executes a query.",
+    "status": "COMPLETE",
+    "current": "DiscoveryDesk turns each profiled discovery target into one query per geography x domain x language and locates candidates by entity and geography; the deep brain builds it from QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH; a missing dimension is refused at load and in queries_for.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/discovery_targets.rs:145 queries_for",
       "backend/crates/services/qip-data-finder/src/discovery_targets.rs:215 locations_for",
-      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs:92-130 query generation and refusal tests"
+      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs:92-130 query generation and refusal tests",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs::DiscoveryDesk::maybe_run"
     ],
-    "gap": "Call queries_for/locations_for from DiscoveryDesk and give them a search/crawl port (absent: no crawl stage exists).",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -362,7 +364,7 @@
     "verification": "cargo test -p qip-data-finder --test discovery_targets",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-DATA-2017",
@@ -482,12 +484,13 @@
   {
     "id": "R12-DATA-2022",
     "status": "PARTIAL",
-    "current": "source_alpha::incremental_information_gain is implemented and tested; nothing outside the crate calls it, so routing uses the coverage-overlap uniqueness instead.",
+    "current": "incremental_information_gain now has a production caller: each connector is scored against the deep brain's own stream; a duplicate earns no gain and an independent source earns some.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:68 incremental_information_gain",
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:28 a_duplicate_source_adds_no_information_and_an_informative_one_earns_a_positive_contribution"
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:28 a_duplicate_source_adds_no_information_and_an_informative_one_earns_a_positive_contribution",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score"
     ],
-    "gap": "Feed incremental gain into SourceScores/Routing from a production caller.",
+    "gap": "The incumbent is only the own stream, not every source already held (two connectors duplicating each other both earn gain); the score feeds no routing or SourceScores.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -498,7 +501,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-2023",
@@ -546,13 +549,14 @@
   {
     "id": "R12-DATA-2025",
     "status": "PARTIAL",
-    "current": "source_alpha::realised_contribution and SourceAlphaHistory exist and are tested; no composition root supplies outcome series.",
+    "current": "realised_contribution now runs in the deep brain against the own stream's next price change; a leading source earns a positive contribution.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:77 realised_contribution",
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:91 SourceAlphaHistory",
-      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71 a_sources_scores_are_recorded_over_time_within_a_bound"
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71 a_sources_scores_are_recorded_over_time_within_a_bound",
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score"
     ],
-    "gap": "Wire LEARN-stage attribution outcomes per source into SourceAlphaHistory and into routing.",
+    "gap": "The outcome is the next price move, not a strategy outcome/LEARN attribution, and not conditioned on the source being used; nothing feeds routing.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -563,7 +567,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-2026",
@@ -757,16 +761,17 @@
   {
     "id": "R12-EVID-2034",
     "status": "PARTIAL",
-    "current": "assess_authenticity credits a hash matching the fetched document, a TLS domain equal to the source host, an identity in a trusted registry, and an official release only from a registered identity; it flags spoofing on mismatch and never credits a signature claim (fabric.rs:184-275). Authenticity multiplies into belief_weight (fabric.rs:719-723). In production the connector attaches only HashVerified with hash = the document hash it was given (connector/evidence.rs:184-187), so the check compares the body hash with itself and is always credited (+0.3, score 0.5); the world fabric is built with EvidenceFabric::default() and no trusting_registry call (world.rs:108; trusting_registry has no caller), so registered-issuer credit cannot occur; belief_weight is read by nothing outside qip-evidence.",
+    "current": "The self-matching hash credit is gone: a source's declared Content-Digest is checked, a mismatch marks the claim spoofed and quarantines it; cross-source corroboration by independent origins adds authenticity, which multiplies into belief_weight.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/fabric.rs:184-275",
       "backend/crates/libs/qip-evidence/src/fabric.rs:719-723",
       "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:184-187",
       "backend/crates/services/qip-world-model/src/world.rs:108",
       "qip-world-model/tests/evidence_fabric.rs::a_hash_is_credited_only_when_it_matches_the_fetched_document_and_a_mismatch_is_spoofing",
-      "qip-world-model/tests/evidence_fabric.rs::a_signature_claim_is_recorded_and_never_credited"
+      "qip-world-model/tests/evidence_fabric.rs::a_signature_claim_is_recorded_and_never_credited",
+      "backend/crates/services/qip-market-ingestion/src/connector/transport.rs::ContentDigest"
     ],
-    "gap": "Production signals that are independent of the fetch (TLS identity from the transport, a published issuer hash or signature, a trusted registry configured), signature/issuer verification, and the resulting weight feeding a belief.",
+    "gap": "No production TLS-identity, signed-release or registered-issuer signal (no trusted registry configured); belief_weight is read by no decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -779,19 +784,20 @@
     "verification": "a test that authenticity changes evidence weight",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: the production HashVerified signal is tautological (the hash credited is the hash it is compared with). The comment at fabric.rs:265-267 says 'no in-tree signing, ADR 0043', but commit 56f2c191 added ring-based P-256 verification in qip_transport::trust, so 'cannot verify a signature' is no longer a capability limit."
+    "notes": "Round-2 independent audit, 2026-10-11: Defect: the production HashVerified signal is tautological (the hash credited is the hash it is compared with). The comment at fabric.rs:265-267 says 'no in-tree signing, ADR 0043', but commit 56f2c191 added ring-based P-256 verification in qip_transport::trust, so 'cannot verify a signature' is no longer a capability limit. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2035",
     "status": "PARTIAL",
-    "current": "admit does not count a same-origin claim (same statement fingerprint or document hash) as corroboration (fabric.rs:667-679), and independent_origins collapses copies by document hash or text (fabric.rs:595-622). The world fabric now spans sources in production (evidence_intake.rs:103). Neither independent_origins nor the fabric's corroboration/contests is read by any production path (grep for independent_origins and .contests() outside qip-evidence finds no caller); REASON does not weigh it.",
+    "current": "admit skips same-origin corroboration and now credits authenticity per independent origin at other sources (capped), using normalised-statement and document-hash collapse; fed in production.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/fabric.rs:595-622",
       "backend/crates/libs/qip-evidence/src/fabric.rs:667-679",
       "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin",
-      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not"
+      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
+      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::admit"
     ],
-    "gap": "Have the decision path weigh corroboration by independent origins; detect near-duplicate (re-bylined) text rather than only exact fingerprints; a property test over generated copy sets.",
+    "gap": "No test asserts the supporting weight (not the origin count) is unchanged by copies; normalisation catches punctuation/case only, not reworded copies; belief_weight reaches no decision.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -802,12 +808,12 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based."
+    "notes": "Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2036",
     "status": "PARTIAL",
-    "current": "check_temporal_consistency marks a claim dated after its publication, ingested before publication, preceding its declared cause, or contradicting earlier-known state (qip-evidence/src/evidence.rs:189-250); the fabric runs it on admit and holds an impossible-timeline claim at zero weight (fabric.rs:646-653), and the connector runtime quarantines it (connector/runtime.rs:957-962) on every connector poll from both brains. But production evidence never declares a cause: evidence_of sets claimed_at and location and never calls with_cause (connector/evidence.rs:170-196; grep for with_cause/caused_by outside qip-evidence finds no evidence caller), so the event-ordering arm cannot fire in production.",
+    "current": "Production evidence now declares its feed-sequence predecessor as cause, so the event-ordering check fires (runtime-level test) alongside postdating and impossible-timeline checks; verdicts are held on the record.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/evidence.rs:189-250",
       "backend/crates/libs/qip-evidence/src/fabric.rs:646-653",
@@ -815,9 +821,10 @@
       "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:170-196",
       "qip-evidence/src/evidence.rs::tests::a_claim_dated_after_its_source_was_published_is_flagged",
       "qip-evidence/src/evidence.rs::tests::a_claim_that_precedes_its_cause_names_the_cause",
-      "qip-evidence/src/evidence.rs::tests::a_claim_ingested_before_its_source_published_violates_the_physical_timeline"
+      "qip-evidence/src/evidence.rs::tests::a_claim_ingested_before_its_source_published_violates_the_physical_timeline",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::sequence_predecessor"
     ],
-    "gap": "Populate caused_by on production claims so the ordering check can fire, and a runtime-level test of the quarantine branch.",
+    "gap": "The cause comes only from the feed's own sequence, and the shipped connectors (Coinbase, Kalshi) set sequence None, so ordering cannot fire for them; results are in-memory only.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -830,7 +837,7 @@
     "verification": "cargo test -p qip-world-model --lib evidence",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: COMPLETE->PARTIAL: the prior COMPLETE overlooked that the 'before its declared cause' half is vacuous on the production path, the same reason EVID-2037 is PARTIAL. A PrecedesCause result is recorded but does not make a claim inadmissible (fabric.rs:648-651)."
+    "notes": "Round-2 independent audit, 2026-10-11: COMPLETE->PARTIAL: the prior COMPLETE overlooked that the 'before its declared cause' half is vacuous on the production path, the same reason EVID-2037 is PARTIAL. A PrecedesCause result is recorded but does not make a claim inadmissible (fabric.rs:648-651). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2037",
@@ -860,7 +867,7 @@
   {
     "id": "R12-EVID-2038",
     "status": "PARTIAL",
-    "current": "The fabric keeps every hypothesis for a claim key and resolves a contest only when a later claim with authenticity >= RESOLVING_AUTHENTICITY (0.6) arrives, recording the resolving id and keeping losers (fabric.rs:56, :657-704). The world fabric is now fed across sources, so cross-source contests open in production (evidence_intake.rs:121-131). On production evidence a contest can never resolve: the only signal attached is the tautological HashVerified (connector/evidence.rs:184-187), giving 0.2+0.3=0.5 < 0.6, and no registry is trusted (world.rs:108). Hypotheses are dropped on capacity eviction (fabric.rs:812-826). Nothing downstream reads contests.",
+    "current": "Contests keep every hypothesis and now resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
       "backend/crates/libs/qip-evidence/src/fabric.rs:657-704",
@@ -868,7 +875,7 @@
       "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
       "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
     ],
-    "gap": "Production evidence able to reach the resolving threshold (real authenticity signals), a consumer of contests, and contest retention that survives eviction/restart.",
+    "gap": "Hypotheses are dropped on capacity eviction and nothing persists contests across restart; nothing downstream reads contests.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -881,20 +888,21 @@
     "verification": "cargo test -p qip-reasoning-engine contradiction",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either."
+    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2039",
     "status": "PARTIAL",
-    "current": "detect_poisoning scans the world fabric for coordinated manipulation, source poisoning, spoofing, synthetic content and spam (world-model poisoning.rs:39-50); Platform::evidence_poisoning runs it and counts findings (evidence_intake.rs:157-175); the deep brain's research loop calls it every sweep and raises each finding as a data gap (research.rs:854-858), on by default (ResearchConfig::default every_cycles 1, research.rs:232-241; main.rs:718-750). The fabric it reads is now fed (fastbrain node.rs:137, deepbrain connectors.rs:365). On production evidence the Spoofing class cannot fire (the only signal is a self-matching hash, connector/evidence.rs:184-187) and SourcePoisoning depends on contest resolutions that cannot occur (see EVID-2038).",
+    "current": "detect_poisoning covers coordinated manipulation, source poisoning, spoofing, synthetic content and spam over the fed world fabric, run each deep-brain sweep; spoofing now fires on a declared-digest mismatch and contests can resolve.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:157-175",
       "backend/crates/apps/qip-deepbrain/src/research.rs:854-858",
       "backend/crates/apps/qip-fastbrain/src/node.rs:137",
       "qip-kernel/tests/evidence_intake.rs::a_coordinated_campaign_forwarded_from_connectors_is_found_by_the_poisoning_detector",
-      "qip-deepbrain/tests/research_market.rs::a_poisoned_feed_in_the_world_fabric_becomes_a_data_gap_naming_its_sources"
+      "qip-deepbrain/tests/research_market.rs::a_poisoned_feed_in_the_world_fabric_becomes_a_data_gap_naming_its_sources",
+      "backend/crates/services/qip-world-model/src/poisoning.rs::detect_poisoning"
     ],
-    "gap": "Production evidence carrying independent authenticity signals so spoofing and source-poisoning are detectable; the coordinated-campaign path only fires where statement text matches exactly (connector statements embed the source id, connector/evidence.rs:157-168, so only News headlines can coincide).",
+    "gap": "Coordinated detection matches only normalised-identical text, not near-identical rewording; connector statements embed the source id, so only news headlines can coincide.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -907,15 +915,15 @@
     "verification": "a test feeding a coordinated campaign through PoisoningDetector::analyse",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The old note's 'input empty in every binary' is no longer true: the fabric is fed. The coordinated-campaign verification itself is met via Platform."
+    "notes": "Round-2 independent audit, 2026-10-11: The old note's 'input empty in every binary' is no longer true: the fabric is fed. The coordinated-campaign verification itself is met via Platform. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2040",
-    "status": "MISSING",
-    "current": "No quantum work on evidence graphs exists; there is also no structural guard because there is no evidence graph.",
+    "status": "PARTIAL",
+    "current": "quantum_evidence.rs asserts SolverKind advisory typing.",
     "evidence": [],
-    "gap": "Nothing to assess until an evidence graph exists; a guard should accompany any quantum clustering work.",
-    "implemented": false,
+    "gap": "No compile-fail/structural guard proving no path to authenticity/belief fields.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -927,16 +935,17 @@
     "verification": "inspection",
     "work_item": "",
     "size": "S",
-    "notes": "Vacuously satisfied today; recorded MISSING because no guard exists."
+    "notes": "Vacuously satisfied today; recorded MISSING because no guard exists. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2041",
     "status": "PARTIAL",
-    "current": "Lane-placement acceptance test keeps qip-simulation-engine, qip-training, qip-twin and qip-world-model out of qip-edge-node. No time-aligned summary/embedding contract exists for the cognitive layer.",
+    "current": "Lane-placement keeps replay/training/twin/world-model out of qip-edge-node. qip_contracts::market_state::MarketStatePack (book/flow/liquidity/regime/embedding with integrity flags) exists but no cognitive-layer consumer.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:151 replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:151 replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node",
+      "backend/crates/libs/qip-contracts/src/market_state.rs::MarketStatePack"
     ],
-    "gap": "Define the summarised market-state contract the cognitive layer consumes.",
+    "gap": "Cognitive layer does not consume MarketStatePack; no test that it lacks a raw-tick input type.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -947,19 +956,20 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2042",
     "status": "PARTIAL",
-    "current": "Edge-node drains applied ticks into the lake (simulated feed); central TickLakeWriter has no production caller; Cloud Storage disabled in every environment.",
+    "current": "TickLakeWriter now has central callers (deep-brain connector arms) beside the edge drain, sealing ticks under per-entitlement retention rights with raw bytes or their hash.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)",
-      "grep with_tick_lake|TickLakeWriter::new in apps/runtime/services src: none"
+      "grep with_tick_lake|TickLakeWriter::new in apps/runtime/services src: none",
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs::TickLakeSettings"
     ],
-    "gap": "Central capture into the lake; durable bucket enabled; byte-for-byte rematerialisation of a session.",
+    "gap": "Cloud Storage disabled in every environment; no test re-materialises a captured session byte-for-byte from the lake.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -972,7 +982,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge ticks now reach a lake; not durable anywhere. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2043",
@@ -1134,12 +1144,13 @@
   {
     "id": "R12-TICK-2050",
     "status": "PARTIAL",
-    "current": "tick_capture keeps raw bytes only where the right permits and the hash either way; no production writer uses it, and the edge LakeSink hardcodes raw_retention_permitted false.",
+    "current": "Edge LakeSink records raw_retention_permitted per dataset from the retention policy, but write_segment passes no raw bytes (sink holds decoded events); tick_capture library keeps raw only where permitted.",
     "evidence": [
       "backend/crates/libs/qip-storage/tests/tick_capture.rs:103 raw_bytes_are_kept_only_where_the_right_permits_and_their_hash_either_way",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:498 raw_retention_permitted: false"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:498 raw_retention_permitted: false",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs::parse_retention"
     ],
-    "gap": "A production capture writer.",
+    "gap": "No production writer stores venue-native raw bytes under a permitting right.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1152,7 +1163,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2051",
@@ -1340,13 +1351,15 @@
   {
     "id": "R12-TICK-2059",
     "status": "PARTIAL",
-    "current": "Acceptance test replays venue bytes through decode, sequence, rebuild and simulated fill, twice and from a checkpoint, asserting identity. Runs only in tests; no replay service.",
+    "current": "tick_replay rebuilds books deterministically with serialisable checkpoints; replay twice and from a checkpoint gives identical books, fills and flags. The deep brain's tick desk is a production replay job over pinned lake history.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:297 resumed_from_a_checkpoint",
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327 replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_reproduces_every_event_book_fill_and_flag",
-      "backend/crates/edge/qip-orderbook/src/snapshot.rs"
+      "backend/crates/edge/qip-orderbook/src/snapshot.rs",
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs::ReplaySession::resume",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "No production replay job reads lake history.",
+    "gap": "None for the requirement; not deployed (desk off unless configured).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1359,7 +1372,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2060",
@@ -1387,13 +1400,14 @@
   {
     "id": "R12-TICK-2061",
     "status": "PARTIAL",
-    "current": "qip_orderbook::replay::replay emits per-message flags and UnreliablePeriod; tested in-crate and in acceptance; no consumer outside tests. Acceptance test records a known defect: a hole one packet wide is replayed as wholly reliable.",
+    "current": "tick_replay flags a hole one message wide as an unreliable span until the next reset (the qip_orderbook::replay defect was also fixed), and labels are never built across a flagged span in the desk.",
     "evidence": [
       "backend/crates/edge/qip-orderbook/src/replay.rs:42,84",
       "backend/crates/edge/qip-orderbook/tests/integrity.rs:45 removing_one_message_flags_the_period_from_the_gap_and_the_flag_is_on_the_output",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:518 a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:518 a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs::a_gap_one_message_wide_is_flagged_on_the_output_until_the_next_reset"
     ],
-    "gap": "Close the one-packet-hole case; consume flags in training/label building.",
+    "gap": "None for the requirement; not deployed (desk off unless configured).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1406,7 +1420,7 @@
     "verification": "cargo test -p qip-orderbook --test integrity",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2062",
@@ -1477,12 +1491,13 @@
   {
     "id": "R12-TICK-2065",
     "status": "PARTIAL",
-    "current": "qip_training::labels::LabelBuilder implements all six plus at_horizons with hand-computed tests; no production caller.",
+    "current": "LabelBuilder implements fill-probability, future-return, adverse-selection, impact, realised-volatility, opportunity-decay and multi-horizon labels with hand-computed tests, and the tick desk labels decision instants through it.",
     "evidence": [
       "backend/crates/services/qip-training/src/labels.rs:95-210",
-      "backend/crates/services/qip-training/tests/labels.rs:31-148"
+      "backend/crates/services/qip-training/tests/labels.rs:31-148",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk::round"
     ],
-    "gap": "Call it from a training job over captured tick history.",
+    "gap": "None for the requirement; not deployed (desk off unless configured).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1495,7 +1510,7 @@
     "verification": "cargo test -p qip-training --test labels",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2066",
@@ -1524,14 +1539,16 @@
   {
     "id": "R12-TICK-2067",
     "status": "PARTIAL",
-    "current": "qip-simulation-engine MarketSimulator has a price-time book, conditions (latency, jitter, partial-fill cap, outages, delayed feed), cost model and impact; kernel uses it for synthetic runs. It replays bars, not tick history; no queue position; multi-leg only as conditions.",
+    "current": "Tick desk replays lake history tick by tick via qip_simulation_engine::tick_replay with an execution model; MarketSimulator covers latency, partial fills, costs, impact on bars.",
     "evidence": [
       "backend/crates/services/qip-simulation-engine/src/market.rs",
       "backend/crates/services/qip-simulation-engine/src/conditions.rs:96-165 MarketCondition",
       "backend/crates/services/qip-simulation-engine/src/venue.rs never more generous than reality",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13457 MarketSimulator::synthetic"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13457 MarketSimulator::synthetic",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk",
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs::ReplaySession"
     ],
-    "gap": "Tick-level replay from the lake with queue-position modelling.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Queue position and multi-leg execution semantics in replay not shown.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1545,17 +1562,19 @@
     "verification": "cargo test -p qip-simulation-engine --test market_conditions",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2068",
     "status": "PARTIAL",
-    "current": "qip-training LocalTrainer fits ridge and boosted stumps with holdout skill policy; deepbrain's learning desk fits next-bar return models from bars. No microstructure (fill, slippage, liquidity) model is trained.",
+    "current": "qip_training::microstructure trains a fill-probability and short-horizon volatility model against naive baselines on a held-out slice, called from the deep brain tick desk.",
     "evidence": [
       "backend/crates/services/qip-training/src/local.rs:328 SkillPolicy",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:134-139 desk uses qip-training"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:134-139 desk uses qip-training",
+      "backend/crates/services/qip-training/src/microstructure.rs::train_fill_model",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
     ],
-    "gap": "Train fill/slippage/liquidity models from tick labels.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Slippage, liquidity, regime and execution models not trained.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1568,17 +1587,18 @@
     "verification": "cargo test -p qip-deepbrain learning",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2069",
     "status": "PARTIAL",
-    "current": "Per-horizon Brier scores are recorded for theses, and twin fill error is recorded per venue; no model benchmark sliced by all four.",
+    "current": "Tick desk benchmarks the fill model one row per venue x asset x regime x horizon (benchmark_fill_model, BenchmarkReport).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/tests/learning.rs:1760 per_horizon_brier_scores_are_recorded_with_horizon_label",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:884 the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:884 the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
+      "backend/crates/services/qip-training/src/microstructure.rs::benchmark_fill_model"
     ],
-    "gap": "No venue x asset x regime x horizon benchmark for models.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Only the fill model is benchmarked.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1591,7 +1611,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2070",
@@ -1733,12 +1753,13 @@
   {
     "id": "R12-TICK-2076",
     "status": "PARTIAL",
-    "current": "Proven in qip-acceptance tick_replay over a committed dirty session; no service runs it over stored history.",
+    "current": "Deterministic tick replay with integrity flags exists (tick_replay acceptance) and the deep brain tick desk replays pinned lake manifests through it.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:433 the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:433 the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
     ],
-    "gap": "Production replay job over lake history.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No checkpoint-resume replay proven on stored production history.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1752,7 +1773,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2077",
@@ -1827,12 +1848,13 @@
   {
     "id": "R12-TICK-2080",
     "status": "PARTIAL",
-    "current": "Twin entry-price error versus actual fills is recorded per venue (qip_venue_fill_error_bps); it is diagnostic and read by nothing that decides; no parameter is recalibrated.",
+    "current": "FillCalibration moves a per-venue half-spread bias toward each observed fill error and the twin prices with the calibrated cost model; tested through the cycle.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/tests/learning.rs:884 the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue",
+      "backend/crates/services/qip-twin/src/calibration.rs::FillCalibration"
     ],
-    "gap": "Calibrate fill/queue/impact/latency parameters from captured fills.",
+    "gap": "Only the spread/fill model is calibrated; queue, impact and latency parameters stay fixed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1845,15 +1867,17 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2081",
-    "status": "MISSING",
-    "current": "No fusion component; world model and market features are consumed separately by the kernel.",
-    "evidence": [],
-    "gap": "Design and build the fusion representation.",
-    "implemented": false,
+    "status": "PARTIAL",
+    "current": "fusion::fuse joins knowable world events, entities, exposure paths and beliefs with replayed tick traces as of one instant, producing watch graphs, measured reactions, belief updates and mismatches; the tick desk calls it.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
+    ],
+    "gap": "Market side carries only mid and spread reactions; regime, liquidity, flow, dislocation and feasibility are not fused.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -1863,17 +1887,18 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2082",
     "status": "PARTIAL",
-    "current": "World-model exposure queries walk the relationship graph point-in-time to impacted instruments, used by the UNDERSTAND stage's second-order pass; no watch graph or prior output.",
+    "current": "qip_kernel::fusion::fuse produces, per knowable event, a watch graph of entities and instruments/venues within two hops and a reaction prior; called only by the deep brain tick desk.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/exposure.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2587 SecondOrderDriver uses MAX_EXPOSURE_HOPS"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2587 SecondOrderDriver uses MAX_EXPOSURE_HOPS",
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
     ],
-    "gap": "Emit a watch graph and hypothesis priors per world event.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1884,15 +1909,17 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2083",
-    "status": "MISSING",
-    "current": "No component measures propagation or reaction timing from ticks and feeds it to beliefs.",
-    "evidence": [],
-    "gap": "Build reaction measurement and belief update.",
-    "implemented": false,
+    "status": "PARTIAL",
+    "current": "fusion measures each watched instrument's reaction from tick traces (move, time to first move, peak, decay, spread response) and the belief update it implies; called only from the tick desk.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
+    ],
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. The implied belief update is not applied to the platform's beliefs.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -1904,17 +1931,18 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2084",
     "status": "PARTIAL",
-    "current": "Falsifiers are evaluated against held-out data and forecast-error spikes become discovery targets; neither is a world-vs-market mismatch detector.",
+    "current": "fusion raises an investigation, evidence-quality challenge or relative-value hypothesis on a world/market mismatch; reached only through the tick desk.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/falsification.rs:63",
-      "backend/crates/services/qip-data-finder/src/discovery_targets.rs:86"
+      "backend/crates/services/qip-data-finder/src/discovery_targets.rs:86",
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
     ],
-    "gap": "A mismatch detector that dispatches the three named responses.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Mismatch outputs dispatch to nothing in the cycle.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1925,15 +1953,17 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2085",
-    "status": "MISSING",
-    "current": "No fused state exists to consume.",
-    "evidence": [],
-    "gap": "Depends on the fusion layer.",
-    "implemented": false,
+    "status": "PARTIAL",
+    "current": "FusedState::posteriors is the stated read surface for foundry and brains; produced by the tick desk.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::FusedState"
+    ],
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No foundry, Asset, Capital or Risk brain reads FusedState.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -1945,17 +1975,18 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2086",
-    "status": "MISSING",
-    "current": "No fused state; distillation exists only for single teacher models.",
+    "status": "PARTIAL",
+    "current": "FusedState::opportunity_map distils fused state into a bounded per-region map, authorised by entitlement regions; written by the tick desk.",
     "evidence": [
-      "backend/crates/services/qip-training/src/distill.rs:311"
+      "backend/crates/services/qip-training/src/distill.rs:311",
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::OpportunityMap"
     ],
-    "gap": "Depends on the fusion layer and distillation delivery.",
-    "implemented": false,
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No edge crate or qip-edge-node reads the OpportunityMap, so it never reaches a reflex cell.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -1967,7 +1998,7 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2087",
@@ -2066,12 +2097,13 @@
   {
     "id": "R12-TICK-2091",
     "status": "PARTIAL",
-    "current": "ModelCard records training_datasets by name (set by register_fit and the learning desk); no entitlement or permitted-location field and no deployment check.",
+    "current": "ModelCard records training entitlements and permitted locations and refuses others; the tick desk ships its opportunity map only to permitted regions.",
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs:173,313 training_datasets/with_training_data",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:167"
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:167",
+      "backend/crates/libs/qip-ai/src/registry.rs::ModelCard::authorise_location"
     ],
-    "gap": "Add entitlements and permitted locations to the model card and enforce them where models are shipped.",
+    "gap": "authorise_location is called only for the opportunity map; promoted models and distillates shipped to cells are not location-checked.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2084,17 +2116,18 @@
     "verification": "a qip-ai registry test refusing an out-of-entitlement deployment",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-2092",
     "status": "PARTIAL",
-    "current": "SkillPolicy requires positive holdout R² (beats predicting the mean) before a fit is registered as skilled; no comparison against a simpler model or bar-based baseline for tick-derived models.",
+    "current": "Tick desk trains fill and volatility models against naive baselines on held-out slices; SkillPolicy needs positive holdout R2.",
     "evidence": [
       "backend/crates/services/qip-training/src/local.rs:316-332 SkillPolicy",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs register_fit verdict"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs register_fit verdict",
+      "backend/crates/services/qip-training/src/microstructure.rs"
     ],
-    "gap": "Explicit baseline-model comparison in evaluation for tick models.",
+    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Registration refusal for a tick model that fails its baseline not shown from a binary.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2107,6 +2140,6 @@
     "verification": "cargo test -p qip-training --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   }
 ]

@@ -23,9 +23,16 @@ which with 538 does not make 1,518); recount with `python3 -I -c` over
 any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
-Recounted **2026-10-17** with `python3 -I` over `docs/blueprint/assessment/*.json`:
-COMPLETE 172, PARTIAL 1154, MISSING 159, BLOCKED 31, INCORRECT 1,
-NEEDS-VALIDATION 1 (= 1518). It was COMPLETE 161, PARTIAL 1165 earlier the
+Recounted **2026-10-18** with `python3 -I` over `docs/blueprint/assessment/*.json`:
+COMPLETE 249, PARTIAL 1122, MISSING 114, BLOCKED 31, INCORRECT 1,
+NEEDS-VALIDATION 1 (= 1518). On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
+MISSING 159: eleven independent graders read 980 rows (ran nothing), 88
+were proposed COMPLETE, eleven were held back (ten TICK rows reachable only
+with `QIP_DEEPBRAIN_TICK_EVERY` set, which needs a licensing decision;
+OBS-3118, whose alert policy is gated off; AMBIENT-1055, fenced partly by a
+source scan), and the other 77 were promoted after every named test passed in
+a full workspace run and five production calls were mutated. 35 MISSING rows
+became PARTIAL and 218 rows had text corrected. Earlier on 2026-10-17 it was COMPLETE 161, PARTIAL 1165 earlier the
 same day; nine rows (AMBIENT-1026, -1140, -1144, -7025, EXPAND-1113, -1114,
 -1120, -6045, WORLD-9004) were promoted after an independent re-grade found
 their text older than the code and the named tests were run and mutated;

@@ -24,12 +24,13 @@
   {
     "id": "R12-SEC-10002",
     "status": "PARTIAL",
-    "current": "IAP member lists exist as variables; the identity module provisions Identity Platform for portal customers, which is not workforce identity. No Cloud Identity group structure is in code.",
+    "current": "The three IAP member lists validate every member against ^(user|group):...; the acceptance test requires that validation and refuses allUsers/allAuthenticatedUsers/domain: literals in any committed grant.",
     "evidence": [
       "infrastructure/terraform/modules/iap-run/main.tf:158 google_iap_web_cloud_run_service_iam_member console",
-      "infrastructure/terraform/main.tf:1054 module identity (Identity Platform, customer auth)"
+      "infrastructure/terraform/main.tf:1054 module identity (Identity Platform, customer auth)",
+      "backend/crates/tests/qip-acceptance/tests/identity_separation.rs::every_workforce_access_list_admits_only_managed_cloud_identity_users_and_groups"
     ],
-    "gap": "No declared workforce groups or test that admin grants name managed groups only.",
+    "gap": "A shared account written as user: passes; no Cloud Identity group structure is declared; human project-IAM grants beyond the three IAP lists are not enumerated.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -40,7 +41,7 @@
     "verification": "inspection of IAP/IAM member lists against a Cloud Identity group naming rule",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-SEC-10003",
@@ -325,14 +326,15 @@
   {
     "id": "R12-FABRIC-10016",
     "status": "PARTIAL",
-    "current": "Public signed zone (dns-zone module) and a private googleapis zone exist. SRV bootstrap is only in modules/event-fabric-broker, which main.tf never instantiates. qip-ledgerd hard-codes broker 127.0.0.1:9090.",
+    "current": "Public signed zone and private googleapis zone; SRV records only in un-instantiated event-fabric-broker module; ledgerd now takes a required fabric URL.",
     "evidence": [
       "infrastructure/terraform/modules/dns-zone/main.tf",
       "infrastructure/terraform/modules/network/main.tf:102 private googleapis zone",
       "infrastructure/terraform/modules/event-fabric-broker/main.tf:89 SRV records (module not instantiated)",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:62 hard-coded broker address 127.0.0.1:9090"
+      "backend/crates/apps/qip-ledgerd/src/main.rs:62 hard-coded broker address 127.0.0.1:9090",
+      "backend/crates/apps/qip-ledgerd/src/config.rs::LedgerConfig::fabric_url"
     ],
-    "gap": "Instantiate broker DNS/SRV, make clients resolve SRV, remove hard-coded addresses.",
+    "gap": "No broker DNS/SRV instantiated; no client resolves SRV (qip-transport connects to literal URL authority).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -343,7 +345,7 @@
     "verification": "terraform plan shows SRV records; ledgerd config test resolving SRV",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-API-10017",
@@ -439,15 +441,16 @@
   },
   {
     "id": "R12-SEC-10021",
-    "status": "PARTIAL",
-    "current": "Certificate Manager certificate/map and managed SSL certificates are declared; not deployed.",
+    "status": "COMPLETE",
+    "current": "The acceptance test refuses any google_compute_(region_)ssl_certificate, requires managed blocks with no private key on every managed and Certificate Manager certificate, and checks every HTTPS proxy terminates on one.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:380 google_certificate_manager_certificate edge"
+      "infrastructure/terraform/modules/public-edge/main.tf:380 google_certificate_manager_certificate edge",
+      "backend/crates/tests/qip-acceptance/tests/admin_surfaces.rs::every_public_tls_certificate_is_google_managed_and_none_is_uploaded"
     ],
-    "gap": "No test refusing self-managed certs; edge shut.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -457,7 +460,7 @@
     "verification": "inspection of public-edge plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-SEC-10022",
@@ -506,14 +509,14 @@
   {
     "id": "R12-REFLEX-10024",
     "status": "PARTIAL",
-    "current": "execution-node allowlists C3/C3D/C4/C4D high-CPU shapes, defines a primary and a standby template with placement policies; execution_nodes = {} in every environment. The Fabric broker module is never instantiated.",
+    "current": "execution-node allowlist now admits only c4/c4d highcpu-8/16 (C3/C3D refused); primary and standby templates with placement policies; execution_nodes = {} everywhere; Fabric broker module never instantiated.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/variables.tf:140-150 machine-type allowlist",
       "infrastructure/terraform/modules/execution-node/main.tf:351 instance template node; :808 standby",
       "infrastructure/terraform/modules/execution-node/tests/standby.tftest.hcl",
       "infrastructure/environments/prod/terraform.tfvars:51 execution_nodes = {}"
     ],
-    "gap": "No node or broker provisioned; standby fencing unproven.",
+    "gap": "Nothing provisioned per shard; standby fencing unproven; requirement is a deployment claim.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -524,7 +527,7 @@
     "verification": "terraform test modules/execution-node",
     "work_item": "",
     "size": "M",
-    "notes": "Allowlist includes C3/C3D, wider than the blueprint's C4/C4D."
+    "notes": "Allowlist includes C3/C3D, wider than the blueprint's C4/C4D. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-REFLEX-10025",
@@ -818,13 +821,15 @@
   },
   {
     "id": "R12-DATA-10038",
-    "status": "PARTIAL",
-    "current": "No Dataflow or Dataproc resource exists, so the invariant holds by absence; no guard test.",
-    "evidence": [],
-    "gap": "A guard test refusing Dataflow on live streams if one is ever added.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "COMPLETE",
+    "current": "Guard test now exists: scans every Terraform file (premise >10 files/resources) for google_dataflow/google_dataproc and the fabric binaries' sources for Dataflow/Dataproc; no such resource exists, so no Dataflow job can touch a live Fabric stream.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::no_dataflow_or_dataproc_resource_is_declared_so_none_can_be_a_live_fabric_consumer"
+    ],
+    "gap": "None for the requirement; not deployed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -832,7 +837,7 @@
     "verification": "acceptance scan of Terraform",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-DATA-10039",
@@ -1593,13 +1598,13 @@
   {
     "id": "R12-MESH-10075",
     "status": "PARTIAL",
-    "current": "qip-mesh peer.rs implements the peer protocol as pure frames-in/state-out with bounded frames and epoch rules (tests); no transport exists and nothing in an app uses PeerEndpoint. The cell-to-centre mesh is HTTP/1.1 via the centre.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:1-25 protocol with no sockets (MESH-038 blocked)",
       "backend/crates/services/qip-mesh/tests/peer.rs:246 no_leg_is_sent_and_no_message_is_applied_at_or_after_the_epoch_expiry",
       "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs (PeerEndpoint used only in tests)"
     ],
-    "gap": "A peer transport and composition-root wiring.",
+    "gap": "Default-on/committed-deployment peer configuration; QUIC.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1610,7 +1615,7 @@
     "verification": "two-node integration test over a socket",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-FABRIC-10076",
@@ -1661,13 +1666,15 @@
   {
     "id": "R12-FABRIC-10078",
     "status": "PARTIAL",
-    "current": "Consumer groups and offsets exist in qip-streaming's broker and LedgerSink commits offsets after writes; qip-ledgerd's consumer is a placeholder pointed at a hard-coded address and never drained.",
+    "current": "qip-ledgerd now runs a real fabric consumer (required fabric URL) that resumes from its store's offset; SDK group commit/resume tested.",
     "evidence": [
       "backend/crates/services/qip-streaming/src/event_fabric/group.rs",
       "backend/crates/services/qip-streaming/src/event_fabric/sink.rs:1-12",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 placeholder consumer"
+      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 placeholder consumer",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs::resume_offset",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Production consumer loops.",
+    "gap": "Only qip-ledgerd consumes; it resumes from its own store offset, not a broker consumer-group checkpoint; GroupCoordinator has no binary caller.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1680,7 +1687,7 @@
     "verification": "cargo test -p qip-streaming",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-10079",
@@ -1938,12 +1945,14 @@
   {
     "id": "R12-WORLD-10090",
     "status": "PARTIAL",
-    "current": "Knowledge packs are schema-closed; world-model absorbs evidence in-process; no Fabric knowledge-event stream or NOW Brain service.",
+    "current": "NOW Brain absorbs typed observations each cycle and journals schema-closed BeliefDeltas that refuse a raw payload field.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
-      "backend/crates/services/qip-world-model/src/evidence.rs"
+      "backend/crates/services/qip-world-model/src/evidence.rs",
+      "backend/crates/services/qip-world-model/src/now.rs::NowBrain",
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run"
     ],
-    "gap": "Typed Fabric knowledge stream into a NOW state service.",
+    "gap": "Inputs come from in-process bar history and the world model, not scout/evidence workers over typed Fabric knowledge events.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1954,15 +1963,17 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-WORLD-10091",
-    "status": "MISSING",
-    "current": "No forecast router or forecast task contract exists.",
-    "evidence": [],
-    "gap": "Router + task contract.",
-    "implemented": false,
+    "status": "PARTIAL",
+    "current": "lattice::route weights a horizon population from a reputation cache; lattice stage issues per-horizon forecasts from NOW latent returns.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/lattice.rs::route"
+    ],
+    "gap": "No Fabric task contracts; no fan-out to agents, world models or simulators; microsecond horizon never issued.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -1974,18 +1985,21 @@
     "verification": "unit tests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-10092",
-    "status": "PARTIAL",
-    "current": "qip-prediction scores beliefs and markets; kernel learn_from produces belief calibration in LEARN.",
+    "status": "COMPLETE",
+    "current": "Kernel tournament stage opens a question per directional hypothesis, aggregates forecasts weighted by synthetic-credit market share and calibration, and on resolution scores every forecaster (Brier, log loss, calibration error, ...) per regime; journaled as TournamentReview.",
     "evidence": [
       "backend/crates/services/qip-prediction/src/scoring.rs",
       "backend/crates/services/qip-prediction/tests/scoring.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8901 learn_from",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::aggregate",
+      "backend/crates/services/qip-learning-engine/src/forecast_market.rs::ForecastMarket"
     ],
-    "gap": "Multi-model forecast market aggregation.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1996,7 +2010,7 @@
     "verification": "cargo test -p qip-prediction",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-AMBIENT-10093",
@@ -2022,12 +2036,12 @@
   {
     "id": "R12-AMBIENT-10094",
     "status": "PARTIAL",
-    "current": "qip-cost-router chooses a rung per request and records a rationale; no ComputePlan contract across accelerator classes.",
+    "current": "qip-expansion MetaIntelligence::allocate grants CPU/GPU/TPU/QPU units by marginal value per cost, each ComputeAllocation with expected-value rationale; QPU grants carry ComputePlan; called from deepbrain sweep.",
     "evidence": [
       "backend/crates/services/qip-cost-router/src/router.rs:161-168 rationale",
       "backend/crates/services/qip-cost-router/tests/cost_router.rs"
     ],
-    "gap": "ComputePlan with value-of-information justification.",
+    "gap": "No agent budgets; TPU budget zero; ComputePlan only on QPU grants.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2038,7 +2052,7 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-QUANT-10095",
@@ -2064,12 +2078,12 @@
   {
     "id": "R12-MODEL-10096",
     "status": "PARTIAL",
-    "current": "qip-lifecycle demotion and gates, and kernel promote_model retiring displaced references; no VerificationResult contract.",
+    "current": "Verifier society (qip-learning-engine verifier.rs) refutes predictions/forecasters/models; refutation blocks forecaster promotion and refuses promote_model_from, journaled. No VerificationResult contract; no reweight/retire of a promoted model.",
     "evidence": [
       "backend/crates/services/qip-lifecycle/src/demotion.rs",
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595"
     ],
-    "gap": "Verification contract feeding tournament weights.",
+    "gap": "VerificationResult contract driving demotion/retirement and solver policy weights.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2080,15 +2094,17 @@
     "verification": "cargo test -p qip-lifecycle",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-CAPITAL-10097",
-    "status": "MISSING",
-    "current": "No ForecastState or WorldBranch contract.",
-    "evidence": [],
-    "gap": "Contracts and consumers.",
-    "implemented": false,
+    "status": "PARTIAL",
+    "current": "ForecastState and WorldBranch contracts exist in qip-contracts.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastState"
+    ],
+    "gap": "No capital/risk/hedge consumer.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
@@ -2100,19 +2116,19 @@
     "verification": "unit tests",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-CAPITAL-10098",
     "status": "PARTIAL",
-    "current": "Signed CapitalEnvelopes with expiry flow centre-to-cell over the HTTP spine and the cell refuses beyond its region allocation; RiskEnvelopeSnapshot exists in the policy payload; no HedgePlan contract and not over Fabric.",
+    "current": "Signed CapitalEnvelopes reach cells; kernel hedge.rs produces a HedgePlan centrally.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/spine.rs:95 CapitalGrantFrame",
       "backend/crates/edge/qip-edge/src/reservation.rs:1-25 RegionAllocation",
       "backend/crates/libs/qip-contracts/src/policy.rs:550 RiskEnvelopeSnapshot",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
     ],
-    "gap": "HedgePlan; Fabric transport.",
+    "gap": "HedgePlan not distributed to regions; not over Fabric.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2123,7 +2139,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-REASON-10099",
@@ -2429,14 +2445,14 @@
   {
     "id": "R12-MESH-10112",
     "status": "PARTIAL",
-    "current": "Peer protocol enforces epoch fields, expiry and fire preconditions (tests); RegionAllocation holds capital before an order. Peer protocol unused by any composition root.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC.",
     "evidence": [
       "backend/crates/services/qip-mesh/tests/peer.rs:88",
       "backend/crates/services/qip-mesh/tests/peer.rs:246",
       "backend/crates/services/qip-mesh/tests/peer_guarantees.rs",
       "backend/crates/edge/qip-edge/src/reservation.rs"
     ],
-    "gap": "Wire into the node.",
+    "gap": "Default-on peer link; reservation under cell risk gate on real capital.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2449,18 +2465,18 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MESH-10113",
     "status": "PARTIAL",
-    "current": "DecompositionPolicy governs completion after a short fill (tests); hedge-book path assignment for mirrors; the Saga enum in cell.rs is documentation-only.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. Cell-level decomposition stops whole-cycle desks on short legs.",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/decomposition.rs:557 a_desk_that_will_only_carry_a_whole_cycle_stops_on_any_short_leg_at_all",
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1537",
       "backend/crates/edge/qip-edge/src/cell.rs:73-89 Saga (doc enum)"
     ],
-    "gap": "Explicit unwind execution for cross-cell cycles.",
+    "gap": "Default-on peer saga; cell reroute/executed unwind.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2473,7 +2489,7 @@
     "verification": "cargo test -p qip-edge --test decomposition",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-LEDGER-10114",
@@ -2619,13 +2635,15 @@
   },
   {
     "id": "R12-WORLD-10120",
-    "status": "PARTIAL",
-    "current": "World model holds beliefs with freshness/expiry and causal graph; no single NOW state service.",
+    "status": "COMPLETE",
+    "current": "Each cycle observations are stepped into NowBrain; promoted NowStore state carries mean and uncertainty updated per observation, contradiction widening it.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/world.rs",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:611 BeliefFreshness"
+      "backend/crates/libs/qip-contracts/src/degradation.rs:611 BeliefFreshness",
+      "backend/crates/services/qip-world-model/src/now.rs::NowBrain",
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run"
     ],
-    "gap": "NOW Brain service.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2636,7 +2654,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-TICK-10121",
@@ -2662,12 +2680,12 @@
   {
     "id": "R12-CAPITAL-10122",
     "status": "PARTIAL",
-    "current": "Expected shortfall limit fires from tail risk; edge sizing multiplier narrows on stale inputs; no consumer of forecast disagreement.",
+    "current": "Confidence governor reads disagreement and narrows grants (survival grant_decision); hedge brain consumes stress worlds.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:19703 the_expected_shortfall_limit_can_actually_fire",
       "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier"
     ],
-    "gap": "Disagreement-aware sizing and HedgePlan.",
+    "gap": "No capital society; distributions not via ForecastState.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2680,7 +2698,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-10123",
@@ -2706,18 +2724,20 @@
   },
   {
     "id": "R12-RES-10124",
-    "status": "PARTIAL",
-    "current": "Spool, pressure gauge (Normal/Narrow/Exhausted/Stale/Fenced) and the cell's journal-pressure wire are implemented and tested, but main.rs neither builds the spool nor calls with_journal_wire.",
+    "status": "COMPLETE",
+    "current": "main.rs now builds the spool, pressure gauge and writer unconditionally and arms with_journal_wire; gauge reads Normal/Narrow/Exhausted; wired cell narrows then halts new exposure, withdrawals continue; ship returns without waiting on a stalled writer; stale policy narrows sizing.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs:1-60",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs:65 spool_pressure_reads_narrow_before_exhausted...",
       "backend/crates/edge/qip-edge/src/cell.rs:580 with_journal_wire (no production caller)",
-      "backend/crates/edge/qip-edge/tests/journal_pressure.rs"
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs",
+      "backend/crates/apps/qip-edge-node/src/main.rs::with_journal_wire",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped"
     ],
-    "gap": "Wire spool + gauge + journal wire in qip-edge-node main.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2727,7 +2747,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_pressure + a main wiring test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-RES-10125",
@@ -2826,14 +2846,16 @@
   },
   {
     "id": "R12-RES-10129",
-    "status": "PARTIAL",
-    "current": "BigQuery adapter lives in qip-mesh outside the edge node closure by design; no automated closure test for BigQuery/Bigtable.",
+    "status": "COMPLETE",
+    "current": "Closure test walks cargo graph from every edge crate and qip-edge-node, finds the crate defining BigQueryWarehouse from source, anchors it reachable from qip-api, asserts unreachable from reflex. No Bigtable client exists anywhere; node source scanned for BigQuery/Bigtable tokens; only key_value/LakeSink opened.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/bigquery.rs:6-15"
+      "backend/crates/services/qip-mesh/src/bigquery.rs:6-15",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_crate_on_the_reflex_path_can_reach_the_bigquery_client",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store"
     ],
-    "gap": "A dependency-closure test.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -2842,7 +2864,7 @@
     "verification": "cargo tree -p qip-edge-node assertion in acceptance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-RES-10130",
@@ -3588,12 +3610,14 @@
   {
     "id": "R12-LEDGER-10163",
     "status": "PARTIAL",
-    "current": "Idempotent local ledger store, central reconciliation, signed envelopes; no Spanner.",
+    "current": "qip-ledgerd now has LedgerStorage::Spanner writer (spanner.rs) tested against a fake Spanner endpoint; idempotent store; reconciliation.",
     "evidence": [
       "backend/crates/apps/qip-ledgerd/src/store.rs",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs"
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs",
+      "backend/crates/apps/qip-ledgerd/src/spanner.rs",
+      "backend/crates/apps/qip-ledgerd/tests/spanner.rs"
     ],
-    "gap": "Spanner writer.",
+    "gap": "enable_spanner=false in every tfvars; no emulator/real exit test; phase exit unproven.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3607,7 +3631,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-10164",
@@ -3756,11 +3780,12 @@
   {
     "id": "R12-WORLD-10170",
     "status": "PARTIAL",
-    "current": "ForecastLattice type (disagreement only) used only in tests; belief calibration in LEARN; no multi-horizon contract or calibration SLO.",
+    "current": "NOW Brain promoted state and lattice §9.14 forecasts with per-horizon calibration run in the cycle.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/feature.rs:413 ForecastLattice"
+      "backend/crates/libs/qip-contracts/src/feature.rs:413 ForecastLattice",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs"
     ],
-    "gap": "Contracts and SLOs.",
+    "gap": "No calibration SLO exists; no phase exit test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3773,17 +3798,17 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-10171",
     "status": "PARTIAL",
-    "current": "Prediction scoring, lifecycle demotion, adversary review exist; no forecast market.",
+    "current": "Tournament, synthetic-credit forecast market and eight-critic verifier society run in the kernel cycle; no named phase-12 exit test.",
     "evidence": [
       "backend/crates/services/qip-prediction/src/scoring.rs",
       "backend/crates/runtime/qip-kernel/src/adversary_review.rs"
     ],
-    "gap": "Tournament and market.",
+    "gap": "A phase exit test; production forecaster population.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3796,7 +3821,7 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-TICK-10172",
@@ -3847,13 +3872,13 @@
   {
     "id": "R12-CAPITAL-10174",
     "status": "PARTIAL",
-    "current": "Survival kernel and shadow portfolio acceptance suites and capital crates exist; no hedge brain.",
+    "current": "Survival kernel, hedge brain (hedge.rs), confidence governor, shadow portfolios exist.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs",
       "backend/crates/tests/qip-acceptance/tests/capital_shadow_portfolios.rs",
       "backend/crates/services/qip-capital"
     ],
-    "gap": "Hedge brain; confidence governor.",
+    "gap": "Capital society missing; no phase exit test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3866,17 +3891,17 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-AMBIENT-10175",
     "status": "PARTIAL",
-    "current": "Ambient attention and expansion engine exist; no VOI sensing or attention market.",
+    "current": "Compute/attention market, specialist proposals and cognitive compiler (unsigned packages) exist in deepbrain.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
       "backend/crates/services/qip-expansion"
     ],
-    "gap": "VOI and attention market.",
+    "gap": "VOI urgency unmeasured; no phase exit test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3890,19 +3915,20 @@
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-ARCH-10176",
     "status": "PARTIAL",
-    "current": "Pass logic has no remote call inside it, and outages do not stop it (tests). But the node's serve loop runs, per probe and on one thread, a store flush and a synchronous mesh exchange with the central plane before run_pass, so pass latency is coupled to those calls (bounded only by their timeouts). The acceptance test named for this property asserts booleans it sets itself.",
+    "current": "DecisionLoop with MeshWorker thread and outbox relay decouples mesh/journal from the pass; tests show stalled journal store and unreachable peer do not hold the decision thread.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:919-947 flush and mesh exchange_with_installers run before run_pass on the same thread",
       "backend/crates/apps/qip-edge-node/src/main.rs:955-965 run_pass",
       "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_contracting.rs:92 fabric_003 (tautological)"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_contracting.rs:92 fabric_003 (tautological)",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread"
     ],
-    "gap": "Decouple the pass from the exchange/flush (separate thread or timer) and add a test that a stalled exchange does not delay a pass.",
+    "gap": "No test stalling the central exchange (hanging centre) or all remote dependencies at once with bounded pass latency.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3913,7 +3939,7 @@
     "verification": "a qip-edge-node test with a stalled mesh peer measuring pass latency",
     "work_item": "",
     "size": "M",
-    "notes": "Doc comments elsewhere say the scrape/flush is 'not the order path'; in main.rs the pass shares that loop."
+    "notes": "Doc comments elsewhere say the scrape/flush is 'not the order path'; in main.rs the pass shares that loop. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-FABRIC-10177",
@@ -4181,12 +4207,13 @@
   {
     "id": "R12-WORLD-10187",
     "status": "PARTIAL",
-    "current": "ForecastLattice carries distributions and disagreement (no horizon, calibration, lineage, expiry) and is used only in tests; beliefs carry expiry.",
+    "current": "qip_contracts::forecast::Forecast requires horizon, distribution, calibration, disagreement, evidence lineage and expiry and refuses each broken invariant; lattice issues it.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/feature.rs:413-470 ForecastLattice",
-      "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs"
+      "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs",
+      "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastFields"
     ],
-    "gap": "Complete forecast contract.",
+    "gap": "Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4197,17 +4224,18 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-10188",
-    "status": "PARTIAL",
-    "current": "Lifecycle demotion and cost-router reputation exist; no per-domain/regime influence weighting of forecasters.",
+    "status": "COMPLETE",
+    "current": "Influence is earned per regime from resolved scores: market share of synthetic credits x calibration x information value x cost x latency x predicted survival; poor scorers lose weight and compute (tested). No forecaster has fixed authority.",
     "evidence": [
       "backend/crates/services/qip-lifecycle/src/demotion.rs",
-      "backend/crates/services/qip-cost-router/src/reputation.rs"
+      "backend/crates/services/qip-cost-router/src/reputation.rs",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::influence"
     ],
-    "gap": "Regime-conditioned influence.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4220,16 +4248,16 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-AMBIENT-10189",
     "status": "PARTIAL",
-    "current": "Cost-router records a rationale per routed request; no post-hoc marginal information value.",
+    "current": "Allocations carry rationale; record_outcome logs realised per-unit value, gauge qip_meta_marginal_value_bp.",
     "evidence": [
       "backend/crates/services/qip-cost-router/src/router.rs:161-168"
     ],
-    "gap": "Post-hoc VOI measurement.",
+    "gap": "Realised value is expected x progress proxy, measured only for fill-bias items; not a measured information value.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4242,7 +4270,7 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-QUANT-10190",
@@ -4269,12 +4297,13 @@
   },
   {
     "id": "R12-TICK-10191",
-    "status": "PARTIAL",
-    "current": "Edge node's Cargo.toml excludes qip-twin and qip-simulation-engine (substring test); runtime isolation under twin failure not tested.",
+    "status": "COMPLETE",
+    "current": "lane_placement walks the transitive closure of qip-edge-node (premise: contains qip-edge) and asserts qip-simulation-engine, qip-training, qip-twin, qip-world-model are absent and registered Lane 3; fast lanes may not depend on slower lanes.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11"
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs::replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node"
     ],
-    "gap": "Runtime failure test; dependency-closure (not substring) check.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4285,7 +4314,7 @@
     "verification": "cargo test -p qip-acceptance --test arch_001_independent_reflex",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-RISK-10192",
@@ -4333,16 +4362,17 @@
   },
   {
     "id": "R12-FABRIC-10194",
-    "status": "PARTIAL",
-    "current": "Structurally true in qip-edge-node (feed and gateway bound directly). The acceptance tests are fixture-only: fabric_003 sets and asserts its own booleans and fabric_066 asserts a fixture describing orders flowing through Fabric topics.",
+    "status": "COMPLETE",
+    "current": "Code-level guards replace the fixture tests: only event_fabric/control.rs in qip-edge-node production code may name a fabric consumer; cell.rs's order path may name no fabric client and qip-edge cannot depend on qip-streaming; the control consumer refuses non-control streams.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:471-485",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_contracting.rs:92 fabric_003 (tautological)",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:45 fabric_066 (fixture asserting orders via Fabric topics)"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:45 fabric_066 (fixture asserting orders via Fabric topics)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_contracting.rs::fabric_10194_the_node_reads_no_market_data_from_a_fabric_consumer"
     ],
-    "gap": "Replace tautological tests with a code-level guard.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -4351,7 +4381,7 @@
     "verification": "acceptance test scanning qip-edge-node's feed/gateway types",
     "work_item": "",
     "size": "S",
-    "notes": "fabric_066's fixture describes the anti-pattern it should forbid."
+    "notes": "fabric_066's fixture describes the anti-pattern it should forbid. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-FABRIC-10195",

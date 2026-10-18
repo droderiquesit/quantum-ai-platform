@@ -48,13 +48,13 @@
   {
     "id": "R12-MESH-8003",
     "status": "PARTIAL",
-    "current": "An in-tree mesh exists (qip-transport mesh over blocking HTTP/1.1 TCP; qip-mesh peer/spine; qip-edge mesh); cells exchange with the centre and peers but not over QUIC.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC.",
     "evidence": [
       "backend/crates/libs/qip-transport/src/mesh.rs (HTTP/1.1 over TcpStream via http.rs:1139-1154)",
       "backend/crates/services/qip-mesh/src/peer.rs",
       "backend/crates/libs/qip-transport/tests/mesh.rs"
     ],
-    "gap": "QUIC transport; a 2–20-leg peer coordination protocol bounded by deadline; proof of cross-region exchange.",
+    "gap": "QUIC transport; deployed/default-on peer link; cross-region proof.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -65,7 +65,7 @@
     "verification": "cargo test -p qip-transport --test mesh",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-FABRIC-8004",
@@ -216,24 +216,26 @@
   },
   {
     "id": "R12-FABRIC-8010",
-    "status": "PARTIAL",
-    "current": "No bridge exists; an acceptance scan refuses durable-state types in a bridge crate and any dependency on it.",
+    "status": "COMPLETE",
+    "current": "No bridge crate exists; acceptance scans refuse any Kafka/PubSub client outside qip-fabric-bridge, any dependency on it, and durable-state tokens (incl. fs::write after use std::fs) in it, with premise checks and fixture proofs.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:153 a_bridge_crate_if_one_exists_holds_no_durable_state",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:193 the_scan_refuses_a_client_outside_the_bridge_and_a_dependency_on_it"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:193 the_scan_refuses_a_client_outside_the_bridge_and_a_dependency_on_it",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs::the_durable_state_scan_catches_fs_write_after_use_std_fs_and_passes_clean_source",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs::no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge"
     ],
-    "gap": "bridge_boundary.rs:153 passes vacuously: no bridge exists, no premise check; its token list misses fs::write after use std::fs. None while no bridge exists.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
     "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
     "work_item": "",
     "size": "S",
-    "notes": "Vacuously satisfied: the durable-state check only bites once a bridge crate exists; the self-test at :193 proves the scanner fires. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: bridge_boundary.rs:153 passes vacuously: no bridge exists, no premise check; its token list misses fs::write after use std::fs."
+    "notes": "Vacuously satisfied: the durable-state check only bites once a bridge crate exists; the self-test at :193 proves the scanner fires. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: bridge_boundary.rs:153 passes vacuously: no bridge exists, no premise check; its token list misses fs::write after use std::fs. Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-DATA-8011",
@@ -260,14 +262,15 @@
   {
     "id": "R12-DATA-8012",
     "status": "PARTIAL",
-    "current": "No Terraform bucket is designated for external-world content (buckets: data archive/artifacts, evidence, ai training, egress bootstrap, image-bake payload, cloudrun config, public-edge shell). HTTP client buffers in memory. No test enforces the absence.",
+    "current": "An acceptance test refuses any bucket/dataset whose label or name carries landing/raw/crawl/scrape/scout/corpus tokens, and any unclassified bucket, with a self-test that the checker fires.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:117,219",
       "infrastructure/terraform/modules/evidence/main.tf:58",
       "infrastructure/terraform/modules/ai/main.tf:52",
-      "backend/crates/libs/qip-transport/src/http.rs:1191 read_response into memory"
+      "backend/crates/libs/qip-transport/src/http.rs:1191 read_response into memory",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::no_bucket_or_dataset_lands_external_world_content"
     ],
-    "gap": "An acceptance check that refuses a bucket labelled/used for external payloads; encrypted ephemeral disk policy for workers.",
+    "gap": "The guard is token/classification based; the tick lake may durably keep raw venue bytes under an entitlement; no worker-side encrypted-ephemeral-disk policy or test.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -278,7 +281,7 @@
     "verification": "new acceptance scan over google_storage_bucket purposes",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-8013",
@@ -481,14 +484,16 @@
   {
     "id": "R12-FABRIC-8022",
     "status": "PARTIAL",
-    "current": "Wire Batch/Record carry event_id, trace_id, source ts, schema id/version, producer id/epoch/sequence, logical (HLC) ts and CRC32C. Region, ordering key and provenance are in qip-events FabricEnvelope (and a second FabricEnvelope in qip-contracts), neither used on any production path.",
+    "current": "qip-events FabricEnvelope (duplicate qip-contracts type gone) is opened by qip-desk-ship and qip-ledgerd consumer on production paths.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/codec.rs:267-339 Record/Batch fields",
       "backend/crates/libs/qip-events/src/event_fabric/envelope.rs:62-96 FabricFacts/FabricEnvelope",
       "backend/crates/libs/qip-contracts/src/fabric_envelope.rs:19 duplicate FabricEnvelope",
-      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs"
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs",
+      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs::FabricEnvelope::open",
+      "backend/crates/runtime/qip-desk-ship/src/lib.rs::FabricEnvelope::open_all"
     ],
-    "gap": "One envelope type on the wire carrying region, ordering key and provenance; remove the duplicate contract type.",
+    "gap": "Region and provenance come from reader-supplied FabricContext, not carried by the event on the wire; not every async event (mesh, spine) uses it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -499,7 +504,7 @@
     "verification": "cargo test -p qip-events --test event_fabric_codec",
     "work_item": "",
     "size": "M",
-    "notes": "Two FabricEnvelope types exist (qip-events and qip-contracts) — a second source of truth for one contract."
+    "notes": "Two FabricEnvelope types exist (qip-events and qip-contracts) — a second source of truth for one contract. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-FABRIC-8023",
@@ -1383,12 +1388,12 @@
   {
     "id": "R12-REFLEX-8063",
     "status": "PARTIAL",
-    "current": "Template sets GVNIC and TIER_1 and consumes a specific reservation; machine_type also admits C3/C3D; no node declared.",
+    "current": "Template sets GVNIC, TIER_1 and specific reservation; machine_type now restricted to C4/C4D. No node enabled (dev newyork-1 disabled).",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/main.tf:411,424 GVNIC/TIER_1",
       "infrastructure/terraform/modules/execution-node/variables.tf:138-150"
     ],
-    "gap": "Restrict to C4/C4D; shard-sizing record; declare a node.",
+    "gap": "No plan showing a node; no shard-sizing record; gVNIC/Tier-1 benefit not benchmarked.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1399,7 +1404,7 @@
     "verification": "terraform test modules/execution-node",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-REFLEX-8064",
@@ -1559,16 +1564,18 @@
   },
   {
     "id": "R12-REFLEX-8071",
-    "status": "PARTIAL",
-    "current": "Cell::roll_back_policy keeps the previous payload and is tested, but no production caller (node control path) invokes it.",
+    "status": "COMPLETE",
+    "current": "Operator rollback wire: file naming the sequence to roll away from, polled on its own thread and applied at pass start; restores the resident previous payload without a fetch. Test proves rollback 3->2 and that stale requests do nothing.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:2773 roll_back_policy",
-      "backend/crates/edge/qip-edge/tests/policy_rollback.rs:63 a_rollback_restores_the_previous_payload_without_a_fetch_and_the_rolled_away_one_cannot_return"
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs:63 a_rollback_restores_the_previous_payload_without_a_fetch_and_the_rolled_away_one_cannot_return",
+      "backend/crates/apps/qip-edge-node/src/rollback.rs::RollbackWire",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs::apply_rollback"
     ],
-    "gap": "Wire a rollback control (halt-wire-like) in qip-edge-node.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1576,7 +1583,7 @@
     "verification": "cargo test -p qip-edge --test policy_rollback",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Re-graded 2026-10-18 by an independent grader that wrote none of the code (read code, tests and the production path; ran nothing); every named test then passed in the orchestrator's full workspace run (gate 20, 9513 passed), and a sample of production calls was mutated (see the commit)."
   },
   {
     "id": "R12-REFLEX-8072",
@@ -1968,13 +1975,14 @@
   {
     "id": "R12-FABRIC-8089",
     "status": "PARTIAL",
-    "current": "Consumer fetch credit, per-producer byte/message quotas, lag-limit refusal and per-class overload policy exist in the broker. No cross-class priority scheduler proving P4 is shed before P0/P1 starve.",
+    "current": "Per-producer quotas, lag refusal, class-aware admission (P4 shed, P0/P1 told to wait), tested in event_fabric_quota.",
     "evidence": [
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1074 refuse_when_a_group_lags, :1105 charge_quota",
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:153 OverloadPolicy",
-      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112"
+      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs::over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait"
     ],
-    "gap": "Priority-aware admission and an overload test across classes.",
+    "gap": "No credit-window flow control across classes or priority scheduler; no overload test proving P0/P1 commit while P4 shed concurrently.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1985,7 +1993,7 @@
     "verification": "new overload integration test against fabricd",
     "work_item": "",
     "size": "M",
-    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test."
+    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-FABRIC-8090",
@@ -2102,12 +2110,12 @@
   {
     "id": "R12-FABRIC-8095",
     "status": "PARTIAL",
-    "current": "P4 ack floor None and shed-first declared; fabricd health served directly. No drop-oldest proof.",
+    "current": "P4 ack None; over-quota P4 produce is shed (refused) visibly; health served directly.",
     "evidence": [
       "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
       "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
     ],
-    "gap": "Drop-oldest behaviour under pressure, tested.",
+    "gap": "Shed refuses the new batch; no drop-oldest behaviour under pressure, untested.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2118,7 +2126,7 @@
     "verification": "new pressure test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-FABRIC-8096",
@@ -2673,11 +2681,12 @@
   {
     "id": "R12-DATA-8121",
     "status": "PARTIAL",
-    "current": "No raw-lake resource exists in Terraform; no automated check refuses one.",
+    "current": "Same acceptance scan refuses a lake-shaped bucket/dataset by name token or missing classification; no raw-lake resource exists in Terraform.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:117 archive (tick/internal)"
+      "infrastructure/terraform/modules/data/main.tf:117 archive (tick/internal)",
+      "backend/crates/libs/qip-storage/src/tick_capture.rs::raw_retention_permitted"
     ],
-    "gap": "Acceptance guard.",
+    "gap": "Raw external payloads can be stored: the tick lake keeps raw venue bytes where an entitlement permits; the guard is name-based, not content-based.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2688,7 +2697,7 @@
     "verification": "acceptance scan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-DATA-8122",

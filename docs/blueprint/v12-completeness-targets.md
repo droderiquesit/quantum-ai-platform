@@ -12,12 +12,12 @@ requirement's assessment, with its evidence, and render again.
 
 | # | Target (v12.0 §31.1) | Cited requirement: status | Scored | Reading |
 |---|---|---|---|---|
-| 1 | A NOW Brain continuously estimates latent global/market/system state with uncertainty and freshness. | R12-WORLD-7196: MISSING | OPEN (0 of 1 complete) |  |
-| 2 | A Temporal Forecast Lattice produces calibrated distributions from microseconds through years. | R12-WORLD-7197: MISSING | OPEN (0 of 1 complete) |  |
-| 3 | Thousands of specialist/temporary models can compete in a scored Model Tournament and internal Forecast Market. | R12-MODEL-7198: MISSING | OPEN (0 of 1 complete) |  |
+| 1 | A NOW Brain continuously estimates latent global/market/system state with uncertainty and freshness. | R12-WORLD-7196: COMPLETE | COMPLETE |  |
+| 2 | A Temporal Forecast Lattice produces calibrated distributions from microseconds through years. | R12-WORLD-7197: PARTIAL | OPEN (0 of 1 complete) |  |
+| 3 | Thousands of specialist/temporary models can compete in a scored Model Tournament and internal Forecast Market. | R12-MODEL-7198: PARTIAL | OPEN (0 of 1 complete) |  |
 | 4 | Synthetic future trees and digital twins continuously explore worlds not present in historical data. | R12-TICK-7199: PARTIAL | OPEN (0 of 1 complete) |  |
 | 5 | Active Sensing chooses new observations by expected value of information. | R12-AMBIENT-7200: PARTIAL | OPEN (0 of 1 complete) |  |
-| 6 | Adversarial verifier societies independently attack important predictions and models. | R12-MODEL-7201: PARTIAL | OPEN (0 of 1 complete) |  |
+| 6 | Adversarial verifier societies independently attack important predictions and models. | R12-MODEL-7201: COMPLETE | COMPLETE |  |
 | 7 | Meta-Intelligence allocates attention, agents and CPU/GPU/TPU/QPU compute by marginal information/economic value. | R12-AMBIENT-7202: PARTIAL | OPEN (0 of 1 complete) |  |
 | 8 | A Cognitive Compiler distills slow-lane discoveries into bounded specialist/reflex packages. | R12-REASON-7203: PARTIAL | OPEN (0 of 1 complete) |  |
 | 9 | Capital, hedge, model-risk and survival systems are independent from alpha generation and can veto/reduce exposure. | R12-RISK-7205: COMPLETE; R12-CAPITAL-7204: PARTIAL | OPEN (1 of 2 complete) |  |
