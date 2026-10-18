@@ -5,8 +5,9 @@
 #   1. Parallelism above 40 is refused, and 8, 40 are admitted. 41 is the
 #      boundary case: a `<= 40` mistyped as `< 40` would pass 41 and refuse
 #      the owner's own ceiling, so both edges are run.
-#   2. The worker's bindings are exactly roles/aiplatform.user at the project
-#      and object access on its own bucket, and none of the forbidden families
+#   2. The worker's bindings are exactly roles/aiplatform.user and
+#      roles/monitoring.viewer at the project and prefix-conditioned object
+#      access on its own bucket (ADR 0102 amendment of 2026-10-11), and none of the forbidden families
 #      appears. The assertion reads `output.worker_roles`, which is built from
 #      the roles on the IAM resources themselves, not from a variable, so
 #      adding a binding to the resources changes the list.
@@ -91,12 +92,17 @@ run "an_image_pinned_by_tag_is_refused" {
   expect_failures = [var.image]
 }
 
-run "the_worker_holds_aiplatform_user_and_its_bucket_and_nothing_else" {
+run "the_worker_holds_aiplatform_user_read_only_telemetry_and_its_bucket_prefixes_and_nothing_else" {
   command = plan
 
   assert {
-    condition     = toset(output.worker_roles) == toset(["roles/aiplatform.user", "roles/storage.objectUser"])
-    error_message = "the worker's roles must be exactly aiplatform.user and objectUser on its bucket"
+    condition = toset(output.worker_roles) == toset([
+      "roles/aiplatform.user",
+      "roles/monitoring.viewer",
+      "roles/storage.objectViewer",
+      "roles/storage.objectUser",
+    ])
+    error_message = "the worker's roles must be exactly aiplatform.user, monitoring.viewer, and objectViewer and objectUser on its bucket (ADR 0102 amendment of 2026-10-11)"
   }
 
   # Substring families, so a broader role in the same family is caught as well
@@ -124,8 +130,81 @@ run "the_harder_stop_removes_the_model_binding" {
   }
 
   assert {
-    condition     = toset(output.worker_roles) == toset(["roles/storage.objectUser"])
-    error_message = "with worker_may_call_models = false the aiplatform.user binding must be gone"
+    condition     = toset(output.worker_roles) == toset(["roles/monitoring.viewer", "roles/storage.objectViewer", "roles/storage.objectUser"])
+    error_message = "with worker_may_call_models = false the aiplatform.user binding must be gone and the read-only telemetry role must remain"
+  }
+}
+
+# ADR 0102 amendment, item 3: the bucket grant is narrowed by object prefix. A
+# plan cannot tell whether Google evaluates a condition as intended, but it
+# can pin what is asked for, and it fails if the grant widens back to the
+# whole bucket: a binding without a condition, or a condition that names a
+# prefix it should not.
+run "the_workers_bucket_grants_are_conditioned_on_object_prefixes" {
+  command = plan
+
+  assert {
+    condition     = length(google_storage_bucket_iam_member.worker_reads.condition) == 1 && length(google_storage_bucket_iam_member.worker_writes.condition) == 1
+    error_message = "both bucket bindings must carry a condition: an unconditioned objectViewer or objectUser is the whole bucket"
+  }
+
+  assert {
+    condition = (
+      strcontains(output.worker_bucket_conditions.reads, "/objects/packets/") &&
+      strcontains(output.worker_bucket_conditions.reads, "/objects/HALT") &&
+      !strcontains(output.worker_bucket_conditions.reads, "/objects/output/") &&
+      !strcontains(output.worker_bucket_conditions.reads, "/objects/ledger/")
+    )
+    error_message = "the read grant must reach packets/ and HALT and nothing else"
+  }
+
+  assert {
+    condition = (
+      strcontains(output.worker_bucket_conditions.writes, "/objects/output/") &&
+      strcontains(output.worker_bucket_conditions.writes, "/objects/ledger/") &&
+      !strcontains(output.worker_bucket_conditions.writes, "/objects/packets/") &&
+      !strcontains(output.worker_bucket_conditions.writes, "/objects/HALT")
+    )
+    error_message = "the write grant must reach output/ and ledger/ and never packets/ or HALT: a worker that can delete HALT can un-halt the fleet"
+  }
+}
+
+# ADR 0102 amendment, item 2: egress is restricted to Google APIs. The Job
+# sends all traffic through the fleet VPC; the VPC's one allow rule admits TCP
+# 443 to the Private Google Access range, and a lower-priority rule denies
+# everything else. Both edges are pinned: an allow widened to 0.0.0.0/0, or a
+# deny that is gone, is the open egress this closes.
+run "the_job_reaches_google_apis_and_nothing_else" {
+  command = plan
+
+  assert {
+    condition     = output.job_egress == "ALL_TRAFFIC"
+    error_message = "the Job must route all egress through the VPC; PRIVATE_RANGES_ONLY would leave the internet open"
+  }
+
+  assert {
+    condition     = toset(output.egress_allowed_ranges) == toset(["199.36.153.8/30"])
+    error_message = "the allow rule must admit only the private.googleapis.com range"
+  }
+
+  assert {
+    condition     = toset(output.egress_denied_ranges) == toset(["0.0.0.0/0"])
+    error_message = "the deny rule must refuse every other destination"
+  }
+
+  assert {
+    condition     = google_compute_firewall.deny_all_egress.priority > google_compute_firewall.allow_google_apis_egress.priority
+    error_message = "the deny rule must have the larger priority number, so the allow rule is evaluated first"
+  }
+
+  assert {
+    condition     = google_compute_firewall.allow_google_apis_egress.direction == "EGRESS" && google_compute_firewall.deny_all_egress.direction == "EGRESS"
+    error_message = "both firewall rules must be egress rules"
+  }
+
+  assert {
+    condition     = google_compute_subnetwork.fleet.private_ip_google_access == true
+    error_message = "the subnet must have Private Google Access, or the Job reaches no API at all"
   }
 }
 
@@ -181,7 +260,12 @@ run "without_an_image_there_is_no_job_and_the_rest_still_plans" {
   }
 
   assert {
-    condition     = toset(output.worker_roles) == toset(["roles/aiplatform.user", "roles/storage.objectUser"])
+    condition = toset(output.worker_roles) == toset([
+      "roles/aiplatform.user",
+      "roles/monitoring.viewer",
+      "roles/storage.objectViewer",
+      "roles/storage.objectUser",
+    ])
     error_message = "the worker's fence must be the same with and without a Job"
   }
 }

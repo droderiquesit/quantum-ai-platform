@@ -984,6 +984,10 @@ pub mod names {
     /// The uplink circuit to the centre, by `state`: `1` on the state it is
     /// in and `0` on the others.
     pub const EDGE_MESH_CIRCUIT: &str = "qip_edge_mesh_circuit";
+    /// The shortest fresh peer clock round trip, in milliseconds, across
+    /// the cell's peer links (MESH-007): the measured latency to the nearest
+    /// peer. Absent, not zero, while no peer has a fresh sample.
+    pub const EDGE_PEER_ROUND_TRIP_MS: &str = "qip_edge_peer_round_trip_ms";
 
     pub const KILL_SWITCH_TRIPPED: &str = "qip_kill_switch_tripped";
     pub const LIVE_FILLS: &str = "qip_live_fills_total";
