@@ -187,6 +187,15 @@ impl SourceConnector for CoinbaseTickerConnector {
         )])
     }
 
+    /// Coinbase numbers a product's trades in the order they printed, so
+    /// `trade_id` is this feed's causal order: a print numbered after another
+    /// and dated before it is the feed contradicting its own clock. It is
+    /// the evidence check's sequence and not the tick's — the ids skip, and
+    /// the tick's sequence is the runtime's contiguous arrival count.
+    fn feed_sequence(&self, event: &RawEvent) -> Option<u64> {
+        event.body.get("trade_id").and_then(Value::as_u64)
+    }
+
     fn map(&self, event: &RawEvent, ingest_time: Timestamp) -> Result<SensedRecord> {
         Ok(SensedRecord::Tick(Tick {
             object_id: self.object_id.clone(),

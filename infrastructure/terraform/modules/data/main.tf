@@ -65,7 +65,12 @@ resource "google_kms_crypto_key" "archive" {
 }
 
 resource "google_kms_crypto_key" "records" {
-  count = var.enable_alloydb ? 1 : 0
+  # Both record stores encrypt under this key: AlloyDB's operational records
+  # and Spanner's `positions` database. Gated on AlloyDB alone, enabling
+  # Spanner by itself planned a database whose key reference indexed an empty
+  # tuple, so the ledger could not be planned without a second, unrelated
+  # store switched on beside it.
+  count = var.enable_alloydb || var.enable_spanner ? 1 : 0
 
   name     = "${local.prefix}-records"
   key_ring = var.key_ring_id
@@ -239,6 +244,119 @@ resource "google_storage_bucket" "artifacts" {
   }
 }
 
+# The regional segment store: sealed tick and internal replay segments and
+# knowledge packs, in the region fabricd runs in, before they are compacted
+# into the dual-region archive above. Regional because the writer is regional
+# and a segment upload that crosses a continent on the produce path is latency
+# the journal pays for. Internal and derived content only — never an external
+# corpus — which is why it is not called a landing bucket: that word is one
+# of the tokens `qip-acceptance` refuses in a store's name.
+#
+# It is not the record. fabricd's own journal is, and the archive is the copy
+# kept, so this bucket expires what it holds: a regional copy kept forever is
+# the uncontrolled duplication the retention rules forbid. Object lifecycle
+# cannot move an object to another bucket, so nothing here copies a segment
+# into the archive yet; until a transfer does, pointing fabricd's archive at
+# this bucket would delete the archive at thirty days. The seven-day
+# retention policy is unlocked on purpose; it stops an operator deleting a
+# segment compaction has not yet read, and nothing more.
+resource "google_storage_bucket" "segments" {
+  count = var.enable_cloud_storage ? 1 : 0
+
+  project  = var.project_id
+  name     = "${local.prefix}-segments-${var.region}"
+  location = var.region
+  labels   = var.labels
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.archive[0].id
+  }
+
+  retention_policy {
+    retention_period = 7 * 24 * 60 * 60
+    is_locked        = false
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+# Simulation outputs and reproducible campaign datasets, one bucket with a
+# retention class per prefix rather than one rule for all three. A campaign's
+# dataset is what makes its result reproducible, so it is kept; a run's raw
+# output can be regenerated from the dataset and the manifest, so it expires;
+# the manifest is small and names exactly what ran, so it is kept. One
+# lifecycle for the bucket would either delete the datasets or keep every
+# output forever.
+resource "google_storage_bucket" "simulation" {
+  count = var.enable_cloud_storage ? 1 : 0
+
+  project  = var.project_id
+  name     = "${local.prefix}-simulation"
+  location = var.bucket_location
+  labels   = var.labels
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.archive[0].id
+  }
+
+  # Thirty days, unlocked: long enough that a result under review cannot be
+  # deleted from under the reviewer.
+  retention_policy {
+    retention_period = 30 * 24 * 60 * 60
+    is_locked        = false
+  }
+
+  # Run outputs: regenerable from campaign + manifest, so bounded.
+  lifecycle_rule {
+    condition {
+      age            = 90
+      matches_prefix = ["outputs/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  # Campaign datasets: kept, colder with age, never deleted.
+  lifecycle_rule {
+    condition {
+      age                   = 90
+      matches_prefix        = ["campaigns/"]
+      matches_storage_class = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+
+  # Manifests: kept, colder with age, never deleted.
+  lifecycle_rule {
+    condition {
+      age                   = 365
+      matches_prefix        = ["manifests/"]
+      matches_storage_class = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+  }
+}
+
 # --- Private services access ------------------------------------------------
 #
 # AlloyDB and Memorystore are reachable only over VPC peering, never over a
@@ -342,6 +460,87 @@ resource "google_bigtable_instance" "timeseries" {
       storage_target = 8192
     }
   }
+
+  # A second cluster in another zone of the same region, so a zonal outage
+  # leaves the history readable rather than the replay stopped. Replication
+  # between the two is eventually consistent; the app profiles below decide
+  # which workload may see that and which may not.
+  cluster {
+    cluster_id   = "${local.prefix}-timeseries-secondary"
+    zone         = "${var.region}-b"
+    storage_type = "SSD"
+
+    autoscaling_config {
+      min_nodes      = 1
+      max_nodes      = 10
+      cpu_target     = 60
+      storage_target = 8192
+    }
+  }
+}
+
+# One app profile per workload, chosen by the consistency that workload needs
+# rather than one default profile for all of them. The default profile routes
+# with multi-cluster routing to whichever cluster is nearest, so a writer and
+# a replay on the same profile can each land on a different cluster and the
+# replay reads history the writer has already acknowledged as missing: a
+# backtest that silently loses its most recent ticks.
+locals {
+  bigtable_app_profiles = {
+    # The fabric sink writes, and a replay that must see every acknowledged
+    # write reads, through the primary only: single-cluster routing is the
+    # read-your-writes guarantee replication does not give.
+    ingest = {
+      description = "Fabric sink writes and read-your-writes replay; pinned to the primary cluster."
+      multi       = false
+      cluster     = "${local.prefix}-timeseries-primary"
+      priority    = "PRIORITY_HIGH"
+    }
+    # Research and dashboards tolerate replication lag and must not stop on a
+    # zonal outage: multi-cluster routing fails over to the surviving cluster.
+    serve = {
+      description = "Lag-tolerant reads that must survive a zonal outage; multi-cluster routing."
+      multi       = true
+      cluster     = null
+      priority    = "PRIORITY_MEDIUM"
+    }
+    # Bulk scans for training sets are pinned to the secondary at low
+    # priority, so a large scan never competes with the sink for the
+    # primary's CPU on the day volume peaks.
+    batch = {
+      description = "Bulk training-set scans; pinned to the secondary at low priority."
+      multi       = false
+      cluster     = "${local.prefix}-timeseries-secondary"
+      priority    = "PRIORITY_LOW"
+    }
+  }
+}
+
+resource "google_bigtable_app_profile" "timeseries" {
+  for_each = var.enable_bigtable ? local.bigtable_app_profiles : {}
+
+  project        = var.project_id
+  instance       = google_bigtable_instance.timeseries[0].name
+  app_profile_id = each.key
+  description    = each.value.description
+
+  multi_cluster_routing_use_any = each.value.multi ? true : null
+
+  dynamic "single_cluster_routing" {
+    for_each = each.value.multi ? [] : [each.value.cluster]
+    content {
+      cluster_id                 = single_cluster_routing.value
+      allow_transactional_writes = false
+    }
+  }
+
+  standard_isolation {
+    priority = each.value.priority
+  }
+
+  # A profile is deleted only with the instance; ignore_warnings lets a
+  # profile be replaced while the instance still serves traffic.
+  ignore_warnings = true
 }
 
 # --- Hot cache --------------------------------------------------------------
@@ -394,10 +593,22 @@ resource "google_spanner_instance" "global" {
   # `qip-acceptance`'s infrastructure suite refuses the attribute's absence.
   edition = "ENTERPRISE_PLUS"
 
-  # Processing units rather than nodes: 1000 units is one node, and starting
-  # below a node is the difference between an affordable mistake and an
-  # expensive one.
-  processing_units = 100
+  # Managed autoscaling with a floor, rather than a fixed size. A fixed 100
+  # processing units was affordable and would also have been the size the
+  # ledger had on the close of a volatile day, when reconciliation reads every
+  # book at once and a commit that waits on CPU is a balance the desk cannot
+  # see. The floor is `spanner_min_processing_units`, which refuses anything
+  # below one node; the ceiling bounds the bill.
+  autoscaling_config {
+    autoscaling_limits {
+      min_processing_units = var.spanner_min_processing_units
+      max_processing_units = var.spanner_max_processing_units
+    }
+    autoscaling_targets {
+      high_priority_cpu_utilization_percent = 65
+      storage_utilization_percent           = 90
+    }
+  }
 
   force_destroy = !var.deletion_protection
 }

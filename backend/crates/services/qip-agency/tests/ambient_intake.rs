@@ -559,3 +559,113 @@ fn ambient_types_cannot_reach_an_adapter_except_through_promote_and_the_guard() 
         "one adapter call site"
     );
 }
+
+/// R12-AGENCY-3002: every draft is guarded against a sub-goal the door's
+/// standing goal decomposes into, and the outbox records the sub-goal it
+/// served. A signal admitted at its very expiry leaves the sub-goal no
+/// horizon, so the decomposition refuses it and nothing is written or
+/// charged.
+/// Mutation: in `AmbientIntake::attempt`, guard against `self.goal` and
+/// skip `sub_goal` (record `None`) — the recorded sub-goal assertions fail
+/// and the at-expiry signal is drafted.
+#[test]
+fn each_draft_serves_a_validated_sub_goal_and_one_that_cannot_decompose_is_withheld() {
+    let mut door = intake();
+    let outcome = door
+        .admit(advisory("sig-30", "EURUSD basis"), APPROVER, at(120), 1)
+        .unwrap();
+    assert!(
+        matches!(outcome, Intake::Drafted { .. }),
+        "premise: {outcome:?}"
+    );
+    let written = drafts(door.outbox()).unwrap();
+    let sub_goal = written[0].sub_goal.as_ref().expect("a sub-goal recorded");
+    assert_eq!(sub_goal.budget, Decimal::ONE, "one draft's worth of budget");
+    assert_eq!(sub_goal.risk_envelope, Decimal::ZERO);
+    assert_eq!(sub_goal.acting_identity, IDENTITY);
+    assert_eq!(sub_goal.time_horizon_secs, 3_600, "capped by the parent");
+    assert!(
+        sub_goal.target_state.contains("sig-30"),
+        "{}",
+        sub_goal.target_state
+    );
+    for inherited in ["publish", "outreach", "pricing"] {
+        assert!(
+            sub_goal.prohibited_methods.iter().any(|m| m == inherited),
+            "the sub-goal keeps the parent's prohibition `{inherited}`"
+        );
+    }
+
+    let mut door = intake();
+    let outcome = door
+        .admit(advisory("sig-31", "EURUSD basis"), APPROVER, at(10_000), 1)
+        .unwrap();
+    let Intake::Withheld { reason } = outcome else {
+        panic!("expected withheld, got {outcome:?}")
+    };
+    assert!(reason.contains("does not decompose"), "{reason}");
+    assert!(reason.contains("time_horizon_secs"), "{reason}");
+    assert!(door.outbox().is_empty(), "nothing written");
+    assert!(door.guard().audit().is_empty(), "nothing charged");
+}
+
+/// R12-RES-7109: revoking the drafting tool stops the drafts already held for
+/// a retry, as well as the next new one. A held draft has cleared the guard
+/// once. Left queued, it would go out on the first retry after the tool is
+/// reauthorised, on an authority given before the stop. Only a named operator
+/// restores the tool, and the dropped drafts stay dropped.
+///
+/// Mutation: in `AmbientIntake::revoke`, map over `retry.iter().cloned()`
+/// instead of draining it. The held draft survives the revocation and the
+/// `pending() == 0` assertion fails.
+#[test]
+fn revoking_the_drafting_tool_drops_every_held_draft_and_only_a_named_operator_restores_it() {
+    let mut door =
+        AmbientIntake::open(config(), EventLog::in_memory().with_capacity(1).unwrap()).unwrap();
+    assert!(matches!(
+        door.admit(advisory("sig-20", "EURUSD"), APPROVER, at(120), 1)
+            .unwrap(),
+        Intake::Drafted { .. }
+    ));
+    let held = door
+        .admit(advisory("sig-21", "GBPUSD"), APPROVER, at(121), 1)
+        .unwrap();
+    assert!(matches!(held, Intake::Deferred { .. }), "premise: {held:?}");
+    assert_eq!(door.pending(), 1, "premise: one draft is held for a retry");
+
+    let dropped = door.revoke().unwrap();
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(
+        matches!(&dropped[0], Intake::Abandoned { reason, attempts: 1 } if reason.contains("revoked")),
+        "{dropped:?}"
+    );
+    assert_eq!(door.pending(), 0, "nothing is left queued behind the stop");
+    assert!(door.retry(at(130), 2).unwrap().is_empty());
+
+    assert!(
+        door.reauthorise("  ").is_err(),
+        "a blank operator restores nothing"
+    );
+    let refused = door
+        .admit(advisory("sig-22", "USDJPY"), APPROVER, at(131), 2)
+        .unwrap();
+    assert!(
+        matches!(refused, Intake::Withheld { ref reason } if reason.contains("revoked")),
+        "still revoked after a refused reauthorisation: {refused:?}"
+    );
+
+    door.reauthorise("ops-lead").unwrap();
+    assert!(
+        door.retry(at(140), 3).unwrap().is_empty(),
+        "the dropped draft is not resurrected by the reauthorisation"
+    );
+    let after = door
+        .admit(advisory("sig-23", "AUDUSD"), APPROVER, at(141), 3)
+        .unwrap();
+    // The outbox is full, so the write is deferred; what matters is that the
+    // guard cleared it, which a revoked tool never does.
+    assert!(
+        matches!(after, Intake::Deferred { .. }),
+        "a reauthorised tool clears the guard again: {after:?}"
+    );
+}

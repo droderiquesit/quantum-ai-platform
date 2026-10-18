@@ -31,6 +31,7 @@ fn quantum_question() -> Result<String> {
         evidence: vec!["solver-gap:portfolio-40".into()],
         severity: 0.6,
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     })?;
     assert_eq!(
         raised.signal.gap_class,

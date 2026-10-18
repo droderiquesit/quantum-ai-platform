@@ -87,6 +87,8 @@ fn trace(object: &str, before: f64, after: f64, turn: i64) -> MarketTrace {
                     at: at(t),
                     mid: if t < turn { before } else { after },
                     spread_bps: 2.0,
+                    depth: None,
+                    imbalance: None,
                 }
             })
             .collect(),
@@ -239,6 +241,8 @@ fn a_measured_tick_reaction_moves_the_belief_it_tests() -> Result<()> {
                         _ => 99.5 * 0.99,
                     },
                     spread_bps: 2.0,
+                    depth: None,
+                    imbalance: None,
                 }
             })
             .collect(),
@@ -539,6 +543,8 @@ fn nothing_recorded_or_printed_after_the_fusion_instant_is_read() -> Result<()> 
             at: at(301),
             mid: 1.0,
             spread_bps: 900.0,
+            depth: None,
+            imbalance: None,
         });
     }
     let after = fuse(&graph, &traces, at(300), &config())?;
@@ -573,5 +579,215 @@ fn the_distilled_map_is_bounded_and_ships_only_where_the_training_entitlements_p
         )?;
     map.authorise_for(&card, "europe-west2")?;
     assert!(map.authorise_for(&card, "us-east4").is_err());
+    Ok(())
+}
+
+/// A seeded in-tree LCG (the repository takes no `rand`): reproducible, so
+/// a failing seed is a failing seed on every machine.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+}
+
+/// `nothing_recorded_or_printed_after_the_fusion_instant_is_read` is one
+/// example. A leak that needs a particular interleaving of recording and
+/// tick times passes an example, so this draws 200 random episodes — events
+/// recorded before and after the fusion instant, ticks on both sides of it —
+/// and requires `fuse` over everything to equal `fuse` over only what was
+/// knowable at `as_of`. The comparison fuses a graph and traces rebuilt
+/// without the late records, so a late record that changes any output is a
+/// difference rather than an absence. It also asserts its own premise: that
+/// late records existed in most episodes and that some events were knowable,
+/// so a generator that never produced either would fail here rather than
+/// pass vacuously.
+///
+/// Mutations, each failing the equality: drop the `p.at <= as_of` filter on
+/// trace points in `fuse`, and widen `events_at(as_of, as_of)` to
+/// `events_at(as_of, Timestamp::MAX)` so an event recorded later is read.
+#[test]
+fn over_random_episodes_fusing_everything_equals_fusing_only_what_was_knowable() -> Result<()> {
+    let mut rng = Lcg(0x5eed_f00d);
+    let mut with_late_records = 0;
+    let mut with_knowable_events = 0;
+    for case in 0..200 {
+        let as_of = at(150 + i64::try_from(rng.below(300)).unwrap_or(0));
+        let count = 1 + rng.below(4);
+        // (company, object, direction, quality, recorded, mid before/after, turn)
+        let mut episodes = Vec::new();
+        for n in 0..count {
+            episodes.push((
+                format!("co{n}"),
+                format!("obj-CO{n}"),
+                if rng.below(2) == 0 { "up" } else { "down" },
+                ["0.9", "0.2", "0.6"][usize::try_from(rng.below(3)).unwrap_or(0)],
+                at(110 + i64::try_from(rng.below(400)).unwrap_or(0)),
+                50.0 + rng.below(50) as f64,
+                1.0 + rng.below(10) as f64 / 10.0,
+                i64::try_from(rng.below(60)).unwrap_or(0) * 10,
+            ));
+        }
+        let build = |only_knowable: bool| -> Result<(KnowledgeGraph, Vec<MarketTrace>)> {
+            let mut graph = KnowledgeGraph::new();
+            let mut traces = Vec::new();
+            for (company, object, direction, quality, recorded, before, factor, turn) in &episodes {
+                if !only_knowable || *recorded <= as_of {
+                    add_episode(
+                        &mut graph,
+                        &format!("evt-{company}"),
+                        company,
+                        object,
+                        direction,
+                        quality,
+                        *recorded,
+                    )?;
+                }
+                let mut path = trace(object, *before, before * factor, *turn);
+                if only_knowable {
+                    path.points.retain(|p| p.at <= as_of);
+                }
+                traces.push(path);
+            }
+            Ok((graph, traces))
+        };
+        let (graph, traces) = build(false)?;
+        let (known_graph, known_traces) = build(true)?;
+        if episodes.iter().any(|e| e.4 > as_of)
+            && traces.iter().any(|t| t.points.iter().any(|p| p.at > as_of))
+        {
+            with_late_records += 1;
+        }
+        let everything = fuse(&graph, &traces, as_of, &config())?;
+        let knowable = fuse(&known_graph, &known_traces, as_of, &config())?;
+        if !knowable.events.is_empty() {
+            with_knowable_events += 1;
+        }
+        assert_eq!(
+            everything, knowable,
+            "case {case}: a record knowable only after {as_of} changed the fusion"
+        );
+    }
+    assert!(
+        with_late_records >= 100,
+        "premise: only {with_late_records} of 200 episodes held a late record"
+    );
+    assert!(
+        with_knowable_events >= 50,
+        "premise: only {with_knowable_events} of 200 episodes fused a knowable event"
+    );
+    Ok(())
+}
+
+/// Only the mid and the spread were fused: the five other things a market
+/// says about a reaction (regime, liquidity, flow, dislocation, feasibility)
+/// were thrown away on the way in, so a move on a book that had emptied read
+/// the same as one on a book that had not. ACME's book thins from 100 to 40
+/// and tips toward the ask as it falls 100 bps, while a second venue still
+/// quotes it half a point higher; BETA's trace records no sizes and does not
+/// move. The test asserts ACME's reaction carries each input at the value the
+/// trace implies, and that BETA's missing sizes are absent rather than zero.
+///
+/// Mutations: compute `depth_ratio` from the baseline against itself, drop
+/// the second venue from `venue_dislocation_bps`, and compare the move with
+/// zero rather than the spread in `clears_spread` — each fails its own
+/// assertion below.
+#[test]
+fn each_market_input_the_trace_records_appears_in_the_measured_reaction() -> Result<()> {
+    let (graph, mut traces) = episode()?;
+    let thinning = |t: i64| -> TracePoint {
+        let fallen = t >= 150;
+        TracePoint {
+            at: at(t),
+            mid: if fallen { 99.0 } else { 100.0 },
+            spread_bps: 2.0,
+            depth: Some(if fallen { 40.0 } else { 100.0 }),
+            imbalance: Some(if fallen { -0.5 } else { 0.2 }),
+        }
+    };
+    let acme = traces
+        .iter_mut()
+        .find(|t| t.instrument == "obj-ACME")
+        .expect("premise: the episode traces ACME");
+    acme.points = (0..=30).map(|i| thinning(i * 10)).collect();
+    // DELT moves one basis point against a two basis point spread: a move,
+    // and not one worth crossing for.
+    let delt = traces
+        .iter_mut()
+        .find(|t| t.instrument == "obj-DELT")
+        .expect("premise: the episode traces DELT");
+    for p in &mut delt.points {
+        if p.at >= at(150) {
+            p.mid = 10.001;
+        }
+    }
+    traces.push(MarketTrace {
+        instrument: "obj-ACME".into(),
+        venue: "XPAR".into(),
+        points: vec![TracePoint {
+            at: at(255),
+            mid: 99.5,
+            spread_bps: 2.0,
+            depth: None,
+            imbalance: None,
+        }],
+    });
+
+    let state = fuse(&graph, &traces, at(300), &config())?;
+
+    let reaction = |instrument: &str| {
+        state
+            .events
+            .iter()
+            .flat_map(|event| event.reactions.iter())
+            .find(|r| r.instrument == instrument)
+            .unwrap_or_else(|| panic!("no reaction measured for {instrument}"))
+    };
+    let acme = reaction("obj-ACME");
+    assert_eq!(
+        acme.depth_ratio,
+        Some(0.4),
+        "the book thinned from 100 to 40"
+    );
+    assert_eq!(acme.flow_imbalance, Some(-0.5));
+    assert!(
+        acme.realised_vol_bps.is_some_and(|v| v > 0.0),
+        "{:?}",
+        acme.realised_vol_bps
+    );
+    let dislocation = acme
+        .venue_dislocation_bps
+        .expect("two venues quote ACME at the fusion instant");
+    assert!(
+        (dislocation - 50.378).abs() < 0.01,
+        "XLON 99.0 against XPAR 99.5 is about 50.4 bps, got {dislocation}"
+    );
+    assert!(acme.clears_spread, "a 100 bps move clears a 2 bps spread");
+
+    let delt = reaction("obj-DELT");
+    assert!(
+        (delt.move_bps - 1.0).abs() < 1e-6,
+        "premise: DELT moved one basis point, got {}",
+        delt.move_bps
+    );
+    assert!(
+        !delt.clears_spread,
+        "a 1 bps move does not clear a 2 bps spread"
+    );
+
+    let beta = reaction("obj-BETA");
+    assert_eq!(beta.depth_ratio, None, "no sizes were recorded for BETA");
+    assert_eq!(beta.flow_imbalance, None);
+    assert_eq!(beta.venue_dislocation_bps, None, "BETA trades on one venue");
+    assert!(!beta.clears_spread, "BETA did not move");
     Ok(())
 }

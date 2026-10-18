@@ -662,10 +662,16 @@ pub mod names {
     /// and here rather than returned as the error that stopped the node
     /// loop until 2026-09-12. Recorded in `qip_deepbrain::campaign`.
     pub const RESEARCH_CAMPAIGNS_REFUSED: &str = "qip_research_campaigns_refused_total";
-    /// Fraction of records with complete lineage metadata, recorded as a gauge.
-    /// 1.0 means all records have full lineage, 0.0 means none do. Recorded in
-    /// Platform::record_reference when data is processed.
+    /// Fraction of received records whose lineage reached the event log, as a
+    /// gauge: the ratio of [`DATA_LINEAGE_RECORDS`]' two outcomes since the
+    /// platform was assembled. Recorded in `Platform::count_lineage`.
     pub const DATA_LINEAGE_COMPLETENESS: &str = "qip_data_lineage_completeness";
+    /// Records the platform received, by `outcome`: `linked` when the record
+    /// was appended to the event log under its ingestion correlation id,
+    /// `unlinked` when it arrived with no lineage or its append failed. The
+    /// series the `data-provenance-lineage-completeness` critical path is
+    /// evaluated on. Recorded in `Platform::count_lineage`.
+    pub const DATA_LINEAGE_RECORDS: &str = "qip_data_lineage_records_total";
     /// Delay in minutes between when an archive was written to GCS and when
     /// the platform became aware of it. A histogram recording the observed lag
     /// for each archive. Recorded when archive ingestion completes.
@@ -1330,6 +1336,12 @@ pub mod names {
     pub const EVENT_FABRIC_SERVING: &str = "qip_event_fabric_serving";
     pub const EVENT_FABRIC_SEGMENTS_SEALED: &str = "qip_event_fabric_segments_sealed_total";
     pub const EVENT_FABRIC_ARCHIVE_LAG: &str = "qip_event_fabric_archive_lag_segments";
+    /// Archive-lag readings judged against the `fabric-archive-backlog`
+    /// ceiling, by `outcome` (`within`, `over`): the good and total counts
+    /// the objective is evaluated from, since a gauge alone keeps only the
+    /// last reading and no fraction can be read off it.
+    pub const EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS: &str =
+        "qip_event_fabric_archive_backlog_checks_total";
     pub const EVENT_FABRIC_GROUP_LAG: &str = "qip_event_fabric_group_lag";
 
     // Edge journal metrics (edge-node)
@@ -1411,4 +1423,9 @@ pub mod names {
     /// Promoted model packages, by whether the artifact the promotion names
     /// was written where serving reads it (`written`, `failed`).
     pub const MODEL_PACKAGES: &str = "qip_model_packages_total";
+    /// Seconds since the deep brain last promoted a model package: the
+    /// central plane's model freshness, beside the edge's capability
+    /// freshness. Absent, not zero, until a first package is promoted —
+    /// a zero would read as a model promoted this instant.
+    pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
 }

@@ -180,7 +180,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for tax lots or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "No production producer opens a lot. Tried 2026-10-18 by lane L15 and dropped: opening a lot per strategy share inside LedgerStore::apply's paper-buy arm, through plan_operation in the fill's own commit, works, but (1) every ledgerd and acceptance oracle that compares balances() or events() with a fill-only refold (qip-ledgerd tests store.rs, fabric.rs, history.rs; qip-acceptance vertical_slice_ledgerd, vertical_slice_cell_ledger, vertical_slice_ship, desk_record_parity, desk_ledger_property) must first fold lot postings through one shared pure function, or each breaks; (2) a sell fill relieves no lot, so open quantity and basis would overstate after any sale until FIFO (or another declared) relief posts Phase::Unwind of the relieved quantity and proportional basis; (3) a lot id must avoid ':' and '/', which Account's text form refuses (order@session-sequence works). Closing needs all three in one change.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -191,7 +191,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Gap corrected 2026-10-18 by lane L15 after an attempted closure; nothing in the code changed."
   },
   {
     "id": "R12-LEDGER-5009",
@@ -584,12 +584,15 @@
   {
     "id": "R12-LEDGER-5026",
     "status": "PARTIAL",
-    "current": "Commerce plane settles marketplace sales and returns against its own unit ledger (commerce.rs:951 settle, :979 return_unit) with a SimulatedMerchant only; no reconciliation against an external warehouse/marketplace record.",
+    "current": "CommercePlane settles marketplace sales and returns against its unit ledger and, since 2026-10-18, reconciles them against the marketplace's own record: a SimulatedMarketplace books each settled sale and claws back each refunded return by its own arithmetic into a MarketplaceStatement, and CommercePlane::reconcile compares every settlement (presence, unit, net after adjustments, returned or kept) and every statement line (a sale the ledger never settled), recording each difference as a ReconciliationBreak and correcting neither side. The kernel's CommerceResearch::simulate reconciles once per SIMULATE pass and reports each break as a problem on that pass; it runs only when QIP_DEEPBRAIN_BREADTH_PLAN installs commerce research.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/commerce.rs:951 settle",
-      "backend/crates/libs/qip-financial/tests/commerce.rs:555"
+      "backend/crates/libs/qip-financial/src/commerce.rs:909 SimulatedMarketplace",
+      "backend/crates/libs/qip-financial/src/commerce.rs:1010 CommercePlane::reconcile",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:613 reconciled every SIMULATE pass",
+      "backend/crates/libs/qip-financial/tests/commerce.rs:686 a_seeded_difference_between_the_ledger_and_the_marketplaces_record_is_recorded_as_a_break",
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs:624 commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_cycle asserts one reconciliation per SIMULATE and no breaks"
     ],
-    "gap": "External reconciliation; integration.",
+    "gap": "Warehouses are not reconciled: the ledger's custody facts (received, moved, reserved, location) are compared with no warehouse record, because no warehouse keeps one in-tree. And a break is recorded and reported on the pass but not acted on: nothing holds the unit or the venue while a break is open.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -597,10 +600,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "reconciliation test with a seeded break",
+    "verification": "cargo test -p qip-financial --test commerce a_seeded_difference_between_the_ledger_and_the_marketplaces_record_is_recorded_as_a_break && cargo test -p qip-kernel --test breadth commerce_research",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: marketplace-side reconciliation added. Mutations: skipping the net comparison in reconcile fails the seeded test (no break for the short payment); dropping the reconcile call from simulate fails breadth.rs (reconciliations 0, expected 6). Restored, both pass. Kept PARTIAL for the warehouse side and for acting on a break."
   },
   {
     "id": "R12-LEDGER-5027",
@@ -716,14 +719,16 @@
   },
   {
     "id": "R12-REFLEX-5032",
-    "status": "PARTIAL",
-    "current": "qip_edge::Journal (backend/crates/edge/qip-edge/src/journal.rs:49, record :180) hash-chained (seal_v2); StoreMirror persists via qip-storage (backend/crates/apps/qip-edge-node/src/main.rs:519).",
+    "status": "COMPLETE",
+    "current": "qip_edge::Journal (backend/crates/edge/qip-edge/src/journal.rs) is append-only and hash-chained (seal_v2); StoreMirror persists it through qip-storage. The node's composition root builds the cell with CellConfig::with_journal_trimmed_on_ship and with_journal_wire (backend/crates/apps/qip-edge-node/src/main.rs:559-560), and DecisionLoop::new refuses a cell whose journal does not trim on ship (backend/crates/apps/qip-edge-node/src/scheduler.rs:309), so the in-memory journal is bounded on the default path.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/journal.rs:180 record",
-      "backend/crates/edge/qip-edge/tests/journal_v2.rs:194",
-      "backend/crates/apps/qip-edge-node/src/main.rs:519 StoreMirror::open"
+      "backend/crates/edge/qip-edge/src/journal.rs record/seal_v2",
+      "backend/crates/edge/qip-edge/tests/journal_v2.rs",
+      "backend/crates/apps/qip-edge-node/src/main.rs:559 with_journal_trimmed_on_ship",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:309 trims_on_ship refusal",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_decision_loop_refuses_a_cell_that_keeps_shipped_journal_entries"
     ],
-    "gap": "Deployed node does not trim on ship (no with_journal_trimmed_on_ship in assemble, backend/crates/apps/qip-edge-node/src/lib.rs:140-200), so the in-memory journal grows unbounded for a session; no deployment.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -731,10 +736,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test journal_v2",
+    "verification": "cargo test -p qip-edge --test journal_v2; cargo test -p qip-edge-node --test decision_loop a_decision_loop_refuses_a_cell_that_keeps_shipped_journal_entries",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the earlier gap ('no with_journal_trimmed_on_ship in assemble') was stale, main.rs arms the trim and the loop refuses a cell without it. Added the proving test; mutation: making the trims_on_ship check at scheduler.rs:309 unreachable made it fail with 'a decision loop accepted a cell that keeps shipped journal entries', restored byte for byte."
   },
   {
     "id": "R12-REFLEX-5033",
@@ -861,15 +866,17 @@
   {
     "id": "R12-REFLEX-5038",
     "status": "PARTIAL",
-    "current": "Books: qip-orderbook VenueState (L2/L3); funding/borrow: backend/crates/edge/qip-edge/src/funding.rs; venue health: qip_routing::health::HealthTracker (backend/crates/edge/qip-routing/src/health.rs:325) armed in backend/crates/apps/qip-edge-node/src/lib.rs:167; reservations: RegionAllocation (backend/crates/edge/qip-edge/src/reservation.rs:121); inventory targets from policy.",
+    "current": "Books: qip-orderbook VenueState (L2/L3); funding/borrow: backend/crates/edge/qip-edge/src/funding.rs, held on the Cell (Cell::set_funding_rate, Cell::set_borrow_availability) and read by nothing; venue health: qip_routing::health::HealthTracker armed in qip-edge-node; reservations: RegionAllocation; inventory measured from confirmed fills: Cell::confirm writes the venue-facing positions map and each contributor's strategy_positions from every venue-reported fill, and Cell::position reads it.",
     "evidence": [
       "backend/crates/edge/qip-orderbook/src/venue.rs",
       "backend/crates/edge/qip-edge/src/funding.rs",
+      "backend/crates/edge/qip-edge/src/cell.rs:6537 confirm adds each fill's signed quantity to positions, and to strategy_positions per contributor share",
+      "backend/crates/edge/qip-edge/tests/fills.rs:254 an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one asserts position() moves only on the reported fill",
       "backend/crates/apps/qip-edge-node/src/lib.rs:167 with_venue_health",
       "backend/crates/edge/qip-edge/src/reservation.rs:370 reserve",
       "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs:262"
     ],
-    "gap": "Funding/borrow state has no feed in the deployed node; inventory is target-only (no measured inventory from settled fills).",
+    "gap": "Funding and borrow have no producer and no consumer: nothing in qip-edge-node (feed.rs SimulatedFeed or any decoder) calls Cell::set_funding_rate or set_borrow_availability, and no gate in qip-edge reads FundingState, so a sale needing borrow the venue says is unavailable is not refused on it. The inventory half of the old gap was wrong: positions are measured from confirmed fills.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -880,7 +887,7 @@
     "verification": "cargo test -p qip-edge --test reservation; cargo test -p qip-edge-node --test feed_recovery",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The grader's 'Cell::positions is never written from fills' is false (cell.rs:6537, tested in fills.rs). Closing the rest needs a funding/borrow print in qip-edge-node's feed (lane L09's crate) and a borrow gate in Cell's pre-order checks; neither was done here."
   },
   {
     "id": "R12-REFLEX-5039",
@@ -937,7 +944,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:628",
       "backend/crates/apps/qip-edge-node/tests/strategies.rs"
     ],
-    "gap": "opportunity_definitions slot not consumed; not deployed.",
+    "gap": "Opportunity detectors do not exist as a concept to consume: PolicyPayload::opportunity_definitions (qip-contracts policy.rs:1016, OpportunityManifest at :626, id to definition digest) is never read outside qip-contracts, nothing produces it, and neither qip-strategy's compiled plan nor qip-edge names a detector (no 'detector' identifier in qip-strategy/src, qip-edge/src or qip-edge-node/src). Closing it needs a detector definition in the compiled plan, a centre producer for the manifest, and the installer gating on it; that is a contract design (an ADR), not a wiring change. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -948,7 +955,7 @@
     "verification": "cargo test -p qip-edge-node --test strategies",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure ('StrategyInstaller consumes OpportunityManifest so a plan's detectors deploy only when the manifest names them') presupposed detectors in the plan; there are none, so gating them would gate nothing. The compiled-strategy half of the statement is met by StrategyInstaller and tests/strategies.rs."
   },
   {
     "id": "R12-MESH-5042",
@@ -1006,7 +1013,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:9053",
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:1"
     ],
-    "gap": "Expected-edge-after-costs check applies to arbitrage cycles; compiled-strategy intents are not gated on net edge after costs (only fixed cost fraction, cell.rs:7251).",
+    "gap": "Compiled-strategy intents carry no expected edge to gate: qip_contracts::signal::Signal holds strategy, instrument, kind, conviction, desired quantity, validity and inputs (signal.rs:130-143) and Intent likewise, so a GATE_NET_EDGE on them would compare costs to a number nobody computed. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (a contract change across qip-contracts, qip-strategy and every Signal constructor), then the cell's cost model subtracted from it before an order exists. The fixed cost fraction (cell.rs, feasibility::fixed_cost_fraction) is applied only inside cycle admission.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1017,7 +1024,7 @@
     "verification": "cargo test -p qip-edge --test feasibility",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: gap corrected, PARTIAL kept. The triage closure (add GATE_NET_EDGE in the feasibility gate) cannot be met without inventing the edge; feasibility.rs's module doc (the paragraph on directional intents) states the same refusal. The old gap's 'only fixed cost fraction' for compiled strategies was also wrong: that fraction is charged to cycle legs only."
   },
   {
     "id": "R12-EXEC-5045",
@@ -1140,14 +1147,13 @@
   },
   {
     "id": "R12-MESH-5050",
-    "status": "PARTIAL",
-    "current": "The peer turn runs last in DecisionLoop::turn, after the journal flush and the centre's mesh delta (apps/qip-edge-node/src/scheduler.rs:504-548), and uses only try_recv/try_send (peer.rs:15-25, :267-290). A failing peer turn is counted and the loop continues (scheduler.rs:536-547). decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal drives the real loop with an unreachable peer and asserts short turns, running passes, and journal batches reaching the store. Reached from main (main.rs:1092-1103).",
+    "status": "COMPLETE",
+    "current": "The decision loop reaches peers only through qip_peer_link::boundary::ReflexPort (ADR 0116), whose methods never wait, and applies the centre's control through MeshWorker inside DecisionLoop::turn (apply_mesh, backend/crates/apps/qip-edge-node/src/scheduler.rs:662), independent of peer health. decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal drives the real loop with every peer refusing: turns stay short, the journal ships to the store, and a policy the centre's inbox accepts reaches the cell through the worker and DecisionLoop::turn (sequence 1 to 2) while the peer wire still reports zero sent.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/scheduler.rs:504",
-      "backend/crates/apps/qip-edge-node/src/scheduler.rs:533",
-      "apps/qip-edge-node/tests/decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal"
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:662 apply_mesh",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal"
     ],
-    "gap": "Prove the control/policy half through the loop: deliver a policy via the centre's downlink (apply_mesh/apply_wires inside DecisionLoop::turn) while peers are down. The test's policy half calls decisions.cell_mut().apply_policy(...) directly (decision_loop.rs:655-669), which bypasses the loop. A mutation that gated policy distribution on peer health would not fail it.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1157,10 +1163,10 @@
       "R12-MESH-5046"
     ],
     "blocked_by": "",
-    "verification": "node test with peer transport down asserting journal ships",
+    "verification": "cargo test -p qip-edge-node --test decision_loop an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The journal half meets the stated mutation (gate the flush on mesh health and the test fails). The policy half is close to tautological. The endpoint's receive/frame/expire work also still runs on the decision thread, which is what ADR 0116 calls a MESH-013 failure. ADR 0116 (accepted 2026-10-11, 'Implemented by: not yet') will move qip-contracts/src/peer.rs to a new Lane 1 lib qip-peer, move qip-edge-node/src/peer.rs (PeerSettings, PeerLink, PeerSession, node_limits) into a new edge crate qip-peer-link whose wire thread owns the PeerEndpoint, and leave the decision loop only boundary::ReflexPort {try_publish(Vec<EdgeQuote>), status()}; PeerSession::turn will take Vec<ExecutableEdge> instead of &Cell and stop running on the scheduler thread. Until then tests/qip-acceptance/tests/mesh_lane.rs::the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it is expected to fail (ADR 0116 header). After ADR 0116 the outage property rests on ReflexPort having no blocking method."
+    "notes": "Re-graded 2026-10-18 by lane L09. The gap ('the policy half calls cell_mut().apply_policy directly') was stale: the test now admits the policy frame to the centre's MeshInbox and waits for the loop to apply it. Mutation: returning early from apply_mesh when the peer port reports send failures made the test fail with 'the centre's policy did not reach the cell through the loop while the peer mesh was down'; restored byte for byte. The journal half's mutation (gate the flush on mesh health) was recorded by the 2026-10-11 audit."
   },
   {
     "id": "R12-MESH-5051",
@@ -1211,14 +1217,15 @@
   {
     "id": "R12-MESH-5053",
     "status": "PARTIAL",
-    "current": "Node is (object, venue, representation, settlement, region), and all five are part of its derived identity and ordering (backend/crates/edge/qip-arbitrage/src/graph.rs:139-148). ArbitrageGraph refuses a zero-cost edge between two nodes differing only in settlement stage or region (graph.rs:36-41, refusal near :810-822). The graph type is the one the edge node's desk builds (apps/qip-edge-node/src/arbitrage.rs:199-210), reached from main.rs:46-56/369.",
+    "current": "Node is (object, venue, representation, settlement, region), all five in its identity and ordering (backend/crates/edge/qip-arbitrage/src/graph.rs:139-148), and the graph refuses a zero-cost edge between nodes differing only in settlement stage or region. Since 2026-10-18 the edge node's desk places every node in the cell's region: ArbitrageInstaller::in_region, set by main.rs from config.region, builds the graph through graph_from_whitelist_in (backend/crates/apps/qip-edge-node/src/arbitrage.rs). Representation and settlement stage remain Native and Settled, because the centre's CycleWhitelist conversions state neither.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/graph.rs:139",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:183",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:199",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs graph_from_whitelist_in, ArbitrageInstaller::in_region",
+      "backend/crates/apps/qip-edge-node/src/main.rs .in_region(&config.region)",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs::the_installed_desks_graph_places_every_node_in_the_cells_region_and_two_regions_never_share_a_node",
       "edge/qip-arbitrage/tests/edge_costs.rs::two_nodes_differing_only_in_settlement_stage_or_region_are_distinct_and_no_free_edge_joins_them"
     ],
-    "gap": "qip-arbitrage Node has the five dimensions but the edge node's desk builds nodes with only asset and venue (defaults for the rest).",
+    "gap": "Representation and settlement stage on production nodes: the CycleWhitelist contract (qip-contracts) carries neither per conversion, so the desk can only assume Native/Settled; settlement stage from gateway terms needs the contract to name it. The kernel's graphs (qip-kernel platform.rs) still build Node::new.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1226,10 +1233,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new qip-arbitrage graph test",
+    "verification": "cargo test -p qip-edge-node --test arbitrage the_installed_desks_graph_places_every_node_in_the_cells_region",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Every production builder uses Node::new (Native, Settled, region None): apps/qip-edge-node/src/arbitrage.rs:200-204, qip-arbitrage graph.rs:683-684, qip-kernel platform.rs:9725/28072. The identity can distinguish the dimensions, but no production graph populates them yet. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Five-part node identity exists in the type; production graph never sets settlement stage, representation or region."
+    "notes": "Re-graded 2026-10-18 by lane L09: region half closed on the node. Mutations, each restored byte for byte: passing None for the region in ArbitrageInstaller::install failed 'a node of the installed graph carries no region'; deleting .in_region(&config.region) from main.rs failed 'main.rs no longer places the desk's graph in the cell's region'."
   },
   {
     "id": "R12-MESH-5054",
@@ -1302,14 +1309,13 @@
   {
     "id": "R12-MESH-5057",
     "status": "PARTIAL",
-    "current": "EdgeCosts carries settlement_risk_fraction and fill_probability, charged in netedge with named-line tests; latency deduction exists. Centre whitelist ships costs: None, so production edges carry certain fill and no settlement risk.",
+    "current": "EdgeCosts carries settlement_risk_fraction and fill_probability, charged in netedge with named-line tests. The edge node's desk prices whatever costs a whitelisted conversion states (backend/crates/apps/qip-edge-node/src/arbitrage.rs graph_from_whitelist_in, graph.set_costs), refusing an out-of-range figure rather than clamping it. The only production producer of whitelists, the centre's builder (backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 and :616), writes costs: None on both edges of every market, so production edges carry certain fill and no settlement risk.",
     "evidence": [
       "backend/crates/edge/qip-arbitrage/src/netedge.rs:73",
-      "backend/crates/edge/qip-edge/src/settlement.rs",
-      "backend/crates/edge/qip-edge/tests/settlement.rs",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs::EdgeCosts::rate_multiplier"
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs set_costs from conversion.costs",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs:606 costs: None"
     ],
-    "gap": "No production producer of per-edge fill probability/settlement risk.",
+    "gap": "The centre's whitelist builder must state per-conversion costs: settlement_risk_fraction from the venue's settlement terms and fill_probability from the venue's measured fill record, both of which the centre holds per venue. The node already prices them; nothing in qip-edge-node needs to change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1320,7 +1326,7 @@
     "verification": "cargo test -p qip-arbitrage",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure proposed deriving the costs on the node, but the node does not hold the evidence for a fill probability (its fill-time measurement is a latency, not a probability) and the settlement terms are the centre's; the producer belongs in qip-kernel central/whitelist.rs, outside this lane."
   },
   {
     "id": "R12-MESH-5058",
@@ -1541,7 +1547,7 @@
       "backend/crates/services/qip-mesh/src/rebalance.rs:27",
       "backend/crates/services/qip-mesh/tests/rebalance.rs:40"
     ],
-    "gap": "Consumer in treasury/kernel.",
+    "gap": "Consumer in the saga: the only non-mesh holder of OpportunityEpoch is qip-peer-link's saga (Lane 1), which does not depend on qip-mesh, where rebalancing_tasks lives (a service). Wiring it needs either the function moved into the pure qip-peer library or a qip-peer-link dependency on qip-mesh, an architecture call the mesh_lane and lane_placement suites constrain, plus a journal record for the tasks.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1552,7 +1558,7 @@
     "verification": "cargo test -p qip-mesh --test rebalance",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: the closure (saga.rs calls rebalancing_tasks) is blocked by the crate graph; not attempted."
   },
   {
     "id": "R12-MESH-5068",

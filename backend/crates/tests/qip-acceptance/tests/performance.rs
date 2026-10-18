@@ -35,7 +35,7 @@
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
 use qip_contracts::intent::Intent;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
-use qip_contracts::policy::PolicyPayload;
+use qip_contracts::policy::{ModelManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_contracts::{FeatureKey, FeatureValue, FeatureVector, Revision};
@@ -72,8 +72,9 @@ use qip_risk_engine::pretrade::{PreTradeChecker, ProposedOrder};
 use qip_sequencing::arbitration::{ArbitrationEvent, LineArbiter};
 use qip_sequencing::tracker::{ReorderPolicy, SequenceEvent, Sequencer};
 use qip_strategy::catalogue::FeatureCatalogue;
-use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
+use qip_strategy::compile::{CompiledStrategy, CompilerLimits, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
+use qip_strategy::model::{DistilledModel, TreeNode};
 use qip_strategy::program::Program;
 use qip_strategy::runtime::StrategyRuntime;
 use std::collections::BTreeMap;
@@ -1355,8 +1356,9 @@ fn firing_strategy(
 }
 
 /// An envelope wide enough that the grant is never what refuses over a long
-/// loop: a hundred million gross, a hundred thousand per order.
-fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
+/// loop: a hundred million gross, a hundred thousand per order, granted for
+/// `lifetime` from the start of the run.
+fn edge_envelope(strategy: &str, lifetime: Duration) -> Result<VerifiedEnvelope> {
     let build = |signature: &str| {
         CapitalEnvelope::new(
             StrategyId::new(strategy),
@@ -1366,7 +1368,7 @@ fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
             dec!("50000"),
             vec![venue()],
             start(),
-            start().saturating_add(Duration::from_hours(1)),
+            start().saturating_add(lifetime),
             "alice@example.com",
             signature,
         )
@@ -1382,15 +1384,25 @@ fn edge_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
 }
 
 /// A cell holding the ACME book and one always-firing strategy per entry,
-/// each priced as given.
+/// each priced as given, under envelopes granted for an hour.
 fn edge_cell(strategies: &[(&str, SignalKind, &str, PricingPolicy)]) -> Result<Cell> {
+    edge_cell_granted_for(strategies, Duration::from_hours(1))
+}
+
+/// [`edge_cell`] with envelopes granted for `lifetime`, for a loop whose
+/// simulated span is longer than the hour: an envelope that lapsed inside the
+/// loop would refuse every later pass and read here as a fast one.
+fn edge_cell_granted_for(
+    strategies: &[(&str, SignalKind, &str, PricingPolicy)],
+    lifetime: Duration,
+) -> Result<Cell> {
     let config = CellConfig::new(EDGE_CELL, EDGE_REGION).with_venue(venue());
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let mut cell = Cell::new(config, features)?;
     cell.track(edge_book("ACME")?);
     for (id, kind, size, pricing) in strategies {
         let (compiled, program) = firing_strategy(id, "ACME", *kind, size)?;
-        cell.deploy_with_pricing(compiled, program, edge_envelope(id)?, *pricing)?;
+        cell.deploy_with_pricing(compiled, program, edge_envelope(id, lifetime)?, *pricing)?;
     }
     Ok(cell)
 }
@@ -1818,6 +1830,159 @@ fn an_edge_work_pass_with_a_fill_and_its_drop_copy_costs_what_the_execution_meas
     Ok(())
 }
 
+/// A strategy that enters every pass on a chain-tree `DistilledModel` of
+/// `length` nodes over one input. The chain's cost is its node count, so the
+/// plan's worst-case cost is `length` plus a handful of nodes around it.
+fn model_strategy(id: &str, length: usize) -> Result<(CompiledStrategy, Program, String)> {
+    let nodes: Vec<TreeNode> = (0..length)
+        .map(|index| {
+            if index + 1 == length {
+                TreeNode::Leaf { value: 1.0 }
+            } else {
+                TreeNode::Branch {
+                    input: 0,
+                    threshold: 0.5,
+                    below: index + 1,
+                    at_or_above: index + 1,
+                }
+            }
+        })
+        .collect();
+    let model = DistilledModel::tree("chain", 1, nodes)?;
+    let digest = model.digest();
+    let spec = StrategySpec::new(StrategyId::new(id), object("ACME"), Duration::from_secs(30))
+        .with_rule(Rule::new(
+            "enter-on-the-model",
+            SignalKind::Enter,
+            Expr::Model {
+                model,
+                // A feature, not a literal: the compiler folds a model whose
+                // inputs are all constants into its answer, and a plan of
+                // three nodes would be timed instead of the model.
+                inputs: vec![Expr::Feature(FeatureKey::new("mid", object("ACME"))).widened()],
+            }
+            .greater_than(Expr::Statistic(0.0)),
+            Expr::Exact(d("100")),
+            Expr::Statistic(0.5),
+            10,
+        ));
+    let mut catalogue = FeatureCatalogue::new();
+    catalogue.declare(FeatureKey::new("mid", object("ACME")), Type::Exact)?;
+    let mut compiler = StrategyCompiler::new(catalogue);
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program(), digest))
+}
+
+#[test]
+fn an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget()
+-> Result<()> {
+    // R12-MODEL-4001: a bounded worst-case cost for all of lane 0, not only
+    // for `DistilledModel::cost`. The compiler refuses a plan whose worst
+    // case exceeds `CompilerLimits::default().max_nodes`; this deploys the
+    // largest plan it admits into a cell and times whole `Cell::work`
+    // passes, so the bound is shown to be a bound on the pass and not on a
+    // number the compiler computed. The baseline pass above runs a plan of a
+    // few nodes; the ceiling is the same.
+    let limit = CompilerLimits::default().max_nodes;
+    // The figure the pass time below was measured at. Raising the compiler's
+    // budget raises the worst-case pass; the pass ceiling is then re-argued
+    // from a new measurement, in this line, and not inherited.
+    const MEASURED_NODE_BUDGET: usize = 512;
+    assert!(
+        limit <= MEASURED_NODE_BUDGET,
+        "the compiler admits {limit} nodes; the pass budget below was measured at \
+         {MEASURED_NODE_BUDGET}"
+    );
+    // The largest chain the compiler admits: refuse-by-one above it is the
+    // premise that this is the edge and not just a big model.
+    let admitted = (1..=limit)
+        .rev()
+        .find(|length| model_strategy("probe", *length).is_ok())
+        .expect("some chain fits the budget");
+    assert!(
+        admitted + 8 >= limit,
+        "the largest admitted chain is {admitted} against a budget of {limit}: the plan around \
+         it costs more than a handful of nodes"
+    );
+    assert!(
+        model_strategy("probe", admitted + 1).is_err(),
+        "a chain one node longer was admitted, so {admitted} is not the largest"
+    );
+
+    const PASSES: usize = 500;
+    let config = CellConfig::new(EDGE_CELL, EDGE_REGION).with_venue(venue());
+    // The feature graph carries `mid`, loaded from a two-sided book, so the
+    // model has a live input and the compiler cannot fold it away.
+    let mut features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    features.register(Box::new(Mid::new(object("ACME"))))?;
+    for (index, (side, price, size)) in
+        [(BookSide::Bid, "99", "500"), (BookSide::Ask, "101", "400")]
+            .iter()
+            .enumerate()
+    {
+        let when = start().saturating_add(Duration::from_millis(index as i64));
+        features.ingest(&MarketMessage::new(
+            object("ACME"),
+            Origin::new(venue(), "feed-a", 0, index as u64),
+            MessageBody::LevelSet {
+                side: *side,
+                price: d(price),
+                quantity: d(size),
+                order_count: None,
+            },
+            when,
+            when,
+        ))?;
+    }
+    let mut cell = Cell::new(config, features)?;
+    cell.track(edge_book("ACME")?);
+    let (compiled, program, digest) = model_strategy("alpha", admitted)?;
+    // A cell evaluates only a model its policy promoted, by name and digest.
+    let issued = start().saturating_add(Duration::from_secs(1));
+    let mut payload = PolicyPayload::unproduced(1, EDGE_CELL, issued);
+    payload.trained_models = Slot::produced(
+        ModelManifest::unreleased(BTreeMap::from([("chain".to_string(), digest)])),
+        issued,
+    );
+    let policy = VerifiedPolicy::verify(
+        payload.signed(EDGE_POLICY_KEY)?,
+        EDGE_POLICY_KEY,
+        EDGE_CELL,
+        issued,
+    )?;
+    cell.apply_policy(policy, issued)?;
+    // The model is in the plan the cell runs, not folded away: the plan's
+    // worst-case cost is the chain plus a handful of nodes around it.
+    assert!(
+        compiled.cost() + 8 >= limit,
+        "the compiled plan costs {} against a budget of {limit}; the model was not carried",
+        compiled.cost()
+    );
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        edge_envelope("alpha", Duration::from_hours(1))?,
+        PricingPolicy::Marketable,
+    )?;
+    let mut gateway = PaperVenue {
+        fills: true,
+        ..PaperVenue::default()
+    };
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_millis(1))?;
+    assert_eq!(
+        totals.orders, PASSES,
+        "the maximal plan did not fire on every pass, so the pass did not evaluate it"
+    );
+    assert_eq!(totals.refusals, 0, "a gate refused inside the loop");
+    report(
+        "edge work pass (largest admitted model plan)",
+        PASSES,
+        totals.work,
+        5_000.0,
+    );
+    Ok(())
+}
+
 #[test]
 fn an_edge_work_pass_costs_the_same_per_pass_however_many_passes_the_cell_has_already_run()
 -> Result<()> {
@@ -1966,21 +2131,40 @@ fn an_internal_cross_costs_what_the_execution_measurements_say() -> Result<()> {
 
 #[test]
 fn a_resting_orders_expiry_costs_what_the_execution_measurements_say() -> Result<()> {
-    // An order rested at the mid for one second, and the next pass two
+    // An order rested at the mid for one second, and the next pass thirty
     // seconds later withdrawing it: `withdraw_expired` through the venue's
     // cancel, the region hold returned, the order closed and settled. The
     // premise is the venue's cancel count — an order the cell forgot rather
     // than withdrew would leave the venue holding it and read here as fast.
+    //
+    // Thirty seconds apart, not two, and the gap is the scenario rather than
+    // a tolerance. A rester that never fills, pulled at its time to live
+    // every two seconds on one side of one book, is the place-and-cancel
+    // pattern the cell refuses (`qip_edge::conduct`, under
+    // `GATE_CONDUCT_SPOOFING`): from the fifth pass the window held four
+    // unfilled withdrawals of four placements, and this loop timed a cell
+    // refusing rather than one resting. Thirty seconds apart, no conduct
+    // window holds more than two such withdrawals — the quiet-market rester
+    // the default policy is written to admit — so every pass still rests,
+    // withdraws and settles one order, which is the work being timed, under
+    // the same default conduct policy every cell runs. A thousand passes that
+    // far apart span more than the hour the other edge loops fit in, so the
+    // envelope is granted for the run plus an hour: one that lapsed inside it
+    // would refuse every later pass.
     const PASSES: usize = 1_000;
-    let mut cell = edge_cell(&[(
-        "alpha",
-        SignalKind::Enter,
-        "100",
-        PricingPolicy::rest_at_mid(Duration::from_secs(1))?,
-    )])?;
+    let step = Duration::from_secs(30);
+    let mut cell = edge_cell_granted_for(
+        &[(
+            "alpha",
+            SignalKind::Enter,
+            "100",
+            PricingPolicy::rest_at_mid(Duration::from_secs(1))?,
+        )],
+        step * PASSES as i64 + Duration::from_hours(1),
+    )?;
     let mut gateway = PaperVenue::default();
 
-    let totals = run_passes(&mut cell, &mut gateway, PASSES, Duration::from_secs(2))?;
+    let totals = run_passes(&mut cell, &mut gateway, PASSES, step)?;
 
     assert_eq!(totals.orders, PASSES, "not every pass rested its order");
     assert_eq!(

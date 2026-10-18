@@ -62,6 +62,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, Topic};
+use qip_quantum::foundry::{FamilyKind, FamilyStatus, Foundry};
 use qip_strategy::model::DistilledModel;
 use qip_streaming::envelope::StreamEnvelope;
 use serde::{Deserialize, Serialize};
@@ -78,14 +79,24 @@ pub const MODEL_PROMOTION_ORIGIN: &str = "kernel/model-promotion";
 /// quantum gateway's output is a control signal (a selection or search
 /// result) that may inform a classical candidate, and that candidate arrives
 /// here as [`Self::QuantumInformed`] carrying the reference of the classical
-/// baseline it was compared against. A quantum result presented as the
+/// baseline it was compared against, and the workload family its quantum
+/// input answered (R12-QUANT-4018). A quantum result presented as the
 /// candidate itself is [`Self::QuantumGateway`], and is refused.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProducer {
     TrainingPipeline,
     QuantumGateway,
-    QuantumInformed { baseline: String },
+    QuantumInformed {
+        baseline: String,
+        /// The `qip_quantum::foundry::FamilyKind` (by its variant name) the
+        /// quantum input was produced for. Absent from records written
+        /// before the field existed; a candidate naming none is refused,
+        /// because a quantum benefit is claimed only on a workload family
+        /// the foundry has built.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workload: Option<String>,
+    },
 }
 
 impl ModelProducer {
@@ -157,6 +168,16 @@ pub struct ModelPromotion {
     /// taken from the caller, so a desk cannot assert evidence it lacks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// Where the promoted card's training-data licence lets it run
+    /// (`ModelCard::permitted_locations`), read off the registry at the
+    /// promotion and never taken from the caller; `None` when the card
+    /// carries no data entitlement and so may run anywhere. A distillate of a
+    /// restricted card is named only in a manifest issued for a permitted
+    /// location (R12-TICK-2091). Absent from records written before the field
+    /// existed, which replay as unrestricted because the log does not say
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permitted_locations: Option<BTreeSet<String>>,
     pub at: Timestamp,
 }
 
@@ -192,6 +213,9 @@ pub struct ModelManifestIssue {
     /// counted so the line says how many and why.
     /// Always zero while no release packs are admitted.
     unreleased: usize,
+    /// Promoted distillates left out because their card's data licence does
+    /// not permit the location the manifest was issued for (R12-TICK-2091).
+    unlicensed: usize,
 }
 
 impl ModelManifestIssue {
@@ -213,6 +237,12 @@ impl ModelManifestIssue {
         self.unreleased
     }
 
+    /// Promoted distillates withheld because their licence does not permit
+    /// the manifest's location.
+    pub const fn unlicensed(&self) -> usize {
+        self.unlicensed
+    }
+
     pub fn describe(&self) -> String {
         let line = format!(
             "trained models: shipped {} distillate(s) by digest, newest promoted {}; {} \
@@ -226,13 +256,22 @@ impl ModelManifestIssue {
                 ModelPack::describe
             )
         );
-        if self.unreleased == 0 {
+        let line = if self.unreleased == 0 {
             line
         } else {
             format!(
                 "{line}; {} promoted distillate(s) withheld because no verified release pack \
                  names their artifact (ADR 0110)",
                 self.unreleased
+            )
+        };
+        if self.unlicensed == 0 {
+            line
+        } else {
+            format!(
+                "{line}; {} promoted distillate(s) withheld because their training-data licence \
+                 does not permit this location",
+                self.unlicensed
             )
         }
     }
@@ -340,6 +379,36 @@ impl ModelPack {
 }
 
 /// The first twelve characters of a digest, for a line a person reads.
+/// A quantum-informed candidate is evaluated only on a workload family the
+/// platform's foundry has built (blueprint §10, QUANT-004): a family recorded
+/// as not built has no encoding, baseline or benchmark, so no quantum
+/// advantage on it could have been measured. Refuses a missing family, a name
+/// that is no family, and a family the foundry holds only as not built.
+fn require_eligible_workload(reference: &str, workload: Option<&str>) -> Result<()> {
+    let Some(name) = workload else {
+        return Err(Error::denied(format!(
+            "{reference} is not promoted: a quantum-informed candidate must name the workload              family its quantum input answered, and this one names none"
+        )));
+    };
+    let Some(kind) = FamilyKind::ALL
+        .into_iter()
+        .find(|kind| format!("{kind:?}") == name)
+    else {
+        return Err(Error::denied(format!(
+            "{reference} is not promoted: `{name}` is not a workload family the blueprint names"
+        )));
+    };
+    match Foundry::platform()?.status(kind) {
+        Some(FamilyStatus::Registered(_)) => Ok(()),
+        Some(FamilyStatus::NotBuilt { reason }) => Err(Error::denied(format!(
+            "{reference} is not promoted: the {name} family is not built ({reason}); a quantum              benefit is evaluated only on a family with an encoding, baseline and benchmark"
+        ))),
+        None => Err(Error::denied(format!(
+            "{reference} is not promoted: the foundry does not account for the {name} family"
+        ))),
+    }
+}
+
 fn short(digest: &str) -> &str {
     digest.get(..12).unwrap_or(digest)
 }
@@ -654,7 +723,8 @@ impl Platform {
                     artifact.reference
                 )));
             }
-            ModelProducer::QuantumInformed { baseline } => {
+            ModelProducer::QuantumInformed { baseline, workload } => {
+                require_eligible_workload(&artifact.reference, workload.as_deref())?;
                 crate::central::models::require_calibrated_baseline(registry, baseline).map_err(
                     |error| {
                         Error::denied(format!(
@@ -761,6 +831,18 @@ impl Platform {
         // Done after the retirements and from the pre-retirement deploy
         // times, which retire does not touch.
         scratch.record_rollback_parent(&artifact.reference, displaced)?;
+        // R12-TICK-2091: the licence travels with the record, read off the
+        // card here, because the manifest is issued long after the registry
+        // the desk handed in has gone and a cell must never be named a model
+        // its training data may not run beside.
+        let card = scratch.get(&artifact.reference).ok_or_else(|| {
+            Error::not_found(format!(
+                "{} has no card in the registry it was promoted in; its licence cannot be read",
+                artifact.reference
+            ))
+        })?;
+        let permitted_locations =
+            (!card.data_entitlements.is_empty()).then(|| card.permitted_locations.clone());
         let record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
@@ -775,6 +857,7 @@ impl Platform {
             producer,
             moved_by: Some(desk),
             evidence: Some(evidence),
+            permitted_locations,
             at: now,
         };
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
@@ -890,16 +973,33 @@ impl Platform {
     /// and "this process has not resumed a promotion" is the shipper's, and
     /// the line says which.
     pub fn model_manifest(&self) -> Result<ModelManifestIssue> {
+        self.model_manifest_for(None)
+    }
+
+    /// The `trained_models` slot as issued for `location`: a distillate whose
+    /// card's training-data licence names permitted locations is named only
+    /// where `location` is one of them, with the same rule as
+    /// `ModelCard::authorise_location` (R12-TICK-2091). `None` — a cell whose
+    /// location the centre has not been told — withholds every restricted
+    /// distillate: a licence that cannot be checked is not a licence granted.
+    pub fn model_manifest_for(&self, location: Option<&str>) -> Result<ModelManifestIssue> {
         let mut models = BTreeMap::new();
         let mut packs = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
         let mut advisory_only = 0usize;
         let mut unreleased = 0usize;
+        let mut unlicensed = 0usize;
         for promotion in self.model_promotions.values() {
             let Some(entry) = &promotion.distilled else {
                 advisory_only += 1;
                 continue;
             };
+            if let Some(permitted) = &promotion.permitted_locations
+                && !location.is_some_and(|location| permitted.contains(location))
+            {
+                unlicensed += 1;
+                continue;
+            }
             // ADR 0110: with release packs admitted, a distillate is named to
             // a cell only when a verified pack names its artifact *and* the
             // inline model the cell will compute — name and digest — and
@@ -933,7 +1033,16 @@ impl Platform {
                 advisory_only,
                 pack: self.model_pack.clone(),
                 unreleased,
+                unlicensed,
             }),
+            None if unlicensed > 0 && unreleased == 0 => Err(Error::denied(format!(
+                "{unlicensed} promoted distillate(s) held and the training-data licence of each \
+                 refuses {}; the trained_models slot ships unproduced for it",
+                location.map_or_else(
+                    || "a cell whose location is not declared".to_string(),
+                    |location| format!("location {location}")
+                )
+            ))),
             None if unreleased > 0 => Err(Error::not_found(format!(
                 "{unreleased} promoted distillate(s) held and no verified release pack names any \
                  of their artifacts at the inline model the cells compute (ADR 0110); the trained_models slot ships unproduced and \

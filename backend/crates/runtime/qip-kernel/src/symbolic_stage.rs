@@ -35,6 +35,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use qip_agents::registries::OntologyRegistry;
+use qip_contracts::expansion::{OntologyTypeFamily, OntologyTypeSpec};
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
@@ -101,6 +103,86 @@ pub struct SymbolicInput {
     pub horizon: Duration,
     /// The latest observed return of each instrument, for abduction.
     pub moves: BTreeMap<String, f64>,
+    /// The subject's settlement convention and its lag (REASON-3055), from
+    /// the asset-class record the platform registered it under; `None` for
+    /// a class with no delivery cycle or a subject with no record.
+    pub settlement: Option<(String, Duration)>,
+    /// The asset class the platform registered the subject under, as
+    /// `AssetClass::as_str` spells it; `None` for a subject with no record.
+    /// What the subject is typed against in [`platform_ontology`].
+    pub subject_class: Option<String>,
+}
+
+/// The ontology version this build seeds. A recorded typing names it, so a
+/// replay under a build whose ontology moved is refused rather than retyped.
+pub const ONTOLOGY_VERSION: u32 = 1;
+
+/// The ontology the symbolic stage types a hypothesis's subject against
+/// (R12-REASON-1131): every asset class as an `Asset` type, the anomaly a
+/// hypothesis starts from as an `Event` type, and the hypothesis's own
+/// lifecycle as a `Lifecycle` type.
+///
+/// Seeded here, from the platform's own vocabulary, rather than loaded:
+/// `OntologyRegistry` existed and was constructed only in its own tests, so
+/// no reasoning step ever asked what kind of thing its subject was.
+pub fn platform_ontology() -> Result<OntologyRegistry> {
+    let mut registry = OntologyRegistry::new();
+    let spec = |family, name: &str, description: String| OntologyTypeSpec {
+        family,
+        name: name.to_string(),
+        version: ONTOLOGY_VERSION,
+        schema: format!("qip-kernel/symbolic/{name}"),
+        description,
+    };
+    for class in qip_financial::asset_class::AssetClass::ALL {
+        registry.register(spec(
+            OntologyTypeFamily::Asset,
+            class.as_str(),
+            format!(
+                "an instrument the platform registered under the {} class",
+                class.as_str()
+            ),
+        ))?;
+    }
+    registry.register(spec(
+        OntologyTypeFamily::Event,
+        "anomaly",
+        "a detector's observation departing from its expectation".to_string(),
+    ))?;
+    registry.register(spec(
+        OntologyTypeFamily::Lifecycle,
+        "hypothesis",
+        "a hypothesis from draft through review".to_string(),
+    ))?;
+    Ok(registry)
+}
+
+/// The subject's type as the ontology holds it, or the refusal.
+fn type_subject(class: Option<&str>) -> Result<String> {
+    let ontology = platform_ontology()?;
+    let Some(class) = class else {
+        return Err(Error::invalid(
+            "the subject has no registered asset class, so the ontology cannot type it; register \
+             the instrument under an asset class before reasoning about it",
+        ));
+    };
+    let spec = ontology
+        .get_latest(OntologyTypeFamily::Asset, class)
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "the subject's asset class `{class}` is not a type the ontology holds; add it to \
+                 platform_ontology before reasoning about it"
+            ))
+        })?;
+    Ok(format!("asset/{} v{}", spec.name, spec.version))
+}
+
+/// The subject typed against the ontology, with the class it was typed from
+/// so a replay re-types it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SubjectTyping {
+    pub class: Option<String>,
+    pub typed: Step<String>,
 }
 
 /// A part that ran, or the reasoner's refusal.
@@ -157,6 +239,15 @@ pub struct TemporalInputs {
     pub horizon: Duration,
     /// The linked catalyst's id and the instant it became knowable.
     pub catalyst: Option<(String, Timestamp)>,
+    /// The subject's settlement convention and lag (REASON-3055). A trade
+    /// entered when the hypothesis formed settles that long after it, and
+    /// the timeline is asked to hold settlement before the deadline: a
+    /// claim that resolves before its trade could settle is refused as a
+    /// link. The lag counts calendar days, so the settlement instant is the
+    /// earliest the convention allows — a weekend only makes it later.
+    /// Absent on a record written before the field existed.
+    #[serde(default)]
+    pub settlement: Option<(String, Duration)>,
 }
 
 /// The temporal part.
@@ -245,6 +336,10 @@ pub struct SymbolicDerivation {
     /// computed, and a number here would be one nobody computed.
     #[serde(default)]
     pub uncertainty: Option<f64>,
+    /// The subject typed against [`platform_ontology`] (R12-REASON-1131).
+    /// `None` only on a record written before typing existed.
+    #[serde(default)]
+    pub subject_type: Option<SubjectTyping>,
 }
 
 impl EventBody for SymbolicDerivation {
@@ -306,9 +401,14 @@ impl SymbolicDerivation {
             Step::Derived(a) => format!("{} explanation(s)", a.candidates.len()),
             Step::Refused(_) => "no surprise to explain".to_string(),
         };
+        let typed = match self.subject_type.as_ref().map(|t| &t.typed) {
+            Some(Step::Derived(name)) => format!(", subject typed {name}"),
+            Some(Step::Refused(_)) => ", subject untyped".to_string(),
+            None => String::new(),
+        };
         format!(
             "; symbolic: rules {eligibility}{review}, lifecycle {lifecycle}, timeline {temporal}, \
-             P(claim) {posterior}, acting {acting}, abduction {abduction}"
+             P(claim) {posterior}, acting {acting}, abduction {abduction}{typed}"
         )
     }
 }
@@ -483,6 +583,7 @@ fn temporal(input: &SymbolicInput, now: Timestamp) -> TemporalDerivation {
             formed_at: input.formed_at,
             horizon: input.horizon,
             catalyst: input.catalyst.clone(),
+            settlement: input.settlement.clone(),
         },
         now,
     )
@@ -518,12 +619,24 @@ fn timeline_of(hypothesis_id: &str, input: TemporalInputs, now: Timestamp) -> Te
     ];
     let mut chain = vec![
         (anomaly.clone(), hypothesis.clone()),
-        (hypothesis.clone(), deadline_id),
+        (hypothesis.clone(), deadline_id.clone()),
     ];
     if let Some((id, known_at)) = &input.catalyst {
         let catalyst = format!("catalyst:{id}");
         recorded.push(record(&mut timeline, &catalyst, *known_at, *known_at));
         chain.insert(0, (catalyst, anomaly.clone()));
+    }
+    if let Some((convention, lag)) = &input.settlement {
+        let settlement = format!("settlement:{convention}:{hypothesis_id}");
+        // Known the instant the claim is made, like the deadline: the
+        // convention is reference data, not something learned later.
+        recorded.push(record(
+            &mut timeline,
+            &settlement,
+            input.formed_at.saturating_add(*lag),
+            input.formed_at,
+        ));
+        chain.push((settlement, deadline_id.clone()));
     }
     for result in recorded {
         if let Err(error) = result {
@@ -741,6 +854,10 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
                 }),
         );
     let acting = Step::of(acting(eligible, halted));
+    let subject_type = SubjectTyping {
+        typed: Step::of(type_subject(input.subject_class.as_deref())),
+        class: input.subject_class,
+    };
     let violated_assumptions = violated_assumptions(&rules, &temporal, &acting);
     let uncertainty = uncertainty_of(&posterior);
     SymbolicDerivation {
@@ -758,6 +875,7 @@ pub fn derive(input: SymbolicInput, causal: &CausalGraph, now: Timestamp) -> Sym
         intervention,
         violated_assumptions,
         uncertainty,
+        subject_type: Some(subject_type),
     }
 }
 
@@ -822,6 +940,15 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<SymbolicDeriva
 /// invented `contested` or `kill_switch`.
 pub fn verify(derivation: &SymbolicDerivation, causal: &CausalGraph) -> Result<()> {
     let id = &derivation.hypothesis_id;
+    if let Some(typing) = &derivation.subject_type
+        && Step::of(type_subject(typing.class.as_deref())) != typing.typed
+    {
+        return Err(Error::invalid(format!(
+            "derivation for {id}: re-typed against this build's ontology (v{ONTOLOGY_VERSION}), \
+             the subject does not match the journaled typing; the subject typing is not \
+             reproducible"
+        )));
+    }
     let pack = rule_pack();
     if let Step::Derived(verdict) = &derivation.rules.verdict {
         if verdict.pack != pack.name || verdict.version != pack.version {
@@ -953,7 +1080,9 @@ mod tests {
             catalyst: None,
             formed_at: at(10),
             horizon: Duration::from_days(1),
+            settlement: None,
             moves: BTreeMap::new(),
+            subject_class: Some("equity".into()),
         }
     }
 
@@ -1017,6 +1146,54 @@ mod tests {
             .expect("the anomaly link was claimed");
         assert!(matches!(link.admitted, Step::Refused(_)), "{link:?}");
         assert_eq!(d.temporal.anomaly_to_hypothesis, Order::After);
+    }
+
+    #[test]
+    fn a_claim_that_resolves_before_its_trade_could_settle_records_the_settlement_link_as_refused()
+    {
+        // R12-REASON-3055. The failure this guards: the timeline ordered the
+        // anomaly, the hypothesis and its deadline, and never the trade's
+        // settlement, so a one-day claim on a T+2 instrument read as
+        // coherent although no position entered on it could have settled
+        // before reality answered.
+        let at = |days: i64| Timestamp::from_secs(1_700_000_000 + days * 86_400);
+        let mut t2 = input();
+        t2.settlement = Some(("T+2".into(), Duration::from_days(2)));
+        let derivation = derive(t2.clone(), &CausalGraph::new(), at(5));
+        let settlement = format!("settlement:T+2:{}", t2.hypothesis_id);
+        let deadline = format!("deadline:{}", t2.hypothesis_id);
+        let link = derivation
+            .temporal
+            .links
+            .iter()
+            .find(|l| l.cause == settlement && l.effect == deadline)
+            .expect("the settlement was posed against the deadline");
+        assert!(matches!(link.admitted, Step::Refused(_)), "{link:?}");
+        let token = format!("link {settlement} -> {deadline}: ");
+        assert!(
+            derivation
+                .violated_assumptions
+                .iter()
+                .any(|v| v.starts_with(&token)),
+            "{:?}",
+            derivation.violated_assumptions
+        );
+        // The same claim on a same-day convention settles inside its
+        // horizon and the link is admitted, so the refusal above is the
+        // lag's and not the link's existence.
+        let mut t0 = input();
+        t0.settlement = Some(("T+0".into(), Duration::ZERO));
+        let same_day = derive(t0.clone(), &CausalGraph::new(), at(5));
+        let admitted = same_day
+            .temporal
+            .links
+            .iter()
+            .find(|l| l.cause == format!("settlement:T+0:{}", t0.hypothesis_id))
+            .expect("posed");
+        assert!(
+            matches!(admitted.admitted, Step::Derived(())),
+            "{admitted:?}"
+        );
     }
 
     #[test]

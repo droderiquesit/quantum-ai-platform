@@ -41,15 +41,16 @@ fn draft(class: GoalClass) -> GoalSpecDraft {
         prohibited_side_effects: list(&["public_statement"]),
         prohibited_methods: list(&["wash_trade"]),
         stop_conditions: list(&["spread widens"]),
+        rollback_conditions: list(&["restore the prior quote width"]),
     }
 }
 
 // ---- AGENCY-003 / 041 ------------------------------------------------------
 
 #[test]
-fn a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field() {
+fn a_goal_missing_any_one_of_its_thirteen_declarations_is_refused_naming_that_field() {
     type Wipe = fn(&mut GoalSpecDraft);
-    let wipes: [(&str, Wipe); 12] = [
+    let wipes: [(&str, Wipe); 13] = [
         ("target_state", |g| g.target_state = None),
         ("entities_affected", |g| g.entities_affected = None),
         ("time_horizon_secs", |g| g.time_horizon_secs = None),
@@ -66,6 +67,7 @@ fn a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_fiel
         }),
         ("prohibited_methods", |g| g.prohibited_methods = None),
         ("stop_conditions", |g| g.stop_conditions = None),
+        ("rollback_conditions", |g| g.rollback_conditions = None),
     ];
     assert!(
         draft(GoalClass::Financial).build().is_ok(),
@@ -1013,8 +1015,11 @@ impl Adapter for Counting {
     }
 }
 
+/// The desk's request. It carries the desk's structural model because a
+/// pass may act only over a plan simulated against counterfactual branches
+/// (R12-MODEL-4014); a test about a pass without one removes it.
 fn request() -> Request {
-    Request {
+    with_structural_model(Request {
         goal: draft(GoalClass::Liquidity).build().unwrap(),
         targets: vec!["spread".into()],
         variables: vec![
@@ -1059,7 +1064,7 @@ fn request() -> Request {
         pass: None,
         structural: None,
         touches: Vec::new(),
-    }
+    })
 }
 
 fn identified(class: Method) -> EffectAttribution {
@@ -1121,6 +1126,10 @@ fn over_generated_passes_an_adapter_is_called_only_after_simulation_and_the_gate
                 None // refused at Generate; the baseline is chosen
             }
             5 => {
+                // Without a structural model, so the plan reaches the
+                // Simulate stage rather than being refused at Generate for
+                // a claim its simulation does not bear out.
+                r.structural = None;
                 r.proposals[0].root = PlanNode::Conditional {
                     condition: "not_observed".into(),
                     then: Box::new(step("quoter", 20)),
@@ -1161,6 +1170,7 @@ fn over_generated_passes_an_adapter_is_called_only_after_simulation_and_the_gate
         graph: &g,
         plan: &plan,
         facts: &r.observed_facts,
+        simulated: None,
     };
     let err = execute(&mut fresh, Some(&policy), gated, None, &mut adapter).unwrap_err();
     assert!(err.to_string().contains("out of order"), "{err}");
@@ -2170,6 +2180,7 @@ fn execute_reports_withheld_rather_than_shadow_when_the_guard_refuses_in_shadow(
         graph: &g,
         plan: &plan,
         facts: &r.observed_facts,
+        simulated: None,
     };
     let at_gate = || {
         let mut log = StageLog::new();
@@ -2282,7 +2293,12 @@ fn with_structural_model(mut request: Request) -> Request {
             variable: "spread".into(),
             direction: Direction::Decrease,
         },
-        actuation: BTreeMap::from([("quoter".to_string(), 10.0)]),
+        // Every tool a test registers on `quote_size` moves it alike, so a
+        // test about a second tool is not a test about its actuation.
+        actuation: ["quoter", "quoter2", "quoter-2", "delist"]
+            .into_iter()
+            .map(|tool| (tool.to_string(), 10.0))
+            .collect(),
         generate: None,
     });
     request
@@ -2489,11 +2505,260 @@ fn a_shadowed_pass_learns_its_simulated_effect_and_nothing_is_recommended_on_it(
     );
 
     // No model, no simulated outcome: refused by name.
-    let bare = run(request(), None, &mut Counting::default()).unwrap();
+    let mut unmodelled = request();
+    unmodelled.structural = None;
+    let bare = run(unmodelled, None, &mut Counting::default()).unwrap();
     assert!(matches!(bare.outcome, Outcome::Shadowed(_)), "premise");
     let err = simulated::evidence(&bare, 8, "spread under 5 bps").unwrap_err();
     assert!(
         err.to_string().contains("no structural model simulated"),
         "{err}"
+    );
+}
+
+/// R12-AGENCY-1060: market conduct judged on the step, not only the words.
+/// A pass that would release the same quote four times is withheld at the
+/// act stage with no adapter call, though each copy reads innocently alone
+/// and no phrase rule fires; the same plan releasing it three times — the
+/// most one pass may — executes, so the gate is a rate and not a refusal of
+/// repetition as such.
+/// Mutation: in `guard::ActionGuard::preflight`, drop the
+/// `self.gate.step_failure(&faces)` push — the four-step pass executes and
+/// the first assertion fails.
+#[test]
+fn a_pass_releasing_one_message_above_the_repetition_rate_is_withheld_before_any_adapter_call() {
+    let policy = narrow();
+    let repeated = |times: usize| {
+        let mut r = request();
+        r.tool_edges[0].edge.cost = Some(d(1));
+        r.proposals[0].root = PlanNode::Sequence((0..times).map(|_| step("quoter", 1)).collect());
+        r
+    };
+    let mut adapter = Counting::default();
+    let report = run(
+        repeated(qip_agency::conduct_brain::MAX_RELEASES_PER_MESSAGE),
+        Some(&policy),
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Executed(_)),
+        "premise: at the rate the pass executes, {:?}",
+        report.outcome
+    );
+    assert_eq!(adapter.calls.len(), 3, "premise");
+
+    for authority in [Some(&policy), None] {
+        let mut adapter = Counting::default();
+        let report = run(
+            repeated(qip_agency::conduct_brain::MAX_RELEASES_PER_MESSAGE + 1),
+            authority,
+            &mut adapter,
+        )
+        .unwrap();
+        let Outcome::Stopped(reason) = &report.outcome else {
+            panic!("expected withheld, got {:?}", report.outcome)
+        };
+        assert!(reason.contains("step_conduct"), "{reason}");
+        assert!(reason.contains("4 times"), "{reason}");
+        assert!(adapter.calls.is_empty(), "an adapter was called");
+        assert_eq!(report.failed, Some(Stage::Act));
+    }
+}
+
+/// R12-CONTRACT-7082: a shadow pass the guard clears yields one §27
+/// `ActionIntent` per step — who acts for whom, through which channel,
+/// the payload and its digest, provenance, disclosure, every policy that
+/// admitted it, an idempotency key and the audit lineage — and the record
+/// round-trips through its strict decoder, while the same record with its
+/// payload edited after review is refused. A withheld pass yields none.
+/// Mutation: in `guard::intent`, digest a constant instead of `payload` —
+/// `ActionIntent::new` refuses, the pass is withheld and the first
+/// assertion fails.
+#[test]
+fn a_shadow_pass_yields_a_decodable_action_intent_and_an_edited_payload_is_refused() {
+    use qip_contracts::action_intent::{ActionIntent, Verdict};
+    let mut adapter = Counting::default();
+    let report = run(request(), None, &mut adapter).unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Shadowed(_)),
+        "premise: {:?}",
+        report.outcome
+    );
+    assert!(adapter.calls.is_empty(), "premise: shadow called nothing");
+    assert_eq!(report.intents.len(), 1, "one intent per cleared step");
+    let intent = &report.intents[0];
+    let chain = report.approvals.as_ref().unwrap();
+    assert_eq!(intent.identity.actor, "desk-agent");
+    assert_eq!(intent.identity.on_behalf_of, chain.goal.approver);
+    assert_eq!(intent.channel, "paper-venue");
+    assert!(intent.provenance.contains(&chain.plan.id));
+    assert_eq!(
+        intent.audit_lineage,
+        vec![chain.goal.id.clone(), chain.plan.id.clone()]
+    );
+    assert!(
+        intent
+            .policy_decisions
+            .iter()
+            .all(|d| d.verdict == Verdict::Allowed)
+    );
+
+    let bytes = intent.encode().unwrap();
+    assert_eq!(&ActionIntent::decode(&bytes).unwrap(), intent);
+    let mut edited: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let payload = edited["payload"]
+        .as_str()
+        .unwrap()
+        .replace("20 lots", "2000 lots");
+    assert_ne!(
+        payload, intent.payload,
+        "premise: the edit changed the payload"
+    );
+    edited["payload"] = serde_json::Value::String(payload);
+    let refusal = ActionIntent::decode(&serde_json::to_vec(&edited).unwrap()).unwrap_err();
+    assert!(refusal.to_string().contains("payload_digest"), "{refusal}");
+
+    let mut withheld = request();
+    withheld.guards.as_mut().unwrap().grounds = vec![Ground::ExpectedProfit];
+    let report = run(withheld, None, &mut adapter).unwrap();
+    assert!(matches!(report.outcome, Outcome::Stopped(_)), "premise");
+    assert!(
+        report.intents.is_empty(),
+        "a refused pass carries no intent"
+    );
+}
+
+/// R12-RES-7111: a side effect the policy did not predict does not only
+/// return it to shadow; the memory files a failure episode naming the plan,
+/// the departure, the authority it cost, and the plan-specific stop and
+/// roll-back. An outcome that held to the prediction files none.
+/// Mutation: in `engine::learn_outcome`, drop `memory.keep_failure` — the
+/// memory holds no episode and the second assertion block fails.
+#[test]
+fn a_side_effect_the_policy_did_not_predict_files_a_failure_episode_with_its_stop_and_roll_back() {
+    use qip_agency::autonomy::Drift;
+    use qip_agency::memory::Mitigation;
+    let mut policy = narrow();
+    let mut memory = ActionOutcomeMemory::with_capacity(4).unwrap();
+    let held = learn(
+        &mut acted_log(),
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &identified(Method::Market),
+    )
+    .unwrap();
+    assert_eq!(held, Authority::NarrowReversible, "premise");
+    assert_eq!(
+        memory.failures().count(),
+        0,
+        "a held prediction is no failure"
+    );
+
+    let mut surprising = outcome("calm", 7, 4);
+    surprising.side_effects = list(&["venue_complaint"]);
+    let after = learn(
+        &mut acted_log(),
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        surprising,
+        &identified(Method::Market),
+    )
+    .unwrap();
+    assert_eq!(after, Authority::Shadow);
+    let episodes: Vec<_> = memory.failures().collect();
+    assert_eq!(episodes.len(), 1, "one failure, one episode");
+    let episode = episodes[0];
+    assert_eq!(episode.action_sequence, vec!["quoter".to_string()]);
+    assert_eq!(
+        episode.drift,
+        vec![Drift::UnpredictedSideEffect("venue_complaint".into())]
+    );
+    assert_eq!(
+        (episode.authority_before, episode.authority_after),
+        (Authority::NarrowReversible, Authority::Shadow)
+    );
+    assert_eq!(
+        episode.mitigations,
+        vec![
+            Mitigation::Halt {
+                tools: vec!["quoter".into()]
+            },
+            Mitigation::Reverse {
+                tool: "quoter".into()
+            },
+        ],
+        "a measured, executed plan is halted and its step reversed"
+    );
+}
+
+/// R12-MODEL-4014 / R12-COVERAGE-7186: authority to act is used only over a
+/// plan simulated against counterfactual branches, and only when every
+/// branch of every competing model says it helps. The desk's model alone
+/// agrees and the pass executes; with no model the same authority sends
+/// nothing; with a second model that says quoting widens the spread, the
+/// plan is weakly identified and nothing is sent, though in shadow it is
+/// still simulated and shadowed (the gate is on acting, not on thinking).
+/// Mutation: in `engine::counterfactually_supported`, read only the first
+/// branch (`results.iter().take(1)`) — the dissenting model is never
+/// consulted, the contested pass executes and the weak-identification
+/// assertion fails.
+#[test]
+fn authority_is_used_only_over_a_plan_every_competing_model_agrees_helps() {
+    let policy = narrow();
+    let mut adapter = Counting::default();
+    let agreed = run(request(), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        matches!(agreed.outcome, Outcome::Executed(_)),
+        "premise: one agreeing model, {:?}",
+        agreed.outcome
+    );
+    assert_eq!(adapter.calls.len(), 1, "premise");
+
+    let mut unmodelled = request();
+    unmodelled.structural = None;
+    let mut adapter = Counting::default();
+    let report = run(unmodelled, Some(&policy), &mut adapter).unwrap();
+    let Outcome::Stopped(reason) = &report.outcome else {
+        panic!("expected withheld, got {:?}", report.outcome)
+    };
+    assert!(reason.contains("simulated against none"), "{reason}");
+    assert!(adapter.calls.is_empty());
+    assert_eq!(report.failed, Some(Stage::Act));
+
+    let contested = || {
+        let mut r = request();
+        let decl = r.structural.as_mut().unwrap();
+        let mut skeptic = decl.models[0].clone();
+        skeptic.name = "skeptic".into();
+        skeptic.links[0].coefficient = 0.6;
+        decl.models.push(skeptic);
+        r
+    };
+    let mut adapter = Counting::default();
+    let report = run(contested(), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        report
+            .simulations
+            .iter()
+            .flat_map(|s| &s.results)
+            .any(|b| b.model == "skeptic"),
+        "premise: the second model was simulated"
+    );
+    let Outcome::Stopped(reason) = &report.outcome else {
+        panic!("expected withheld, got {:?}", report.outcome)
+    };
+    assert!(reason.contains("weakly identified"), "{reason}");
+    assert!(reason.contains("skeptic/"), "{reason}");
+    assert!(adapter.calls.is_empty(), "a contested plan sends nothing");
+
+    let shadow = run(contested(), None, &mut Counting::default()).unwrap();
+    assert!(
+        matches!(shadow.outcome, Outcome::Shadowed(_)),
+        "{:?}",
+        shadow.outcome
     );
 }

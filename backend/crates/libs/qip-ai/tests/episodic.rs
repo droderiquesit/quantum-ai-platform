@@ -1454,3 +1454,70 @@ fn failure_and_market_memory_types_serialize_and_deserialize_with_lineage() {
     assert_eq!(deserialized.model_version, Some("v2.0.0".to_string()));
     assert!(!deserialized.model_derived);
 }
+
+/// R12-WORLD-6013: at capacity the store gives up the stale copy of a lesson
+/// it still holds before a unique episode, even an older one, and what it
+/// gives up is kept as an abstraction counting it, naming it and carrying its
+/// outcome.
+///
+/// Mutation: make `EpisodicMemory::stale_calm` return the oldest calm slot
+/// (`calm.first()`) — the older unique episode is evicted in its place and
+/// the retention assertion fails. Mutation: skip `abstract_away` in
+/// `evict_sampled` — no abstraction is produced.
+#[test]
+fn at_capacity_a_stale_near_duplicate_is_folded_into_an_abstraction_before_a_unique_episode_goes() {
+    let mut memory = EpisodicMemory::new(3, 16).expect("non-zero bounds");
+    let day = Duration::from_days(1);
+    // The oldest-known episode is unique; the next one has a newer twin.
+    memory
+        .remember(episode("unique-old", "obj-BBB", "quiet", start(), 10.0))
+        .expect("valid");
+    memory
+        .remember(episode(
+            "dup-old",
+            "obj-AAA",
+            "quiet",
+            start().saturating_add(day),
+            50.0,
+        ))
+        .expect("valid");
+    memory
+        .remember(episode(
+            "dup-new",
+            "obj-AAA",
+            "quiet",
+            start().saturating_add(day * 2),
+            70.0,
+        ))
+        .expect("valid");
+    // Premise: full, every grade calm, nothing folded yet.
+    assert_eq!(memory.len(), 3);
+    assert_eq!(memory.held_at(EpisodeGrade::Tail), 0);
+    assert_eq!(memory.abstractions().count(), 0);
+
+    memory
+        .remember(episode(
+            "fresh",
+            "obj-CCC",
+            "quiet",
+            start().saturating_add(day * 3),
+            0.0,
+        ))
+        .expect("valid");
+    assert_eq!(memory.len(), 3, "the bound holds");
+    assert!(!memory.contains("dup-old"), "the stale duplicate survived");
+    assert!(
+        memory.contains("unique-old"),
+        "a unique episode went before a duplicate of one still held"
+    );
+    assert!(memory.contains("dup-new") && memory.contains("fresh"));
+
+    let abstractions: Vec<_> = memory.abstractions().collect();
+    assert_eq!(abstractions.len(), 1, "one pattern was folded");
+    let folded = abstractions[0];
+    assert_eq!(folded.instrument, "obj-AAA");
+    assert_eq!(folded.direction, 1);
+    assert_eq!(folded.consolidated, 1);
+    assert_eq!(folded.members, vec!["dup-old".to_string()]);
+    assert_eq!(folded.mean_realised_move_bps, Some(50.0));
+}

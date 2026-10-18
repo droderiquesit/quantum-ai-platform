@@ -141,6 +141,8 @@ pub struct GoalSpecDraft {
     /// May be declared empty ("none"), but must be declared.
     pub prohibited_methods: Option<Vec<String>>,
     pub stop_conditions: Option<Vec<String>>,
+    /// What undoes the goal's effects if a stop condition fires.
+    pub rollback_conditions: Option<Vec<String>>,
 }
 
 /// CONTRACT-027 / AGENCY-003 / R12-AGENCY-6079: the one `GoalSpec`.
@@ -176,6 +178,13 @@ pub struct GoalSpec {
     pub prohibited_side_effects: Vec<String>,
     pub prohibited_methods: Vec<String>,
     pub stop_conditions: Vec<String>,
+    /// What is undone, and how, once a stop condition fires: each entry names
+    /// a condition and the unwinding it requires. Required beside
+    /// `stop_conditions` because a stop says when to halt and not what to
+    /// leave behind. A goal that halts mid-intervention with nothing declared
+    /// leaves its half-applied lever in place, and nobody wrote down that it
+    /// should not be there.
+    pub rollback_conditions: Vec<String>,
 }
 
 impl GoalSpecDraft {
@@ -225,6 +234,7 @@ impl GoalSpecDraft {
             )));
         }
         let stop_conditions = declared_list("stop_conditions", self.stop_conditions)?;
+        let rollback_conditions = declared_list("rollback_conditions", self.rollback_conditions)?;
         Ok(GoalSpec {
             class,
             target_state,
@@ -239,6 +249,7 @@ impl GoalSpecDraft {
             prohibited_side_effects,
             prohibited_methods,
             stop_conditions,
+            rollback_conditions,
         })
     }
 }
@@ -558,7 +569,16 @@ pub struct GapSignal {
     pub evidence: Vec<String>,
     /// Severity in `[0, 1]`.
     pub severity: f64,
+    /// What closing the gap is worth: the return a better model, source or
+    /// tool would earn.
     pub economic_value: Decimal,
+    /// What leaving the gap open exposes the book to: the loss the platform
+    /// carries while the thing it cannot explain keeps moving. Distinct from
+    /// [`Self::economic_value`] because a gap can be worth little to close
+    /// and dangerous to leave — a liquidity hole the desk never trades
+    /// through for profit is still one it can be trapped in — and a single
+    /// figure ranks that gap as harmless.
+    pub risk_value: Decimal,
     pub gap_class: GapClass,
 }
 
@@ -572,6 +592,11 @@ impl GapSignal {
         if self.economic_value.is_negative() {
             return Err(Error::invalid(
                 "GapSignal.economic_value must not be negative",
+            ));
+        }
+        if self.risk_value.is_negative() {
+            return Err(Error::invalid(
+                "GapSignal.risk_value must not be negative; state zero when the gap exposes nothing",
             ));
         }
         Ok(())

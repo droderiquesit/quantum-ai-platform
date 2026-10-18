@@ -569,6 +569,17 @@ pub fn run_with(
                     .side_failures
                     .push(format!("research: {}", error.message())),
             }
+            // Every request the sweep launched goes to the discovery desk as a
+            // scout job, in rank order (R12-AMBIENT-9033); the desk's next
+            // pass looks for evidence on what the sweep paid to ask about.
+            if let (Some(round), Some(desk)) = (
+                outcome.research.as_ref(),
+                evolution
+                    .as_deref_mut()
+                    .and_then(|engine| engine.discovery_desk_mut()),
+            ) {
+                desk.hand_off(&round.scouted);
+            }
             // The evolution round that preceded this sweep in the same gap
             // rides on the sweep record (R12-EXPAND-1117), so a reader of the
             // research round sees the challengers minted and the champion
@@ -627,6 +638,11 @@ pub fn run_with(
                 problems: outcome.report.problems().len(),
                 anomalies: outcome.research.as_ref().map(|r| r.anomalies),
                 drifted: &drifted,
+                package_promoted: outcome
+                    .learning
+                    .as_ref()
+                    .and_then(|round| round.promotion.as_ref())
+                    .is_some_and(|promotion| promotion.published().is_some()),
             };
             match operations.observe(platform, &facts) {
                 Ok(round) => outcome.operations = Some(round),

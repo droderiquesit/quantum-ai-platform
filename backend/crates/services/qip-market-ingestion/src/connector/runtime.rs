@@ -29,7 +29,7 @@ use super::checkpoint::{Checkpoint, Cursor, CursorPosition};
 use super::dedup::{DedupWindow, Novelty};
 use super::envelope::{MarketEventEnvelope, RawEvent};
 use super::evidence::{
-    CheckedEvidence, ParserLineage, evidence_of, feed_sequence_of, sequence_predecessor,
+    CheckedEvidence, ParserLineage, evidence_of, feed_sequence_with, sequence_predecessor,
 };
 use super::heartbeat::{FeedHeartbeat, Liveness};
 use super::manifest::SourceManifest;
@@ -880,7 +880,7 @@ impl ConnectorRuntime {
             .saturating_add(1);
         // The source's own numbering, read before the gate fills a gap in it
         // with an arrival count: only the former declares an order.
-        let feed_sequence = feed_sequence_of(&record);
+        let feed_sequence = feed_sequence_with(&record, connector.feed_sequence(event));
         stamp_capture(&mut record, at, sequence);
 
         let quality = connector.quality_of(event);

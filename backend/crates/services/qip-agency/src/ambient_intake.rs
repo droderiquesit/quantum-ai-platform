@@ -64,7 +64,7 @@ use crate::outbox::{
     DRAFT_TOOL, DraftContext, DraftingAdapter, OUTBOX_CHANNEL, OutboxDraft, drafts,
 };
 use crate::plan::Step;
-use qip_contracts::action::{Ground, ToolRegistration};
+use qip_contracts::action::{Ground, Method, ToolRegistration};
 use qip_contracts::ambient::{
     Advisory, AmbientSignal, AttentionEvent, Disposition, Pathway, Promoted, PromotionCase,
     SignalClass, Trigger, promote,
@@ -92,6 +92,10 @@ pub const OUTBOX_DISCLOSURE_TEXT: &str =
 
 /// The variable the drafting step is "about"; carried only so a `Step` is whole.
 const OUTBOX_VARIABLE: &str = "outbox";
+
+/// What one draft costs the door's budget, in whole registry units: the
+/// price the guard charges it at and the budget its sub-goal declares.
+const DRAFT_COST: Decimal = Decimal::ONE;
 
 /// What ambient attention hands the agency: the facts of one activated
 /// detection, with the provenance the draft must keep. Wrapped in an
@@ -371,6 +375,15 @@ impl AmbientIntake {
                 "pricing".to_string(),
             ]),
             stop_conditions: Some(vec!["the outbox cannot be written".to_string()]),
+            // The door's only effect is a draft in the internal outbox, which
+            // sends nothing, so a stop leaves nothing half-applied outside it.
+            // What a stop unwinds is the retry queue: every held draft is
+            // dropped on the record (`AmbientIntake::revoke`).
+            rollback_conditions: Some(vec![
+                "on a stop, drop every draft held for a retry on the record; written drafts stay \
+                 in the internal outbox, which sends nothing"
+                    .to_string(),
+            ]),
         }
         .build()?;
         Ok(Self {
@@ -396,9 +409,33 @@ impl AmbientIntake {
         self.retry.len()
     }
 
-    /// Revoke the drafting tool: the next draft is refused and audited.
-    pub fn revoke(&mut self) -> Result<(), Error> {
-        self.guard.revoke(DRAFT_TOOL)
+    /// Revoke the drafting tool: the next draft is refused and audited, and
+    /// every draft held for a retry is dropped on the record now, returned
+    /// as [`Intake::Abandoned`].
+    ///
+    /// A held draft has already cleared the guard once. Left in the queue,
+    /// it waits for a retry that the revocation refuses anyway. Worse, a
+    /// later [`Self::reauthorise`] would send it, on an authority given
+    /// before the stop. A stop that leaves pending work queued behind it
+    /// stops only new work.
+    pub fn revoke(&mut self) -> Result<Vec<Intake>, Error> {
+        self.guard.revoke(DRAFT_TOOL)?;
+        Ok(self
+            .retry
+            .drain(..)
+            .map(|pending| Intake::Abandoned {
+                reason: "the drafting tool was revoked while this draft was held for a retry"
+                    .to_string(),
+                attempts: pending.attempts,
+            })
+            .collect())
+    }
+
+    /// Restore the drafting tool on `operator`'s authority. Drafts dropped at
+    /// the revocation stay dropped: an opportunity worth drafting again is
+    /// offered again.
+    pub fn reauthorise(&mut self, operator: &str) -> Result<(), Error> {
+        self.guard.reauthorise(DRAFT_TOOL, operator)
     }
 
     /// Promote an advisory on `approver`'s authority and submit it. The
@@ -469,6 +506,18 @@ impl AmbientIntake {
             self.drafted.insert(opportunity.signal_id.clone());
             return Ok(Intake::Duplicate { draft_id });
         }
+        let sub_goal = match self.sub_goal(&opportunity, now) {
+            Ok(goal) => goal,
+            Err(refusal) => {
+                return Ok(Intake::Withheld {
+                    reason: format!(
+                        "the door's standing goal does not decompose into a sub-goal for this \
+                         draft: {}",
+                        refusal.message()
+                    ),
+                });
+            }
+        };
         let step = Step {
             tool: DRAFT_TOOL.to_string(),
             variable: OUTBOX_VARIABLE.to_string(),
@@ -525,6 +574,7 @@ impl AmbientIntake {
         let result = self.through_guard(
             &mut pending,
             &opportunity,
+            &sub_goal,
             &step,
             communication,
             now,
@@ -558,17 +608,79 @@ impl AmbientIntake {
         }
     }
 
+    /// R12-AGENCY-3002: the standing goal split, through
+    /// [`GoalSpec::decompose`], into the one sub-goal this draft serves and
+    /// the remainder of the door's work. The draft is then guarded against
+    /// the sub-goal, not the standing goal, so what one draft may spend and
+    /// for how long is a declaration the decomposition checked against its
+    /// parent: one unit of the budget, no exposure, the parent's identity,
+    /// jurisdiction and every prohibition, and a horizon that ends when the
+    /// signal expires. A signal expiring at this instant leaves no horizon
+    /// and is refused here rather than drafted with none.
+    fn sub_goal(
+        &self,
+        opportunity: &AmbientOpportunity,
+        now: Timestamp,
+    ) -> Result<GoalSpec, Error> {
+        let parent = &self.goal;
+        let left = opportunity.expiry.as_secs().saturating_sub(now.as_secs());
+        let horizon = u64::try_from(left)
+            .unwrap_or(0)
+            .min(parent.time_horizon_secs);
+        let remainder = parent
+            .budget
+            .checked_sub(DRAFT_COST)
+            .ok_or_else(|| Error::numeric("the door's budget underflowed"))?;
+        let part = |target: String, budget: Decimal, horizon: u64| GoalSpecDraft {
+            class: Some(parent.class),
+            target_state: Some(target),
+            entities_affected: Some(parent.entities_affected.clone()),
+            time_horizon_secs: Some(horizon),
+            success_metric: Some(parent.success_metric.clone()),
+            acceptable_uncertainty: Some(parent.acceptable_uncertainty),
+            budget: Some(budget),
+            risk_envelope: Some(Decimal::ZERO),
+            jurisdictions: Some(parent.jurisdictions.clone()),
+            acting_identity: None,
+            prohibited_side_effects: Some(Vec::new()),
+            prohibited_methods: Some(Vec::new()),
+            stop_conditions: Some(parent.stop_conditions.clone()),
+            rollback_conditions: Some(parent.rollback_conditions.clone()),
+        };
+        let mut children = parent.decompose(vec![
+            part(
+                format!(
+                    "ambient signal {} on {} is drafted to the internal outbox for a person to \
+                     read",
+                    opportunity.signal_id, opportunity.subject
+                ),
+                DRAFT_COST,
+                horizon,
+            ),
+            part(
+                "the door's remaining ambient drafts".to_string(),
+                remainder,
+                parent.time_horizon_secs,
+            ),
+        ])?;
+        Ok(children.remove(0))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn through_guard(
         &mut self,
         pending: &mut Pending,
         opportunity: &AmbientOpportunity,
+        sub_goal: &GoalSpec,
         step: &Step,
         communication: CommunicationDraft,
         now: Timestamp,
         window: u64,
     ) -> Result<Admission, Error> {
-        let priced = [(step.clone(), Decimal::ONE)];
-        let (mut chain, cleared) = match self.guard.preflight(&self.goal, &priced) {
+        // The drafting tool informs a person; it is a communication, and the
+        // conduct gate's step check judges it as one.
+        let priced = [(step.clone(), DRAFT_COST, Method::Communication)];
+        let (mut chain, cleared) = match self.guard.preflight(sub_goal, &priced) {
             Ok(passed) => passed,
             Err(refusal) => return Ok(Admission::Withheld(refusal.message().to_string())),
         };
@@ -606,6 +718,7 @@ impl AmbientIntake {
             tool_decisions: self.guard.audit()[audit_from..].to_vec(),
             rate_window: window,
             attempt: pending.attempts + 1,
+            sub_goal: Some(sub_goal.clone()),
         };
         let draft_id = draft.draft_id.clone();
         self.adapter.stage(DraftContext {

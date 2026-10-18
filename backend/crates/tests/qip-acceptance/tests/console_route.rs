@@ -782,3 +782,119 @@ fn the_deploy_script_derives_the_api_address_rather_than_restating_it() {
          where the console's upstream comes from is a mystery this test cannot check"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Warm-to-warm calls are IAM-authenticated invocations (ADR 0112)
+// ---------------------------------------------------------------------------
+
+/// The `env:` entries of a RunService document as `(name, value)`, read from
+/// consecutive `- name:` / `value:` lines.
+fn run_service_env(lines: &[String]) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut pending: Option<String> = None;
+    for line in lines {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("- name: ") {
+            pending = Some(name.trim().to_string());
+        } else if let (Some(name), Some(value)) =
+            (pending.as_ref(), trimmed.strip_prefix("value: "))
+        {
+            found.push((
+                name.clone(),
+                value.trim().trim_matches(['\'', '"']).to_string(),
+            ));
+            pending = None;
+        }
+    }
+    found
+}
+
+/// Each Cloud Run service one RunService document dials, as the dialled
+/// service's name: an environment value that is a `run.app` URL of the
+/// form `https://qip-<env>-<service>-<number>.<region>.run.app`.
+fn services_dialled(environment: &str, env: &[(String, String)]) -> Vec<String> {
+    let prefix = format!("https://qip-{environment}-");
+    env.iter()
+        .filter_map(|(_, value)| value.strip_prefix(&prefix))
+        .filter(|rest| rest.contains(".run.app"))
+        .filter_map(|rest| rest.split('-').next())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience()
+ {
+    // R12-GCP-8055 and R12-GCP-8119. The blueprint's "mTLS between warm
+    // services" is reinterpreted by ADR 0112 as IAM-authenticated invocation:
+    // Cloud Run's front end validates a Google identity token whose audience
+    // is the dialled service's URL, for a principal holding
+    // `roles/run.invoker`. Three things must agree and any one drifting fails
+    // quietly as a 403 that reads like a missing grant: the caller's
+    // service account is an invoker of the target, the caller dials the
+    // target's own URL, and the caller is told to mint its token for that
+    // same URL. Until 2026-10-18 the portal's manifest carried the first two
+    // and not the third, so the console sent no identity token at all.
+    let mut callers = 0usize;
+    for environment in environments_with_an_api() {
+        let tfvars = tfvars_of(&environment);
+        let number = tfvar(&tfvars, "project_number")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no project_number"));
+        let region = tfvar(&tfvars, "region")
+            .unwrap_or_else(|| panic!("{environment}'s tfvars name no region"));
+        let directory = format!("{ENVS}/{environment}");
+        let documents = documents_under(&directory);
+        let invokers: Vec<(String, String)> = documents
+            .iter()
+            .filter(|document| document.kind == "IAMPolicyMember")
+            .filter_map(|document| {
+                let member = document
+                    .lines
+                    .iter()
+                    .find_map(|line| line.trim().strip_prefix("member: ").map(str::to_string))?;
+                let target = document
+                    .lines
+                    .iter()
+                    .skip_while(|line| line.trim() != "resourceRef:")
+                    .find_map(|line| line.trim().strip_prefix("name: ").map(str::to_string))?;
+                Some((member, target))
+            })
+            .collect();
+        for document in documents.iter().filter(|d| d.kind == "RunService") {
+            let env = run_service_env(&document.lines);
+            for target in services_dialled(&environment, &env) {
+                callers += 1;
+                let account = document
+                    .lines
+                    .iter()
+                    .skip_while(|line| line.trim() != "serviceAccountRef:")
+                    .find_map(|line| line.trim().strip_prefix("external: ").map(str::to_string))
+                    .unwrap_or_else(|| {
+                        panic!("{} dials {target} with no service account", document.name)
+                    });
+                let url = format!("https://qip-{environment}-{target}-{number}.{region}.run.app");
+                let audiences: Vec<&String> = env
+                    .iter()
+                    .filter(|(name, _)| name == "QIP_API_AUDIENCE")
+                    .map(|(_, value)| value)
+                    .collect();
+                assert_eq!(
+                    audiences,
+                    vec![&url],
+                    "the console must mint its identity token for the audience it dials"
+                );
+                assert!(
+                    invokers.contains(&(
+                        format!("serviceAccount:{account}"),
+                        format!("qip-{environment}-{target}")
+                    )),
+                    "a service dials {target} without being its named invoker in {directory}"
+                );
+            }
+        }
+    }
+    assert!(
+        callers > 0,
+        "no Cloud Run service dials another, so the test asserts nothing"
+    );
+}

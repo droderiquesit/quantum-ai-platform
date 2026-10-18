@@ -57,6 +57,15 @@ pub struct TracePoint {
     pub at: Timestamp,
     pub mid: f64,
     pub spread_bps: f64,
+    /// Best-bid size plus best-ask size at the point, in the instrument's own
+    /// units. `None` where the replay recorded no sizes, which is not zero
+    /// depth: a book read as empty and a book never read are different.
+    #[serde(default)]
+    pub depth: Option<f64>,
+    /// `(bid size - ask size) / (bid size + ask size)` in `[-1, 1]`, positive
+    /// where the bid side is heavier. `None` with `depth`.
+    #[serde(default)]
+    pub imbalance: Option<f64>,
 }
 
 /// An instrument's market as a tick replay rebuilt it.
@@ -177,6 +186,27 @@ pub struct MeasuredReaction {
     /// already priced, and not tradable by the platform.
     pub priced_before_known_bps: Option<f64>,
     pub reacted: bool,
+    /// Depth at the latest point over depth at the baseline: below one the
+    /// book thinned under the news. `None` where either point recorded none.
+    #[serde(default)]
+    pub depth_ratio: Option<f64>,
+    /// Book imbalance at the latest point, signed toward the bid.
+    #[serde(default)]
+    pub flow_imbalance: Option<f64>,
+    /// Standard deviation of the tick-to-tick mid returns after the baseline,
+    /// in basis points: the regime the reaction happened in. `None` below
+    /// three points, where a deviation says nothing.
+    #[serde(default)]
+    pub realised_vol_bps: Option<f64>,
+    /// Gap between the highest and lowest venue mid for this instrument at
+    /// `as_of`, over their mean, in basis points; `None` on one venue.
+    #[serde(default)]
+    pub venue_dislocation_bps: Option<f64>,
+    /// Whether the move at the latest point is larger than the spread that
+    /// crossing it costs: a reaction smaller than its own cost is not
+    /// something the platform could have acted on.
+    #[serde(default)]
+    pub clears_spread: bool,
 }
 
 /// A belief moved by a measured reaction.
@@ -281,6 +311,53 @@ fn direction_of(text: Option<&String>) -> f64 {
 fn last_at_or_before(points: &[&TracePoint], at: Timestamp) -> Option<usize> {
     let end = points.partition_point(|p| p.at <= at);
     end.checked_sub(1)
+}
+
+/// Standard deviation of consecutive mid returns, in basis points.
+fn realised_vol_bps(points: &[&TracePoint]) -> Option<f64> {
+    let returns: Vec<f64> = points
+        .windows(2)
+        .map(|w| (w[1].mid / w[0].mid - 1.0) * 10_000.0)
+        .collect();
+    if returns.len() < 2 {
+        return None;
+    }
+    let n = returns.len() as f64;
+    let mean = returns.iter().sum::<f64>() / n;
+    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    Some(variance.sqrt())
+}
+
+/// The spread of venue mids for `instrument` at `as_of`: each venue's last
+/// knowable mid, highest less lowest over the mean.
+fn venue_dislocation_bps(
+    traces: &[MarketTrace],
+    instrument: &str,
+    as_of: Timestamp,
+) -> Option<f64> {
+    let mut by_venue: BTreeMap<&str, (Timestamp, f64)> = BTreeMap::new();
+    for trace in traces.iter().filter(|t| t.instrument == instrument) {
+        for p in trace
+            .points
+            .iter()
+            .filter(|p| p.at <= as_of && p.mid.is_finite() && p.mid > 0.0)
+        {
+            let held = by_venue
+                .entry(trace.venue.as_str())
+                .or_insert((p.at, p.mid));
+            if p.at >= held.0 {
+                *held = (p.at, p.mid);
+            }
+        }
+    }
+    if by_venue.len() < 2 {
+        return None;
+    }
+    let mids: Vec<f64> = by_venue.values().map(|(_, mid)| *mid).collect();
+    let high = mids.iter().copied().fold(f64::MIN, f64::max);
+    let low = mids.iter().copied().fold(f64::MAX, f64::min);
+    let mean = mids.iter().sum::<f64>() / mids.len() as f64;
+    Some((high - low) / mean * 10_000.0)
 }
 
 /// Fuse the world model and the market traces as of `as_of`. See the module
@@ -440,6 +517,14 @@ pub fn fuse(
                 spread_change_bps: latest.spread_bps - base.spread_bps,
                 priced_before_known_bps,
                 reacted,
+                depth_ratio: match (base.depth, latest.depth) {
+                    (Some(b), Some(l)) if b > 0.0 && b.is_finite() && l.is_finite() => Some(l / b),
+                    _ => None,
+                },
+                flow_imbalance: latest.imbalance,
+                realised_vol_bps: realised_vol_bps(after),
+                venue_dislocation_bps: venue_dislocation_bps(traces, instrument, as_of),
+                clears_spread: move_bps.abs() > latest.spread_bps,
             });
             // Beta-Bernoulli with two pseudo-observations at the prior: one
             // reaction moves a belief, it does not replace it.

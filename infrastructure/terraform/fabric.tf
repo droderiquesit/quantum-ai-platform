@@ -47,6 +47,11 @@ resource "terraform_data" "event_fabric_broker_is_placed" {
       condition     = var.ledgerd != null || (var.execution_nodes_enabled && length(var.execution_nodes) > 0)
       error_message = "event_fabric_broker is set and no client is declared beside it — no qip-ledgerd and no execution node — so its listener would admit nobody by name, which qip-fabricd refuses."
     }
+
+    precondition {
+      condition     = length(var.event_fabric_broker.additional_zones) == length(var.event_fabric_broker.additional_addresses)
+      error_message = "event_fabric_broker names a different number of additional_zones than additional_addresses. Each additional broker is placed in the zone at its position, distinct from `zone` and from each other (FABRIC-008)."
+    }
   }
 }
 
@@ -122,11 +127,22 @@ module "event_fabric_broker" {
   boot_image           = var.event_fabric_broker.boot_image
   journal_disk_size_gb = var.event_fabric_broker.journal_disk_size_gb
 
+  journal_provisioned_iops             = var.event_fabric_broker.journal_provisioned_iops
+  journal_provisioned_throughput_mibps = var.event_fabric_broker.journal_provisioned_throughput_mibps
+
   service_account_email = google_service_account.fabricd[0].email
 
   dns_zone_name             = var.event_fabric_broker.dns_domain
   managed_zone              = google_dns_managed_zone.fabric[0].name
   broker_internal_addresses = concat([var.event_fabric_broker.internal_address], var.event_fabric_broker.additional_addresses)
+  # FABRIC-008: the first broker in `zone`, each additional one in the zone
+  # listed at its position. A length mismatch is refused by the placement
+  # check above; the empty map then leaves every broker on `zone`, which the
+  # module refuses for more than one.
+  broker_zones = length(var.event_fabric_broker.additional_zones) == length(var.event_fabric_broker.additional_addresses) ? zipmap(
+    concat([var.event_fabric_broker.internal_address], var.event_fabric_broker.additional_addresses),
+    concat([var.event_fabric_broker.zone], var.event_fabric_broker.additional_zones),
+  ) : {}
 
   # The committed stream catalogue (ADR 0100 §5, §7) — the single source of
   # seal age and peak byte rate — rather than a second copy in the tfvars.

@@ -501,13 +501,6 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   it cannot lift. Setting it is the reviewed step that turns a deployment's
 #   reference ledger from replays-only to a vendor's own bytes.
 #
-# deepbrain_discover_every = "<a whole number of cycles, or explicitly "0">"
-#   would turn on the source-discovery pass on its own cadence
-#   (QIP_DEEPBRAIN_DISCOVER_EVERY). Left null, the desk keeps its own default
-#   of zero — no pass — which matches the fact that `source_candidates_file`
-#   above is also null: a cadence with nothing to assess would run and decide
-#   about nothing, so the pair is turned on together or not at all.
-#
 # region_dark_after = "<a whole number of seconds, e.g. 300>"
 #   would have the API derive a region dark once every cell in it has been
 #   silent that long (QIP_REGION_DARK_AFTER, ADR 0079): nothing new is
@@ -782,3 +775,14 @@ dns_record_ttl_seconds = 300
 # Stage and prod leave both null, which is the binary's own default of off.
 deepbrain_quantum_provider = "simulated"
 deepbrain_quantum_inspired = "on"
+
+# deepbrain_discover_every stays null in dev, as in test, stage and prod.
+# Turned on here alone on 2026-10-18 (53340778) on the argument that a pass
+# with an empty candidate catalogue names targets and makes no outbound call;
+# two minutes later `blueprint_arch`'s
+# dev_declares_no_more_data_sources_than_any_later_environment (37644866,
+# R12-GCP-10144) pinned dev to declaring no data-source key a later
+# environment lacks, and counts this one. Each landed green alone; together
+# they turned main's ci red on ec1c81ce. The guard is the restrictive half
+# and stays; turning the cadence on is a reviewed change that either sets it
+# in the later environments too or narrows the guard with an argument.

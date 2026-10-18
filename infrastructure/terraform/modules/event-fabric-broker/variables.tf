@@ -56,9 +56,17 @@ variable "subnet_id" {
 
 variable "machine_type" {
   type        = string
-  description = "Machine type for event fabric brokers"
-  default     = "c3-standard-4"
+  description = "Machine type for event fabric brokers, a C4 or C4D shape (FABRIC-8096)."
+  default     = "c4-standard-4"
   nullable    = false
+
+  # FABRIC-084/8096 names the C4/C4D class for the broker: its Hyperdisk
+  # throughput is what the journal's provisioned figures assume, and the
+  # C3 shape this defaulted to is not the class the requirement sizes.
+  validation {
+    condition     = can(regex("^c4d?-(standard|highcpu|highmem)-[0-9]+(-lssd)?$", var.machine_type))
+    error_message = "machine_type must be a C4 or C4D shape, such as c4-standard-4 or c4d-highmem-8 (FABRIC-8096)."
+  }
 }
 
 variable "boot_image" {
@@ -77,6 +85,14 @@ variable "disk_type" {
   description = "Disk type for broker journal (P2 class Hyperdisk, FABRIC-085)"
   default     = "hyperdisk-balanced"
   nullable    = false
+
+  # The journal disk's IOPS and throughput are provisioned (FABRIC-8097), and
+  # only a Hyperdisk accepts them: a persistent-disk type here would be
+  # refused at apply, after the plan had been reviewed as sound.
+  validation {
+    condition     = startswith(var.disk_type, "hyperdisk-")
+    error_message = "disk_type must be a hyperdisk-* type: the journal's IOPS and throughput are provisioned, which only a Hyperdisk accepts."
+  }
 }
 
 variable "disk_size_gb" {
@@ -178,6 +194,18 @@ variable "zone" {
   }
 }
 
+variable "broker_zones" {
+  type        = map(string)
+  description = "The zone of each broker, keyed by its internal address (FABRIC-008). An address not named takes var.zone. Two or three brokers must be placed in distinct zones; the machines refuse two in one zone."
+  default     = {}
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for zone in values(var.broker_zones) : can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", zone))])
+    error_message = "Every broker_zones value is a Compute Engine zone such as us-east4-b."
+  }
+}
+
 variable "network_tags" {
   type        = list(string)
   description = "Network tags the broker carries, first among them the control-fabric trust zone's tag, so the zone's firewall rules apply to it."
@@ -194,6 +222,30 @@ variable "journal_disk_size_gb" {
   validation {
     condition     = var.journal_disk_size_gb >= 10
     error_message = "journal_disk_size_gb must be at least 10."
+  }
+}
+
+variable "journal_provisioned_iops" {
+  type        = number
+  description = "IOPS provisioned on the journal disk. Hyperdisk Balanced admits 3000 to 160000."
+  default     = 3000
+  nullable    = false
+
+  validation {
+    condition     = var.journal_provisioned_iops >= 3000 && var.journal_provisioned_iops <= 160000 && floor(var.journal_provisioned_iops) == var.journal_provisioned_iops
+    error_message = "journal_provisioned_iops is a whole number from 3000 to 160000, the Hyperdisk Balanced range."
+  }
+}
+
+variable "journal_provisioned_throughput_mibps" {
+  type        = number
+  description = "Throughput provisioned on the journal disk, in MiB/s. Hyperdisk Balanced admits 140 to 2400."
+  default     = 140
+  nullable    = false
+
+  validation {
+    condition     = var.journal_provisioned_throughput_mibps >= 140 && var.journal_provisioned_throughput_mibps <= 2400 && floor(var.journal_provisioned_throughput_mibps) == var.journal_provisioned_throughput_mibps
+    error_message = "journal_provisioned_throughput_mibps is a whole number from 140 to 2400, the Hyperdisk Balanced range in MiB/s."
   }
 }
 

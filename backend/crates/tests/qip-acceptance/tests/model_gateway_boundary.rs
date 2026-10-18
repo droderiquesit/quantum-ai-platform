@@ -88,14 +88,16 @@ const DECLARED_PROVIDER_FILES: [(&str, &str); 3] = [
 /// The production files permitted to implement the language-model port.
 const DECLARED_PORT_IMPLEMENTATIONS: [&str; 2] = [
     // The port itself, its deterministic stand-in, the unavailable remote
-    // placeholder and the fallback chain — none performs I/O.
+    // placeholder, the fallback chain and the reply-counting decorator the
+    // deep brain's tally wraps a model in — none performs I/O.
     "backend/crates/libs/qip-ai/src/language.rs",
     "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs",
 ];
 
 /// The production files permitted to invoke a model.
 const DECLARED_INVOCATIONS: [&str; 2] = [
-    // `complete_structured`'s default body and the fallback chain delegating.
+    // `complete_structured`'s default body, the fallback chain delegating,
+    // and the reply-counting decorator passing each call through.
     "backend/crates/libs/qip-ai/src/language.rs",
     // `AgentRuntime::complete`: capability check, then budget, then the call.
     "backend/crates/libs/qip-agents/src/runtime.rs",
@@ -329,4 +331,85 @@ fn the_organisation_is_convened_only_after_the_cost_router_places_the_decision()
         "`reason_about_the_queue` convenes the organisation before the cost router has placed the \
          decision, so a model can be reached without the router's rationale on record"
     );
+}
+
+/// Words that tie a type or a wire name to one cloud vendor's model or data
+/// API. Whole words, case folded.
+const VENDOR_API_WORDS: [&str; 7] = [
+    "vertex",
+    "aiplatform",
+    "googleapis",
+    "gemini",
+    "google",
+    "bigquery",
+    "spanner",
+];
+
+fn vendor_api_words_in(text: &str) -> Vec<&'static str> {
+    // CamelCase identifiers are split first: `VertexRequest` names the
+    // vendor and a whole-word match on the folded text would miss it.
+    let mut spaced = String::with_capacity(text.len() * 2);
+    let mut previous = ' ';
+    for c in text.chars() {
+        if c.is_ascii_uppercase() && previous.is_ascii_lowercase() {
+            spaced.push(' ');
+        }
+        spaced.push(c);
+        previous = c;
+    }
+    let folded = spaced.to_ascii_lowercase();
+    let words: BTreeSet<&str> = folded.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    VENDOR_API_WORDS
+        .into_iter()
+        .filter(|word| words.contains(word))
+        .collect()
+}
+
+#[test]
+fn the_contract_layer_names_no_cloud_vendor_model_or_data_api() {
+    // R12-MODEL-10043: product contracts must not depend on Google branding
+    // or API shape. `qip-contracts` is the shared vocabulary every crate
+    // links, so a `VertexRequest` type or an `aiplatform` field there would
+    // make every consumer's wire format a vendor's, and swapping the vendor
+    // a rewrite of the contract rather than of one adapter. The endpoint
+    // marker test above pins the adapter; this pins the layer beneath it.
+    let root = qip_acceptance::repository_root();
+    let mut scanned = 0usize;
+    let mut offenders: Vec<(String, Vec<&'static str>)> = Vec::new();
+    let mut files =
+        qip_acceptance::files_with_extension("backend/crates/libs/qip-contracts/src", "rs");
+    files.push(root.join("backend/crates/libs/qip-contracts/Cargo.toml"));
+    for file in files {
+        scanned += 1;
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
+        let production = if file.extension().is_some_and(|e| e == "rs") {
+            qip_acceptance::production_text(&text)
+        } else {
+            text
+        };
+        let found = vendor_api_words_in(&production);
+        if !found.is_empty() {
+            offenders.push((
+                file.strip_prefix(&root)
+                    .unwrap_or(&file)
+                    .to_string_lossy()
+                    .into_owned(),
+                found,
+            ));
+        }
+    }
+    assert!(scanned > 20, "only {scanned} files were scanned");
+    assert_eq!(
+        offenders,
+        Vec::<(String, Vec<&'static str>)>::new(),
+        "the contract layer names a cloud vendor's model or data API"
+    );
+
+    // The scan sees each word as a word, and a near miss is not one.
+    assert_eq!(
+        vendor_api_words_in("pub struct VertexRequest { aiplatform: String }"),
+        vec!["vertex", "aiplatform"]
+    );
+    assert!(vendor_api_words_in("let vertexes = 1; // not a word match").is_empty());
 }

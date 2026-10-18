@@ -337,14 +337,18 @@ pub fn default_slos() -> Vec<Slo> {
         // archive would lose it. The ceiling of two is this declaration's
         // own: one segment sealed since the last pass is the archiver
         // keeping up, and a third means it is falling behind sealing.
-        Slo::backlog_at_most(
-            "fabric-archive-backlog",
-            "fabric",
-            2.0,
-            0.99,
-            SloWindow::Hour,
-        ),
+        fabric_archive_backlog(),
     ]
+}
+
+/// The name of the Fabric archive-backlog objective.
+pub const FABRIC_ARCHIVE_BACKLOG: &str = "fabric-archive-backlog";
+
+/// The Fabric archive-backlog objective, as [`default_slos`] declares it and
+/// as `qip-fabricd` evaluates it on every archiver pass. One constructor, so
+/// the declaration and the evaluation cannot carry two different ceilings.
+pub fn fabric_archive_backlog() -> Slo {
+    Slo::backlog_at_most(FABRIC_ARCHIVE_BACKLOG, "fabric", 2.0, 0.99, SloWindow::Hour)
 }
 
 /// The names of §49.1 objectives that **cannot** be measured without a

@@ -1,16 +1,15 @@
 [
   {
     "id": "R12-MODEL-4001",
-    "status": "PARTIAL",
-    "current": "lane_placement acceptance suite computes qip-edge-node's normal-dependency closure and requires it to equal the register's lane-0 set and to exclude qip-simulation-engine/qip-training/qip-twin/qip-world-model; qip-edge depends only on in-tree edge/lib crates. Inline models are DistilledModel with a validated cost bound.",
+    "status": "COMPLETE",
+    "current": "Lane 0 has a bounded worst-case cost in a pass, not only in DistilledModel::cost: the compiler refuses a plan over CompilerLimits::default().max_nodes (512), and performance.rs::an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget deploys the largest chain-tree DistilledModel plan it admits, with a live feature input and the model promoted through the cell's policy, into a Cell and times whole Cell::work passes against the same 5000 us ceiling the baseline pass uses (about 490 us per pass in the debug profile on the measuring machine). It also pins the node budget to the 512 the time was measured at. lane_placement.rs still holds the lane-0 closure structurally.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150 lane-0 set == reflex-node closure",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:154-175 slow crates absent from qip-edge-node",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178-202 no fast-lane crate depends on a slower one",
-      "backend/crates/edge/qip-edge/Cargo.toml [dependencies] in-tree edge/lib crates only",
-      "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost bound"
+      "backend/crates/tests/qip-acceptance/tests/performance.rs an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget",
+      "backend/crates/edge/qip-strategy/src/compile.rs CompilerLimits::default",
+      "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150"
     ],
-    "gap": "Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0. None for the constraint as written; nothing is deployed (execution_nodes = {}), so it is proven structurally only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -18,10 +17,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test lane_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test performance -- an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget",
     "work_item": "",
     "size": "S",
-    "notes": "Register is read from docs/architecture/lane-placement.md but the closure is computed from Cargo manifests, so the check is code-backed. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0."
+    "notes": "Re-graded 2026-10-18 (lane L08). The first draft of this test was vacuous and the register's closure would have been too: with constant model inputs the compiler folds the model into its answer, so the cell timed a plan of three nodes; the plan cost is now asserted to be within eight nodes of the budget. Mutations, each restored byte for byte: max_nodes raised to 20000 failed the pin at 'the compiler admits 20000 nodes; the pass budget below was measured at 512'; an 8 ms sleep in DistilledModel::evaluate failed the 5000 us ceiling at 8985 us per pass. A chain tree's evaluation is a cheap index walk (raising the budget forty-fold added under 100 us per pass), so the wall-clock ceiling alone would not catch a larger budget; the pin does. The ceiling is wall clock on shared hardware, loose by design; nothing is deployed."
   },
   {
     "id": "R12-MODEL-4002",
@@ -231,7 +230,7 @@
       "backend/crates/libs/qip-contracts/src/ambient.rs:76-160 ambient signal types",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Distilled ambient models in fast lanes with test.",
+    "gap": "Distilled ambient models in fast lanes with test. The NOW stage's expected-state estimator is a local-level filter over bounded variables, and qip_training::distil takes a fitted teacher with training rows; no teacher exists for it, so distilling it would fit a student to the filter's own outputs and call that a distillate. A cell plan carrying an inline ambient model also needs a promoted model pack release (R12-CONTRACT-7064) to be named to a cell.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -242,7 +241,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4012",
@@ -288,12 +287,15 @@
   {
     "id": "R12-MODEL-4014",
     "status": "PARTIAL",
-    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint (cost, authority, budget, risk envelope) holds and always offers do-nothing; select is the only ranker. It is reached only from qip-cli; no simulator or counterfactual-branch evaluation gates authority.",
+    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:338) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:454). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs header (AGENCY-001/005/016/042/043/047)",
+      "backend/crates/services/qip-agency/src/engine.rs:338",
+      "backend/crates/services/qip-agency/src/engine.rs:454",
+      "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps",
+      "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Simulation/counterfactual evaluation before authority; integration beyond the CLI.",
+    "gap": "Integration beyond the CLI: no deployed binary acts under authority (qip-deepbrain's ambient door only drafts and never runs engine::execute), and the branches come from the request's declared structural models, not qip-twin futures.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -301,10 +303,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L10): the simulation-before-authority half is met; kept PARTIAL on integration, as the closure itself said it would stay. Mutation fired: reading only the first branch in counterfactually_supported lets the contested pass Execute."
   },
   {
     "id": "R12-MODEL-4015",
@@ -314,7 +316,7 @@
       "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 assemble",
       "backend/crates/apps/qip-deepbrain/src/main.rs:608-640 learning rounds through the campaign"
     ],
-    "gap": "Retained internal episodes (episodic memory) are not a campaign input; external references are market streams only.",
+    "gap": "Retained internal episodes are not a campaign input, and naming one in the manifest alone would be false: campaign::assemble builds the window from the subject's bars (or the platform's fallback bars) and LearningDesk::learn fits only bars, so an episode set listed in the manifest would describe data the fit never read. Closing this needs the learning dataset to admit episode-derived rows (learning.rs, lane L20's file) and then an episode-set DataReference hashed into the FetchCampaign manifest; external references remain market streams only.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -325,7 +327,7 @@
     "verification": "cargo test -p qip-deepbrain campaign",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the triage closure proposed hashing an OutcomeCapture export into the manifest, which would name an input the window does not contain."
   },
   {
     "id": "R12-MODEL-4016",
@@ -375,13 +377,12 @@
   {
     "id": "R12-QUANT-4018",
     "status": "PARTIAL",
-    "current": "ModelProducer::QuantumInformed is admitted only with its calibrated baseline; QuantumGateway output as a candidate is refused. No quantum-assisted training exists and eligibility by workload family is not checked at this seam.",
+    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family (qip_quantum::foundry::FamilyKind variant) that Foundry::platform() holds as Registered; a NotBuilt, unnamed or unknown family is refused with the foundry reason before anything is journalled.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:78-88 ModelProducer",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:630-650 refusal arms",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:713 a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built"
     ],
-    "gap": "No quantum-assisted variant is ever produced; no eligible-workload check.",
+    "gap": "The seam refuses ineligible workloads, but no production caller produces a QuantumInformed candidate (qip-deepbrain promotes only ModelProducer::TrainingPipeline through promote_model), so the check runs only when a test or a future desk names the producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -389,10 +390,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate."
   },
   {
     "id": "R12-MODEL-4019",
@@ -466,7 +467,7 @@
       "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
       "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
     ],
-    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record.",
+    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record. The only validation before promotion is the deep brain held-out rmse comparison; score_filled scores fills of cycles that already ran, with no per-candidate shadow run, so no PaperGate-style trial record exists to require. Needs a shadow-scoring stage that runs a candidate beside the incumbent over simulated or paper fills and journals the result before the kernel can refuse a promotion lacking it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -477,7 +478,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; requiring a trial record nothing produces would stop every promotion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4023",
@@ -2195,14 +2196,16 @@
   },
   {
     "id": "R12-RISK-4100",
-    "status": "PARTIAL",
-    "current": "Edge refuses on silent feed and stale book; capability staleness narrows sizing; simulated BadFeed condition. No poisoning/manipulation detection in the live path.",
+    "status": "COMPLETE",
+    "current": "Edge refuses on silent feed and stale book; capability staleness narrows sizing; and an intent whose chosen venue serves a mid further than CellConfig::cross_source_tolerance (default 5%, validated in (0,1) at Cell::new) from the mid another fresh, open, unwithheld venue serves for the same instrument is refused under GATE_CROSS_SOURCE, naming both sources, so the cell trades on neither until they agree.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:231 GATE_CROSS_SOURCE and its reasoning; :4922 route_for refuses through Cell::refuse; :4955 cross_source_disagreement",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1252 two_venues_serving_one_instrument_at_mids_further_apart_than_the_tolerance_are_traded_on_by_neither",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1326 a_cross_source_tolerance_that_could_never_judge_two_sources_stops_assembly",
       "backend/crates/edge/qip-edge/src/cell.rs:360 GATE_SILENT_FEED",
-      "backend/crates/edge/qip-edge/src/cell.rs:4686 stale_book",
       "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier"
     ],
-    "gap": "Poisoning/manipulation detection.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2210,10 +2213,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. Runs in Cell::work's route_for on every cell (the tolerance is a CellConfig default), so qip-edge-node's simulated passes carry it. Limits stated in the gate's doc: an instrument with one source has nothing to compare and is not refused; arbitrage cycles are priced from the disagreement and are not gated here. Mutations: a comparison that never exceeds the tolerance fails the gate test at the no-order assertion; removing the validation admits a zero tolerance and fails the assembly test."
   },
   {
     "id": "R12-RISK-4101",
@@ -2324,38 +2327,42 @@
   },
   {
     "id": "R12-RISK-4106",
-    "status": "PARTIAL",
-    "current": "qip_risk::hedge_search searches singles and pairs for the least-cost plan keeping every world above the survival floor within the hedge capacity (backend/crates/libs/qip-risk/src/hedge_search.rs; test at :951). The kernel calls it each DECIDE with self.config.hedge_candidates (platform.rs:16620), which defaults to empty (backend/crates/runtime/qip-kernel/src/config.rs:565) and no composition root sets (no with_hedge_candidates call in apps/*), so in every binary the search runs over no candidates.",
+    "status": "COMPLETE",
+    "current": "qip_risk::hedge_search searches singles and pairs for the least-cost plan keeping every world above the survival floor within the hedge capacity. Every central composition root now declares candidates from the catalogue it loaded: qip-api, qip-fastbrain and qip-deepbrain call PlatformConfig::with_hedge_candidates(qip_kernel::config::paper_hedge_candidates(&catalogue.universe)), one linear CorrelatedAsset per catalogue common stock with the record's venue, spread and daily volume and a declared one-for-one equity loading. The search also prices the adversarial world from its own shocks (hedge.rs::plan), without which every candidate was DoesNotProtect there and no book whose adversarial sequence breached could be planned a hedge. A cycle over data/datasets/universe.json with the shipped survival policy plans and journals a hedge from that catalogue.",
     "evidence": [
-      "libs/qip-risk/src/hedge_search.rs::tests::of_several_instruments_that_protect_the_crash_the_search_returns_the_cheapest",
-      "libs/qip-risk/src/hedge_search.rs::tests::a_plan_never_consumes_more_than_the_hedge_capacity_withheld",
-      "backend/crates/runtime/qip-kernel/src/config.rs:565",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16620"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/apps/qip-api/src/main.rs (with_hedge_candidates in the PlatformConfig assembly)",
+      "backend/crates/apps/qip-fastbrain/src/main.rs (with_hedge_candidates before Platform::new)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs (with_hedge_candidates after load_universe)",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::plan (adversarial shocks folded into the library)",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "A composition root that declares hedge candidates (catalogue instruments with Greeks, carry, depth) so the search has something to choose among.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. Lane L07, 2026-10-18: PARTIAL->COMPLETE. Mutations: EQUITY_FACTOR misspelt 'equities' -> no plan ('no hedge was planned'); adversarial fold disabled -> no plan; both restored and passing. Every candidate is a single listed equity because the committed catalogue holds only common stock (R12-RISK-4107 keeps the per-class gap); HLCX and RSRC state a daily volume of 0 and are refused by the search as Invalid each cycle, which is the catalogue's statement and not defaulted."
   },
   {
     "id": "R12-RISK-4107",
     "status": "PARTIAL",
-    "current": "InstrumentClass covers Option, Future, Fx, Rate, Commodity, Volatility, CorrelatedAsset, EventContract and CashCollateral (backend/crates/libs/qip-risk/src/hedge_search.rs:59-71); an option is sized through its multiplier and delta and a linear class with convexity is refused (tests at :1057, :1078); multiplier/lot come from the catalogue (hedge.rs:105-120). No binary declares any candidate (config.rs:565).",
+    "current": "InstrumentClass covers Option, Future, Fx, Rate, Commodity, Volatility, CorrelatedAsset, EventContract and CashCollateral (backend/crates/libs/qip-risk/src/hedge_search.rs:59-71); an option is sized through its multiplier and delta and a linear class with convexity is refused; multiplier/lot come from the catalogue. Since 2026-10-18 every central root declares candidates (config.rs::paper_hedge_candidates), but only CorrelatedAsset ones: data/datasets/universe.json lists six common stocks and no option, future, FX, rate, commodity, volatility, event-contract or cash record.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/hedge_search.rs:59-71",
       "libs/qip-risk/src/hedge_search.rs::tests::every_class_can_be_named_and_a_linear_class_with_convexity_is_refused",
       "libs/qip-risk/src/hedge_search.rs::tests::an_option_is_sized_through_its_multiplier_and_delta",
-      "backend/crates/runtime/qip-kernel/src/config.rs:565"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::every_common_stock_in_the_committed_catalogue_is_a_declared_hedge_candidate"
     ],
-    "gap": "Candidates of each class declared in a composition root against catalogue instruments.",
+    "gap": "Only CorrelatedAsset is declared in a running root, because the committed catalogue holds only common stock. Closing needs catalogue records (with a printed price on the simulated exchange) for the other eight classes and stated Greeks/loadings for each; declaring a common stock as an option or future would be a guessed sensitivity, which paper_hedge_candidates refuses to do.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2366,7 +2373,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap corrected (the triage's closure, one candidate per class against the present catalogue, would mislabel equities)."
   },
   {
     "id": "R12-RISK-4108",
@@ -2392,26 +2399,25 @@
   },
   {
     "id": "R12-RISK-4109",
-    "status": "PARTIAL",
-    "current": "Every plan records cost, edge given up, basis risk, convexity, liquidity decay, counterparty risk and unwind feasibility (backend/crates/libs/qip-risk/src/hedge_search.rs:403-411) and a candidate that cannot unwind inside MAX_UNWIND_DAYS is refused rather than shrunk (test at :982; hedge.rs:66-70). Reached each DECIDE, but over an empty candidate list in every binary (config.rs:565).",
+    "status": "COMPLETE",
+    "current": "Every plan records cost, edge given up, basis risk, convexity, liquidity decay, counterparty risk and unwind feasibility (qip-risk hedge_search.rs HedgeMeasures), and the chosen plan's measures are now journaled on kernel/hedge-brain's HedgePlanned record (hedge.rs HedgePlanned::measures), because the §24.9 HedgePlan contract carries only cost and liquidity. With candidates declared in every central root (R12-RISK-4106) the measures are computed on a real plan in a cycle over the committed catalogue.",
     "evidence": [
-      "backend/crates/libs/qip-risk/src/hedge_search.rs:403-411",
-      "libs/qip-risk/src/hedge_search.rs::tests::a_hedge_that_cannot_be_unwound_inside_the_horizon_is_refused_not_shrunk",
-      "runtime/qip-kernel/src/hedge.rs::tests::a_book_failing_a_library_world_is_planned_a_validated_hedge_sized_by_that_world",
-      "backend/crates/runtime/qip-kernel/src/config.rs:565"
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::HedgePlanned::measures",
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue"
     ],
-    "gap": "Declared candidates in a composition root so the measures are computed on a real plan.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. Lane L07, 2026-10-18: PARTIAL->COMPLETE. The test asserts all six on the journaled record (cost positive, basis risk positive, convexity measured at 0 for linear legs, liquidity decay positive, counterparty 0 for exchange-cleared legs, unwind feasible). Mutation: HedgePlanned::of journals measures as None -> 'a chosen plan journals its measures' fails; restored and passing."
   },
   {
     "id": "R12-RISK-4110",

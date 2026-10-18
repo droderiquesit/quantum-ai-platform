@@ -32,7 +32,7 @@
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
     ],
-    "gap": "Tick desk off by default; no test that a decision consumes the fused record and changes when either input is removed.",
+    "gap": "Tick desk off by default; no test that a decision consumes the fused record and changes when either input is removed. REASON (reason_about_the_queue in platform.rs) forms its hypothesis through the cost router and the agent panel and holds no seam for a prior from outside the opportunity; a fused posterior is a belief about an instrument reacting, so injecting it as the panel prior is a decision-path design choice (which confidence it moves, and under which gate) that needs an ADR, not a call-site change.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -45,7 +45,7 @@
     "verification": "an integration test in qip-kernel asserting a decision reads a fused record",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; wiring FusedState::posteriors into REASON would change what a decision rests on without a recorded design. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-WORLD-1003",
@@ -373,18 +373,17 @@
   },
   {
     "id": "R12-GOV-1017",
-    "status": "PARTIAL",
-    "current": "AutonomyLevel::deployable refuses live ceilings at start-up in all three central composition roots; Terraform refuses them at plan; acceptance tests scan every binary that reads the ceiling.",
+    "status": "COMPLETE",
+    "current": "Discovery, research, training, promotion, deployment and allocation each run inside a bound that refuses, and one suite drives four of them side by side: the research budget ledger refuses the call past its budget, a candidate with no evidence is not promoted and a capital-holding rung needs a dual approval, a verified capital envelope refuses an order that does not fit whole, a foreign cell, an expired grant and an unverified signature, and no live autonomy ceiling is deployable. bounded_authority.rs holds all four.",
     "evidence": [
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:120 deployable refuses live levels",
-      "backend/crates/apps/qip-api/src/main.rs:97",
-      "backend/crates/apps/qip-fastbrain/src/main.rs:116",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:171",
-      "infrastructure/terraform/variables.tf:102 live levels refused at plan",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37 live ceiling stops deployment",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:148 every ceiling read routes through the refusal"
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs research_is_bounded_by_the_budget_ledger",
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs promotion_needs_evidence_and_a_capital_holding_rung_needs_two_approvers",
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs allocation_is_bounded_by_a_verified_capital_envelope",
+      "backend/crates/tests/qip-acceptance/tests/bounded_authority.rs deployment_is_bounded_by_the_paper_ceiling",
+      "backend/crates/runtime/qip-kernel/tests/central.rs a_promotion_whose_bucket_is_over_its_pool_is_refused_once_the_learn_stage_has_armed_the_gate",
+      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs"
     ],
-    "gap": "Cite or add per-activity authority bounds (research budget, promotion rule, allocation envelope) with tests.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -392,10 +391,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test paper_boundary",
+    "verification": "cd backend && cargo test -p qip-acceptance --test bounded_authority",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Evidence covers only the live-autonomy ceiling; no cited evidence that discovery, research, training, promotion, deployment and allocation each run inside a bounded authority."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations, each restored byte for byte: the budget check in BudgetLedger::charge_tool_call replaced by false, the approval requirement in AuthorisedPromotion::advance replaced by false, the live check in AutonomyLevel::deployable replaced by false, and the expiry and venue checks in CapitalEnvelope::admit replaced by false each failed their test. Training and discovery have no bound of their own named here beyond the research budget they draw on; the learn-stage horizon pool gate (qip-kernel central.rs) is cited and not re-driven because it needs a whole platform cycle. The suite proves each bound refuses, not that no unbounded path exists."
   },
   {
     "id": "R12-MESH-1018",
@@ -493,11 +492,12 @@
     "current": "qip_kernel::fusion::fuse joins knowledge-graph events (occurred and recorded by as_of) with knowable tick traces into FusedState (posteriors, mismatches, opportunity_map); tests/fusion.rs covers it; called by qip-deepbrain tick_desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set (no committed deployment sets it).",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:892 nothing visible before it became known",
-      "backend/crates/runtime/qip-kernel/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_is_read"
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_is_read",
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::over_random_episodes_fusing_everything_equals_fusing_only_what_was_knowable"
     ],
-    "gap": "Example test, not a property test; join of tick embeddings absent; desk off by default.",
+    "gap": "Tick embeddings are not joined (fusion reads mid and spread only); the desk that calls fuse is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -505,10 +505,10 @@
       "R12-TICK-1002"
     ],
     "blocked_by": "",
-    "verification": "new property test in qip-training or qip-kernel",
+    "verification": "cargo test -p qip-kernel --test fusion",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: the point-in-time clause is now a seeded 200-episode property test; two mutations (trace-point as_of filter dropped; events_at widened to Timestamp::MAX) each failed it with the case number. Kept PARTIAL: the property holds in fuse, but fuse runs only behind the off-by-default desk."
   },
   {
     "id": "R12-WORLD-1023",
@@ -864,7 +864,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1038",
@@ -889,7 +889,7 @@
     "verification": "cargo test -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-DATA-1039",
@@ -927,7 +927,7 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/tests/acquisition_manifest.rs:226 a_watcher_classifies_new_unchanged_and_changed_extents_and_survives_a_restart"
     ],
-    "gap": "SourceWatcher has no caller outside tests; no binary runs a watcher loop.",
+    "gap": "SourceWatcher has no caller outside tests. The seam the triage proposed for it, the deep brain's re-fetch pass (EvolutionEngine::maybe_refetch), is itself off by default: connectors::refetch_every returns 0 when QIP_DEEPBRAIN_REFETCH_EVERY is unset (connectors.rs:212-214), no committed deployment sets it, and the pass also needs a catalogued connector. Wiring the watcher there would not make it run on a default path; it needs an owner to set the re-fetch cadence and a connector in a committed deployment (owner switch), or a watcher seam that runs by default.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -940,7 +940,7 @@
     "verification": "new watcher test in qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Watcher built and tested; no production caller. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Watcher built and tested; no production caller. Unchanged. Lane L20 2026-10-18: gap corrected, no code changed; the triage closure itself made the row an owner switch if the re-fetch default was zero, and it is (connectors.rs:212 refetch_every, None => Ok(0))."
   },
   {
     "id": "R12-DATA-1041",
@@ -961,7 +961,7 @@
     "verification": "inspection + size metric",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-GOV-1042",
@@ -1251,16 +1251,14 @@
   },
   {
     "id": "R12-AMBIENT-1055",
-    "status": "PARTIAL",
-    "current": "Ambient producers now run by default in deepbrain (research sweep signals); their only path onward is AmbientIntake::submit(Promoted) built by promote(), then the guard, then an outbox draft. Advisory payload is private; order-path crates name no ambient type.",
+    "status": "COMPLETE",
+    "current": "An ambient output reaches nothing that acts except through promote(), and the fence is structural: the payload of Advisory is private, promote() is the one door, and the one consumer of the promoted value is qip-agency's AmbientIntake::submit. architecture.rs::no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act requires every order-path crate (execution engine, brokers, risk engine, portfolio engine, capital, kernel, the edge crates and the edge node) to be unable to reach qip-agency through the compiled dependency graph, and requires the deep brain to reach it so the absence means something. The source-text scan in ambient_attention.rs stays for the type names, which a graph over a shared crate cannot see.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:476 Advisory",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:526 promote",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:6 AMBIENT-016 fence",
-      "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake::submit",
-      "backend/crates/libs/qip-contracts/src/ambient.rs::promote"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote",
+      "backend/crates/libs/qip-contracts/src/ambient.rs promote"
     ],
-    "gap": "Acceptance fence is partly a source-text scan; deterministic-controls clause is vacuous (no order path from drafts).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1270,10 +1268,10 @@
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture --test ambient_attention",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). The graph test sits in architecture.rs beside the helpers it uses rather than in ambient_attention.rs. Mutation: qip-agency added to qip-edge's manifest failed the test naming qip-edge and the reachable set; manifest and lockfile restored byte for byte. The text scan was kept, not replaced: qip-contracts is linked by every crate, so a crate naming the ambient module is invisible to the graph, and what makes naming it harmless is that the payload is private and only an intake in qip-agency consumes a promoted value."
   },
   {
     "id": "R12-AGENCY-1056",
@@ -1398,35 +1396,30 @@
   },
   {
     "id": "R12-AGENCY-1060",
-    "status": "PARTIAL",
-    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). check_market_conduct (conduct_brain.rs:395-411) evaluates the policy's conduct rules as whole-word phrase matches on the draft text; four rules are mandatory (ConductGate::new, conduct_brain.rs:491-500), and unknown rule names are refused (:191-210).",
+    "status": "COMPLETE",
+    "current": "Market conduct is now judged on the step as well as the words. ActionGuard::preflight (guard.rs) builds a StepConduct per priced step — the tool, the Method its affordance edge declares (engine.rs:360 carries edge.method into the preflight; the ambient door declares Method::Communication, ambient_intake.rs) and the draft it would release — and refuses through ConductGate::step_failure (guard.rs:428) whatever conduct_brain::check_step_conduct (conduct_brain.rs:474) refuses: a deceptive or manipulative method behind a clean draft (refused here as well as at plan time, because the ambient door reaches the guard without a plan) and one message released more than MAX_RELEASES_PER_MESSAGE (3) times in one pass, the flooding shape no phrase list sees. Both production compositions run it before any adapter call: qip-cli agency (operator tool) and qip-deepbrain's ambient door (main.rs:884). The seven per-draft checks and the vocabulary rules are unchanged.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/main.rs:73",
-      "backend/crates/apps/qip-cli/src/agency.rs:227",
-      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
-      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
-      "backend/crates/services/qip-agency/src/engine.rs:316-349",
-      "backend/crates/services/qip-agency/src/guard.rs:264-336",
-      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:395-411",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:166-240",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_rules_given_decide_the_market_conduct_verdict",
-      "backend/crates/services/qip-agency/tests/agency.rs::a_whole_word_conduct_rule_does_not_withhold_a_quote_whose_words_merely_contain_one"
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:474",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:637",
+      "backend/crates/services/qip-agency/src/guard.rs:428",
+      "backend/crates/services/qip-agency/src/engine.rs:360",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:884",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_pass_releasing_one_message_above_the_repetition_rate_is_withheld_before_any_adapter_call",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_step_check_refuses_a_deceptive_method_behind_clean_words_and_a_flooded_message",
+      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call"
     ],
-    "gap": "Evaluate the step itself (tool, exposure, sequence) against conduct rules, not only draft vocabulary.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test conduct_brain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency a_pass_releasing_one_message_above_the_repetition_rate && cargo +1.94.1 test -p qip-agency --lib the_step_check_refuses",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The guard-level test does fire on no_manipulation/no_fake_consensus/no_rumour_engineering before the adapter, and the binary now composes it. Held at PARTIAL because a lexical filter on message text is not a market-conduct rule check on the action. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Closed 2026-10-18 (lane L10). Mutations fired: dropping the `step_failure(&faces)` push in preflight lets the four-release pass Execute (agency.rs test fails at its withheld match); making check_step_conduct skip `is_deceptive` passes the WashTrading step (unit test fails). The step's Method is the affordance graph's declaration, which is operator policy by design; a per-channel forbidden-method table was not added, because channel and audience are already checked per draft (check 5) and per tool registration (ToolRegistry channels). Round-2 audit note retained: drafts and citations are still declared by the request document."
   },
   {
     "id": "R12-AGENCY-1061",
@@ -2461,7 +2454,7 @@
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:68",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk"
     ],
-    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; no global Scout Fabric beyond one deep brain's arms.",
+    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; recording it needs a kernel journaling seam for a deep-brain-owned record (Platform has journal_campaign for campaigns, nothing generic a binary may call). Even recorded, it would reach no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is deliberately unset (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) and deepbrain_connector is null in every environment's terraform.tfvars (protected path). No global Scout Fabric beyond one deep brain's arms.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2472,7 +2465,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the closure's 'commit the cadence' half would select a desk with nothing to read until an operator names a connector in a tfvars file, which a lane may not edit. The incumbent the desk scores against now spans every held arm (R12-DATA-2022)."
   },
   {
     "id": "R12-DATA-1106",
@@ -2515,7 +2508,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1108",
@@ -2536,7 +2529,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1109",
@@ -2557,7 +2550,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1110",
@@ -2578,7 +2571,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1111",
@@ -2598,7 +2591,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1112",
@@ -2620,7 +2613,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EXPAND-1113",
@@ -2669,24 +2662,26 @@
   },
   {
     "id": "R12-EXPAND-1115",
-    "status": "PARTIAL",
-    "current": "OntologyRegistry/CapabilityRegistry in qip-agents; source catalogue in data-finder.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop holds an OntologyRegistry of every type its detectors read (SWEEP_ONTOLOGY: Market.price_series, Asset.asset_class, Event.anomaly, Entity.evidence_claim, Lifecycle.research_item), refused at construction and again at each sweep if a type is missing, beside the ToolRegistry and the BrainSpec map; every sweep record carries RegistryCounts naming the licensed sources the discovery desk handed it, the ontology types, the tools and the brains it ran against.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21",
-      "backend/crates/libs/qip-agents/src/registries.rs:115"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:595-650 RegistryCounts, SWEEP_ONTOLOGY, sweep_ontology",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:947-958 check_ontology",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1076-1086 the sweep consults and records the registries",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:861 a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted (mutation: drop the round.registries assignment; every count reads zero and the test fails)"
     ],
-    "gap": "Integrate source/ontology/tool/brain registries in deepbrain with a named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test expansion_rows a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L03: closed. The source registry the sweep consults is the discovery desk's licensed catalogue (qip-data-finder), handed to every sweep by node::run_with; with discovery off it is empty and the record says zero."
   },
   {
     "id": "R12-EXPAND-1116",
@@ -2816,13 +2811,15 @@
   },
   {
     "id": "R12-TICK-1122",
-    "status": "PARTIAL",
-    "current": "event vs capture time preserved; qip-sequencing orders venue events.",
+    "status": "COMPLETE",
+    "current": "Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/temporal_correctness.rs:19",
-      "backend/crates/edge/qip-sequencing/src"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/edge/qip-sequencing/src/capture.rs CaptureStream::capture"
     ],
-    "gap": "Implement/integrate clock normalization.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2830,10 +2827,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: clock normalization now runs on the node's production drain. The test recomputes every lake line's clock block with an independent CaptureStream over the line's own event and requires equality, plus an offset estimate once the discipline holds its minimum samples. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte."
   },
   {
     "id": "R12-TICK-1123",
@@ -3009,23 +3006,26 @@
   },
   {
     "id": "R12-REASON-1131",
-    "status": "PARTIAL",
-    "current": "OntologyRegistry.",
+    "status": "COMPLETE",
+    "current": "Every hypothesis the REASON stage forms is derived symbolically on the default cycle (Platform::reason_symbolically), and the derivation now types its subject against symbolic_stage::platform_ontology, an OntologyRegistry seeded with every asset class (Asset family), the anomaly (Event) and the hypothesis lifecycle (Lifecycle). The class comes from the asset class the platform registered the instrument under; a subject with no class, or a class the ontology does not hold, is recorded as a refused typing, and replay re-types the subject and refuses a journaled typing the ontology does not reproduce.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:128 platform_ontology, type_subject, SubjectTyping on SymbolicDerivation, verify",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_symbolically passes subject_class from asset_classes",
+      "backend/crates/libs/qip-agents/src/registries.rs:21 OntologyRegistry",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:907 the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused"
     ],
-    "gap": "Integrate ontologies into the REASON stage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22. The shipped cycle's derivation for AAA (a common stock) records 'asset/equity v1'; a subject with no class and one under an unheld class are recorded refused, naming why, and the stage line says 'subject untyped'; a corrupted typing is refused on replay as 'the subject typing is not reproducible'. Mutations: pass subject_class: None from reason_symbolically - the shipped typing assertion fails; record Step::Derived whatever type_subject returns - the untyped subject reads typed and the refusal assertion fails; both restored. The typing is advisory, like the rest of the derivation: it reaches nothing that sizes or sends. Records written before the field decode with subject_type None."
   },
   {
     "id": "R12-REASON-1132",
@@ -3549,7 +3549,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-WORLD-1155",
@@ -3774,13 +3774,14 @@
   },
   {
     "id": "R12-REFLEX-1165",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-edge Cell with orderbook, feature DAG, strategy, netting, risk gates and simulated venue adapters, composed by qip-edge-node; not deployed.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:52",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_reflex_node_scope_item_is_still_composed_where_the_node_assembles_it"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3788,10 +3789,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Inspection test added 2026-10-18. Netting (net(intents)) and the inventory-target read happen inside Cell::work, which the scheduler's run_pass calls, so they are pinned in qip-edge/src/cell.rs rather than as symbols of the node's composition root as the closure proposed; feature engine, mode and risk gates are pinned in assemble_with_risk, the strategy installer and gateway in main.rs, venue state in feed.rs. Mutations: netting line renamed and the risk-gate call reshaped each failed the test naming the item; restored."
   },
   {
     "id": "R12-MESH-1166",
@@ -4109,14 +4110,14 @@
   {
     "id": "R12-WORLD-1181",
     "status": "PARTIAL",
-    "current": "Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information.",
+    "current": "Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information. A Branch decision is now executed (FederationStage::act_on_decisions opens a branch of the leader following the runner-up and journals its lineage; R12-WORLD-3041). A Merge decision folds the two best branches through Federation::merge and never two roots, because a merge stops the federation feeding both parents.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:252 InformationRequest",
-      "backend/crates/services/qip-world-model/src/federation.rs:258 Decision",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1103 act_on_decisions (Branch and Merge arms)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1652 a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1716 a_merge_decision_folds_two_branches_into_one_and_leaves_the_roots_alone",
       "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
     ],
-    "gap": "Decisions are recorded only: no branch or merge is executed, and contradiction detection is not a distinct mechanism.",
+    "gap": "The Merge arm is proven only by handing act_on_decisions a hand-built Merge arbitration over two seeded branches: no default-path scenario yet produces a Merge decision while two branches hold views, so the arm has not run from a real pass. Contradiction detection is still not a distinct mechanism.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4124,10 +4125,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cargo test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: dropping the branches filter on the Merge arm merges roots and a_merge_decision_folds_two_branches... fails."
   },
   {
     "id": "R12-AGENCY-1182",
@@ -4545,7 +4546,7 @@
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model"
     ],
-    "gap": "Truth-loop order is only proven by a test-local pipeline; no global-scout stage, and the kernel cycle does not call the quality/entitlement gate before the world model.",
+    "gap": "Truth-loop order is proven by a test-local pipeline; no global-scout stage. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4556,7 +4557,7 @@
     "verification": "cargo test -p qip-acceptance --test truth_loop",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model. 2026-10-18 lane L06: not implemented; the closure needs ConnectorFeed to return evidence ids with its records, a change in qip-market-ingestion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-TICK-1201",

@@ -44,12 +44,16 @@
 //! decisions a previous process journaled, so a budget is not reset by
 //! running the binary again.
 
-use crate::conduct_brain::{CommunicationDraft, ConductGate, ConductPolicy};
+use crate::conduct_brain::{CommunicationDraft, ConductGate, ConductPolicy, StepConduct};
 use crate::goal::GoalSpec;
 use crate::plan::Step;
 use qip_contracts::action::{
-    ExecutionRecord, GoalApproval, Ground, PlanApproval, ToolAudit, ToolRegistration, ToolRegistry,
-    check_justification, words,
+    ExecutionRecord, GoalApproval, Ground, Method, PlanApproval, ToolAudit, ToolRegistration,
+    ToolRegistry, check_justification, words,
+};
+use qip_contracts::action_intent::{
+    ActingIdentity as IntentIdentity, ActionIntent, ActionIntentFields,
+    Disclosure as IntentDisclosure, PolicyDecision, Verdict,
 };
 use qip_core::decimal::SCALE;
 use qip_core::{Decimal, Error, Timestamp};
@@ -150,7 +154,34 @@ pub(crate) struct Cleared {
     pub(crate) cost_units: u64,
     /// The voice this step would release, remembered once it is admitted.
     pub(crate) voice: Voice,
+    /// The §27 record of this step as an action outside the platform
+    /// (R12-CONTRACT-7082): who acts, through which channel, saying what,
+    /// on what provenance and disclosure, admitted by which policies.
+    pub(crate) intent: ActionIntent,
 }
+
+/// The payload an [`ActionIntent`] carries for one step: what the channel
+/// would receive, so the digest the intent holds is a digest of the action
+/// that was reviewed and not of a summary of it.
+#[derive(Serialize)]
+struct StepPayload<'a> {
+    tool: &'a str,
+    variable: &'a str,
+    exposure: Decimal,
+    channel: &'a str,
+    audience: &'a str,
+    content: &'a str,
+}
+
+/// The policies an intent records as having admitted it, in the order the
+/// preflight consults them. An intent leaves the preflight only once every
+/// one has passed: a refused step leaves a refusal, never an intent.
+const INTENT_POLICIES: [&str; 4] = [
+    "justification",
+    "approval_chain",
+    "conduct_gate",
+    "tool_registry",
+];
 
 /// The built guard. Holds the registry, so a caller that keeps one guard
 /// across passes keeps the rate, budget and revocation state across them.
@@ -289,6 +320,13 @@ impl ActionGuard {
         self.registry.revoke(tool)
     }
 
+    /// Restore a revoked tool on `operator`'s authority
+    /// ([`ToolRegistry::reauthorise`]): the only way back from
+    /// [`Self::revoke`].
+    pub fn reauthorise(&mut self, tool: &str, operator: &str) -> Result<(), Error> {
+        self.registry.reauthorise(tool, operator)
+    }
+
     /// Move to a new rate window and execution instant, keeping the current
     /// pass's drafts and grounds. With no pass begun, begins one with none,
     /// which every preflight refuses on its grounds.
@@ -323,22 +361,32 @@ impl ActionGuard {
         })
     }
 
-    /// Every check, read-only. `priced` is each step beside its cost from
-    /// the affordance graph. On success, the goal and plan approvals and the
+    /// Every check, read-only. `priced` is each step beside its cost and
+    /// the method its affordance edge declares. On success, the goal and plan approvals and the
     /// steps as the registry will be charged for them.
     pub(crate) fn preflight(
         &self,
         goal: &GoalSpec,
-        priced: &[(Step, Decimal)],
+        priced: &[(Step, Decimal, Method)],
     ) -> Result<(ApprovalChain, Vec<Cleared>), Error> {
         let pass = self.current()?;
         check_justification(&pass.grounds)?;
-        let steps: Vec<Step> = priced.iter().map(|(step, _)| step.clone()).collect();
+        let steps: Vec<Step> = priced.iter().map(|(step, _, _)| step.clone()).collect();
         let chain = self.approve(goal, &steps)?;
 
-        let mut cleared = Vec::with_capacity(priced.len());
+        // A step's checks, then its intent: the intent is built only once
+        // every check has passed, so a refusal names the check that refused
+        // rather than whatever the §27 record would have refused first.
+        struct Staged {
+            step: Step,
+            channel: String,
+            cost_units: u64,
+            voice: Voice,
+        }
+        let mut cleared: Vec<Staged> = Vec::with_capacity(priced.len());
         let mut drafts: BTreeMap<&str, &CommunicationDraft> = BTreeMap::new();
-        for (step, cost) in priced {
+        let mut faces: Vec<StepConduct<'_>> = Vec::with_capacity(priced.len());
+        for (step, cost, method) in priced {
             let registration = self.registry.registration(&step.tool).ok_or_else(|| {
                 Error::denied(format!(
                     "tool `{}` is not registered; an action acts only through a registered tool",
@@ -364,7 +412,7 @@ impl ActionGuard {
                     goal.acting_identity
                 )));
             }
-            cleared.push(Cleared {
+            cleared.push(Staged {
                 step: step.clone(),
                 channel: draft.channel.clone(),
                 cost_units: budget_units(&step.tool, *cost)?,
@@ -375,10 +423,18 @@ impl ActionGuard {
                 },
             });
             drafts.insert(step.tool.as_str(), draft);
+            faces.push(StepConduct {
+                tool: step.tool.as_str(),
+                method: *method,
+                draft,
+            });
         }
 
         let released: Vec<&CommunicationDraft> = drafts.values().copied().collect();
-        let failures = self.gate.campaign_failures(&released);
+        let mut failures = self.gate.campaign_failures(&released);
+        if let Some(step) = self.gate.step_failure(&faces) {
+            failures.push(("*".to_string(), step));
+        }
         if !failures.is_empty() {
             let reasons: Vec<String> = failures
                 .iter()
@@ -415,7 +471,17 @@ impl ActionGuard {
             .map(|c| (c.step.tool.as_str(), c.channel.as_str(), c.cost_units))
             .collect();
         self.registry.admits_all(pass.rate_window, &actions)?;
-        Ok((chain, cleared))
+        let mut admitted = Vec::with_capacity(cleared.len());
+        for (index, (staged, face)) in cleared.into_iter().zip(&faces).enumerate() {
+            admitted.push(Cleared {
+                intent: intent(goal, &chain, pass, index, &staged.step, face.draft)?,
+                step: staged.step,
+                channel: staged.channel,
+                cost_units: staged.cost_units,
+                voice: staged.voice,
+            });
+        }
+        Ok((chain, admitted))
     }
 
     /// The execution record, written before the first call so a refused or
@@ -482,6 +548,69 @@ impl ActionGuard {
             execution: None,
         })
     }
+}
+
+/// The §27 intent for the `index`th step of a pass, built only once the
+/// step has a drafted face and an approval chain. Validated by
+/// [`ActionIntent::new`], so a payload whose digest does not match, a
+/// blank name or a missing provenance is refused here rather than carried.
+fn intent(
+    goal: &GoalSpec,
+    chain: &ApprovalChain,
+    pass: &PassDecl,
+    index: usize,
+    step: &Step,
+    draft: &CommunicationDraft,
+) -> Result<ActionIntent, Error> {
+    let payload = serde_json::to_string(&StepPayload {
+        tool: &step.tool,
+        variable: &step.variable,
+        exposure: step.exposure,
+        channel: &draft.channel,
+        audience: &draft.target_audience,
+        content: &draft.content,
+    })
+    .map_err(|e| Error::invalid(format!("step `{}` payload does not encode: {e}", step.tool)))?;
+    let payload_digest = ActionIntentFields::digest_payload(&payload);
+    let at = pass.approvals.execute_at;
+    let horizon = i64::try_from(goal.time_horizon_secs)
+        .map_err(|_| Error::numeric("the goal's horizon does not fit a timestamp"))?;
+    let mut provenance: Vec<String> = draft
+        .evidence_citations
+        .iter()
+        .map(|c| c.evidence_id.clone())
+        .collect();
+    provenance.push(chain.goal.id.clone());
+    provenance.push(chain.plan.id.clone());
+    ActionIntent::new(ActionIntentFields {
+        schema_version: 1,
+        intent_id: format!("intent-{}-{index}", chain.plan.id),
+        identity: IntentIdentity {
+            actor: goal.acting_identity.clone(),
+            on_behalf_of: chain.goal.approver.clone(),
+        },
+        channel: draft.channel.clone(),
+        idempotency_key: qip_core::sha256_hex(
+            format!("{}|{index}|{payload_digest}", chain.plan.id).as_bytes(),
+        ),
+        payload,
+        payload_digest,
+        provenance,
+        disclosure: IntentDisclosure::Required {
+            statements: draft.disclosures.iter().map(|d| d.text.clone()).collect(),
+        },
+        policy_decisions: INTENT_POLICIES
+            .iter()
+            .map(|policy| PolicyDecision {
+                policy: (*policy).to_string(),
+                verdict: Verdict::Allowed,
+                decided_at: at,
+            })
+            .collect(),
+        created_at: at,
+        expires_at: Timestamp::from_secs(at.as_secs().saturating_add(horizon)),
+        audit_lineage: vec![chain.goal.id.clone(), chain.plan.id.clone()],
+    })
 }
 
 /// What a plan approval and an execution record are about: the tools, in

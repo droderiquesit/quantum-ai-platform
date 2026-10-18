@@ -115,6 +115,11 @@ run "three_brokers_behind_the_spanner_lease_are_three_machines" {
     managed_log = {
       spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
     }
+    broker_zones = {
+      "10.0.20.10" = "us-east4-a"
+      "10.0.20.11" = "us-east4-b"
+      "10.0.20.12" = "us-east4-c"
+    }
   }
 
   assert {
@@ -214,4 +219,154 @@ run "a_journal_device_carrying_shell_syntax_is_refused" {
   }
 
   expect_failures = [var.qip_storage_journal_device]
+}
+
+# FABRIC-8097: the journal every acknowledgement fsyncs to is sized for
+# throughput, not only for capacity. Before this run the disk declared a type
+# and a size and nothing else, so its IOPS and throughput were whatever Google
+# derived from 100 GB. Positional for the reason the journal-disk run gives.
+run "the_journal_disk_is_provisioned_for_iops_and_throughput" {
+  command = plan
+
+  variables {
+    journal_provisioned_iops             = 6000
+    journal_provisioned_throughput_mibps = 400
+  }
+
+  assert {
+    condition = (
+      google_compute_instance_template.event_fabric_broker[0].disk[1].device_name == "qip-journal"
+      && google_compute_instance_template.event_fabric_broker[0].disk[1].provisioned_iops == 6000
+      && google_compute_instance_template.event_fabric_broker[0].disk[1].provisioned_throughput == 400
+    )
+    error_message = "The journal disk does not carry the IOPS and throughput the module was given."
+  }
+}
+
+run "a_journal_throughput_outside_the_hyperdisk_range_is_refused" {
+  command = plan
+
+  variables {
+    journal_provisioned_throughput_mibps = 100
+  }
+
+  expect_failures = [var.journal_provisioned_throughput_mibps]
+}
+
+run "provisioned_journal_performance_on_a_persistent_disk_type_is_refused" {
+  command = plan
+
+  variables {
+    disk_type = "pd-balanced"
+  }
+
+  expect_failures = [var.disk_type]
+}
+
+# FABRIC-8099: every broker address is a reserved INTERNAL address in the
+# broker's subnet, and the machine takes its address from that reservation
+# rather than from the literal, so a replaced machine cannot leave the name
+# pointing at an address anything else may claim.
+run "each_broker_address_is_a_reserved_internal_address_the_machine_takes" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = ["10.0.20.10", "10.0.20.11", "10.0.20.12"]
+    managed_log = {
+      spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
+    }
+    broker_zones = {
+      "10.0.20.10" = "us-east4-a"
+      "10.0.20.11" = "us-east4-b"
+      "10.0.20.12" = "us-east4-c"
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_address.event_fabric_broker) == 3
+    error_message = "Three broker addresses were given and the plan does not reserve three."
+  }
+
+  assert {
+    condition = alltrue([
+      for address, reserved in google_compute_address.event_fabric_broker :
+      reserved.address_type == "INTERNAL"
+      && reserved.address == address
+      && reserved.subnetwork == "projects/test-project/regions/us-east4/subnetworks/control-fabric"
+    ])
+    error_message = "A broker address is not reserved as INTERNAL in the broker's subnet."
+  }
+
+  assert {
+    condition = alltrue([
+      for address, machine in google_compute_instance_from_template.event_fabric_broker :
+      machine.network_interface[0].network_ip == google_compute_address.event_fabric_broker[address].address
+      && length(machine.network_interface[0].access_config) == 0
+    ])
+    error_message = "A broker machine is not on its reserved address, or has an external one."
+  }
+}
+
+# FABRIC-008/7011: three brokers behind the lease sit in three zones, so one
+# zone's outage leaves two of them.
+run "three_brokers_are_placed_in_three_zones" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = ["10.0.20.10", "10.0.20.11", "10.0.20.12"]
+    managed_log = {
+      spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
+    }
+    broker_zones = {
+      "10.0.20.10" = "us-east4-a"
+      "10.0.20.11" = "us-east4-b"
+      "10.0.20.12" = "us-east4-c"
+    }
+  }
+
+  assert {
+    condition = (
+      length(google_compute_instance_from_template.event_fabric_broker) == 3
+      && length(distinct([for machine in google_compute_instance_from_template.event_fabric_broker : machine.zone])) == 3
+      && google_compute_instance_from_template.event_fabric_broker["10.0.20.11"].zone == "us-east4-b"
+    )
+    error_message = "Three brokers were named into three zones and the plan does not place one in each."
+  }
+}
+
+# Two brokers in one zone are refused: the zone's loss would be both.
+run "two_brokers_in_one_zone_are_refused" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = ["10.0.20.10", "10.0.20.11"]
+    managed_log = {
+      spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
+    }
+  }
+
+  expect_failures = [google_compute_instance_from_template.event_fabric_broker]
+}
+
+run "a_broker_zone_outside_the_region_is_refused" {
+  command = plan
+
+  variables {
+    broker_zones = {
+      "10.0.20.10" = "europe-west2-a"
+    }
+  }
+
+  expect_failures = [google_compute_instance_from_template.event_fabric_broker]
+}
+
+# FABRIC-8096: the broker shape is C4 or C4D.
+run "a_c3_broker_shape_is_refused" {
+  command = plan
+
+  variables {
+    machine_type = "c3-standard-4"
+  }
+
+  expect_failures = [var.machine_type]
 }

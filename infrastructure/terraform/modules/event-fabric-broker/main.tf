@@ -22,7 +22,13 @@ locals {
   # admits one broker on the local fabric and two or three only with ADR
   # 0111's managed log (variables.tf), whose Spanner lease makes them one
   # leader and its followers rather than several writers of one chain.
-  brokers = var.enabled && var.zone != "" ? toset(var.broker_internal_addresses) : toset([])
+  brokers = var.enabled && alltrue([for zone in values(local.broker_zone) : zone != ""]) ? toset(var.broker_internal_addresses) : toset([])
+
+  # FABRIC-008: the zone each broker runs in, by address. An address
+  # `broker_zones` does not name takes `var.zone`, so a single broker needs
+  # nothing new; two or three must each be named into a zone of their own,
+  # because a zone lost with two brokers in it is two brokers lost at once.
+  broker_zone = { for address in var.broker_internal_addresses : address => lookup(var.broker_zones, address, var.zone) }
 }
 
 # FABRIC-089: Brokers have stable internal addresses and no public endpoint.
@@ -69,6 +75,14 @@ resource "google_compute_instance_template" "event_fabric_broker" {
     device_name  = "qip-journal"
     disk_type    = var.disk_type
     disk_size_gb = var.journal_disk_size_gb
+
+    # Provisioned rather than left to the type's default, because every
+    # acknowledgement waits on this disk's fsync (ADR 0100 §3): a journal
+    # sized by capacity alone inherits whatever performance Google derives
+    # from its size, and an append rate the catalogue promises is then a
+    # number nothing provisioned (FABRIC-085).
+    provisioned_iops       = var.journal_provisioned_iops
+    provisioned_throughput = var.journal_provisioned_throughput_mibps
 
     labels = {
       component   = "event-fabric-broker"
@@ -133,28 +147,58 @@ resource "google_compute_instance_template" "event_fabric_broker" {
   }
 }
 
+# FABRIC-089: each broker's address is a reserved internal address in the
+# control-fabric subnet, not only a literal handed to the interface. A literal
+# on `network_ip` is held for exactly as long as the machine exists: replace
+# the broker and the address is free for anything in the subnet to take while
+# the A record still names it. Reserved here, the address outlives the
+# machine, and Google refuses to hand it to anything else.
+resource "google_compute_address" "event_fabric_broker" {
+  for_each = local.brokers
+
+  name         = "qip-event-fabric-broker-${replace(each.value, ".", "-")}"
+  project      = var.project_id
+  region       = var.region
+  subnetwork   = var.subnet_id
+  address_type = "INTERNAL"
+  purpose      = "GCE_ENDPOINT"
+  address      = each.value
+  description  = "Stable internal address of an event-fabric broker; the fabric SRV/A records name it."
+}
+
 # The brokers: one machine per stable address the DNS records name. Not a
 # managed instance group: a group's surge creates a replacement before
 # retiring the original, outside any lease the broker takes, and on the local
 # fabric two brokers on one chain are two writers (ADR 0100 §2). With the
 # managed log the region's two or three instances contend for one Spanner
-# lease and only its holder writes (ADR 0111). All share `var.zone` today —
-# spreading them across zones (FABRIC-008) is a variable this module does not
-# have yet.
+# lease and only its holder writes (ADR 0111). Each in a zone of its own
+# (FABRIC-008), refused at plan when two share one.
 resource "google_compute_instance_from_template" "event_fabric_broker" {
   for_each = local.brokers
 
   name    = "qip-event-fabric-broker-${replace(each.value, ".", "-")}"
   project = var.project_id
-  zone    = var.zone
+  zone    = local.broker_zone[each.value]
 
   source_instance_template = google_compute_instance_template.event_fabric_broker[0].self_link_unique
 
   network_interface {
     network    = var.network_id
     subnetwork = var.subnet_id
-    network_ip = each.value
+    network_ip = google_compute_address.event_fabric_broker[each.value].address
     stack_type = "IPV4_ONLY"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(distinct([for address in local.brokers : local.broker_zone[address]])) == length(local.brokers)
+      error_message = "Two event-fabric brokers are placed in one zone (FABRIC-008): a zone outage would take both. Name each address in broker_zones into a distinct zone of the region."
+    }
+
+    precondition {
+      condition     = startswith(local.broker_zone[each.value], "${var.region}-")
+      error_message = "An event-fabric broker is placed in a zone outside var.region; every broker in a region contends for that region's lease (ADR 0111)."
+    }
   }
 }
 

@@ -203,3 +203,78 @@ fn re_materializing_a_manifest_matches_its_checksums_and_a_corrupt_byte_names_th
     assert!(failure.to_string().contains(&victim), "{failure}");
     Ok(())
 }
+
+/// A store whose reads see nothing: what two writers racing on one segment
+/// id each saw, having both read before either wrote. Writes reach the real
+/// store underneath.
+#[derive(Debug, Default)]
+struct RacedReads {
+    inner: MemoryBlobStore,
+}
+
+impl BlobStore for RacedReads {
+    fn put(&self, key: &str, bytes: Vec<u8>) -> Result<()> {
+        self.inner.put(key, bytes)
+    }
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        self.inner.put_if_absent(key, bytes)
+    }
+    fn get(&self, _key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn delete(&self, key: &str) -> Result<bool> {
+        self.inner.delete(key)
+    }
+    fn list(&self, _prefix: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+}
+
+/// R12-TICK-2055: the existence check is a read followed by a write, so two
+/// writers racing on one segment id both passed it and the second silently
+/// replaced the first. Here both writers' reads see nothing, as in the race;
+/// exactly one seals, the other is refused, and the sealed bytes and the raw
+/// bytes are both the winner's. Mutation: sealing with `put` (reporting the
+/// write as created) lets the second writer replace the first.
+#[test]
+fn two_writers_racing_one_segment_id_seal_exactly_one() -> Result<()> {
+    let store = RacedReads::default();
+    let lake = Lake::new(&store);
+    let p = part("AAPL", ent("nasdaq-l2", true))?;
+
+    let first = lake.write_segment(&p, "seg-1", b"first".to_vec(), Some(b"raw-1".to_vec()))?;
+    // Premise: the second writer's existence check passes, as it did in the
+    // race — the store's reads show nothing sealed.
+    assert_eq!(store.get(&first.key)?, None);
+    let second = lake.write_segment(&p, "seg-1", b"second".to_vec(), Some(b"raw-2".to_vec()));
+
+    assert!(second.is_err(), "both writers sealed one segment id");
+    assert_eq!(store.inner.get(&first.key)?, Some(b"first".to_vec()));
+    let raw_key = first.raw_key.clone().expect("raw retention was permitted");
+    assert_eq!(store.inner.get(&raw_key)?, Some(b"raw-1".to_vec()));
+    Ok(())
+}
+
+/// The file adapter's create-if-absent publishes by hard link, which fails
+/// when the name exists: the second call writes nothing and reports so.
+/// Mutation: publishing by `write_atomic`'s rename replaces the first bytes.
+#[test]
+fn a_file_store_creates_an_object_once_and_leaves_an_existing_one_untouched() -> Result<()> {
+    let root = std::env::temp_dir().join(format!(
+        "qip-lake-create-once-{}-{}",
+        std::process::id(),
+        sha256_hex(b"create-once")
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let store = qip_storage::FileBlobStore::open(&root)?;
+    assert!(store.put_if_absent("lake/a/seg-1.seg", b"first".to_vec())?);
+    assert!(!store.put_if_absent("lake/a/seg-1.seg", b"second".to_vec())?);
+    assert_eq!(store.get("lake/a/seg-1.seg")?, Some(b"first".to_vec()));
+    assert_eq!(
+        store.list("")?,
+        ["lake/a/seg-1.seg"],
+        "no scratch file left"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}

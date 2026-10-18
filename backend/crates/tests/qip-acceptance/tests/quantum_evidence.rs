@@ -151,3 +151,79 @@ fn quantum_results_must_be_validated_against_request() {
     // This validation ensures quantum results cannot be applied to the wrong
     // problem, which would allow misuse as evidence modification.
 }
+
+/// The result and routing types of the quantum contract, and the crate that
+/// computes them. Whole words.
+const QUANTUM_RESULT_NAMES: [&str; 6] = [
+    "SolverResult",
+    "SolverKind",
+    "DecisionRequest",
+    "RoutingDecision",
+    "ChosenPath",
+    "qip_quantum",
+];
+
+fn quantum_names_in(text: &str) -> Vec<&'static str> {
+    let words: std::collections::BTreeSet<&str> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .collect();
+    QUANTUM_RESULT_NAMES
+        .into_iter()
+        .filter(|name| words.contains(name))
+        .collect()
+}
+
+#[test]
+fn evidence_the_world_model_and_the_reasoning_engine_do_not_name_a_quantum_result_type() {
+    // R12-EVID-2040 (QUANT-014): no path from a quantum result type to an
+    // authenticity or belief field. `architecture.rs` proves these crates do
+    // not link the solvers; this proves they also do not name the contract
+    // types a result travels in, which they could do through `qip-contracts`
+    // alone. A `fn from(result: SolverResult) -> Belief` would need only that.
+    let root = qip_acceptance::repository_root();
+    let mut scanned = 0usize;
+    let mut offenders: Vec<(String, Vec<&'static str>)> = Vec::new();
+    for crate_dir in [
+        "backend/crates/libs/qip-evidence",
+        "backend/crates/services/qip-world-model",
+        "backend/crates/services/qip-reasoning-engine",
+    ] {
+        let mut files = qip_acceptance::files_with_extension(&format!("{crate_dir}/src"), "rs");
+        files.push(root.join(crate_dir).join("Cargo.toml"));
+        for file in files {
+            scanned += 1;
+            let text = std::fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
+            let manifest = file.extension().is_some_and(|e| e == "toml");
+            let found = if manifest {
+                // A manifest names the crate with a hyphen.
+                let hyphenated = text.replace("qip-quantum", "qip_quantum");
+                quantum_names_in(&hyphenated)
+            } else {
+                quantum_names_in(&qip_acceptance::production_text(&text))
+            };
+            if !found.is_empty() {
+                offenders.push((
+                    file.strip_prefix(&root)
+                        .unwrap_or(&file)
+                        .to_string_lossy()
+                        .into_owned(),
+                    found,
+                ));
+            }
+        }
+    }
+    assert!(scanned > 30, "only {scanned} files were scanned");
+    assert_eq!(
+        offenders,
+        Vec::<(String, Vec<&'static str>)>::new(),
+        "a crate that holds evidence or belief names a quantum result type"
+    );
+
+    // The scan sees a type as a word and a dependency by either spelling.
+    assert_eq!(
+        quantum_names_in("fn f(r: SolverResult) -> ChosenPath { todo }"),
+        vec!["SolverResult", "ChosenPath"]
+    );
+    assert!(quantum_names_in("let solver_results = 1;").is_empty());
+}

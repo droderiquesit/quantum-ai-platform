@@ -149,7 +149,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    assert_eq!(first.population.len(), 7, "{:?}", first.population);
+    assert_eq!(first.population.len(), 9, "{:?}", first.population);
     for family in REQUIRED_FAMILIES {
         assert!(
             !first.uncovered.contains(&family.to_string()),
@@ -166,7 +166,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
         .collect();
     assert_eq!(instrument.len(), 2, "one proposition per instrument");
     for a in &instrument {
-        assert_eq!(a.disagreement.views.len(), 5, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 7, "{a:?}");
         // Unscored members cannot be weighed, and the record says so rather
         // than averaging them.
         assert!(matches!(a.decision, Decision::RequestMoreInformation(_)));
@@ -428,7 +428,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     assert_eq!(reviews.len() as u64, cycles, "one review per cycle");
 
     // More than one model, with distinct scopes, live in the cycle (1003,
-    // 1129): five tape members on every instrument proposition.
+    // 1129): seven tape members on every instrument proposition.
     let last = reviews.last().expect("reviews");
     let scopes: std::collections::BTreeSet<String> = last
         .population
@@ -466,7 +466,15 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     for a in &scored {
         // Every view kept, minority included, on all four dimensions, with
         // the composite present only because performance is (1130, 3040).
-        assert_eq!(a.disagreement.views.len(), 5, "{a:?}");
+        // Seven roots; a branch the stage opened on an earlier split
+        // (WORLD-1181) is an eighth voice and carries its parent.
+        let roots = a
+            .disagreement
+            .views
+            .iter()
+            .filter(|v| v.lineage.parents.is_empty())
+            .count();
+        assert_eq!(roots, 7, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
@@ -581,6 +589,8 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
         formed_at: now,
         horizon: Duration::from_days(5),
         moves: BTreeMap::from([("kestrel".to_string(), -0.05)]),
+        settlement: None,
+        subject_class: Some("equity".into()),
     };
     let derivation = derive(input, &causal, now);
     // Premise: abduction named Kestrel, seen to move, so there is a cause to
@@ -614,6 +624,51 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
     let json = serde_json::to_value(&derivation)?;
     let back: qip_kernel::symbolic_stage::SymbolicDerivation = serde_json::from_value(json)?;
     assert_eq!(back, derivation);
+    Ok(())
+}
+
+/// R12-MODEL-6016: a world-model federation member is scored after its
+/// outcome resolves, charged to its own component in the self-model, as a
+/// detector or an analyst is. The federation kept its own Brier record and
+/// the self-model never heard of a world model. Mutation: dropping the
+/// charge loop in `Platform`'s federation pass leaves every member's
+/// component absent.
+#[test]
+fn a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_model() -> Result<()> {
+    use qip_learning_engine::self_model::{ComponentKey, ComponentKind};
+
+    let cycles: u64 = 8;
+    let mut platform = platform()?;
+    let total = 120 + cycles as usize;
+    let end = start().saturating_add(Duration::from_days(cycles as i64));
+    let mut aaa = tape("AAA", total, end);
+    let later = aaa.split_off(120);
+    platform.observe(aaa);
+    for (step, a) in later.into_iter().enumerate() {
+        platform.observe(vec![a]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(step as i64 + 1)));
+    }
+
+    // Premise: reality answered forecasts that named the members who made
+    // them, on a side each took.
+    let reviews = federation_stage::replay(&platform)?;
+    let mut charged: std::collections::BTreeMap<String, usize> = Default::default();
+    for resolution in reviews.iter().flat_map(|r| &r.resolved) {
+        for (member, probability) in &resolution.forecasts {
+            if probability.total_cmp(&0.5).is_ne() {
+                *charged.entry(member.clone()).or_default() += 1;
+            }
+        }
+    }
+    assert!(!charged.is_empty(), "no resolved forecast named a member");
+
+    for (member, count) in &charged {
+        let key = ComponentKey::new(ComponentKind::WorldModel, member.as_str())?;
+        let estimate = platform.self_model().get(&key).unwrap_or_else(|| {
+            panic!("{member} resolved {count} forecast(s) and holds no estimate")
+        });
+        assert_eq!(estimate.sample_count(), *count, "{member}");
+    }
     Ok(())
 }
 
@@ -660,6 +715,21 @@ fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refu
     assert!(
         derivation.temporal.inputs.is_some(),
         "the record keeps the instants its timeline was built from"
+    );
+    // R12-REASON-3055: the platform hands the subject's settlement
+    // convention from its asset-class record, and the timeline poses it
+    // against the deadline.
+    let settlement = derivation
+        .temporal
+        .inputs
+        .as_ref()
+        .and_then(|inputs| inputs.settlement.clone())
+        .expect("the platform handed the subject's settlement convention");
+    let posed = format!("settlement:{}:{}", settlement.0, derivation.hypothesis_id);
+    assert!(
+        derivation.temporal.links.iter().any(|l| l.cause == posed),
+        "{:?}",
+        derivation.temporal.links
     );
     assert_eq!(
         derivation.temporal.anomaly_to_hypothesis,
@@ -793,5 +863,126 @@ fn a_derivation_records_its_violated_assumptions_and_uncertainty_and_replay_refu
     let mut steadied = derivation;
     steadied.uncertainty = Some(0.0);
     assert_refused_for(&platform, &steadied, "uncertainty");
+    Ok(())
+}
+
+#[test]
+fn the_self_system_member_is_fed_the_previous_cycles_stage_latency_and_the_degradation_table()
+-> Result<()> {
+    // R12-WORLD-3052. The failure this guards: the self/system member read
+    // the kill switch, the autonomy level and expired manifests, and never
+    // how slow the platform ran or how stale its own capabilities were, so
+    // a platform degrading quietly forecast itself as healthy.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    for step in 0..2 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * step)));
+    }
+    let reviews = federation_stage::replay(&platform)?;
+    assert_eq!(reviews.len(), 2, "premise: one review per cycle");
+    // The first pass has no finished cycle behind it, and says so.
+    assert_eq!(reviews[0].system.slowest_stage, None);
+    assert!(
+        reviews[1].system.slowest_stage.is_some(),
+        "the second pass did not read the first cycle's stage latency"
+    );
+    for review in &reviews {
+        let degraded = review
+            .system
+            .degraded_capabilities
+            .expect("the degradation table was read");
+        assert!(
+            degraded <= qip_contracts::degradation::Capability::all().len(),
+            "{degraded}"
+        );
+    }
+    Ok(())
+}
+
+/// R12-REASON-1131: a reasoning task uses the ontology. The symbolic stage
+/// types every hypothesis's subject against `platform_ontology`, from the
+/// asset class the platform registered it under, and journals the typing on
+/// the derivation; a subject the ontology cannot type is recorded as
+/// refused rather than reasoned about as if it were known. Until this,
+/// `OntologyRegistry` was constructed only in its own tests.
+///
+/// Mutations: in `Platform::reason_symbolically`, pass `subject_class: None`
+/// — the shipped cycle's derivation is untyped and the first assertion
+/// fires; in `symbolic_stage::derive`, record `Step::Derived` whatever
+/// `type_subject` returns — the untyped subjects read as typed and the
+/// refusal assertions fire.
+#[test]
+fn the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused()
+-> Result<()> {
+    use qip_kernel::symbolic_stage::{Step, derive};
+
+    // The shipped cycle: AAA is a common stock, so an equity.
+    let (platform, derivation) = journaled_derivation()?;
+    let typing = derivation
+        .subject_type
+        .as_ref()
+        .expect("a derivation written by this build records its subject's typing");
+    assert_eq!(typing.class.as_deref(), Some("equity"));
+    assert_eq!(typing.typed, Step::Derived("asset/equity v1".to_string()));
+
+    // A subject with no registered class, and one whose class the ontology
+    // does not hold: both refused, each naming why.
+    let mut input = {
+        use qip_kernel::symbolic_stage::{AnomalyFacts, SymbolicInput};
+        SymbolicInput {
+            cycle: 1,
+            hypothesis_id: "hyp-1-unknown".into(),
+            subject: "unknown".into(),
+            status: "draft".into(),
+            confidence: 0.6,
+            contested: false,
+            dissenters: 0,
+            evidence_items: 1,
+            kill_switch: false,
+            live_authority: false,
+            anomaly: AnomalyFacts {
+                detector: "zscore".into(),
+                detected_at: start(),
+                observed: -0.04,
+                expected: 0.0,
+                confidence: 0.9,
+            },
+            catalyst: None,
+            formed_at: start(),
+            horizon: Duration::from_days(5),
+            moves: std::collections::BTreeMap::new(),
+            settlement: None,
+            subject_class: None,
+        }
+    };
+    let unregistered = derive(input.clone(), platform.world().causal(), start());
+    match unregistered.subject_type.as_ref().map(|t| &t.typed) {
+        Some(Step::Refused(why)) => assert!(why.contains("no registered asset class"), "{why}"),
+        other => panic!("a subject with no class was typed: {other:?}"),
+    }
+    input.subject_class = Some("weather_derivative".into());
+    let foreign = derive(input, platform.world().causal(), start());
+    match foreign.subject_type.as_ref().map(|t| &t.typed) {
+        Some(Step::Refused(why)) => {
+            assert!(
+                why.contains("`weather_derivative` is not a type the ontology holds"),
+                "{why}"
+            )
+        }
+        other => panic!("a class the ontology does not hold was typed: {other:?}"),
+    }
+    assert!(
+        foreign.detail().ends_with(", subject untyped"),
+        "the stage line does not say the subject was untyped: {}",
+        foreign.detail()
+    );
+
+    // And the typing is part of the proof: a journaled typing the ontology
+    // does not reproduce is refused on replay.
+    let mut corrupted = derivation;
+    if let Some(typing) = corrupted.subject_type.as_mut() {
+        typing.typed = Step::Derived("asset/credit v1".to_string());
+    }
+    assert_refused_for(&platform, &corrupted, "subject typing");
     Ok(())
 }

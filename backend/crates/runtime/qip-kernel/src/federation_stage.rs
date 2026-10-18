@@ -71,6 +71,17 @@ pub const MOMENTUM: &str = "markets.momentum.global.micro";
 pub const REVERSION: &str = "markets.reversion.global.meso";
 pub const STRESS_SCENARIO: &str = "markets.stress-world.global.macro";
 pub const STANDING_ASIDE: &str = "markets.standing-aside.global.meso";
+/// The rare-regime member (WORLD-3051): what an instrument does on the day
+/// after one of its own tail moves, read from the tape's history of them.
+pub const RARE_REGIME: &str = "markets.rare-regime.global.macro";
+/// The alternate-future member (WORLD-3051): the stress world's inverse — the
+/// future in which the shock the stress member applies does not arrive and
+/// its opposite does.
+pub const ALTERNATE_FUTURE: &str = "markets.alternate-future.global.macro";
+/// The share of an instrument's largest absolute moves the rare-regime
+/// member treats as its rare days. One in twenty is the tail the stress
+/// member's shock is drawn from, so the two read the same regime.
+pub const RARE_REGIME_TAIL: f64 = 0.05;
 pub const SELF_SYSTEM: &str = "self.operational-health.global";
 pub const ON_CHAIN: &str = "crypto-onchain.flows.global";
 /// The regional member's id is `markets.microstructure.<region>.micro`.
@@ -89,6 +100,12 @@ pub const REQUEST_BUDGET_SHARE_BP: u32 = 1_000;
 /// How long an active-sensing request's answer stays useful: the next
 /// close, which is what every instrument proposition is about.
 pub const REQUEST_DEADLINE: Duration = Duration::from_days(1);
+
+/// Live branches the stage keeps at once. A branch mirrors the member it
+/// follows, so without a ceiling a persistently split panel would add one
+/// duplicate voice per pass and the arbitration would drift toward whichever
+/// member kept dissenting.
+pub const FEDERATION_MAX_LIVE_BRANCHES: usize = 8;
 
 /// One instrument as the platform has observed it.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,7 +136,23 @@ pub struct SystemView {
     pub expired_manifests: usize,
     /// Instruments priced but below the history a member needs: a blind spot.
     pub thin_subjects: usize,
+    /// The slowest stage of the previous cycle on the platform's clock
+    /// (WORLD-3052), as [`FederationStage::observe_cycle`] last recorded it;
+    /// `None` before the first cycle has finished. Absent on a record
+    /// written before the field existed.
+    #[serde(default)]
+    pub slowest_stage: Option<Duration>,
+    /// Central capabilities the degradation table holds as anything but
+    /// fresh (WORLD-3052); `None` when the table could not be read, which
+    /// the member counts as unknown health rather than good health.
+    #[serde(default)]
+    pub degraded_capabilities: Option<usize>,
 }
+
+/// A stage slower than this is a platform the self/system member reads as
+/// at risk: a cycle is daily, and a stage that takes a minute of it is a
+/// process waiting on something it should not be (WORLD-3052).
+pub const SELF_STAGE_LATENCY_BUDGET: Duration = Duration::from_secs(60);
 
 /// What the on-chain member reads (ASSET-3017's federation half).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +188,11 @@ pub struct Resolution {
     pub outcome: bool,
     /// Branches closed because they forecast the wrong side.
     pub closed: Vec<String>,
+    /// The probability each member had given the proposition, by member id:
+    /// what the platform charges to that member in its self-model. Absent
+    /// from a review journaled before it existed, which reads as empty.
+    #[serde(default)]
+    pub forecasts: BTreeMap<String, f64>,
 }
 
 /// The pass, once a cycle, as the log keeps it.
@@ -288,6 +326,21 @@ pub struct FederationStage {
     asset_classes: BTreeMap<String, String>,
     /// Classes whose domain member has been declared.
     domain_members: BTreeSet<String>,
+    /// The probability each member gave each pending proposition, as the
+    /// federation took it: what a resolution charges to the member's entry
+    /// in the self-model (R12-MODEL-6016). Kept only for propositions still
+    /// pending, so it is bounded by `pending`.
+    views: BTreeMap<String, BTreeMap<String, f64>>,
+    /// The previous cycle's slowest stage ([`Self::observe_cycle`]).
+    slowest_stage: Option<Duration>,
+    /// Each branch the stage opened, mapped to the member whose reading it
+    /// follows: a branch is fed whatever that member is fed, so it holds a
+    /// forecast on every proposition until an outcome closes it (WORLD-3041).
+    /// Entries leave when the federation closes or merges the branch.
+    branches: BTreeMap<String, String>,
+    /// Ids already spent on branches and merges; the federation never
+    /// reuses an id.
+    serial: u64,
 }
 
 /// Hand one view to `model`; true when the federation took it. A refusal is
@@ -298,10 +351,42 @@ fn feed(
     assessment: Assessment,
     fed: &mut BTreeSet<String>,
     refused: &mut Vec<(String, String)>,
+    views: &mut BTreeMap<String, BTreeMap<String, f64>>,
+    branches: &BTreeMap<String, String>,
 ) -> bool {
+    let (proposition, probability) = (assessment.proposition.clone(), assessment.probability);
+    let followers: Vec<(&String, Assessment)> = branches
+        .iter()
+        .filter(|(_, source)| source.as_str() == model)
+        .map(|(branch, _)| (branch, assessment.clone()))
+        .collect();
     match federation.assess(model, assessment) {
         Ok(()) => {
             fed.insert(model.to_string());
+            views
+                .entry(proposition.clone())
+                .or_default()
+                .insert(model.to_string(), probability);
+            for (branch, mirrored) in followers {
+                // A branch the federation already closed or merged is no
+                // longer fed; its record stays readable and says why.
+                if !matches!(
+                    federation.status(branch),
+                    Ok(qip_world_model::federation::Status::Live)
+                ) {
+                    continue;
+                }
+                match federation.assess(branch, mirrored) {
+                    Ok(()) => {
+                        fed.insert(branch.clone());
+                        views
+                            .entry(proposition.clone())
+                            .or_default()
+                            .insert(branch.clone(), probability);
+                    }
+                    Err(error) => refused.push((branch.clone(), error.message().to_string())),
+                }
+            }
             true
         }
         Err(error) => {
@@ -367,6 +452,28 @@ fn share_positive(xs: &[f64]) -> f64 {
     xs.iter().filter(|r| **r > 0.0).count() as f64 / xs.len() as f64
 }
 
+/// The rare-regime member's reading: the share of positive returns on the
+/// day after a move in the largest [`RARE_REGIME_TAIL`] of absolute moves,
+/// and how many such days there were. Zero days — the only tail move is the
+/// latest, with no day after it yet — is reported as zero, not guessed.
+fn after_tail_moves(xs: &[f64]) -> (f64, usize) {
+    let mut magnitudes: Vec<f64> = xs.iter().map(|x| x.abs()).collect();
+    magnitudes.sort_by(f64::total_cmp);
+    let rank = ((magnitudes.len() as f64) * (1.0 - RARE_REGIME_TAIL)).floor() as usize;
+    let Some(threshold) = magnitudes.get(rank.min(magnitudes.len().saturating_sub(1))) else {
+        return (0.5, 0);
+    };
+    let after: Vec<f64> = xs
+        .windows(2)
+        .filter(|pair| pair[0].abs() >= *threshold)
+        .map(|pair| pair[1])
+        .collect();
+    if after.is_empty() {
+        return (0.5, 0);
+    }
+    (share_positive(&after), after.len())
+}
+
 fn tail(xs: &[f64]) -> &[f64] {
     &xs[xs.len().saturating_sub(20)..]
 }
@@ -415,6 +522,17 @@ impl FederationStage {
     }
 
     /// The id of the domain member for `class`.
+    /// Record a finished cycle's slowest stage, for the next pass's
+    /// self/system member to read.
+    pub fn observe_cycle(&mut self, slowest_stage: Duration) {
+        self.slowest_stage = Some(slowest_stage);
+    }
+
+    /// The slowest stage [`Self::observe_cycle`] last recorded.
+    pub fn slowest_stage(&self) -> Option<Duration> {
+        self.slowest_stage
+    }
+
     pub fn domain_member(class: &str) -> String {
         format!("{DOMAIN_PREFIX}{class}.global.meso")
     }
@@ -550,6 +668,28 @@ impl FederationStage {
                 0.3,
             ),
             declare(
+                RARE_REGIME.into(),
+                "markets",
+                "global",
+                10,
+                Abstraction::Macro,
+                "rare-regime",
+                ModelKind::Scenario,
+                &["sense:bar-closes"],
+                0.3,
+            ),
+            declare(
+                ALTERNATE_FUTURE.into(),
+                "markets",
+                "global",
+                20,
+                Abstraction::Macro,
+                "alternate-future",
+                ModelKind::Counterfactual,
+                &["sense:bar-closes"],
+                0.3,
+            ),
+            declare(
                 STANDING_ASIDE.into(),
                 "markets",
                 "global",
@@ -650,8 +790,9 @@ impl FederationStage {
                 // Microstructure unmeasured: the member says it barely knows.
                 _ => 0.7,
             };
+            let (after_tail, tail_days) = after_tail_moves(r);
             let at = now;
-            let views: [(&str, f64, f64, f64, f64); 5] = [
+            let views: [(&str, f64, f64, f64, f64); 7] = [
                 (
                     MOMENTUM,
                     logistic(0.5 * z_momentum),
@@ -674,6 +815,27 @@ impl FederationStage {
                     microstructure_uncertainty,
                 ),
                 (STRESS_SCENARIO, share_positive(&stressed), fit, 0.4, 0.6),
+                // No tail day with a day after it is no rare-regime
+                // evidence at all: the member says it knows nothing.
+                (
+                    RARE_REGIME,
+                    after_tail,
+                    fit,
+                    0.4,
+                    if tail_days == 0 {
+                        1.0
+                    } else {
+                        (2.0 * (after_tail * (1.0 - after_tail) / tail_days as f64).sqrt())
+                            .clamp(0.1, 1.0)
+                    },
+                ),
+                (
+                    ALTERNATE_FUTURE,
+                    1.0 - share_positive(&stressed),
+                    fit,
+                    0.3,
+                    0.6,
+                ),
                 (
                     STANDING_ASIDE,
                     base,
@@ -719,6 +881,8 @@ impl FederationStage {
                     },
                     &mut fed,
                     &mut refused,
+                    &mut self.views,
+                    &self.branches,
                 );
             }
             if any {
@@ -739,12 +903,25 @@ impl FederationStage {
         // halted? A tripped switch is sticky, so it says yes; otherwise the
         // risk rises with the capabilities the organisation holds and may not
         // use. Its view is the platform's own failure state as a forecast.
+        // WORLD-3052: latency and data health are the platform's own state
+        // too. A stage past its budget or a capability the degradation table
+        // holds stale each raise the risk; health nobody could read is
+        // counted as one degraded capability and widens the uncertainty,
+        // because unknown health is not good health.
         let system = &inputs.system;
+        let slow = system
+            .slowest_stage
+            .is_some_and(|d| d > SELF_STAGE_LATENCY_BUDGET);
+        let capabilities = qip_contracts::degradation::Capability::all().len();
+        let degraded = system.degraded_capabilities.unwrap_or(1).min(capabilities);
         let halted_p = if system.halted {
             0.9
         } else {
             0.05 + 0.1 * (system.expired_manifests.min(5) as f64 / 5.0)
+                + if slow { 0.1 } else { 0.0 }
+                + 0.1 * (degraded as f64 / capabilities as f64)
         };
+        let health_known = system.slowest_stage.is_some() && system.degraded_capabilities.is_some();
         let proposition = halted_proposition(inputs.cycle);
         if feed(
             &mut self.federation,
@@ -754,11 +931,17 @@ impl FederationStage {
                 probability: halted_p,
                 evidence_fit: 1.0,
                 causal_coherence: 0.6,
-                uncertainty: if system.halted { 0.1 } else { 0.3 },
+                uncertainty: match (system.halted, health_known) {
+                    (true, _) => 0.1,
+                    (false, true) => 0.3,
+                    (false, false) => 0.45,
+                },
                 at: now,
             },
             &mut fed,
             &mut refused,
+            &mut self.views,
+            &self.branches,
         ) {
             self.pending.insert(
                 proposition.clone(),
@@ -789,6 +972,8 @@ impl FederationStage {
                 },
                 &mut fed,
                 &mut refused,
+                &mut self.views,
+                &self.branches,
             ) {
                 self.pending.insert(
                     proposition.clone(),
@@ -849,6 +1034,11 @@ impl FederationStage {
             }
         }
 
+        // Decisions are acted on after every arbitration of the pass is
+        // recorded, so a branch opened or a merge made for one proposition
+        // cannot change which views another proposition's arbitration saw.
+        self.act_on_decisions(&arbitrations, now, &mut fed, &mut refused);
+
         let live = self.federation.live_specs(now);
         let population: Vec<MemberStanding> = live
             .iter()
@@ -896,6 +1086,130 @@ impl FederationStage {
         }
     }
 
+    /// Act on the `Branch` and `Merge` decisions the pass reached
+    /// (WORLD-1181, WORLD-3041); until now they were only labelled in the
+    /// review, so "preserve multiple live branches until an outcome resolves
+    /// them" held for no branch the cycle ever opened.
+    ///
+    /// A `Branch` decision means the top two scored views are too close to
+    /// pick between and too far apart to average: the runner-up's reading is
+    /// opened as a branch of the leader, fed whatever the runner-up is fed,
+    /// and scored when the proposition resolves, at which point the
+    /// federation closes it if it forecast the wrong side. A `Merge` decision
+    /// folds the two best branches into one. **Only branches are merged**: a
+    /// merge marks both parents merged and the federation stops feeding them,
+    /// so merging two roots would silence two members of the population the
+    /// stage is required to keep covered.
+    fn act_on_decisions(
+        &mut self,
+        arbitrations: &[Arbitration],
+        now: Timestamp,
+        fed: &mut BTreeSet<String>,
+        refused: &mut Vec<(String, String)>,
+    ) {
+        use qip_world_model::federation::ScoredView;
+        let by_standing = |views: &[ScoredView]| {
+            let mut ranked: Vec<ScoredView> = views.to_vec();
+            ranked.sort_by(|a, b| {
+                b.composite
+                    .unwrap_or(0.0)
+                    .total_cmp(&a.composite.unwrap_or(0.0))
+                    .then_with(|| a.model.cmp(&b.model))
+            });
+            ranked
+        };
+        for a in arbitrations {
+            match a.decision {
+                Decision::Branch => {
+                    let live = self
+                        .branches
+                        .keys()
+                        .filter(|id| {
+                            matches!(
+                                self.federation.status(id),
+                                Ok(qip_world_model::federation::Status::Live)
+                            )
+                        })
+                        .count();
+                    let ranked = by_standing(&a.disagreement.views);
+                    let (Some(leader), Some(rival)) = (ranked.first(), ranked.get(1)) else {
+                        continue;
+                    };
+                    // One branch per followed reading: a second branch of
+                    // the same member would be the same voice twice.
+                    if live >= FEDERATION_MAX_LIVE_BRANCHES
+                        || self.branches.values().any(|source| *source == rival.model)
+                        || self.branches.contains_key(&rival.model)
+                    {
+                        continue;
+                    }
+                    self.serial += 1;
+                    let root = leader.model.split('~').next().unwrap_or(&leader.model);
+                    let id = format!("{root}~branch-{}", self.serial);
+                    let hypothesis = format!(
+                        "follows {} at {:.3} against {} at {:.3}",
+                        rival.model, rival.probability, leader.model, leader.probability
+                    );
+                    let trigger = format!("{}: {}", a.proposition, a.reason);
+                    if let Err(error) =
+                        self.federation
+                            .branch(&leader.model, &id, &hypothesis, &trigger, now)
+                    {
+                        refused.push((id, error.message().to_string()));
+                        continue;
+                    }
+                    let seeded = self.federation.assess(
+                        &id,
+                        Assessment {
+                            proposition: a.proposition.clone(),
+                            probability: rival.probability,
+                            evidence_fit: rival.evidence_fit,
+                            causal_coherence: rival.causal_coherence,
+                            uncertainty: rival.uncertainty,
+                            at: now,
+                        },
+                    );
+                    match seeded {
+                        Ok(()) => {
+                            fed.insert(id.clone());
+                            self.views
+                                .entry(a.proposition.clone())
+                                .or_default()
+                                .insert(id.clone(), rival.probability);
+                            self.branches.insert(id, rival.model.clone());
+                        }
+                        Err(error) => refused.push((id, error.message().to_string())),
+                    }
+                }
+                Decision::Merge => {
+                    let ranked: Vec<ScoredView> = by_standing(&a.disagreement.views)
+                        .into_iter()
+                        .filter(|v| self.branches.contains_key(&v.model))
+                        .collect();
+                    let (Some(first), Some(second)) = (ranked.first(), ranked.get(1)) else {
+                        continue;
+                    };
+                    self.serial += 1;
+                    let id = format!("merge-{}", self.serial);
+                    match self
+                        .federation
+                        .merge(&first.model, &second.model, &id, &a.reason, now)
+                    {
+                        Ok(()) => {
+                            let followed = self.branches.remove(&first.model);
+                            self.branches.remove(&second.model);
+                            if let Some(source) = followed {
+                                self.branches.insert(id, source);
+                            }
+                        }
+                        Err(error) => refused.push((id, error.message().to_string())),
+                    }
+                }
+                Decision::Abstain | Decision::RequestMoreInformation(_) => {}
+            }
+        }
+    }
+
     /// Score every pending forecast reality has answered; abandon the ones it
     /// cannot or did not answer in time.
     fn resolve(
@@ -938,10 +1252,15 @@ impl FederationStage {
             match answer {
                 Some(Some(outcome)) => {
                     let closed = self.federation.resolve(&proposition, outcome, now);
+                    for id in &closed {
+                        self.branches.remove(id);
+                    }
+                    let forecasts = self.views.remove(&proposition).unwrap_or_default();
                     resolved.push(Resolution {
                         proposition,
                         outcome,
                         closed,
+                        forecasts,
                     });
                 }
                 Some(None) => {
@@ -959,6 +1278,9 @@ impl FederationStage {
                 }
             }
         }
+        let pending = &self.pending;
+        self.views
+            .retain(|proposition, _| pending.contains_key(proposition));
         (resolved, abandoned)
     }
 }
@@ -1028,6 +1350,8 @@ mod tests {
                 live_authority: false,
                 expired_manifests: 0,
                 thin_subjects: 0,
+                slowest_stage: Some(Duration::from_secs(1)),
+                degraded_capabilities: Some(0),
             },
             chain: chain.map(|confirmed_trades| ChainView { confirmed_trades }),
         }
@@ -1042,7 +1366,7 @@ mod tests {
         let mut stage = FederationStage::new();
         let review = stage.run(&inputs(1, 100.0, day(0), Some(3)), day(0));
         // Premise: the population exists and nothing was refused.
-        assert_eq!(review.population.len(), 7, "{review:?}");
+        assert_eq!(review.population.len(), 9, "{review:?}");
         assert!(review.refused.is_empty(), "{:?}", review.refused);
         let spanned = stage.federation().spanned();
         assert!(spanned.domains.len() >= 3);
@@ -1052,10 +1376,107 @@ mod tests {
         assert_eq!(spanned.kinds.len(), 3);
         assert!(review.uncovered.is_empty(), "{:?}", review.uncovered);
         assert!(review.silent.is_empty(), "{:?}", review.silent);
-        // One instrument proposition with five views, plus self and chain.
+        // One instrument proposition with seven views, plus self and chain.
         assert_eq!(review.arbitrations.len(), 3);
         let instrument = &review.arbitrations[0];
-        assert_eq!(instrument.disagreement.views.len(), 5);
+        assert_eq!(instrument.disagreement.views.len(), 7);
+        // WORLD-3051: the rare-regime and alternate-future members are in
+        // the population and each produced a view on the instrument.
+        for member in [RARE_REGIME, ALTERNATE_FUTURE] {
+            assert!(
+                review.population.iter().any(|m| m.id == member),
+                "{member} not in the population"
+            );
+            assert!(
+                instrument
+                    .disagreement
+                    .views
+                    .iter()
+                    .any(|v| v.model == member),
+                "{member} produced no view: {:?}",
+                instrument.disagreement.views
+            );
+        }
+    }
+
+    /// WORLD-3052: the self/system member's state carries latency and data
+    /// health. A slow stage alone, and a stale capability alone, each raise
+    /// its forecast that the platform is found halted. Mutation: ignore the
+    /// two inputs — all three forecasts are equal.
+    #[test]
+    fn a_slow_stage_or_a_stale_capability_moves_the_self_system_members_state() {
+        let forecast = |slowest: Duration, degraded: usize| {
+            let mut stage = FederationStage::new();
+            let mut inputs = inputs(1, 100.0, day(0), None);
+            inputs.system.slowest_stage = Some(slowest);
+            inputs.system.degraded_capabilities = Some(degraded);
+            let review = stage.run(&inputs, day(0));
+            review
+                .arbitrations
+                .iter()
+                .find(|a| a.proposition == halted_proposition(1))
+                .and_then(|a| a.disagreement.views.iter().find(|v| v.model == SELF_SYSTEM))
+                .map(|v| v.probability)
+                .expect("the self/system member forecast the halt")
+        };
+        let healthy = forecast(Duration::from_secs(1), 0);
+        // Premise: the slow stage is past the budget and the healthy one is
+        // inside it, so the comparison is about the budget being read.
+        let past = Duration::from_secs(61);
+        assert!(
+            past > SELF_STAGE_LATENCY_BUDGET && Duration::from_secs(1) < SELF_STAGE_LATENCY_BUDGET
+        );
+        let slow = forecast(past, 0);
+        let stale = forecast(Duration::from_secs(1), 2);
+        assert!(slow > healthy, "slow {slow} vs healthy {healthy}");
+        assert!(stale > healthy, "stale {stale} vs healthy {healthy}");
+    }
+
+    /// WORLD-3051: the rare-regime member reads the day after the tape's own
+    /// tail moves, and the alternate-future member is the stress world's
+    /// inverse. The tape's two largest moves are each followed by a rise,
+    /// so the rare-regime view is a rise for certain while the tape as a
+    /// whole is a coin flip. Mutation: feed the rare-regime member the
+    /// whole tape's share of rises — its view falls to about one half.
+    #[test]
+    fn the_rare_regime_member_reads_the_day_after_tail_moves_and_the_alternate_future_inverts_the_stress_world()
+     {
+        let mut stage = FederationStage::new();
+        let mut inputs = inputs(1, 100.0, day(0), None);
+        let mut returns = series(40, 0.0);
+        returns[10] = 0.08;
+        returns[11] = 0.02;
+        returns[25] = -0.09;
+        returns[26] = 0.03;
+        // A late run of rises, smaller than either tail move, so the stress
+        // world is not the coin flip its inverse would equal.
+        for r in &mut returns[36..] {
+            *r = 0.03;
+        }
+        // Premise: the whole tape is not one-sided, so a rise for certain
+        // can only come from reading the days after the tail moves.
+        let whole = share_positive(&returns);
+        assert!(whole > 0.3 && whole < 0.7, "{whole}");
+        inputs.instruments[0].returns = returns;
+        let review = stage.run(&inputs, day(0));
+        let views = &review.arbitrations[0].disagreement.views;
+        let view = |model: &str| {
+            views
+                .iter()
+                .find(|v| v.model == model)
+                .unwrap_or_else(|| panic!("{model} produced no view: {views:?}"))
+        };
+        assert!((view(RARE_REGIME).probability - 1.0).abs() < 1e-12);
+        assert!((view(RARE_REGIME).uncertainty - 0.1).abs() < 1e-12);
+        let stress = view(STRESS_SCENARIO).probability;
+        assert!(
+            (view(ALTERNATE_FUTURE).probability - (1.0 - stress)).abs() < 1e-12,
+            "alternate {} vs stress {stress}",
+            view(ALTERNATE_FUTURE).probability
+        );
+        // Premise for the inversion to mean anything: the stress view is
+        // not one half, where a view and its inverse coincide.
+        assert!((stress - 0.5).abs() > 1e-9, "{stress}");
     }
 
     /// MODEL-4009: a domain member per named asset class is declared and
@@ -1203,6 +1624,169 @@ mod tests {
         let json = serde_json::to_value(&review).unwrap();
         let back: FederationReview = serde_json::from_value(json).unwrap();
         assert_eq!(back.information_requests, review.information_requests);
+    }
+
+    /// A tape every drifting member reads as rising, so the panel splits and
+    /// the rival to the leader holds a one-sided view a falling close refutes.
+    fn rising(cycle: u64, close: f64, through: Timestamp) -> FederationInputs {
+        let mut i = inputs(cycle, close, through, None);
+        i.instruments[0].returns = series(40, 0.01);
+        i
+    }
+
+    fn branch_ids(stage: &FederationStage, now: Timestamp) -> Vec<String> {
+        stage
+            .federation()
+            .live_specs(now)
+            .iter()
+            .map(|s| s.id().to_string())
+            .filter(|id| id.contains("~branch-"))
+            .collect()
+    }
+
+    /// WORLD-1181 / WORLD-3041: a `Branch` decision was only labelled, so the
+    /// cycle never held a competing hypothesis. Mutation: skip the
+    /// `Federation::branch` call in `act_on_decisions` — the population stays
+    /// nine and no `Branched` event is journaled.
+    #[test]
+    fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
+        let mut stage = FederationStage::new();
+        let first = stage.run(&rising(1, 100.0, day(0)), day(0));
+        // Premise: nine members, no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 9);
+        assert!(branch_ids(&stage, day(0)).is_empty());
+        let second = stage.run(&rising(2, 101.0, day(1)), day(1));
+        let instrument = &second.arbitrations[0];
+        // Premise: the pass reached the decision under test.
+        assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
+        let branches = branch_ids(&stage, day(1));
+        assert_eq!(branches.len(), 1, "{branches:?}");
+        assert_eq!(second.population.len(), 10);
+        let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
+        assert_eq!(lineage.parents.len(), 1);
+        assert!(branches[0].starts_with(&lineage.parents[0]));
+        assert!(
+            second.events.iter().any(|e| matches!(
+                e,
+                qip_world_model::federation::Event::Branched { id, .. } if *id == branches[0]
+            )),
+            "{:?}",
+            second.events
+        );
+        // The same split persisting does not stack a second branch on the
+        // member that is already followed.
+        let third = stage.run(&rising(3, 101.5, day(2)), day(2));
+        assert_eq!(branch_ids(&stage, day(2)).len(), 1);
+        assert!(!third.silent.contains(&branches[0]), "{:?}", third.silent);
+    }
+
+    /// WORLD-3041: the branch holds a forecast until reality answers, and the
+    /// federation closes it with its Brier score when it forecast the wrong
+    /// side. Mutation: never branch — there is nothing to close and the
+    /// `expect` below fails.
+    #[test]
+    fn a_branch_that_forecast_the_wrong_side_is_closed_with_its_score_when_the_close_answers() {
+        let mut stage = FederationStage::new();
+        stage.run(&rising(1, 100.0, day(0)), day(0));
+        stage.run(&rising(2, 101.0, day(1)), day(1));
+        let branch = branch_ids(&stage, day(1))
+            .pop()
+            .expect("a branch was opened");
+        // The rival it follows read the tape as certain to rise; the close
+        // falls.
+        let third = stage.run(&rising(3, 100.0, day(2)), day(2));
+        let answered = third
+            .resolved
+            .iter()
+            .find(|r| r.proposition == instrument_proposition("AAA", 2))
+            .expect("the cycle-2 proposition resolves");
+        assert!(!answered.outcome);
+        assert!(answered.closed.contains(&branch), "{answered:?}");
+        assert!(matches!(
+            stage.federation().status(&branch),
+            Ok(qip_world_model::federation::Status::Closed { score, .. }) if (*score - 1.0).abs() < 1e-9
+        ));
+        assert!(!branch_ids(&stage, day(2)).contains(&branch));
+        // A closed branch is no longer fed or reported silent.
+        assert!(third.refused.is_empty(), "{:?}", third.refused);
+    }
+
+    /// WORLD-1181: a `Merge` folds two branches into one and never two roots.
+    /// Mutation: drop the `branches.contains_key` filter — the roots are
+    /// merged and the roots-kept assertion fails.
+    #[test]
+    fn a_merge_decision_folds_two_branches_into_one_and_leaves_the_roots_alone() {
+        use qip_world_model::federation::{Disagreement, ScoredView, ViewLineage};
+        let mut stage = FederationStage::new();
+        stage.run(&rising(1, 100.0, day(0)), day(0));
+        let roots: Vec<String> = stage
+            .federation()
+            .live_specs(day(0))
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
+        for (n, source) in [(1, MOMENTUM), (2, REVERSION)] {
+            let id = format!("{STANDING_ASIDE}~branch-{n}");
+            stage
+                .federation
+                .branch(STANDING_ASIDE, &id, "test", "test", day(0))
+                .expect("branch");
+            stage.branches.insert(id, source.to_string());
+        }
+        let view = |model: &str, parents: Vec<String>| ScoredView {
+            model: model.to_string(),
+            probability: 0.6,
+            evidence_fit: 0.5,
+            predictive_performance: Some(0.5),
+            causal_coherence: 0.5,
+            uncertainty: 0.3,
+            composite: Some(0.5),
+            lineage: ViewLineage {
+                depth: parents.len(),
+                parents,
+                trigger: None,
+            },
+        };
+        let mut views: Vec<ScoredView> = roots.iter().map(|r| view(r, Vec::new())).collect();
+        views.extend(
+            stage
+                .branches
+                .keys()
+                .map(|b| view(b, vec![STANDING_ASIDE.to_string()])),
+        );
+        let arbitration = Arbitration {
+            proposition: "AAA:next-close-up@1".into(),
+            at: day(0),
+            decision: Decision::Merge,
+            reason: "views agree".into(),
+            disagreement: Disagreement { views, spread: 0.0 },
+            arbitrated_probability: Some(0.6),
+            expired: Vec::new(),
+            research: None,
+        };
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 11);
+        let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
+        stage.act_on_decisions(
+            std::slice::from_ref(&arbitration),
+            day(0),
+            &mut fed,
+            &mut refused,
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        // 11 live, two branches merged away, one result: 10, every root kept.
+        let live: Vec<String> = stage
+            .federation()
+            .live_specs(day(0))
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
+        assert_eq!(live.len(), 10, "{live:?}");
+        assert!(roots.iter().all(|r| live.contains(r)));
+        assert_eq!(stage.branches.len(), 1);
+        // Replaying the same decision has no live pair left to fold.
+        stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 10);
     }
 
     #[test]

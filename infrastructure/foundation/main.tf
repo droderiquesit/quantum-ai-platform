@@ -149,6 +149,121 @@ resource "google_org_policy_policy" "allowed_member_domains" {
   }
 }
 
+# --- Hierarchical firewall policy on the folder (R12-SEC-9131) ---------------
+#
+# A project's own VPC rules are only as strong as whoever holds
+# `compute.securityAdmin` in it: one allow rule from 0.0.0.0/0 and a machine is
+# on the internet. A folder policy is evaluated before every VPC rule in every
+# project below it, and no project-level role can edit it, so the internet
+# deny here holds whatever a project does to its own rules.
+#
+# It denies only what no platform path uses. Private and shared address space
+# and Google's own front ends (health checks, the HTTPS load balancer's proxies,
+# Identity-Aware Proxy) are handed on to the project's VPC rules with
+# `goto_next`, which decide them exactly as today; every other IPv4 and IPv6
+# source is denied before those rules are read. Nothing in the platform root
+# exposes a VM directly — `compute.vmExternalIpAccess` above refuses the
+# address — so the deny changes no working path and refuses the next one
+# somebody opens by hand.
+
+resource "google_compute_firewall_policy" "platform" {
+  count = local.firewall_applied ? 1 : 0
+
+  parent      = "folders/${local.folder_id}"
+  short_name  = "${var.prefix}-platform"
+  description = "Denies internet ingress to every project in the platform folder before any VPC rule is read."
+
+  depends_on = [google_project_service.seed_compute]
+}
+
+locals {
+  firewall_applied = local.org_mode && var.hierarchical_firewall_enabled
+
+  # Handed on to the project's own rules, never allowed here.
+  firewall_delegated_ranges = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "35.191.0.0/16",   # Google health checks and proxy load balancers
+    "130.211.0.0/22",  # Google health checks and proxy load balancers
+    "35.235.240.0/20", # Identity-Aware Proxy TCP forwarding
+  ]
+}
+
+resource "google_compute_firewall_policy_rule" "delegate_private_and_google" {
+  count = local.firewall_applied ? 1 : 0
+
+  firewall_policy = google_compute_firewall_policy.platform[0].name
+  description     = "Private address space and Google front ends: the project's VPC rules decide."
+  priority        = 1000
+  direction       = "INGRESS"
+  action          = "goto_next"
+
+  match {
+    src_ip_ranges = local.firewall_delegated_ranges
+    layer4_configs {
+      ip_protocol = "all"
+    }
+  }
+}
+
+resource "google_compute_firewall_policy_rule" "deny_internet_ingress_ipv4" {
+  count = local.firewall_applied ? 1 : 0
+
+  firewall_policy = google_compute_firewall_policy.platform[0].name
+  description     = "Every other IPv4 source: denied before any VPC rule can admit it."
+  priority        = 2000
+  direction       = "INGRESS"
+  action          = "deny"
+  enable_logging  = true
+
+  match {
+    src_ip_ranges = ["0.0.0.0/0"]
+    layer4_configs {
+      ip_protocol = "all"
+    }
+  }
+}
+
+resource "google_compute_firewall_policy_rule" "deny_internet_ingress_ipv6" {
+  count = local.firewall_applied ? 1 : 0
+
+  firewall_policy = google_compute_firewall_policy.platform[0].name
+  description     = "Every IPv6 source: denied before any VPC rule can admit it."
+  priority        = 2001
+  direction       = "INGRESS"
+  action          = "deny"
+  enable_logging  = true
+
+  match {
+    src_ip_ranges = ["::/0"]
+    layer4_configs {
+      ip_protocol = "all"
+    }
+  }
+}
+
+resource "google_compute_firewall_policy_association" "platform" {
+  count = local.firewall_applied ? 1 : 0
+
+  name              = "${var.prefix}-platform-folder"
+  firewall_policy   = google_compute_firewall_policy.platform[0].id
+  attachment_target = google_folder.platform[0].name
+}
+
+# Hierarchical firewall policies are Compute Engine resources, and this root
+# bills its calls to the seed (`versions.tf`), so the seed needs the Compute
+# API the bootstrap script does not turn on. Kept out of `seed_apis`, whose
+# list is the script's.
+resource "google_project_service" "seed_compute" {
+  count = local.firewall_applied ? 1 : 0
+
+  project            = google_project.seed.project_id
+  service            = "compute.googleapis.com"
+  disable_on_destroy = false
+}
+
 # --- The seed project ----------------------------------------------------------
 #
 # Created by `scripts/bootstrap-foundation.sh` — under the organisation, or

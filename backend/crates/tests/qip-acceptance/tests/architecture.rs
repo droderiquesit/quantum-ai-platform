@@ -3834,3 +3834,218 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
     assert!(reachable.contains("qip-compliance"));
     assert!(reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"));
 }
+
+/// Every direct dependency one service crate declares on another, as Cargo
+/// resolved it on 2026-10-18. Thirteen edges, each a domain engine reading a
+/// *type* another engine publishes; none of them is a service reaching into
+/// another's mutable state. A new edge is a decision, so it is added here in
+/// the same change that adds it, with a reviewer reading why.
+const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 13] = [
+    ("qip-brokers", "qip-execution-engine"),
+    ("qip-capital-fabric", "qip-capital"),
+    ("qip-data-finder", "qip-market-ingestion"),
+    ("qip-data-finder", "qip-mesh"),
+    ("qip-evolution", "qip-lifecycle"),
+    ("qip-evolution", "qip-simulation-engine"),
+    ("qip-execution-engine", "qip-risk-engine"),
+    ("qip-lifecycle", "qip-simulation-engine"),
+    ("qip-portfolio-engine", "qip-optimization-engine"),
+    ("qip-reasoning-engine", "qip-world-model"),
+    ("qip-twin", "qip-learning-engine"),
+    ("qip-twin", "qip-simulation-engine"),
+    ("qip-world-model", "qip-entity-resolution"),
+];
+
+#[test]
+fn service_crates_depend_on_each_other_only_along_the_edges_this_suite_names() {
+    // R12-CONTRACT-9013. The blueprint wants a service that reads another's
+    // state directly to fail the architecture suite. The platform composes
+    // its services in one in-process `Platform` (qip-kernel) instead of
+    // exchanging Fabric contracts, so the seam that keeps a service out of
+    // another's state is the dependency graph: a service owns its domain and
+    // exposes it through types, and the only place two services meet is the
+    // kernel. `a_library_never_depends_on_a_service_or_an_application` pins
+    // the other direction; nothing pinned this one, so a `qip-risk-engine`
+    // that grew an edge to `qip-brokers` would have compiled, passed every
+    // solver and authority test, and quietly made the risk check depend on
+    // the venue-side ledger it is meant to veto before.
+    let services = crates_under("backend/crates/services");
+    assert!(
+        !services.is_empty(),
+        "no service crate was found, so a service-to-service edge cannot be seen"
+    );
+    let graph = dependency_graph();
+    let mut observed: BTreeSet<(String, String)> = BTreeSet::new();
+    for service in &services {
+        let direct = graph
+            .get(service)
+            .unwrap_or_else(|| panic!("{service} is a service crate absent from the graph"));
+        for dependency in direct.iter().filter(|name| services.contains(*name)) {
+            observed.insert((service.clone(), dependency.clone()));
+        }
+    }
+    let pinned: BTreeSet<(String, String)> = SERVICE_TO_SERVICE_EDGES
+        .iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect();
+    for (from, to) in &pinned {
+        assert!(
+            services.contains(from) && services.contains(to),
+            "the pinned edge {from} -> {to} names a crate that is not a service, so it permits \
+             nothing and hides a rename"
+        );
+    }
+    assert_eq!(
+        observed.difference(&pinned).collect::<Vec<_>>(),
+        Vec::<&(String, String)>::new(),
+        "a service gained a dependency on another service that SERVICE_TO_SERVICE_EDGES does not \
+         name; compose the two in qip-kernel, or add the edge with the reason"
+    );
+    assert_eq!(
+        pinned.difference(&observed).collect::<Vec<_>>(),
+        Vec::<&(String, String)>::new(),
+        "SERVICE_TO_SERVICE_EDGES names an edge that no longer exists; remove it so the list \
+         keeps meaning what it says"
+    );
+}
+
+#[test]
+fn the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd() {
+    // R12-GCP-8105. The ledger's durable write is `LedgerBackend::commit` of
+    // one `LedgerBatch` (balances, chain tail and consumer offset together,
+    // ADR 0100 §4). If a second crate named either, it would hold a second way
+    // to move the ledger of record that the idempotent, chain-checked consumer
+    // never sees. Scope, stated: this proves the *durable ledger of record* has
+    // one writer. It does not prove the kernel's in-process `TrackedCapital`
+    // or the cells' `UserLedger` are not written elsewhere; those are the
+    // working copies `multiple_independent_stores_claim_ledger_authority_...`
+    // documents, and the row stays PARTIAL until they read from the ledger.
+    let root = repository_root();
+    let mut naming: BTreeSet<String> = BTreeSet::new();
+    let mut scanned = 0usize;
+    for path in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("the file is under the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let parts: Vec<&str> = relative.split('/').collect();
+        // backend/crates/<group>/<crate>/src/...: tests and benches of any
+        // crate are not shipped code and may build fixtures.
+        if parts.len() < 6 || parts[4] != "src" {
+            continue;
+        }
+        scanned += 1;
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+        let production = qip_acceptance::production_text(&text);
+        let names = |token: &str| {
+            production
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|word| word == token)
+        };
+        if names("LedgerBackend") || names("LedgerBatch") {
+            naming.insert(parts[3].to_string());
+        }
+    }
+    assert!(scanned > 200, "only {scanned} source files were scanned");
+    assert_eq!(
+        naming,
+        BTreeSet::from(["qip-ledgerd".to_string()]),
+        "the ledger of record's write seam must be named by qip-ledgerd alone"
+    );
+    // Nothing links the ledger daemon: a library that could call its store
+    // from another process image would not need to name the seam at all.
+    let graph = dependency_graph();
+    assert!(graph.contains_key("qip-ledgerd"));
+    let dependents: BTreeSet<&String> = graph
+        .iter()
+        .filter(|(_, deps)| deps.contains("qip-ledgerd"))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        dependents.is_empty(),
+        "a crate links qip-ledgerd: {dependents:?}"
+    );
+}
+
+#[test]
+fn nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver() {
+    // R12-EVID-2040. A quantum result is an advisory candidate; it must not
+    // become evidence authenticity or a belief on its own. The structural
+    // reason is that the crates which hold evidence, the world model and the
+    // reasoning engine do not link the solvers at all, transitively, so there
+    // is no path along which a result type could be handed to them. The
+    // direct-name scan in `quantum_evidence.rs` is the other half.
+    let graph = dependency_graph();
+    for holder in ["qip-evidence", "qip-world-model", "qip-reasoning-engine"] {
+        assert!(
+            graph.contains_key(holder),
+            "{holder} is not a crate in this workspace; this test constrains nothing"
+        );
+        let reachable = reachable_from(&graph, holder);
+        assert!(
+            reachable.contains("qip-contracts"),
+            "{holder} reaches nothing it is known to depend on, so the absence proves nothing"
+        );
+        for solver in ["qip-quantum", "qip-optimization-engine"] {
+            assert!(
+                !reachable.contains(solver),
+                "{holder} can reach {solver}: {reachable:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act() {
+    // R12-AMBIENT-1055. An ambient output is an `Advisory<T>` whose payload is
+    // private; the one door is `promote`, and the one consumer of the promoted
+    // value is `qip-agency`'s `AmbientIntake::submit`. So a crate that cannot
+    // link `qip-agency` cannot act on an ambient output at all, which is a
+    // property of the compiled graph and not of what its source text happens
+    // to spell. `ambient_attention.rs` held this as a scan for the strings
+    // `qip_contracts::ambient` and `Advisory<`; that scan stays for the type
+    // names (qip-contracts is linked by everyone, so a graph cannot see who
+    // names a module in it), and this is the half the graph can hold.
+    let graph = dependency_graph();
+    assert!(
+        graph.contains_key("qip-agency"),
+        "qip-agency is not a crate in this workspace; this test constrains nothing"
+    );
+    let mut order_path: BTreeSet<String> = [
+        "qip-execution-engine",
+        "qip-brokers",
+        "qip-risk-engine",
+        "qip-portfolio-engine",
+        "qip-capital",
+        "qip-kernel",
+        "qip-edge-node",
+    ]
+    .iter()
+    .map(|name| name.to_string())
+    .collect();
+    order_path.extend(crates_under("backend/crates/edge"));
+    assert!(
+        order_path.len() >= 12,
+        "the order path resolved to {order_path:?}, too few to mean the whole path"
+    );
+    for member in &order_path {
+        assert!(
+            graph.contains_key(member),
+            "{member} is named as order path but is not a crate in this workspace"
+        );
+        let reachable = reachable_from(&graph, member);
+        assert!(
+            !reachable.contains("qip-agency"),
+            "{member} can reach qip-agency, the only consumer of a promoted ambient output: \
+             {reachable:?}"
+        );
+    }
+    // The absence means something only if the consumer is reachable from
+    // where it is meant to be: the deep brain hosts ambient cognition.
+    assert!(
+        reachable_from(&graph, "qip-deepbrain").contains("qip-agency"),
+        "the deep brain no longer links qip-agency, so the ambient road has moved"
+    );
+}

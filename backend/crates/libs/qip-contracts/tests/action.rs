@@ -190,3 +190,57 @@ fn one_intervention_leaves_three_linked_records_each_with_its_own_actor_and_time
     assert!(ExecutionRecord::execute(&plan, "sim-gateway", Timestamp::from_secs(15), "x").is_err());
     assert!(ExecutionRecord::execute(&plan, "", Timestamp::from_secs(30), "x").is_err());
 }
+
+/// R12-RES-7109: a revoked tool comes back only through `reauthorise`, on a
+/// named operator's authority. A reauthorisation that names nobody, or names
+/// a tool that was never revoked, is refused, because it would put a name on
+/// a decision nobody made.
+///
+/// Mutation: in `ToolRegistry::reauthorise`, drop the blank-operator refusal.
+/// The blank call clears the flag and the "still revoked" assertion fails.
+#[test]
+fn a_revoked_tool_stays_refused_until_a_named_operator_reauthorises_it() {
+    let mut registry = ToolRegistry::new();
+    registry.register(reg("payment")).unwrap();
+    assert!(
+        registry
+            .authorise("payment", "desk-chat", 1, 1, Timestamp::from_secs(1))
+            .is_ok(),
+        "premise: the registered tool acts"
+    );
+    assert!(
+        registry.reauthorise("payment", "ops-lead").is_err(),
+        "not revoked"
+    );
+    assert_eq!(registry.reauthorised_by("payment"), None);
+
+    registry.revoke("payment").unwrap();
+    assert!(registry.is_revoked("payment"));
+    assert!(
+        registry.reauthorise("payment", " ").is_err(),
+        "blank operator"
+    );
+    assert!(registry.is_revoked("payment"), "still revoked");
+    assert!(
+        registry.reauthorise("ghost", "ops-lead").is_err(),
+        "unregistered"
+    );
+    let err = registry
+        .authorise("payment", "desk-chat", 1, 1, Timestamp::from_secs(2))
+        .unwrap_err();
+    assert!(err.message().contains("tool is revoked"), "{err}");
+    assert!(
+        registry.register(reg("payment")).is_err(),
+        "re-registering is no way round the stop"
+    );
+
+    registry.reauthorise("payment", "ops-lead").unwrap();
+    assert!(!registry.is_revoked("payment"));
+    assert_eq!(registry.reauthorised_by("payment"), Some("ops-lead"));
+    assert!(
+        registry
+            .authorise("payment", "desk-chat", 2, 1, Timestamp::from_secs(3))
+            .is_ok(),
+        "the reauthorised tool acts again"
+    );
+}
