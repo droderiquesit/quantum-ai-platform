@@ -447,8 +447,31 @@ fn every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_
              is a way out that no gateway log records"
         );
 
-        for (name, _) in resources(text, "google_compute_address") {
+        for (name, body) in resources(text, "google_compute_address") {
             let reference = format!("google_compute_address.{name}");
+            // An INTERNAL reservation holds an address inside a subnet and
+            // reaches nothing outside it (FABRIC-8099's broker addresses).
+            // It is held to the opposite rule: it may never be handed to a
+            // gateway or an access config, where it would be read as the
+            // egress address this check exists to pin to a NAT.
+            if compact(&body).contains("address_type=\"INTERNAL\"") {
+                assert!(
+                    compact(&body).contains("subnetwork="),
+                    "{path}: the internal address `{name}` names no subnetwork, so nothing \
+                     says which network it is internal to"
+                );
+                let exposed = text.lines().any(|line| {
+                    let line = line.trim_start();
+                    (line.starts_with("nat_ip") || line.starts_with("access_config"))
+                        && line.contains(&reference)
+                });
+                assert!(
+                    !exposed,
+                    "{path}: the internal address `{name}` is placed on a NAT or an access \
+                     config, where it would carry internet traffic"
+                );
+                continue;
+            }
             let on_a_gateway = text
                 .lines()
                 .any(|line| line.trim_start().starts_with("nat_ips") && line.contains(&reference));
