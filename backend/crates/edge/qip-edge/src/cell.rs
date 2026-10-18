@@ -214,6 +214,28 @@ pub const GATE_QUOTE_BUDGET: &str = "quote_budget";
 /// so the label needs no second enumeration.
 pub const GATE_CONDUCT_SPOOFING: &str = "conduct_spoofing";
 
+/// The gate an intent is refused under when two venues the cell reaches
+/// serve mids for the same instrument further apart than
+/// [`CellConfig::cross_source_tolerance`].
+///
+/// A poisoned or manipulated feed is a book that looks healthy on its own:
+/// sequenced, fresh, two-sided. Every per-book check admits it. What gives
+/// it away is a second source for the same instrument, and with two
+/// sources the cell cannot tell which is lying — so it trades on neither
+/// until they agree, which is the fail-closed reading. With one source there
+/// is nothing to compare and nothing is refused; that is a limit of what
+/// the cell can know, stated here so nobody reads it as a pass. Directional
+/// intents only: an arbitrage cycle is priced from the disagreement and is
+/// bounded by its own scanner and net-edge rules. Refused through
+/// [`Cell::refuse`], so the label needs no second enumeration.
+pub const GATE_CROSS_SOURCE: &str = "cross_source";
+
+/// Five per cent. Venues quoting one instrument normally sit within a few
+/// basis points; a gap twenty times the widest arbitrage the scanner acts
+/// on is a broken or manipulated book, not an opportunity.
+pub const DEFAULT_CROSS_SOURCE_TOLERANCE: Decimal =
+    Decimal::from_raw(qip_core::decimal::SCALE / 20);
+
 /// The gate a cell refuses a cycle under when its legs' venues fill too far
 /// apart in time (§32.1). Refused through [`Cell::refuse`] like every other
 /// pass gate, so the label needs no second enumeration.
@@ -505,6 +527,12 @@ pub struct CellConfig {
     /// control that defaulted to absent would be the spoofing pattern
     /// waiting for a strategy that happens to produce it.
     pub conduct: ConductPolicy,
+    /// How far, as a fraction of the other source's mid, the chosen venue's
+    /// mid for an instrument may sit from the mid another venue this cell
+    /// reaches serves for the same instrument before the intent is refused
+    /// under [`GATE_CROSS_SOURCE`]. Always in force; validated at
+    /// [`Cell::new`], where a bound outside `(0, 1)` stops assembly.
+    pub cross_source_tolerance: Decimal,
     /// Whether this cell reads the journal-pressure wire (ADR 0100 §6).
     ///
     /// Off by default, and that is the decision rather than an omission. A
@@ -590,6 +618,7 @@ impl CellConfig {
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
             conduct: ConductPolicy::default(),
+            cross_source_tolerance: DEFAULT_CROSS_SOURCE_TOLERANCE,
             journal_wire: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
@@ -721,6 +750,16 @@ impl CellConfig {
     /// check that cannot fire — the very thing the rest of this list exists
     /// to remove.
     pub fn validate(&self) -> Result<()> {
+        // Refused, not clamped: a bound of zero refuses any two venues that
+        // differ by a tick, and one of a whole mid or more admits any book.
+        if !self.cross_source_tolerance.is_positive() || self.cross_source_tolerance >= Decimal::ONE
+        {
+            return Err(Error::invalid(format!(
+                "a cross-source tolerance of {} can never judge two sources; state a fraction \
+                 above zero and below one",
+                self.cross_source_tolerance
+            )));
+        }
         if self.cell_id.trim().is_empty() {
             return Err(Error::invalid(
                 "a cell was assembled with no cell id; orders are numbered and region holds are \
@@ -4879,6 +4918,10 @@ impl Cell {
             self.refuse(report, "pricing", "the book serves no usable price", now);
             return None;
         };
+        if let Some(reason) = self.cross_source_disagreement(&venue, object_id, price, now) {
+            self.refuse(report, GATE_CROSS_SOURCE, &reason, now);
+            return None;
+        }
         // The price the intent is *reasoned* at is the mid; the price it is
         // *sent* at is decided by the strategy's policy when the net is
         // placed, and a strategy that stated none is refused here, before
@@ -4900,6 +4943,51 @@ impl Cell {
         }
 
         Some((venue, price))
+    }
+
+    /// Why `price`, the mid `venue` serves for `object_id`, cannot be
+    /// trusted against another venue's mid for the same instrument, or
+    /// `None` when every other usable source agrees within the tolerance
+    /// (see [`GATE_CROSS_SOURCE`]). A source is usable when its book is
+    /// fresh, priced, accepting orders and not withheld — the same tests
+    /// [`Self::venue_for`] applies — because a stale book disagreeing is
+    /// staleness, which has its own gate.
+    fn cross_source_disagreement(
+        &self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        price: Decimal,
+        now: Timestamp,
+    ) -> Option<String> {
+        let tolerance = self.config.cross_source_tolerance;
+        for other in &self.config.venues {
+            if other == venue || self.venue_withheld(other, now).is_some() {
+                continue;
+            }
+            let Some(state) = self.liquidity.get(other, object_id) else {
+                continue;
+            };
+            if state.is_stale() || !state.status().accepts_orders() {
+                continue;
+            }
+            let Some(reference) = state.mid() else {
+                continue;
+            };
+            // A non-positive reference mid is a book that cannot be divided
+            // by; it disagrees with any positive price by definition.
+            let gap = (price - reference).abs().checked_div(reference);
+            if gap.is_none_or(|gap| gap > tolerance) {
+                return Some(format!(
+                    "{} serves a mid of {price} for {} and {} serves {reference}, further apart \
+                     than the {tolerance} this cell admits; one of the two sources is wrong and \
+                     the cell cannot tell which, so it trades on neither until they agree",
+                    venue.as_str(),
+                    object_id.as_str(),
+                    other.as_str(),
+                ));
+            }
+        }
+        None
     }
 
     /// The price an order for `strategy` taking `side` of `object_id` at

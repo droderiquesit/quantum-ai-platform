@@ -4199,7 +4199,7 @@
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs::the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver"
     ],
-    "gap": "Composite clause: constituent obligations (agency conduct/authorization rows) are not all COMPLETE.",
+    "gap": "Composite clause: the constituent agency conduct and authorization rows are not all COMPLETE. R12-COVERAGE-7190 is PARTIAL (the coordinated-voices check is unreachable through preflight; AGENCY-6105 MISSING) and AGENCY-1056/1057/1059/1060/1063-1069 are PARTIAL. The composite proof exists and holds: architecture.rs::the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver; this row closes with those constituents, with no further code of its own.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4210,7 +4210,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Corrected again 2026-10-18 (lane L08): the gap now names the blocking constituents and the acceptance test as the composite proof; the test was run in this lane with the architecture suite (52 passed)."
   },
   {
     "id": "R12-COVERAGE-7192",
