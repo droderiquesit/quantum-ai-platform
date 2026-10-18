@@ -1457,13 +1457,15 @@
   {
     "id": "R12-QUANT-10068",
     "status": "PARTIAL",
-    "current": "qip-quantum always computes a classical baseline (tests), hosted results remain candidates; trust zones permit only optimisation to reach IBM. No QPU budget ledger tested; egress not applied.",
+    "current": "Every quantum path computes a classical baseline and hosted results remain candidates; the quantum arm is now a budgeted dependency: a cumulative spend ceiling (RoutingPolicy::quantum_spend_budget_micros) is enforced in ComputeRouter::estimate against a ledger rebuilt from the journal on restart, beside the per-job cap. Trust zones permit only optimisation to reach IBM. Egress is not applied and HostedProvider has no production caller.",
     "evidence": [
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 the_benchmark_computes_a_classical_baseline_even_when_a_quantum_solver_is_available",
       "backend/crates/libs/qip-quantum/tests/hosted.rs:631 a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1623 cumulative ceiling in estimate",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it"
     ],
-    "gap": "QPU spend budget enforcement and deployment.",
+    "gap": "IBM access itself: HostedProvider has no production caller and the egress proxy is not applied, so the budgeted gateway has never been in front of a real device. The spend budget is enforced and tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1471,10 +1473,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum",
+    "verification": "cargo test -p qip-optimization-engine --test optimization the_quantum_arm_stops_at_its_cumulative_spend_ceiling; cargo test -p qip-quantum",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L19: the budget half is closed (see R12-QUANT-9046); the remaining half is deploy-dependent and owner-gated."
   },
   {
     "id": "R12-FABRIC-10069",
@@ -1675,28 +1677,28 @@
   {
     "id": "R12-FABRIC-10078",
     "status": "PARTIAL",
-    "current": "qip-ledgerd now runs a real fabric consumer (required fabric URL) that resumes from its store's offset; SDK group commit/resume tested.",
+    "current": "qip-ledgerd runs one PartitionWorker per partition against the broker's consumer group (join/commit through GroupCoordinator, seated by qip-streaming's event_fabric::Service, which qip-fabricd composes). It resumes from its store's cursor, committed in the same write as each posting, and commits the group checkpoint after each applied batch; a test proves that after a restart the group checkpoint names exactly the batch the store's cursor resumes past.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/group.rs",
-      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs:1-12",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 placeholder consumer",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::resume_offset",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:615 PartitionWorker::step group commit",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCoordinator seat",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:854 after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Only qip-ledgerd consumes; it resumes from its own store offset, not a broker consumer-group checkpoint; GroupCoordinator has no binary caller.",
+    "gap": "Only one warm service consumes the fabric: qip-ledgerd is the sole production caller of the event_fabric Consumer (grep 'Consumer::new' outside tests finds qip-transport's definition and qip-ledgerd only). The statement names warm services in the plural; no second warm consumer (for example a read model in qip-api) pulls a partition.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming",
+    "verification": "cargo test -p qip-ledgerd --test fabric",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L15: the previous gap (no broker checkpoint, GroupCoordinator with no binary caller) was stale. Added after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past; mutation: committing batch.base_offset.saturating_sub(1) in step times the test out waiting for the checkpoint to reach the store's batch. Kept PARTIAL for the plural only."
   },
   {
     "id": "R12-DATA-10079",
@@ -2836,14 +2838,15 @@
   },
   {
     "id": "R12-RES-10128",
-    "status": "PARTIAL",
-    "current": "Ledger restart replays accumulated P1 records idempotently (checkpoint held, balances equal clean refold); the worker retries a refusing store forever in apply_until_committed.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd's PartitionWorker, the worker the binary runs, retries a refusing store in apply_until_committed without moving the store cursor or the broker group checkpoint; once writes are accepted the same fills are booked once and the balances equal a clean refold. A store lost outright (a fresh empty store under the same consumer group, whose checkpoint is past every fill) rebuilds from the retained P1 partition to the same balances, because the store's cursor, not the group's, is what resumes.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::PartitionWorker::apply_until_committed",
-      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 (LedgerSink, not used by ledgerd)"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::apply_until_committed (retry, never skip)",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:965 a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "No test makes the store/Spanner refuse writes under a running worker; the retry-forever test targets qip-streaming's LedgerSink, which qip-ledgerd does not use.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2854,10 +2857,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming; cargo test -p qip-ledgerd",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement is about the store being lost; only process-down/restart is tested through the real consumer."
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The store refuses through a LedgerBackend wrapper in the test (the container runs as root, so an unwritable directory refuses nothing); the worker, store and broker are the production types. Mutation: answering a store error in apply_until_committed with Ok(Disposition::Advanced) instead of retrying fails the test at the 'group checkpoint holds' assertion. Spanner-specific loss is the same worker over SpannerBackend and is not separately driven."
   },
   {
     "id": "R12-RES-10129",
