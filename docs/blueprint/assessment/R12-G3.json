@@ -1092,9 +1092,10 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3268 every_deployable_has_its_own_cloud_run_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2354 no_workload_runs_as_the_projects_default_compute_identity",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something",
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names"
     ],
-    "gap": "Per-workload identity is enforced; grant minimality ('only the grants it uses') is not tested per workload.",
+    "gap": "The role allow lists for the Cloud Run workload module, the execution node, qip-ledgerd and the fabric broker are committed in workload_identity.rs and compared for equality, so a widened identity is a diff to a test (2026-10-18). Not covered: the CI, infra, build, image-bake, console, landing, model-pack-publisher and GitOps control-plane accounts, and any evidence that each held role is actually used (a pinned list is a ceiling, not a use measurement).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1102,10 +1103,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Identity separation is tested (thinly); 'only the grants it uses' per workload has no assertion."
+    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file."
   },
   {
     "id": "R12-SEC-10051",
