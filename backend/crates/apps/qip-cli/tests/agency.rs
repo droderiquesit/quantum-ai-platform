@@ -156,7 +156,7 @@ fn request(window: u64) -> Value {
     })
 }
 
-/// The request, asking to widen the market policy on a randomised
+/// The request, asking to widen the market policy on a hold-out
 /// experiment whose data reproduces the attribution, and to act under it.
 fn acting(window: u64) -> Value {
     let mut document = request(window);
@@ -193,9 +193,34 @@ fn acting(window: u64) -> Value {
             "identifiability": 0.8,
             "resulting_updates": ["raise quote-size prior"]
         },
-        "evidence": {"randomised_experiment": {"treated": [3.0, 4.0, 5.0], "control": [0.0, 1.0, 2.0]}}
+        "evidence": hold_out_evidence()
     });
     document
+}
+
+/// R12-COVERAGE-7188: evidence for a treated-minus-held-out effect of 3.0
+/// from a hold-out the binary draws itself (twelve cells, a quarter held
+/// out). Replaces the `randomised_experiment` fixture, whose groups the
+/// operator formed.
+fn hold_out_evidence() -> Value {
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = qip_agency::estimate::Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcomes: serde_json::Map<String, Value> = units
+        .iter()
+        .map(|u| {
+            (
+                u.clone(),
+                json!(if design.treated().contains(u) {
+                    4.0
+                } else {
+                    1.0
+                }),
+            )
+        })
+        .collect();
+    json!({"hold_out_experiment": {
+        "seed": "seed-2026-10-18", "units": units, "hold_out_bps": 2500, "outcomes": outcomes
+    }})
 }
 
 struct Scratch {
@@ -351,7 +376,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
     );
     assert_eq!(code, 3, "stdout {out} stderr {err}");
     assert!(
-        out.contains("widened Market on a RandomisedExperiment estimate"),
+        out.contains("widened Market on a HoldOutExperiment estimate"),
         "{out}"
     );
     assert!(out.contains("outcome: attempted and refused"), "{out}");
@@ -545,6 +570,98 @@ fn the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped()
         "{out}"
     );
     assert!(out.contains("outcome: shadowed"), "{out}");
+}
+
+/// R12-COVERAGE-7188: an operator whose hold-out the binary refused (a cell
+/// dropped) cannot resubmit the same outcomes as two groups of their own
+/// forming and widen anyway. The groups are the very ones the design drew
+/// and the outcomes the very ones supplied, so the only thing that changed
+/// is who claims to have formed the groups. Claiming `experiment` is refused
+/// because the method does not earn it; claiming what the method does earn
+/// (`not_identified`) is refused because nothing unidentified widens.
+///
+/// Mutation: in `estimate::operator_formed_comparison` restore
+/// `Identification::Experiment` — the first resubmission then widens and the
+/// binary exits 3 with "widened Market on a RandomisedExperiment estimate".
+#[test]
+fn the_binary_refuses_to_widen_on_operator_chosen_groups_resubmitted_as_the_same_data() {
+    let scratch = Scratch::new("operator-groups");
+    let policy = scratch.write("policy.json", &policy_document());
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcome = |u: &String| {
+        if design.treated().contains(u) {
+            4.0
+        } else {
+            1.0
+        }
+    };
+    let group = |cells: &std::collections::BTreeSet<String>| -> Vec<f64> {
+        cells.iter().map(outcome).collect()
+    };
+    let resubmitted = json!({"randomised_experiment": {
+        "treated": group(design.treated()), "control": group(design.control())
+    }});
+
+    // Premise: the unmodified hold-out widens, so a refusal below is the
+    // resubmission's and not a fixture fault.
+    let whole = scratch.write("whole.json", &acting(1));
+    let (out, err, code) = qip(
+        &[&policy, &scratch.journal(), &whole],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 3, "premise: stdout {out} stderr {err}");
+    assert!(
+        out.contains("widened Market on a HoldOutExperiment"),
+        "{out}"
+    );
+
+    for (name, label, identifiability, reason) in [
+        (
+            "claims-experiment",
+            json!("experiment"),
+            0.8,
+            "earned by the method",
+        ),
+        (
+            "claims-nothing",
+            json!("not_identified"),
+            0.0,
+            "not identified",
+        ),
+    ] {
+        let mut document = acting(1);
+        document["widening"]["evidence"] = resubmitted.clone();
+        document["widening"]["attribution"]["identification"] = label;
+        document["widening"]["attribution"]["identifiability"] = json!(identifiability);
+        let path = scratch.write(&format!("{name}.json"), &document);
+        let fresh = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &fresh, &path],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        assert_eq!(code, 0, "{name}: stdout {out} stderr {err}");
+        assert!(out.contains("widening Market refused"), "{name}: {out}");
+        assert!(!out.contains("widened Market"), "{name}: {out}");
+        assert!(out.contains("outcome: shadowed"), "{name}: {out}");
+        let journaled = records(&fresh);
+        assert!(
+            journaled.iter().any(|r| matches!(
+                r,
+                AgencyRecord::WideningRefused { reason: why, .. } if why.contains(reason)
+            )),
+            "{name}: expected a refusal containing `{reason}`: {out}"
+        );
+        assert!(
+            !journaled.iter().any(|r| matches!(
+                r,
+                AgencyRecord::Widened { .. } | AgencyRecord::Executed { .. }
+            )),
+            "{name}: nothing widened or executed"
+        );
+    }
 }
 
 /// R12-AGENCY-6088: a pass is simulated against the futures of a market twin
