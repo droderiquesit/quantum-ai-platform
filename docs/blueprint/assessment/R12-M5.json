@@ -1622,13 +1622,15 @@
   {
     "id": "R12-EXEC-5071",
     "status": "PARTIAL",
-    "current": "VenueAdapter trait (backend/crates/services/qip-brokers/src/adapter.rs:353-400: connect, authenticate, heartbeat, market_data, submit_order, cancel_order, requirements) with NativeExtension (:312); implemented by simulated exchange and DEX simulator only.",
+    "current": "VenueAdapter (backend/crates/services/qip-brokers/src/adapter.rs:353) with NativeExtension and the submit_native door (native_extensions :495, submit_native_order :505) is implemented by two adapters: SimulatedExchange (exchange.rs:1042), which declares and carries its native post-only order (exchange.rs:1161-1191), and RestOrderEntryAdapter (rest.rs:1275), which declares none. There is no DEX simulator adapter: qip-brokers/src/dex.rs holds DexVenue, a feasibility and cost model, not a VenueAdapter.",
     "evidence": [
       "backend/crates/services/qip-brokers/src/adapter.rs:353 VenueAdapter",
-      "backend/crates/services/qip-brokers/src/exchange.rs",
-      "backend/crates/services/qip-brokers/src/dex.rs"
+      "backend/crates/services/qip-brokers/src/adapter.rs:495-515 native_extensions / submit_native_order defaults",
+      "backend/crates/services/qip-brokers/src/exchange.rs:1161-1191 post-only native extension",
+      "backend/crates/services/qip-brokers/src/rest.rs:1275 RestOrderEntryAdapter declares no extension",
+      "backend/crates/services/qip-brokers/src/dex.rs:76 DexVenue is a cost model"
     ],
-    "gap": "Real venue adapters (blocked for live order entry); capability descriptors per venue.",
+    "gap": "The clause is 'each adapter exposes its native extension'. RestOrderEntryAdapter exposes none, so either it declares and carries one native instruction its wire protocol supports (with a test whose mutation removing the declaration fails), or the row records that a generic REST adapter has no native feature to keep. A DEX venue adapter does not exist to extend; the triage closure assumed one. Real venue adapters remain refused by ADR 0003/0021.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1639,7 +1641,7 @@
     "verification": "cargo test -p qip-brokers",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: triage closure (DexSimulator native extension) not applicable — no such type. Not changed in code: RestOrderEntryAdapter is on the order path the order_placement_paths acceptance suite pins, which is beyond an S row."
   },
   {
     "id": "R12-EXEC-5072",
