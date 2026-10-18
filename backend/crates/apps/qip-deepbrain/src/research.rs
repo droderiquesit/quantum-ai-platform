@@ -346,6 +346,48 @@ pub struct ResearchConfig {
     /// research is off until somebody budgets it, and every grant it does
     /// make charges its classical baseline to the CPU budget (ADR 0006).
     pub qpu_per_sweep: Decimal,
+    /// The most compute units each research agent — the reputation cell
+    /// its bids are weighted by — may be charged in one market round,
+    /// across every resource (R12-AMBIENT-9034). Empty by default: an agent
+    /// the map does not name is bounded by the resource budgets alone.
+    pub agent_budgets: BTreeMap<ReputationKey, Decimal>,
+}
+
+/// The variable naming per-agent compute budgets:
+/// `domain/horizon/regime=units`, comma-separated.
+pub const AGENT_BUDGETS_VARIABLE: &str = "QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS";
+
+/// Parse [`AGENT_BUDGETS_VARIABLE`]. Every entry needs all three key parts
+/// and a non-negative number of units; a malformed entry or a key named
+/// twice is refused rather than skipped, because an agent whose bound was
+/// silently dropped is an agent bounded by nothing.
+pub fn parse_agent_budgets(raw: &str) -> Result<BTreeMap<ReputationKey, Decimal>> {
+    let mut out = BTreeMap::new();
+    for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let refuse = || {
+            Error::invalid(format!(
+                "{AGENT_BUDGETS_VARIABLE} entry {entry:?} is not domain/horizon/regime=units with \
+                 non-negative units"
+            ))
+        };
+        let (key, units) = entry.split_once('=').ok_or_else(refuse)?;
+        // The regime is the last part and may itself hold a `/` — the
+        // platform's regime key is `market/volatility`.
+        let parts: Vec<&str> = key.splitn(3, '/').collect();
+        let [domain, horizon, regime] = parts.as_slice() else {
+            return Err(refuse());
+        };
+        let units = Decimal::parse(units.trim())
+            .filter(|d| !d.is_negative())
+            .ok_or_else(refuse)?;
+        let key = ReputationKey::new(domain, horizon, regime)?;
+        if out.insert(key, units).is_some() {
+            return Err(Error::invalid(format!(
+                "{AGENT_BUDGETS_VARIABLE} names {domain}/{horizon}/{regime} twice; state one budget"
+            )));
+        }
+    }
+    Ok(out)
 }
 
 impl Default for ResearchConfig {
@@ -357,6 +399,7 @@ impl Default for ResearchConfig {
             signal_ttl: Duration::from_hours(1),
             acquisition_budget_bp: ACQUISITION_BUDGET_BP,
             qpu_per_sweep: Decimal::ZERO,
+            agent_budgets: BTreeMap::new(),
         }
     }
 }
@@ -404,6 +447,9 @@ impl ResearchConfig {
                          units; 0 grants no quantum research"
                     ))
                 })?;
+        }
+        if let Some(raw) = lookup(AGENT_BUDGETS_VARIABLE) {
+            config.agent_budgets = parse_agent_budgets(&raw)?;
         }
         Ok(config)
     }
@@ -2305,7 +2351,12 @@ impl ResearchLoop {
             (ComputeResourceType::Tpu, Decimal::ZERO),
             (ComputeResourceType::Qpu, self.config.qpu_per_sweep),
         ]);
-        let allocation = self.meta.allocate(&bids, &budget, now)?;
+        // Each research agent is bounded by its stated budget as well as the
+        // resources (R12-AMBIENT-9034): without it one well-reputed agent
+        // could take every unit of the round.
+        let allocation =
+            self.meta
+                .allocate_within(&bids, &budget, &self.config.agent_budgets, now)?;
         let mut granted: BTreeMap<String, Decimal> = BTreeMap::new();
         for grant in &allocation.grants {
             let question = grant.allocation.work_id().to_string();
