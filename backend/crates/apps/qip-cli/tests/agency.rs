@@ -15,8 +15,11 @@
 
 use qip_agency::estimate::Experiment;
 use qip_agency::journal::{self, AgencyRecord};
+use qip_core::{Duration, Timestamp};
 use qip_events::EventLog;
+use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -533,6 +536,103 @@ fn the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped()
         "{out}"
     );
     assert!(out.contains("outcome: shadowed"), "{out}");
+}
+
+/// R12-AGENCY-6088: a pass is simulated against the futures of a market twin
+/// the document describes, beside its declared scenarios, under every
+/// structural model. Mutation: in `Session::pass`, pass `None` instead of the
+/// twin to `run_governed_with` — the journal holds only the declared two.
+#[test]
+fn the_binary_simulates_a_pass_against_the_futures_of_the_twin_the_document_describes() {
+    let scratch = Scratch::new("twin");
+    let policy = scratch.write("policy.json", &policy_document());
+    let series = BTreeMap::from([(
+        "EURUSD".to_string(),
+        (1..=12)
+            .map(|i| {
+                (
+                    Timestamp::from_secs(i),
+                    1.10 + [0.0, 0.0005, -0.0007, 0.0003][(i % 4) as usize],
+                )
+            })
+            .collect::<Vec<_>>(),
+    )]);
+    let config = TreeConfig {
+        horizon: Duration::from_secs(60),
+        shock_sigmas: vec![1.0, 2.0],
+        propagation: vec![0.5, 1.0],
+        prune_below: 0.01,
+        split_beyond_sigmas: 4.0,
+        max_branches: 64,
+    };
+    let drivers = vec![WorldDriver {
+        id: "evt-rates".into(),
+        sensitivities: BTreeMap::from([("EURUSD".to_string(), 1.0)]),
+        evidence: vec!["doc-1".into()],
+    }];
+    let tree = FutureTree::grow(
+        &TwinState::fit(&series, Timestamp::from_secs(12)).unwrap(),
+        &drivers,
+        config.clone(),
+    )
+    .unwrap();
+    let live = tree.live().count();
+    assert!(live >= 2, "premise: the twin grew {live} live futures");
+
+    let mut shadow = acting(1);
+    shadow.as_object_mut().unwrap().remove("widening");
+    shadow.as_object_mut().unwrap().remove("act_as");
+    let scenarios = |document: &Value, name: &str| -> Vec<String> {
+        let path = scratch.write(&format!("{name}.json"), document);
+        let journal = scratch.dir.join(format!("{name}.jsonl"));
+        let (out, err, code) = qip(
+            &[&policy, &journal, &path],
+            &["--policy", "--journal", "--request"],
+            &[],
+        );
+        assert_eq!(code, 0, "{name}: stdout {out} stderr {err}");
+        records(&journal)
+            .into_iter()
+            .find_map(|r| match r {
+                AgencyRecord::PassConcluded { simulations, .. } => {
+                    Some(simulations.into_iter().map(|b| b.scenario).collect())
+                }
+                _ => None,
+            })
+            .expect("the pass is concluded on the journal")
+    };
+    let declared = scenarios(&shadow, "declared");
+    assert_eq!(
+        declared,
+        ["calm", "stressed"],
+        "premise: no twin, two scenarios"
+    );
+
+    let mut with_twin = shadow.clone();
+    with_twin["twin"] = json!({
+        "as_of": Timestamp::from_secs(12),
+        "series": series,
+        "drivers": drivers,
+        "config": config,
+        "bind": {"spread": "EURUSD"}
+    });
+    let simulated = scenarios(&with_twin, "twin");
+    let from_twin = simulated.iter().filter(|s| s.starts_with("twin:")).count();
+    assert_eq!(from_twin, live, "one result per live future: {simulated:?}");
+    assert_eq!(simulated.len(), 2 + live, "the declared two beside them");
+
+    // A binding to an instrument the twin does not hold is refused, not left
+    // at the declared value.
+    let mut unbound = with_twin.clone();
+    unbound["twin"]["bind"] = json!({"spread": "GBPUSD"});
+    let path = scratch.write("unbound.json", &unbound);
+    let (out, err, code) = qip(
+        &[&policy, &scratch.dir.join("unbound.jsonl"), &path],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 1, "stdout {out} stderr {err}");
+    assert!(err.contains("GBPUSD"), "{err}");
 }
 
 /// The conduct gate and the eligibility register run in the binary, and

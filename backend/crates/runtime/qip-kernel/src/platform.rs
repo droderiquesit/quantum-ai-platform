@@ -660,6 +660,9 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
+    /// quantum contract (R12-QUANT-4063).
+    pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -5292,6 +5295,7 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            pending_routing: None,
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -12577,19 +12581,41 @@ impl Platform {
     ///
     /// Returns a vector of routing decisions that were journalled this cycle,
     /// for observability and for the stage outcome detail.
-    fn route_quantum_decisions(&mut self, _now: Timestamp) -> Vec<RoutingDecision> {
-        // M6 A4 Packet 1: infrastructure wire for quantum routing.
-        // This method will be expanded by later packets to:
-        // - Check for active optimization problems in the portfolio or reasoning engine
-        // - For each problem, compute a classical baseline solution
-        // - For each problem, optionally compute a quantum solution
-        // - Create a RoutingDecision comparing the two
-        // - Journal the decision with metadata for auditability
-        //
-        // For now, return empty vector as no problems may be active yet.
-        // As later packets wire in the quantum router integration, this will
-        // populate the vector with actual routing decisions.
-        Vec::new()
+    fn route_quantum_decisions(&mut self, now: Timestamp) -> Vec<RoutingDecision> {
+        // The previous DECIDE's solve, taken so each is journalled once. It
+        // is the previous cycle's because UNDERSTAND runs before DECIDE:
+        // the record carries that cycle's number, not this one's.
+        let Some((cycle, routing)) = self.pending_routing.take() else {
+            return Vec::new();
+        };
+        match crate::quantum_routing::contract_of(cycle, &routing) {
+            Ok(None) => Vec::new(),
+            Ok(Some(recorded)) => {
+                let decision = recorded.decision.clone();
+                match self.journal_record(
+                    recorded,
+                    crate::quantum_routing::QUANTUM_ROUTING_ORIGIN,
+                    now,
+                ) {
+                    Ok(()) => vec![decision],
+                    Err(error) => {
+                        self.capture_problems.push(format!(
+                            "cycle {cycle}'s solve was stated in the quantum contract and not \
+                             journalled: {}",
+                            error.message()
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "cycle {cycle}'s solve could not be stated in the quantum contract: {}",
+                    error.message()
+                ));
+                Vec::new()
+            }
+        }
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -14986,6 +15012,7 @@ impl Platform {
         // on exactly the cycles an operator most wants to read.
         let comparison = SolverRoutingJournal::of(&outcome.routing);
         self.cycle_solver_routing = Some(comparison.clone());
+        self.pending_routing = Some((self.cycle, outcome.routing.clone()));
         // QUANT-031's benchmark record, from the same value the cycle entry
         // carries; `SolverBenchmarked` says why that is one comparison under
         // two keys and not two accounts of it. A log that will not take it

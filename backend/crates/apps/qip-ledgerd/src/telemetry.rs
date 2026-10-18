@@ -2,7 +2,7 @@
 //! See ADR 0100 § 1 for this module's role.
 
 use qip_observability::critical_paths;
-use qip_observability::metrics::{Labels, Metrics, names};
+use qip_observability::metrics::{Labels, Metrics, labels, names};
 use std::sync::Arc;
 
 /// Records metrics from the ledger service.
@@ -58,6 +58,21 @@ impl LedgerTelemetry {
         m.describe(
             names::LEDGER_STORE_RETRIES,
             "store operations that had to be retried",
+        );
+
+        m.describe(
+            names::LEDGER_MISMATCH_AGE_SECONDS,
+            "seconds the longest-parked cell has been parked; zero when none is",
+        );
+        m.describe(
+            names::LEDGER_LAG_CHECKS,
+            "lag readings judged against the ledger-lag objective's ceiling, by outcome \
+             (within, over)",
+        );
+        m.describe(
+            names::LEDGER_MISMATCH_AGE_CHECKS,
+            "mismatch-age readings judged against the ledger-mismatch-age objective's ceiling, \
+             by outcome (within, over)",
         );
 
         Self { metrics }
@@ -121,6 +136,40 @@ impl LedgerTelemetry {
         // records is a u64; the gauge is an f64, exact to 2^53.
         self.metrics
             .gauge(names::LEDGER_LAG, labels, records as f64);
+        self.check(
+            names::LEDGER_LAG_CHECKS,
+            critical_paths::LEDGER_LAG_OBJECTIVE,
+            records as f64,
+        );
+    }
+
+    /// How long the longest-parked cell has been parked, zero when no cell
+    /// is. Judged against the `ledger-mismatch-age` ceiling on every reading,
+    /// so the objective moves on the clock and not only when a park changes.
+    pub fn mismatch_age_seconds(&self, seconds: f64) {
+        self.metrics
+            .gauge(names::LEDGER_MISMATCH_AGE_SECONDS, Labels::new(), seconds);
+        self.check(
+            names::LEDGER_MISMATCH_AGE_CHECKS,
+            critical_paths::LEDGER_MISMATCH_AGE_OBJECTIVE,
+            seconds,
+        );
+    }
+
+    /// Count one reading of a backlog gauge as `within` or `over` the
+    /// ceiling the catalogue declares for `objective`. The ceiling is read
+    /// from the catalogue, not restated, so the recorder and the objective
+    /// cannot carry two figures. An objective missing from the catalogue
+    /// counts `over`, the restrictive answer: a reading nobody can judge is
+    /// not evidence of health.
+    fn check(&self, series: &str, objective: &str, reading: f64) {
+        let within = critical_paths::ledger_objectives()
+            .iter()
+            .find(|path| path.slo.name == objective)
+            .and_then(|path| path.slo.backlog_ceiling)
+            .is_some_and(|ceiling| reading <= ceiling);
+        let outcome = if within { "within" } else { "over" };
+        self.metrics.count(series, labels([("outcome", outcome)]));
     }
 
     /// A store operation had to be retried.
@@ -144,6 +193,8 @@ impl LedgerTelemetry {
         let statuses: Vec<_> = critical_paths::critical_path_slos()
             .iter()
             .filter(|path| path.slo.service == LEDGER_SERVICE)
+            .cloned()
+            .chain(critical_paths::ledger_objectives())
             .map(|path| {
                 let (good, total) = path.counts(&snapshot);
                 path.evaluate(good, total)

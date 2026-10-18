@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index d0781ed7..c47758f5 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -653,7 +653,7 @@ jobs:
+       - uses: actions/setup-node@v4
+         with:
+           node-version: 22
+-      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/rule-citation.test.mjs
++      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs scripts/sast-gate.test.mjs scripts/agent-guard.test.mjs scripts/agent-lanes.test.mjs scripts/agent-egress.test.mjs scripts/game-day/harness.test.mjs scripts/game-day/agent-escalation.test.mjs scripts/rule-citation.test.mjs
+       # The agent sandbox holds no secret, no credential and no write, every
+       # job in it is time-limited (R12 SEC-9068, SEC-9084), and the lane's
+       # network is the egress proxy and nothing else (SEC-9077). Judged by
