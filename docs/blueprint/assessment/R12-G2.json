@@ -3339,23 +3339,25 @@
   },
   {
     "id": "R12-OBS-9149",
-    "status": "PARTIAL",
-    "current": "qip_ledger_commit_latency_ms recorded by qip-ledgerd with a test.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd records qip_ledger_commit_latency_ms in PartitionWorker::apply_until_committed each time the store commits a delivery, and a test started through qip_ledgerd::start against a real broker listener commits two fills through the consumer and asserts exactly two observations. The check (a test drives the event and the 'ledger commit' series moves; deleting the recording site fails it) is met. Ingestion into Cloud Monitoring belongs to the observability rows that own workload_metrics_exist.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/telemetry.rs:34,81,202-205"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:502 PartitionWorker::apply_until_committed recording site",
+      "backend/crates/apps/qip-ledgerd/src/telemetry.rs LedgerTelemetry::commit_latency_ms",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:822 every_fill_the_consumer_commits_is_observed_once_on_the_ledger_commit_latency_series"
     ],
-    "gap": "Ingestion proof.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-ledgerd --test fabric every_fill_the_consumer_commits_is_observed_once_on_the_ledger_commit_latency_series",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: deleting `self.telemetry.commit_latency_ms(elapsed)` in consumer.rs fails the test at the count assertion (zero observations, two expected). The earlier test called the recorder directly and survived that deletion."
   },
   {
     "id": "R12-OBS-9150",

@@ -621,6 +621,9 @@ impl PartitionWorker {
         } else {
             self.report(None);
         }
+        // Once per applied batch, not per record: a snapshot of the
+        // registry is the cost, and the objective moves only on a commit.
+        self.telemetry.evaluate_objectives();
         self.failures = 0;
         Step::Applied { records: applied }
     }
