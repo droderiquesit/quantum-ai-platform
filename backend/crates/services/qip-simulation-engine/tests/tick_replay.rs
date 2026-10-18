@@ -257,6 +257,8 @@ fn three_legs() -> MultiLegPlan {
             },
         ],
         leg_interval: Duration::from_millis(5),
+        max_path_decay_bps: None,
+        region_reservations: Default::default(),
     }
 }
 
@@ -521,4 +523,126 @@ fn a_message_budget_of_zero_messages_or_zero_window_is_refused() {
         .is_ok(),
         "premise: a well-formed budget is accepted"
     );
+}
+
+fn buy_leg(instrument: &str, region: &str) -> LegPlan {
+    LegPlan {
+        instrument: instrument.into(),
+        side: OrderSide::Buy,
+        quantity: d(2),
+        limit: None,
+        region: region.into(),
+    }
+}
+
+fn three_buys() -> MultiLegPlan {
+    MultiLegPlan {
+        id: "cycle-2".into(),
+        decided_at: at(5),
+        legs: vec![
+            buy_leg("obj-ACME", "europe-west2"),
+            buy_leg("obj-BETA", "us-east4"),
+            buy_leg("obj-GAMA", "asia-northeast1"),
+        ],
+        leg_interval: Duration::from_millis(5),
+        max_path_decay_bps: None,
+        region_reservations: Default::default(),
+    }
+}
+
+/// Every instrument two-sided, so a flattened leg can sell. BETA's ask jumps
+/// from 50 to 60 at 22ms: after the first leg arrives (15ms), where the
+/// plan's touch is read, and before the second does (30ms).
+fn two_sided_books() -> Vec<ReplayTick> {
+    vec![
+        tick("obj-ACME", 1, 0, level(BookSide::Bid, 99, 10)),
+        tick("obj-ACME", 2, 1, level(BookSide::Ask, 101, 10)),
+        tick("obj-BETA", 1, 0, level(BookSide::Bid, 49, 10)),
+        tick("obj-BETA", 2, 1, level(BookSide::Ask, 50, 10)),
+        tick("obj-BETA", 3, 22, level(BookSide::Ask, 50, 0)),
+        tick("obj-BETA", 4, 23, level(BookSide::Ask, 60, 10)),
+        tick("obj-GAMA", 1, 0, level(BookSide::Bid, 19, 10)),
+        tick("obj-GAMA", 2, 1, level(BookSide::Ask, 20, 10)),
+        // History runs on past every arrival, so no order meets its end.
+        tick("obj-ACME", 3, 400, trade(100, 1)),
+        tick("obj-BETA", 5, 400, trade(55, 1)),
+        tick("obj-GAMA", 3, 400, trade(19, 1)),
+    ]
+}
+
+/// R12-TICK-2078. Mutation: in `refusal_before`, replace
+/// `state.path_decay_bps > window` with `false` — the third leg is sent and
+/// the plan completes, so the refusal assertions fail.
+#[test]
+fn a_plan_whose_path_decayed_past_its_window_refuses_the_remaining_legs_and_flattens_the_open_ones()
+-> Result<()> {
+    // Premise: with no window the same plan pays the decay and completes, and
+    // the decay is a positive adverse move on the second leg.
+    let free = replay(model(), two_sided_books(), Vec::new(), vec![three_buys()])?;
+    assert!(free.plans[0].completed, "{:?}", free.plans[0]);
+    assert!(
+        free.plans[0].path_decay_bps > 1_000.0,
+        "premise: BETA's ask moved 50 to 60: {}",
+        free.plans[0].path_decay_bps
+    );
+    assert!(free.plans[0].refused_legs.is_empty());
+
+    let mut windowed = three_buys();
+    windowed.max_path_decay_bps = Some(100.0);
+    let run = replay(model(), two_sided_books(), Vec::new(), vec![windowed])?;
+    let plan = &run.plans[0];
+    assert_eq!(plan.legs.len(), 2, "the third leg is never sent");
+    assert_eq!(plan.refused_legs, vec![2]);
+    assert_eq!(plan.failed_leg, Some(2));
+    assert!(!plan.completed);
+    let reason = plan.refusal.as_deref().unwrap_or_default();
+    assert!(reason.contains("100.00 bp window"), "{reason}");
+    assert_eq!(plan.unwinds.len(), 2, "both open legs are flattened");
+    assert!(plan.unwinds.iter().all(|u| u.side == OrderSide::Sell));
+    assert!(plan.unhedged.is_empty(), "{:?}", plan.unhedged);
+
+    // A window wider than the decay admits the plan.
+    let mut wide = three_buys();
+    wide.max_path_decay_bps = Some(5_000.0);
+    let run = replay(model(), two_sided_books(), Vec::new(), vec![wide])?;
+    assert!(run.plans[0].completed && run.plans[0].refused_legs.is_empty());
+    Ok(())
+}
+
+/// R12-TICK-2078. Mutation: in `refusal_before`, replace
+/// `projected > *reserved` with `false` — the over-reserved leg is sent.
+#[test]
+fn a_leg_that_would_take_a_region_past_the_capital_reserved_to_it_is_refused() -> Result<()> {
+    let mut reserved = three_buys();
+    // GAMA is 2 at 20 = 40 notional; 10 is reserved to the region.
+    reserved
+        .region_reservations
+        .insert("asia-northeast1".into(), d(10));
+    let run = replay(model(), two_sided_books(), Vec::new(), vec![reserved])?;
+    let plan = &run.plans[0];
+    assert_eq!(plan.legs.len(), 2);
+    assert_eq!(plan.refused_legs, vec![2]);
+    let reason = plan.refusal.as_deref().unwrap_or_default();
+    assert!(reason.contains("asia-northeast1"), "{reason}");
+    assert!(reason.contains("reserved there"), "{reason}");
+    assert_eq!(plan.unwinds.len(), 2);
+
+    // Premise: a reservation that covers the leg leaves the plan whole.
+    let mut enough = three_buys();
+    enough
+        .region_reservations
+        .insert("asia-northeast1".into(), d(100));
+    let run = replay(model(), two_sided_books(), Vec::new(), vec![enough])?;
+    assert!(run.plans[0].completed);
+    Ok(())
+}
+
+#[test]
+fn a_reservation_in_a_region_no_leg_uses_or_a_negative_window_is_refused() {
+    let mut stray = three_buys();
+    stray.region_reservations.insert("nowhere".into(), d(1));
+    assert!(replay(model(), two_sided_books(), Vec::new(), vec![stray]).is_err());
+    let mut negative = three_buys();
+    negative.max_path_decay_bps = Some(-1.0);
+    assert!(replay(model(), two_sided_books(), Vec::new(), vec![negative]).is_err());
 }

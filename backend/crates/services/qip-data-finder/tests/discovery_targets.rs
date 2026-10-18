@@ -282,3 +282,59 @@ fn a_query_missing_any_dimension_yields_no_location_at_all() {
         );
     }
 }
+
+/// R12-DATA-2015. A strategy depends on the instruments it trades whether or
+/// not anything has gone wrong yet, so one of them with no source behind it
+/// is a gap the platform already committed to. It was invisible to discovery
+/// until a forecast error spiked or the world model held no close.
+///
+/// Mutation: drop the strategy loop from `targets_from_strategies` - no
+/// target names the strategy and the first assertion fails. Mutation: skip
+/// the `covered` test in it - the covered instrument is targeted too and the
+/// length assertion fails.
+#[test]
+fn a_strategy_whose_instrument_no_source_covers_yields_a_target_naming_it() {
+    use qip_data_finder::discovery_targets::{StrategyCoverage, targets_from_strategies};
+    let strategies = [
+        StrategyCoverage {
+            strategy: "mean-reversion-a".into(),
+            instruments: vec!["obj-uncovered".into(), "obj-covered".into()],
+        },
+        StrategyCoverage {
+            strategy: "empty-book".into(),
+            instruments: vec!["obj-covered".into()],
+        },
+    ];
+    let gaps = [KnowledgeGap {
+        entity: "obj-uncovered".into(),
+    }];
+    let covered = covered(&["obj-covered"]);
+    let targets = targets_from_strategies(&gaps, &[], &strategies, &covered, 3.0).expect("targets");
+    assert_eq!(
+        targets.len(),
+        1,
+        "only the uncovered instrument is a target: {targets:?}"
+    );
+    assert_eq!(targets[0].entity, "obj-uncovered");
+    assert_eq!(
+        targets[0].reason,
+        TargetReason::StrategyGap {
+            strategy: "mean-reversion-a".into()
+        },
+        "a strategy's dependence outranks the bare gap the world model reported"
+    );
+    // A strategy that names nothing is refused, not read as covered.
+    assert!(
+        targets_from_strategies(
+            &[],
+            &[],
+            &[StrategyCoverage {
+                strategy: "nothing".into(),
+                instruments: vec![],
+            }],
+            &covered,
+            3.0,
+        )
+        .is_err()
+    );
+}

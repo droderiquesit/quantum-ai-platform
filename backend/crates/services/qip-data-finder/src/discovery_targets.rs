@@ -46,10 +46,26 @@ pub struct ForecastError {
     pub baseline: f64,
 }
 
+/// What a strategy the platform runs trades on (R12-DATA-2015): the
+/// instruments whose data it reads. A strategy is a standing dependence on
+/// those instruments, so one of them with no source behind it is a gap the
+/// platform has already committed to, not merely an absence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StrategyCoverage {
+    pub strategy: String,
+    pub instruments: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TargetReason {
     KnowledgeGap,
-    ForecastErrorSpike { ratio: f64 },
+    ForecastErrorSpike {
+        ratio: f64,
+    },
+    /// An instrument a running strategy trades on and no source covers.
+    StrategyGap {
+        strategy: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -89,6 +105,23 @@ pub fn targets_from(
     covered: &BTreeSet<String>,
     spike_multiple: f64,
 ) -> Result<Vec<DiscoveryTarget>> {
+    targets_from_strategies(gaps, errors, &[], covered, spike_multiple)
+}
+
+/// [`targets_from`] with the strategies' instruments as a third input
+/// (R12-DATA-2015): an uncovered instrument a strategy trades on becomes a
+/// target naming the strategy. It outranks a bare gap, because a strategy
+/// already depends on it, and ranks below any forecast-error spike, which is
+/// evidence the missing source is costing something. A strategy naming no
+/// instrument, or a blank one, is refused: it would read as a strategy with
+/// nothing to cover.
+pub fn targets_from_strategies(
+    gaps: &[KnowledgeGap],
+    errors: &[ForecastError],
+    strategies: &[StrategyCoverage],
+    covered: &BTreeSet<String>,
+    spike_multiple: f64,
+) -> Result<Vec<DiscoveryTarget>> {
     if !(spike_multiple.is_finite() && spike_multiple > 1.0) {
         return Err(Error::invalid(
             "spike_multiple must be finite and above 1; a multiple of 1 or less flags every error",
@@ -101,6 +134,28 @@ pub fn targets_from(
             by_entity
                 .entry(gap.entity.clone())
                 .or_insert(TargetReason::KnowledgeGap);
+        }
+    }
+    for strategy in strategies {
+        nonempty("strategy", &strategy.strategy)?;
+        if strategy.instruments.is_empty() {
+            return Err(Error::invalid(format!(
+                "strategy {} names no instrument; state what it trades so its coverage can be judged",
+                strategy.strategy
+            )));
+        }
+        for instrument in &strategy.instruments {
+            nonempty("strategy instrument", instrument)?;
+            if !covered.contains(instrument) {
+                // Replaces a bare gap, never a spike (spikes are inserted
+                // below and replace this one only when they apply).
+                by_entity.insert(
+                    instrument.clone(),
+                    TargetReason::StrategyGap {
+                        strategy: strategy.strategy.clone(),
+                    },
+                );
+            }
         }
     }
     for e in errors {
@@ -136,6 +191,7 @@ pub fn targets_from(
 fn rank(r: &TargetReason) -> f64 {
     match r {
         TargetReason::ForecastErrorSpike { ratio } => *ratio,
+        TargetReason::StrategyGap { .. } => 0.5,
         TargetReason::KnowledgeGap => 0.0,
     }
 }
