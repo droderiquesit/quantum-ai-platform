@@ -556,6 +556,11 @@ impl ConnectorArm {
                 )?;
             }
         }
+        let withdrawn = findings
+            .iter()
+            .filter(|finding| finding.check == Some(RevisionCheck::Unretrievable))
+            .count();
+        platform.record_refetch_health(self.admitted.source_id(), findings.len(), withdrawn)?;
         Ok(findings)
     }
 

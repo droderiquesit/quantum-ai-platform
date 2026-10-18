@@ -64,6 +64,11 @@ const MAXIMUM_ROWS_PER_READ: u32 = 4;
 
 const SELECT_LEASE: &str = "SELECT holder, epoch, expires_at <= CURRENT_TIMESTAMP() AS expired \
      FROM fabric_leases WHERE region = @region AND stream = @stream AND partition_id = @partition";
+/// [`SELECT_LEASE`] with the lease counted expired only `@grace` milliseconds
+/// after its expiry (ADR 0111 Amendment 1 §2).
+const SELECT_LEASE_AFTER_GRACE: &str = "SELECT holder, epoch, \
+     expires_at <= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @grace MILLISECOND) AS expired \
+     FROM fabric_leases WHERE region = @region AND stream = @stream AND partition_id = @partition";
 const INSERT_LEASE: &str = "INSERT INTO fabric_leases (region, stream, partition_id, holder, \
      epoch, expires_at) VALUES (@region, @stream, @partition, @holder, @epoch, \
      TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL @ttl MILLISECOND))";
@@ -486,12 +491,32 @@ macro_rules! attempt {
 
 impl ManagedLog for SpannerManagedLog {
     fn acquire(&self, partition: &PartitionRef, holder: &str, ttl_ms: u64) -> Result<LeaseOutcome> {
+        self.acquire_after_expiry(partition, holder, ttl_ms, 0)
+    }
+
+    fn acquire_after_expiry(
+        &self,
+        partition: &PartitionRef,
+        holder: &str,
+        ttl_ms: u64,
+        grace_ms: u64,
+    ) -> Result<LeaseOutcome> {
         let ttl = i64::try_from(ttl_ms)
             .map_err(|_| Error::numeric(format!("a lease TTL of {ttl_ms} ms overflows INT64")))?;
+        let grace = i64::try_from(grace_ms).map_err(|_| {
+            Error::numeric(format!("a lease grace of {grace_ms} ms overflows INT64"))
+        })?;
         self.read_write("lease", |transaction| {
-            let found = attempt!(
-                transaction.execute(statement(SELECT_LEASE, self.partition_params(partition)))
-            );
+            // No grace is the statement this method has always run.
+            let found = if grace_ms == 0 {
+                attempt!(
+                    transaction.execute(statement(SELECT_LEASE, self.partition_params(partition)))
+                )
+            } else {
+                let mut params = self.partition_params(partition);
+                params.push(("grace", Param::Int(grace)));
+                attempt!(transaction.execute(statement(SELECT_LEASE_AFTER_GRACE, params)))
+            };
             let current = rows(&found).into_iter().next();
             let mut params = self.partition_params(partition);
             params.push(("holder", Param::Str(holder.to_string())));

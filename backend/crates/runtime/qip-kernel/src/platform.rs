@@ -5876,6 +5876,11 @@ impl Platform {
             "the fraction of records received since assembly whose lineage reached the event log",
         );
         metrics.describe(
+            names::DATA_REFETCH_HEALTH,
+            "the share of the extents a re-fetch pass asked a source for again that the source \
+             still served, per source: 1 all served, 0 none",
+        );
+        metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
             "internal crosses settled to both contributors' books at the mid",
         );
@@ -14357,6 +14362,29 @@ impl Platform {
         Ok((remembered, lessons))
     }
 
+    /// The weakest estimated accuracy among the components that produced
+    /// `hypothesis` (its detector and the analysts that ran on it), read from
+    /// the self-model at sizing. `None` when the hypothesis has no remembered
+    /// lineage or none of its components has a graded record: silence is not
+    /// unreliability.
+    fn thesis_reliability(&self, hypothesis: &str) -> Option<f64> {
+        let lineage = self.attribution_lineage.lineage(hypothesis)?;
+        lineage
+            .forecasters
+            .iter()
+            .filter_map(|forecaster| {
+                let (kind, id) = forecaster.split_once(':')?;
+                let key = match kind {
+                    "detector" => ComponentKey::detector(id),
+                    "analyst" => ComponentKey::analyst(id),
+                    _ => return None,
+                }
+                .ok()?;
+                self.self_model.factor(&key)
+            })
+            .reduce(f64::min)
+    }
+
     /// The venue's fills on every remembered order that expressed
     /// `hypothesis`, so an episode says what the platform did about its claim
     /// and not only what it claimed. Matched through the attribution
@@ -15107,6 +15135,7 @@ impl Platform {
                 hypothesis_id: thesis.hypothesis_id.clone(),
                 object_id: thesis.object_id.as_str().to_string(),
                 regime: self.market_regime(thesis.object_id.as_str()),
+                reliability: self.thesis_reliability(&thesis.hypothesis_id),
             })
             .collect();
         let figures = self.survival_figures(free, now)?;
@@ -26636,6 +26665,139 @@ mod self_model_tests {
             LimitSet::conservative_default(),
         )
         .expect("the platform assembles")
+    }
+
+    fn objects() -> Universe {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+        let mut universe = Universe::new();
+        universe
+            .insert(
+                FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    InstrumentType::CommonStock,
+                    LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+                )
+                .venue("XNYS")
+                .sector(Sector::InformationTechnology)
+                .price(Decimal::from_int(100))
+                .provenance(Provenance::synthetic("test", start()))
+                .build(start())
+                .expect("valid object"),
+            )
+            .expect("insertable");
+        universe
+    }
+
+    /// The founding tape: noise with a jump two thirds of the way in, so a
+    /// detector finds something and REASON forms a hypothesis.
+    fn tape() -> Vec<qip_market_ingestion::adapter::SensedRecord> {
+        use qip_market::bar::{Bar, Interval};
+        let mut price = 100.0_f64;
+        (0..120_usize)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + jump;
+                let at = start().saturating_sub(Duration::from_days((120 - i) as i64));
+                qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(Bar {
+                    object_id: ObjectId::from_string("obj-AAA"),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: Decimal::from_f64(open).expect("a price"),
+                    high: Decimal::from_f64(open.max(price) * 1.002).expect("a price"),
+                    low: Decimal::from_f64(open.min(price) * 0.998).expect("a price"),
+                    close: Decimal::from_f64(price).expect("a price"),
+                    volume: Decimal::from_int(1_000_000),
+                    trade_count: 5_000,
+                    vwap: Decimal::from_f64((open + price) / 2.0),
+                    quality: qip_financial::quality::DataQuality::default(),
+                }))
+            })
+            .collect()
+    }
+
+    fn reasoning_platform() -> Platform {
+        let config = PlatformConfig {
+            review: qip_reasoning_engine::redteam::ReviewPolicy {
+                minimum_surviving_confidence: 0.10,
+                ..qip_reasoning_engine::redteam::ReviewPolicy::default()
+            },
+            ..PlatformConfig::default()
+        };
+        let (context, _clock) = qip_core::Context::deterministic(start(), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            objects(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles")
+    }
+
+    /// R12-RISK-4110: the self-model's per-component reliability is read at
+    /// sizing. The same tape is sized twice; the second platform's self-model
+    /// has graded the detector that raises the hypothesis wrong twelve times
+    /// first, and its construction carries a reliability contraction the first
+    /// does not. Mutations: pass `reliability: None` in `construct_from`'s
+    /// `ThesisView` (the contraction disappears); skip the reliability block in
+    /// `ConfidenceSignals::decide` (same).
+    #[test]
+    fn a_thesis_raised_by_a_detector_the_self_model_grades_worse_than_chance_is_sized_smaller() {
+        use crate::confidence::Trigger;
+        use qip_learning_engine::self_model::{MINIMUM_SAMPLE, ScoredOutcome};
+
+        let mut probe = reasoning_platform();
+        probe.observe(tape());
+        probe.run_cycle(start());
+        let class = probe.predictions()[0]
+            .claim
+            .as_ref()
+            .map(|claim| claim.class.clone())
+            .expect("premise: the tape formed a claim");
+        let reliability_contraction = |platform: &Platform| {
+            platform.governor.last().and_then(|budget| {
+                budget
+                    .confidence
+                    .contractions
+                    .iter()
+                    .find(|c| c.trigger == Trigger::Reliability)
+                    .cloned()
+            })
+        };
+        assert!(
+            probe.governor.last().is_some(),
+            "premise: the cycle sized a construction"
+        );
+        assert!(
+            reliability_contraction(&probe).is_none(),
+            "an ungraded detector contracted the size"
+        );
+
+        let mut graded = reasoning_platform();
+        let key = ComponentKey::detector(class).expect("a detector key");
+        for n in 0..=MINIMUM_SAMPLE + 2 {
+            graded.self_model.record(
+                key.clone(),
+                ScoredOutcome::new(format!("past-{n}"), 0.9, false, start())
+                    .expect("a probability"),
+            );
+        }
+        assert!(
+            graded.self_model.factor(&key).is_some_and(|f| f < 0.35),
+            "premise: twelve misses leave the detector far below chance"
+        );
+        graded.observe(tape());
+        graded.run_cycle(start());
+        let contraction = reliability_contraction(&graded)
+            .expect("a worse-than-chance detector contracted nothing");
+        assert!(contraction.multiplier < Decimal::ONE, "{contraction:?}");
     }
 
     #[test]

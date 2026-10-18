@@ -390,3 +390,162 @@ fn a_consumer_resumes_from_its_committed_offset_on_whichever_instance_leads() {
     let _ = std::fs::remove_dir_all(dir_a);
     let _ = std::fs::remove_dir_all(dir_b);
 }
+
+// --- R12-FABRIC-8085: rendezvous chooses who tries, the lease decides who holds ---
+
+const GRACE_MS: u64 = 5_000;
+
+/// [`seated`] with ADR 0111 Amendment 1 §2's placement over `zone-a` and
+/// `zone-b`.
+fn placed(label: &str, log: Arc<dyn ManagedLog>, clock: Arc<ManualClock>, me: &str) -> Broker {
+    let dir = temp_dir(label);
+    let broker = Broker::open(&dir, clock.clone())
+        .unwrap()
+        .with_managed_log(log, me)
+        .unwrap()
+        .with_placement(vec!["zone-a".to_string(), "zone-b".to_string()], GRACE_MS)
+        .unwrap();
+    broker
+        .declare_stream(
+            STREAM,
+            1,
+            managed_policy(),
+            SegmentLogConfig::new(clock).with_archive_required(true),
+        )
+        .unwrap();
+    broker
+        .register_schema(STREAM, 1, 1, Shape::of(&1u32).unwrap())
+        .unwrap();
+    broker
+}
+
+fn preferred_and_other() -> (&'static str, &'static str) {
+    let names = ["zone-a", "zone-b"];
+    let preferred = qip_streaming::event_fabric::partition::leader_for(STREAM, 0, &names).unwrap();
+    let other = names.into_iter().find(|n| *n != preferred).unwrap();
+    (preferred, other)
+}
+
+/// ADR 0111 Amendment 1 §2. Rendezvous names a preferred leader for the
+/// partition; the other instance does not take a vacant lease while the
+/// preferred one has had no time to, and does not take an expired one until
+/// the grace has passed on top of the expiry. Safety never depended on any
+/// of it: the lease still decides who holds.
+///
+/// Mutation: in `Broker::tend_leases` pass a grace of zero (drop the
+/// `deferral` argument) — the non-preferred instance takes the expired lease
+/// at once and the "still the preferred's" assertion fires. Mutation: skip the
+/// settling branch — the non-preferred instance, asking first, leads a vacant
+/// partition and the first assertion fires.
+#[test]
+fn a_non_preferred_instance_waits_the_grace_before_contending_a_live_lease() {
+    let (preferred, other) = preferred_and_other();
+    let time = database_time();
+    let log = Arc::new(MemoryManagedLog::new(time.clone()));
+    let first = placed("preferred", log.clone(), time.clone(), preferred);
+    let second = placed("other", log.clone(), time.clone(), other);
+
+    // Cold start, the non-preferred instance asking first: it leaves a
+    // vacant partition to the one that is preferred for it.
+    let report = second.tend_leases(TTL_MS).unwrap();
+    assert!(report.leading.is_empty(), "{report:?}");
+    assert_eq!(report.following.len(), 1, "{report:?}");
+    assert_eq!(
+        log.lease_of(&partition()),
+        None,
+        "premise: the row is vacant"
+    );
+    let report = first.tend_leases(TTL_MS).unwrap();
+    assert_eq!(
+        report.leading.len(),
+        1,
+        "the preferred instance leads: {report:?}"
+    );
+    assert_eq!(
+        log.lease_of(&partition())
+            .map(|(holder, epoch)| (holder.split('#').next().unwrap().to_string(), epoch)),
+        Some((preferred.to_string(), 1))
+    );
+
+    // The preferred instance renews through the settling window, so what
+    // follows is the grace and not the settling.
+    for _ in 0..2 {
+        time.advance(Duration::from_millis(TTL_MS as i64 - 100));
+        assert_eq!(first.tend_leases(TTL_MS).unwrap().leading.len(), 1);
+    }
+
+    // It stops renewing. Past the TTL the lease is expired, and a
+    // non-preferred instance still waits out the grace.
+    time.advance(Duration::from_millis(TTL_MS as i64 + 1));
+    let report = second.tend_leases(TTL_MS).unwrap();
+    assert!(
+        report.leading.is_empty(),
+        "the non-preferred instance took a lease expired for 1 ms: {report:?}"
+    );
+    assert!(
+        log.lease_of(&partition())
+            .is_some_and(|(holder, epoch)| holder.starts_with(preferred) && epoch == 1),
+        "the lease is still the preferred instance's"
+    );
+
+    // Expiry plus grace: now it may contend, and takes the next epoch.
+    time.advance(Duration::from_millis(GRACE_MS as i64));
+    let report = second.tend_leases(TTL_MS).unwrap();
+    assert_eq!(report.leading.len(), 1, "{report:?}");
+    assert_eq!(
+        report.leading.values().copied().collect::<Vec<_>>(),
+        vec![2]
+    );
+}
+
+/// The other half: the preferred instance takes an expired lease the moment
+/// it is expired, with no grace.
+///
+/// Mutation: apply the grace to every instance — the preferred instance waits
+/// and the leading assertion fires.
+#[test]
+fn the_preferred_instance_takes_an_expired_lease_without_waiting() {
+    let (preferred, other) = preferred_and_other();
+    let time = database_time();
+    let log = Arc::new(MemoryManagedLog::new(time.clone()));
+    let first = placed("preferred-b", log.clone(), time.clone(), preferred);
+    let second = placed("other-b", log.clone(), time.clone(), other);
+
+    // The other instance holds the lease once the settling window is over.
+    time.advance(Duration::from_millis(GRACE_MS as i64 + 1));
+    assert_eq!(second.tend_leases(TTL_MS).unwrap().leading.len(), 1);
+    assert!(
+        log.lease_of(&partition())
+            .is_some_and(|(holder, _)| holder.starts_with(other)),
+        "premise: the non-preferred instance leads"
+    );
+
+    time.advance(Duration::from_millis(TTL_MS as i64 + 1));
+    let report = first.tend_leases(TTL_MS).unwrap();
+    assert_eq!(report.leading.len(), 1, "{report:?}");
+}
+
+#[test]
+fn a_placement_set_without_this_instance_or_a_blank_name_is_refused() {
+    let time = database_time();
+    let log = Arc::new(MemoryManagedLog::new(time.clone()));
+    let seat = || {
+        Broker::open(temp_dir("placement-refused"), time.clone())
+            .unwrap()
+            .with_managed_log(log.clone(), "zone-a")
+            .unwrap()
+    };
+    assert!(seat().with_placement(vec!["zone-b".into()], 1).is_err());
+    assert!(
+        seat()
+            .with_placement(vec!["zone-a".into(), "".into()], 1)
+            .is_err()
+    );
+    assert!(
+        seat()
+            .with_placement(vec!["zone-a".into(), "zone-a".into()], 1)
+            .is_err()
+    );
+    let unseated = Broker::open(temp_dir("placement-unseated"), time.clone()).unwrap();
+    assert!(unseated.with_placement(vec!["zone-a".into()], 1).is_err());
+}

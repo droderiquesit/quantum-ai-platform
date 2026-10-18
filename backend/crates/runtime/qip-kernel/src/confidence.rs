@@ -105,6 +105,10 @@ pub enum Trigger {
     /// Read only for a capital grant: a construction already takes the same
     /// multiplier directly in `Platform::size_construction`.
     EvidenceFreshness,
+    /// The self-model's estimate of how often the components behind a thesis
+    /// (its detector, its analysts) are right: the weakest of them, read at
+    /// sizing. Only a component with a graded record has one.
+    Reliability,
 }
 
 impl Trigger {
@@ -115,6 +119,7 @@ impl Trigger {
             Self::OutOfDistribution => "out_of_distribution",
             Self::RegimeMismatch => "regime_mismatch",
             Self::EvidenceFreshness => "evidence_freshness",
+            Self::Reliability => "reliability",
         }
     }
 }
@@ -161,6 +166,36 @@ pub fn ood_multiplier(score: f64) -> Result<Decimal> {
     Ok(scheduled(score, &OOD_SCHEDULE, OOD_FLOOR))
 }
 
+/// Estimated accuracy of the weakest component behind a thesis, as the
+/// self-model states it (a hit rate shrunk toward one half, so a component with
+/// a short record sits near 0.5). `(lower bound inclusive, multiplier)`, read
+/// top to bottom; below the last bound the floor applies. At or above one half
+/// the component is no worse than chance and the size is untouched.
+pub const RELIABILITY_SCHEDULE: [(f64, Decimal); 3] = [
+    (0.50, Decimal::ONE),
+    (0.45, Decimal::from_raw(750_000_000)),
+    (0.35, Decimal::from_raw(500_000_000)),
+];
+/// The multiplier for a thesis resting on a component estimated well below
+/// chance.
+pub const RELIABILITY_FLOOR: Decimal = Decimal::from_raw(250_000_000);
+
+/// The multiplier the weakest component's estimated accuracy earns. Refuses an
+/// accuracy outside `[0, 1]`: a hit rate that is not one is a malformed
+/// record, not a reason to size normally.
+pub fn reliability_multiplier(accuracy: f64) -> Result<Decimal> {
+    if !accuracy.is_finite() || !(0.0..=1.0).contains(&accuracy) {
+        return Err(Error::invalid(format!(
+            "an estimated accuracy of {accuracy} is not a probability; refuse the self-model \
+             reading that produced it rather than size against it"
+        )));
+    }
+    Ok(RELIABILITY_SCHEDULE
+        .iter()
+        .find(|(bound, _)| accuracy >= *bound)
+        .map_or(RELIABILITY_FLOOR, |(_, multiplier)| *multiplier))
+}
+
 /// The multiplier a regime earns against the regimes the platform's claims
 /// were graded in. No graded regime at all is no evidence of mismatch — see
 /// the module doc — and earns one.
@@ -201,6 +236,11 @@ pub struct ThesisView {
     pub hypothesis_id: String,
     pub object_id: String,
     pub regime: MarketRegime,
+    /// The weakest estimated accuracy among the components that produced the
+    /// thesis, or `None` where none of them has a graded record: silence is
+    /// not unreliability, and the self-model's staleness row already narrows
+    /// sizing for "we do not know yet".
+    pub reliability: Option<f64>,
 }
 
 /// The measurements the governor holds between the stage that takes each and
@@ -351,6 +391,22 @@ impl ConfidenceSignals {
                             "{}'s recent returns sit {score:.2}x past the shift its own \
                              estimators' error explains; sized at {multiplier}",
                             thesis.object_id
+                        ),
+                    });
+                }
+            }
+            if let Some(accuracy) = thesis.reliability {
+                let multiplier = reliability_multiplier(accuracy)?;
+                if multiplier < Decimal::ONE {
+                    keep_weakest(Contraction {
+                        trigger: Trigger::Reliability,
+                        subject: Some(thesis.hypothesis_id.clone()),
+                        multiplier,
+                        reason: format!(
+                            "the weakest component behind {} is estimated {:.0}% accurate, below \
+                             chance; sized at {multiplier}",
+                            thesis.hypothesis_id,
+                            accuracy * 100.0
                         ),
                     });
                 }
@@ -579,6 +635,7 @@ mod tests {
             hypothesis_id: id.to_string(),
             object_id: object.to_string(),
             regime,
+            reliability: None,
         }
     }
 
@@ -589,11 +646,17 @@ mod tests {
             .chain(DISAGREEMENT_SCHEDULE.iter())
             .chain(OOD_SCHEDULE.iter())
             .map(|(_, multiplier)| *multiplier)
+            .chain(
+                RELIABILITY_SCHEDULE
+                    .iter()
+                    .map(|(_, multiplier)| *multiplier),
+            )
             .chain([
                 CALIBRATION_FLOOR,
                 DISAGREEMENT_FLOOR,
                 OOD_FLOOR,
                 REGIME_MISMATCH,
+                RELIABILITY_FLOOR,
             ]);
         let mut seen = 0;
         for multiplier in all {
@@ -604,7 +667,59 @@ mod tests {
                 "{multiplier} would zero a size silently"
             );
         }
-        assert_eq!(seen, 12, "premise: every schedule entry was enumerated");
+        assert_eq!(seen, 16, "premise: every schedule entry was enumerated");
+    }
+
+    /// R12-RISK-4110: a thesis resting on a component the self-model estimates
+    /// worse than chance is sized smaller, the weakest thesis in the
+    /// construction decides, and a thesis whose components have no record is
+    /// left alone. Mutations: skip the reliability block in `decide` (the
+    /// weak case reads one); read the strongest thesis instead of the weakest
+    /// (the mixed case reads the strong thesis's multiplier).
+    #[test]
+    fn a_thesis_resting_on_a_component_worse_than_chance_is_sized_smaller_and_silence_is_not_unreliability()
+     {
+        let signals = ConfidenceSignals::default();
+        let with = |id: &str, accuracy: Option<f64>| ThesisView {
+            reliability: accuracy,
+            ..thesis(id, "obj-AAA", MarketRegime::Trending)
+        };
+
+        let silent = signals.decide(&[with("h1", None)]).unwrap();
+        assert_eq!(
+            silent.multiplier,
+            Decimal::ONE,
+            "an unmeasured component contracted a size"
+        );
+        let chance = signals.decide(&[with("h1", Some(0.50))]).unwrap();
+        assert_eq!(
+            chance.multiplier,
+            Decimal::ONE,
+            "a coin-flip component contracted a size"
+        );
+
+        let weak = signals.decide(&[with("h1", Some(0.40))]).unwrap();
+        assert_eq!(weak.multiplier, Decimal::from_raw(500_000_000));
+        assert!(
+            weak.contractions
+                .iter()
+                .any(|c| c.trigger == Trigger::Reliability),
+            "the contraction is not named: {:?}",
+            weak.contractions
+        );
+        let worst = signals.decide(&[with("h1", Some(0.10))]).unwrap();
+        assert_eq!(worst.multiplier, RELIABILITY_FLOOR);
+
+        let mixed = signals
+            .decide(&[with("strong", Some(0.70)), with("weak", Some(0.40))])
+            .unwrap();
+        assert_eq!(
+            mixed.multiplier, weak.multiplier,
+            "the weakest thesis decides"
+        );
+
+        assert!(reliability_multiplier(f64::NAN).is_err());
+        assert!(reliability_multiplier(1.2).is_err());
     }
 
     #[test]

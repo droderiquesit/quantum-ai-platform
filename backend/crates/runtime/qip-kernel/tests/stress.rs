@@ -484,6 +484,7 @@ fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
         hypothesis_id: "hyp-stress".to_string(),
         object_id: "obj-AAA".to_string(),
         regime: MarketRegime::Trending,
+        reliability: None,
     }];
     let at = start().saturating_add(Duration::from_days(1));
 
@@ -864,6 +865,7 @@ fn view(symbol: &str) -> qip_kernel::confidence::ThesisView {
         hypothesis_id: format!("hyp-{symbol}"),
         object_id: object(symbol).to_string(),
         regime: qip_cost_router::MarketRegime::Trending,
+        reliability: None,
     }
 }
 

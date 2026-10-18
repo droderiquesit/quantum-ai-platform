@@ -966,6 +966,7 @@ mod tests {
             hypothesis_id: "h".into(),
             object_id: "obj-AAA".into(),
             regime: MarketRegime::Trending,
+            reliability: None,
         }]
     }
 

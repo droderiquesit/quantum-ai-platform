@@ -552,6 +552,16 @@ fn start_composed(
         }
         (None, None) => broker,
     };
+    // Rendezvous placement (ADR 0111 Amendment 1 §2): with the region's
+    // instances named, this one contends at once only for the partitions it
+    // is preferred for. Without them every instance contends for everything,
+    // as a single broker does.
+    let broker = match &config.managed {
+        Some(settings) if !settings.instances.is_empty() => {
+            broker.with_placement(settings.instances.clone(), settings.placement_grace_ms)?
+        }
+        _ => broker,
+    };
     let broker = Arc::new(broker);
     prove_archive_writable(archive_store.as_ref(), broker.leader_epoch())?;
     let service = Arc::new(Service::new(
