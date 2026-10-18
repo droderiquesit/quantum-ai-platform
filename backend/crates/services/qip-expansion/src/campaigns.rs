@@ -197,6 +197,9 @@ pub fn observations(campaigns: &[TickCampaign]) -> Result<Vec<Observation>> {
             // No campaign measures money. Zero is stated, not defaulted, as
             // every detector in `detectors.rs` states it.
             economic_value: Decimal::ZERO,
+            // Nor exposure: a campaign is a statement about sources, not a
+            // position, and a figure here would be one nobody measured.
+            risk_value: Decimal::ZERO,
         })
         .collect())
 }

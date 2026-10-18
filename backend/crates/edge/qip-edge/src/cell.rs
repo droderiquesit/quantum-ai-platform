@@ -8241,7 +8241,12 @@ impl Cell {
     /// the drop-copy is reconciled" until 2026-09-19; both had been false
     /// since the withdrawal path and the execution-report channel landed.)
     ///
-    /// What the cell can do is refuse to carry on. A leg the venue refuses
+    /// That paragraph is now half history: since 2026-10-18 `break_cycle`
+    /// calls [`Self::unwind_cycle`], which reads the fills the channel has
+    /// delivered and sends, through [`Cell::send`], one offsetting order per
+    /// book the cycle's filled legs left open, journaled as `Hedged`. What
+    /// the seam still cannot do is take back a leg in flight; what it can do
+    /// is refuse to carry on. A leg the venue refuses
     /// after an earlier leg went out leaves the cell holding a position it
     /// did not decide to take, which is the state the multi-leg module calls
     /// the one that "looks, to every downstream report, exactly like a
@@ -8421,7 +8426,15 @@ impl Cell {
                 "cycle {} has no leg {position} to rest",
                 cycle.cycle_id
             ));
-            self.break_cycle(&cycle.cycle_id, 0, cycle.legs.len(), &error, now, report);
+            self.break_cycle(
+                gateway,
+                &cycle.cycle_id,
+                0,
+                cycle.legs.len(),
+                &error,
+                now,
+                report,
+            );
             return Err(error);
         };
         // The leg rests until the cycle's own legs expire, and not one instant
@@ -8539,7 +8552,7 @@ impl Cell {
                 "cycle {cycle_id} left leg {position} resting as order {order_id} and the cell \
                  holds no open order under that id, so what that venue completed cannot be read"
             ));
-            self.break_cycle(cycle_id, 1, total, &error, now, report);
+            self.break_cycle(gateway, cycle_id, 1, total, &error, now, report);
             return Err(error);
         };
         let filled = working.order.filled;
@@ -8580,7 +8593,7 @@ impl Cell {
         let completion = match decomposition.observe(sent, filled) {
             Ok(completion) => completion,
             Err(error) => {
-                self.break_cycle(cycle_id, 1, total, &error, now, report);
+                self.break_cycle(gateway, cycle_id, 1, total, &error, now, report);
                 return Err(error);
             }
         };
@@ -8592,7 +8605,7 @@ impl Cell {
                  order(s), the most it will track",
                 self.working.len()
             ));
-            self.break_cycle(cycle_id, 1, total, &error, now, report);
+            self.break_cycle(gateway, cycle_id, 1, total, &error, now, report);
             return Err(error);
         }
         let mut orders = vec![order_id];
@@ -8625,7 +8638,7 @@ impl Cell {
                     cycle.legs[other].valid_until.as_nanos(),
                     now.as_nanos()
                 ));
-                self.break_cycle(cycle_id, orders.len(), total, &error, now, report);
+                self.break_cycle(gateway, cycle_id, orders.len(), total, &error, now, report);
                 return Err(error);
             }
             let (id, quantity) = self.send_cycle_leg(
@@ -8727,6 +8740,7 @@ impl Cell {
                 cycle.cycle_id
             ));
             self.break_cycle(
+                gateway,
                 &cycle.cycle_id,
                 position,
                 cycle.legs.len(),
@@ -8786,6 +8800,7 @@ impl Cell {
                 // `break_cycle` refuses through. Counting it in both
                 // would make a single stopped cycle read as two.
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position,
                     cycle.legs.len(),
@@ -8813,6 +8828,7 @@ impl Cell {
             Ok(sent) => sent,
             Err(error) => {
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position,
                     cycle.legs.len(),
@@ -8847,6 +8863,7 @@ impl Cell {
                 cycle.cycle_id
             ));
             self.break_cycle(
+                gateway,
                 &cycle.cycle_id,
                 position.saturating_add(1),
                 cycle.legs.len(),
@@ -8966,6 +8983,7 @@ impl Cell {
                     cycle.cycle_id
                 ));
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position.saturating_add(1),
                     cycle.legs.len(),
@@ -8980,6 +8998,7 @@ impl Cell {
             Ok(completion) => completion,
             Err(error) => {
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position.saturating_add(1),
                     cycle.legs.len(),
@@ -8997,6 +9016,7 @@ impl Cell {
     /// A cycle stopped between legs. Record it and stop the cell.
     fn break_cycle(
         &mut self,
+        gateway: &mut dyn Placer,
         cycle_id: &str,
         sent: usize,
         total: usize,
@@ -9032,6 +9052,9 @@ impl Cell {
         // is applied only between passes, so a cell held by the journal wire
         // never reaches this line. A predicate distinction no input can
         // exercise would be a guard no test can prove.
+        if sent > 0 {
+            self.unwind_cycle(cycle_id, gateway, now);
+        }
         if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
@@ -9046,6 +9069,101 @@ impl Cell {
                 now,
             );
             self.record_halt();
+        }
+    }
+
+    /// Close what a broken cycle's filled legs left open, before the cell
+    /// halts (§30's atomic-or-cancelled, as far as a cell can honour it).
+    ///
+    /// The fills the order-entry channel has not yet delivered are read
+    /// first, so a leg that traded before the next one was refused is known
+    /// to have traded. Then [`qip_arbitrage::legs::unwind_plan`] nets what
+    /// the cycle's legs filled per venue and instrument and names the
+    /// opposite order for each book left open; each goes through
+    /// [`Cell::send`] like any other order — the live-venue refusal, the mode
+    /// gate, the fence and the risk gate all apply, and nothing here can
+    /// send to a venue they refuse — priced at the touch it takes, and is
+    /// journaled as [`Decision::Hedged`]. A leg still resting is withdrawn by
+    /// the mass cancel the halt brings, not offset here: offsetting a size
+    /// that has not traded would open the position this exists to close.
+    ///
+    /// An offset the cell cannot price or the venue refuses is journaled as
+    /// a break naming the book, and the halt that follows is unchanged: the
+    /// operator still looks, now at a cell that tried to return to flat
+    /// rather than one that left the position standing.
+    fn unwind_cycle(&mut self, cycle_id: &str, gateway: &mut dyn Placer, now: Timestamp) {
+        self.confirm_execution_reports(gateway, now);
+        let filled: Vec<(VenueId, ObjectId, BookSide, Decimal)> = self
+            .working
+            .values()
+            .filter(|working| working.net.cycle_id.as_deref() == Some(cycle_id))
+            .filter(|working| working.order.filled.is_positive())
+            .map(|working| {
+                (
+                    working.order.venue.clone(),
+                    working.order.object_id.clone(),
+                    working.order.side,
+                    working.order.filled,
+                )
+            })
+            .collect();
+        for offset in qip_arbitrage::legs::unwind_plan(filled) {
+            let price = self
+                .liquidity
+                .get(&offset.venue, &offset.object_id)
+                .and_then(|state| match offset.side {
+                    BookSide::Ask => state.best_ask(),
+                    BookSide::Bid => state.best_bid(),
+                })
+                .map(|level| level.price);
+            let Some(price) = price else {
+                self.break_on(
+                    format!(
+                        "cycle {cycle_id} left {} {} open at {} and the book serves no touch to \
+                         offset it at; the position stands until an operator closes it",
+                        offset.quantity,
+                        offset.object_id.as_str(),
+                        offset.venue.as_str()
+                    ),
+                    now,
+                );
+                continue;
+            };
+            match self.send(
+                &offset.object_id,
+                &offset.venue,
+                offset.side,
+                offset.quantity,
+                price,
+                now,
+                now,
+                qip_execution_engine::modes::ExecutionMode::OrderTaking,
+                gateway,
+            ) {
+                Ok((order_id, simulated)) => {
+                    self.journal.record(
+                        Decision::Hedged {
+                            order_id,
+                            venue: offset.venue.as_str().to_string(),
+                            object: offset.object_id.as_str().to_string(),
+                            quantity: offset.quantity.to_string(),
+                            simulated,
+                        },
+                        now,
+                    );
+                }
+                Err(error) => self.break_on(
+                    format!(
+                        "cycle {cycle_id} left {} {} open at {} and the offsetting order was \
+                         not sent: {}; the position stands until an operator closes it",
+                        offset.quantity,
+                        offset.object_id.as_str(),
+                        offset.venue.as_str(),
+                        error.message()
+                    ),
+                    now,
+                ),
+            }
         }
     }
 
