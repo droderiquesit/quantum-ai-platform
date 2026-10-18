@@ -238,6 +238,8 @@ fn every_schema_id_a_stream_admits_is_in_the_lock() {
                 "reflex.outcome_recorded",
                 "reflex.chain_span",
                 "reflex.fabric_gap",
+                // ADR 0123: non-fill ledger operations, booked by qip-ledgerd.
+                "ledger.operation_recorded",
             ]),
         ),
         (

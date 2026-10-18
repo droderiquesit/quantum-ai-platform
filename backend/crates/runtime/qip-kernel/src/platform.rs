@@ -873,6 +873,11 @@ pub struct Platform {
     /// only through this, so the book and the ledger cannot disagree about
     /// which fills exist.
     desk_ledger: DeskLedgerFeed,
+    /// The desk's non-fill ledger operations not yet acknowledged by the
+    /// fabric (ADR 0123): today the treasury funding of its book. Rebuilt at
+    /// every start from the log and re-sent; the ledger books each once by
+    /// operation id, so a resend is a counted duplicate.
+    desk_operations: Vec<qip_contracts::ledger_operation::LedgerOperation>,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -4021,6 +4026,33 @@ pub struct DeskLedgerAcknowledged {
 /// tells them apart.
 const DESK_LEDGER_ORIGIN: &str = "kernel/desk-ledger";
 
+/// The journalled record that the central treasury funded the desk's book
+/// (ADR 0123), written once, at the first assembly on a fresh log, with the
+/// equity the book opened at. A restart reads it back rather than recomputing
+/// it, so the operation it becomes has the same time and amount, and so the
+/// same digest, under the same id: a changed `initial_equity` on a log that
+/// already holds a funding does not quietly fund the book twice.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeskTreasuryFunded {
+    pub amount: Decimal,
+    pub unit: String,
+    pub at: Timestamp,
+}
+
+/// The producer of [`DeskTreasuryFunded`].
+const DESK_TREASURY_ORIGIN: &str = "kernel/desk-treasury";
+
+/// The treasury that funds every desk's book, as the ledger names it.
+pub const CENTRAL_TREASURY: &str = "central";
+
+// Its own topic, not `PositionUpdated`: a funding is not a position change,
+// and every reader of `PositionUpdated` (retirement dispositions among them)
+// would otherwise find a record it never wrote on every fresh platform.
+impl EventBody for DeskTreasuryFunded {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 impl EventBody for DeskLedgerAcknowledged {
     const TOPIC: Topic = Topic::PositionUpdated;
     const SCHEMA_VERSION: u32 = 1;
@@ -4973,6 +5005,7 @@ impl Platform {
             sensed_pending: Vec::new(),
             sensed_unlisted: 0,
             desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
+            desk_operations: Vec::new(),
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -5127,6 +5160,11 @@ impl Platform {
         // the positions, the fees, the drawdown's peak and the day's loss
         // were all forgotten, and the limits read a book that held nothing.
         platform.resume_book(now)?;
+        // The desk's book is funded by the central treasury with the
+        // platform's initial equity, and that funding is a financial fact the
+        // ledger is the authority for (ADR 0123). Journaled once, so every
+        // restart re-derives the same operation with the same digest.
+        platform.queue_treasury_funding(now)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -18913,6 +18951,71 @@ impl Platform {
                 error.message()
             )),
         }
+    }
+
+    /// The desk's ledger operations not yet acknowledged by the fabric, in
+    /// the order they were recorded (ADR 0123).
+    pub fn pending_desk_operations(&self) -> &[qip_contracts::ledger_operation::LedgerOperation] {
+        &self.desk_operations
+    }
+
+    /// Drop the operations the fabric has acknowledged, by id. Not
+    /// journalled: every start re-sends what the log re-derives, and the
+    /// ledger books each id once.
+    pub fn acknowledge_desk_operations(&mut self, operation_ids: &[String]) -> usize {
+        let before = self.desk_operations.len();
+        self.desk_operations
+            .retain(|operation| !operation_ids.contains(&operation.operation_id));
+        before - self.desk_operations.len()
+    }
+
+    /// Queue the treasury funding of the desk's book, journalling it first
+    /// if this log has never recorded one.
+    fn queue_treasury_funding(&mut self, now: Timestamp) -> Result<()> {
+        use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
+        let mut funded: Option<DeskTreasuryFunded> = None;
+        for record in self.event_log.records() {
+            if record.event.lineage.producer == DESK_TREASURY_ORIGIN
+                && record.event.topic == DeskTreasuryFunded::TOPIC
+            {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                funded = Some(frame.decode::<DeskTreasuryFunded>()?.body);
+                break;
+            }
+        }
+        let funded = match funded {
+            Some(funded) => funded,
+            None => {
+                let funded = DeskTreasuryFunded {
+                    amount: self.config.initial_equity,
+                    unit: crate::desk_ledger::DESK_QUOTE_UNIT.to_string(),
+                    at: now,
+                };
+                self.journal_record(funded.clone(), DESK_TREASURY_ORIGIN, now)?;
+                funded
+            }
+        };
+        let chain = self.desk_ledger.chain().to_string();
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:treasury-funding:0"),
+            origin: chain.clone(),
+            sequence: 0,
+            recorded_at: funded.at,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::TreasuryAllocation {
+                treasury: CENTRAL_TREASURY.to_string(),
+                book: Book {
+                    cell: chain,
+                    strategy: DESK_STRATEGY.to_string(),
+                },
+                unit: funded.unit,
+                amount: funded.amount,
+                phase: Phase::Establish,
+            },
+        })?;
+        self.desk_operations.push(operation);
+        Ok(())
     }
 
     /// Note a problem with shipping the desk's records, to be surfaced beside

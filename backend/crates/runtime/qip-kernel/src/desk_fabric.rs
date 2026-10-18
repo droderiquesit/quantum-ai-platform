@@ -28,12 +28,13 @@
 //! at this seam — a live fill cannot be built into a record that ships.
 
 use crate::desk_ledger::{DESK_CELL, DESK_SESSION, DeskOutcome, validate_chain};
+use qip_contracts::ledger_operation::LedgerOperation;
 use qip_contracts::reflex::Decision;
 use qip_core::canonical::canonical_json;
 use qip_core::error::{Error, Result};
 use qip_core::{EventId, Lineage, sha256_hex};
 use qip_events::AnyEvent;
-use qip_events::event_fabric::bindings::REFLEX_OUTCOME_RECORDED;
+use qip_events::event_fabric::bindings::{LEDGER_OPERATION_RECORDED, REFLEX_OUTCOME_RECORDED};
 use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass};
 use qip_portfolio::ledger::{PaperFill, post};
@@ -126,6 +127,38 @@ pub fn fabric_record(outcome: &DeskOutcome) -> Result<Record> {
         // order stays on [`DeskOutcome::correlation_id`].
         lineage: Lineage {
             correlation_id: chain,
+            causation_id: None,
+            trace_id: None,
+            producer: PRODUCER.to_string(),
+        },
+        idempotency_key: Some(id),
+        payload,
+        payload_hash,
+    };
+    Record::from_any_event(&event, PayloadCodec::CanonicalJson)
+}
+
+/// The fabric record for one of the desk's ledger operations (ADR 0123): the
+/// operation as the body, its event id and lineage both derived from its
+/// operation id, so a resend after a crash carries the id the first send did.
+pub fn operation_record(operation: &LedgerOperation) -> Result<Record> {
+    let binding = LEDGER_OPERATION_RECORDED;
+    let payload = serde_json::to_value(operation).map_err(|error| {
+        Error::schema(format!(
+            "a desk ledger operation would not serialise: {error}"
+        ))
+    })?;
+    let payload_hash = sha256_hex(canonical_json(&payload).as_bytes());
+    let id = sha256_hex(format!("qip.ledger.operation.v1|{}", operation.operation_id).as_bytes());
+    let event = AnyEvent {
+        event_id: EventId::from_string(id.clone()),
+        topic: binding.topic,
+        schema_version: binding.schema_version,
+        occurred_at: operation.recorded_at,
+        recorded_at: operation.recorded_at,
+        sequence: 0,
+        lineage: Lineage {
+            correlation_id: qip_core::CorrelationId::from_string(id.clone()),
             causation_id: None,
             trace_id: None,
             producer: PRODUCER.to_string(),

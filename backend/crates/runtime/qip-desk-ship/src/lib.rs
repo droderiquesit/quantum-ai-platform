@@ -333,6 +333,15 @@ pub trait DeskQueue {
     /// Drop every record through chain position `through_sequence`. Called only
     /// once the fabric has acknowledged them.
     fn acknowledge(&mut self, through_sequence: u64) -> Result<usize>;
+    /// The desk's ledger operations not yet acknowledged (ADR 0123). Empty
+    /// by default: a queue that books no operation ships none.
+    fn pending_operations(&self) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+        Vec::new()
+    }
+    /// Drop the operations the fabric has acknowledged, by id.
+    fn acknowledge_operations(&mut self, _operation_ids: &[String]) -> usize {
+        0
+    }
     /// Surface a problem beside the platform's other capture problems.
     fn note_problem(&mut self, problem: String);
     /// Where the shipper's series are recorded.
@@ -351,6 +360,14 @@ impl DeskQueue for Platform {
 
     fn acknowledge(&mut self, through_sequence: u64) -> Result<usize> {
         self.acknowledge_desk_outcomes(through_sequence)
+    }
+
+    fn pending_operations(&self) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+        self.pending_desk_operations().to_vec()
+    }
+
+    fn acknowledge_operations(&mut self, operation_ids: &[String]) -> usize {
+        self.acknowledge_desk_operations(operation_ids)
     }
 
     fn note_problem(&mut self, problem: String) {
@@ -403,6 +420,7 @@ pub struct ShipReport {
 enum Done {
     Delivered {
         through: u64,
+        operations: Vec<String>,
     },
     /// The broker refused for quota and said how long to wait. Not a failure:
     /// the batch is sound and the broker is up, so the wait is the broker's
@@ -420,6 +438,9 @@ enum Done {
 struct Job {
     batch: Batch,
     through: u64,
+    /// The operation ids this batch carries, for an operations batch (ADR
+    /// 0123); empty for a batch of chain records.
+    operations: Vec<String>,
 }
 
 /// What the shipper needs of the producer after the producer has moved to its
@@ -439,6 +460,9 @@ struct Shipping {
     results: Receiver<Done>,
     /// The chain position of the batch with the worker, if any.
     in_flight: Option<u64>,
+    /// The operation ids of the operations batch with the worker, if that is
+    /// what is out (ADR 0123). At most one batch of either kind is out.
+    operations_in_flight: Option<Vec<String>>,
     /// The chain position the next record must carry, once one has been
     /// delivered. `None` until then: after a restart the first pending record
     /// is whatever the platform's chain continues at.
@@ -521,6 +545,7 @@ impl DeskShipper {
                 jobs,
                 results,
                 in_flight: None,
+                operations_in_flight: None,
                 next_expected: None,
                 refused_at: None,
                 fenced: false,
@@ -654,7 +679,7 @@ impl Shipping {
         let mut failed: Option<(ShipOutcome, String)> = None;
 
         // 1. What the worker finished.
-        if self.in_flight.is_some() {
+        if self.busy() {
             let first = match wait {
                 Wait::No => self.results.try_recv().map_err(|e| match e {
                     TryRecvError::Empty => RecvTimeoutError::Timeout,
@@ -675,7 +700,7 @@ impl Shipping {
         let mut refused: Option<String> = None;
         if self.fenced {
             // Nothing to do, and nothing to count again.
-        } else if self.worker_lost || self.in_flight.is_some() {
+        } else if self.worker_lost || self.busy() {
             // The worker is gone, or busy with the batch already out.
         } else if matches!(wait, Wait::No)
             && self.not_before.is_some_and(|until| Instant::now() < until)
@@ -688,8 +713,8 @@ impl Shipping {
             refused = self.hand_over(platform)?;
         }
 
-        let pending = platform.pending_len();
-        let in_flight = self.in_flight.is_some();
+        let pending = platform.pending_len() + platform.pending_operations().len();
+        let in_flight = self.busy();
         let (outcome, detail) = if self.fenced {
             (
                 ShipOutcome::Fenced,
@@ -725,8 +750,25 @@ impl Shipping {
     ) -> Result<()> {
         let metrics = platform.metrics();
         let expected = self.in_flight.take();
+        let operations_expected = self.operations_in_flight.take();
         match done {
-            Done::Delivered { through } => {
+            Done::Delivered {
+                operations: delivered,
+                ..
+            } if !delivered.is_empty() => {
+                if operations_expected.as_ref() != Some(&delivered) {
+                    return Err(Error::invalid(format!(
+                        "the desk worker delivered operations {delivered:?} but the batch in \
+                         flight was {operations_expected:?}"
+                    )));
+                }
+                *acknowledged += platform.acknowledge_operations(&delivered);
+                self.failures = 0;
+                self.not_before = None;
+                *shipped = true;
+                metrics.count(names::DESK_SHIP, labels([("outcome", "shipped")]));
+            }
+            Done::Delivered { through, .. } => {
                 if expected != Some(through) {
                     return Err(Error::invalid(format!(
                         "the desk worker delivered through chain position {through} but the \
@@ -810,6 +852,7 @@ impl Shipping {
         failed: &mut Option<(ShipOutcome, String)>,
     ) {
         self.in_flight = None;
+        self.operations_in_flight = None;
         self.worker_lost = true;
         let why = "the desk shipper's worker thread ended".to_string();
         platform
@@ -821,9 +864,104 @@ impl Shipping {
         *failed = Some((ShipOutcome::Deferred, why));
     }
 
+    /// Whether a batch of either kind is with the worker.
+    fn busy(&self) -> bool {
+        self.in_flight.is_some() || self.operations_in_flight.is_some()
+    }
+
+    /// Build, preflight and hand over the pending operations as one batch.
+    /// An operation the ledger's envelope check would refuse holds the batch
+    /// back loudly, as a chain record does.
+    fn hand_over_operations(
+        &mut self,
+        platform: &mut dyn DeskQueue,
+        operations: &[qip_contracts::ledger_operation::LedgerOperation],
+    ) -> Result<Option<String>> {
+        // An operation from another desk's chain under this producer's id
+        // would be booked as this desk's; the same configuration fault the
+        // chain check in `prepare` holds back.
+        if let Some(stray) = operations
+            .iter()
+            .find(|operation| operation.origin != self.route.producer_id)
+        {
+            let why = format!(
+                "the desk's ledger operation {} is from desk chain `{}` and this shipper \
+                 produces for `{}`; the platform's desk_chain and the shipper's chain must be \
+                 the same name",
+                stray.operation_id, stray.origin, self.route.producer_id
+            );
+            platform
+                .metrics()
+                .count(names::DESK_SHIP, labels([("outcome", "refused")]));
+            platform.note_problem(why.clone());
+            return Ok(Some(why));
+        }
+        let built: Result<Vec<Record>> = operations
+            .iter()
+            .map(qip_kernel::desk_fabric::operation_record)
+            .collect();
+        let checked = built.and_then(|records| {
+            let batch = p1_batch(records)?;
+            let mut check = batch.clone();
+            check.producer_id = self.route.producer_id.clone();
+            let context = FabricContext {
+                stream: self.route.stream.clone(),
+                region: self.region.clone(),
+                partition: self.route.partition,
+                qos_class: QosClass::P1Outcomes,
+                auth_context: format!("producer:{}", self.route.producer_id),
+                provenance: "qip-fastbrain.desk".to_string(),
+            };
+            FabricEnvelope::open_all(&check, &context, &[bindings::LEDGER_OPERATION_RECORDED])?;
+            Ok(batch)
+        });
+        let batch = match checked {
+            Ok(batch) => batch,
+            Err(error) => {
+                let why = format!(
+                    "the desk's ledger operations are held back: {}. They stay pending; a \
+                     person should look",
+                    error.message()
+                );
+                platform
+                    .metrics()
+                    .count(names::DESK_SHIP, labels([("outcome", "refused")]));
+                platform.note_problem(why.clone());
+                return Ok(Some(why));
+            }
+        };
+        let ids: Vec<String> = operations
+            .iter()
+            .map(|operation| operation.operation_id.clone())
+            .collect();
+        match self.jobs.try_send(Job {
+            batch,
+            through: 0,
+            operations: ids.clone(),
+        }) {
+            Ok(()) => {
+                self.operations_in_flight = Some(ids);
+                Ok(None)
+            }
+            Err(TrySendError::Full(_)) => Err(Error::invalid(
+                "the desk worker's queue was full with nothing in flight",
+            )),
+            Err(TrySendError::Disconnected(_)) => {
+                self.worker_lost = true;
+                Ok(Some("the desk shipper's worker thread ended".to_string()))
+            }
+        }
+    }
+
     /// Build, preflight and hand over the next batch. `Ok(Some(why))` when the
     /// next record is held back.
     fn hand_over(&mut self, platform: &mut dyn DeskQueue) -> Result<Option<String>> {
+        // The desk's operations go first: there are few, and the funding of
+        // a book is the fact its fills are drawn against (ADR 0123).
+        let operations = platform.pending_operations();
+        if !operations.is_empty() {
+            return self.hand_over_operations(platform, &operations);
+        }
         let candidates = platform.peek(BATCH_RECORDS);
         if candidates.is_empty() {
             return Ok(None);
@@ -848,7 +986,11 @@ impl Shipping {
             }
         };
         self.refused_at = None;
-        match self.jobs.try_send(Job { batch, through }) {
+        match self.jobs.try_send(Job {
+            batch,
+            through,
+            operations: Vec::new(),
+        }) {
             Ok(()) => {
                 self.in_flight = Some(through);
                 Ok(None)
@@ -1048,6 +1190,7 @@ fn deliver(producer: &mut Producer, job: Job) -> Done {
     match producer.send(job.batch) {
         Ok(_) => Done::Delivered {
             through: job.through,
+            operations: job.operations,
         },
         Err(error) => fenced(producer, &error).unwrap_or_else(|| match producer.quota_wait() {
             Some(wait) => Done::Throttled {
@@ -1375,7 +1518,14 @@ mod tests {
         let (batch, through) = shipping_of(&mut shipper)
             .prepare(&outcomes)
             .expect("a sendable batch");
-        match deliver(&mut producer, Job { batch, through }) {
+        match deliver(
+            &mut producer,
+            Job {
+                batch,
+                through,
+                operations: Vec::new(),
+            },
+        ) {
             Done::Throttled { wait, .. } => assert_eq!(wait, Duration::from_millis(700)),
             other => panic!("a quota refusal was not a throttle: {other:?}"),
         }

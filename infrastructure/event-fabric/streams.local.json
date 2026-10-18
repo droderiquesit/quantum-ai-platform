@@ -43,7 +43,8 @@
       "topics": [
         "reflex.outcome_recorded",
         "reflex.chain_span",
-        "reflex.fabric_gap"
+        "reflex.fabric_gap",
+        "ledger.operation_recorded"
       ]
     },
     {

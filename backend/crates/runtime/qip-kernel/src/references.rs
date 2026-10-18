@@ -883,7 +883,13 @@ mod tests {
         // Replay the platform's frames into a log with a ceiling of three,
         // so the evictions fall where a running log's would.
         let mut capped = EventLog::in_memory().with_capacity(3)?;
+        // Only the references' own records: the desk's treasury funding
+        // (ADR 0123) is a permanent record every fresh platform writes, and
+        // it would take one of the three slots this scenario counts on.
         for record in platform.event_log().records() {
+            if record.event.topic == Topic::LedgerOperationRecorded {
+                continue;
+            }
             capped.append(&record.event)?;
         }
         let retained: Vec<u64> = capped.records().iter().map(|r| r.sequence).collect();

@@ -247,12 +247,42 @@ impl Fabric {
         self.listener = Some(listener);
     }
 
-    /// Records the broker holds from the desk's producer.
+    /// Chain records the broker holds from the desk's producer: its outcome
+    /// records, not the ledger operations (ADR 0123) it also sends, of which
+    /// every process start re-sends its funding.
     fn desk_records(&self) -> u64 {
-        self.service
+        self.records_from(DESK_PRODUCER, "reflex.outcome_recorded")
+    }
+
+    /// Ledger operations the broker holds from the desk's producer.
+    fn desk_operations(&self) -> u64 {
+        self.records_from(DESK_PRODUCER, "ledger.operation_recorded")
+    }
+
+    fn records_from(&self, producer: &str, topic: &str) -> u64 {
+        use qip_events::event_fabric::codec::{Batch, DecodeOutcome};
+        let response = self
+            .service
             .broker()
-            .next_sequence(OUTCOMES, 0, DESK_PRODUCER)
-            .unwrap()
+            .fetch(OUTCOMES, 0, 0, 64 * 1024 * 1024)
+            .unwrap();
+        let mut bytes = qip_core::hash::from_hex(response.batches()).unwrap();
+        let mut count = 0u64;
+        while !bytes.is_empty() {
+            let DecodeOutcome::Complete(batch) = Batch::decode(&bytes).unwrap() else {
+                panic!("a fetch never returns a torn batch");
+            };
+            let consumed = batch.encode().unwrap().len();
+            if batch.producer_id == producer {
+                for record in &batch.records {
+                    if record.decode_payload(batch.encoding).unwrap().topic.name() == topic {
+                        count += 1;
+                    }
+                }
+            }
+            bytes.drain(..consumed);
+        }
+        count
     }
 
     fn shipper(&self) -> DeskShipper {
@@ -402,7 +432,13 @@ fn warm_platform_at(path: &Path) -> Result<Platform> {
 }
 
 fn warm_platform_with(config: PlatformConfig) -> Result<Platform> {
-    let clock = Arc::new(ManualClock::new(start_time()));
+    warm_platform_assembled_at(config, start_time())
+}
+
+/// [`warm_platform_with`] assembled with its clock at `assembled`: a process
+/// that starts later than the one before it, as a restart does.
+fn warm_platform_assembled_at(config: PlatformConfig, assembled: Timestamp) -> Result<Platform> {
+    let clock = Arc::new(ManualClock::new(assembled));
     let context = Context::new(clock, config.seed);
     let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
     let mut tape: Vec<SensedRecord> = (1..=60)
@@ -462,6 +498,50 @@ fn fills(platform: &mut Platform, count: usize, label: &str) {
 }
 
 // --- driving the shipper ------------------------------------------------------------
+
+/// Ship the desk's treasury funding (ADR 0123), which goes out ahead of its
+/// chain records, so a test about the chain starts with only the chain left.
+fn ship_funding(shipper: &mut DeskShipper, platform: &mut Platform) {
+    let deadline = Instant::now() + EVENTUALLY;
+    loop {
+        let report = shipper
+            .ship(platform)
+            .expect("the shipper's bookkeeping holds");
+        if platform.pending_desk_operations().is_empty() && !report.in_flight {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the funding never shipped: {report:?}"
+        );
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+}
+
+/// The ledger's cash for the desk: its treasury funding less what it paid.
+fn expected_cash(platform: &Platform) -> Decimal {
+    platform.config().initial_equity - paid(platform)
+}
+
+/// Duplicates the ledger counted on chain records, not the re-sent funding
+/// every start sends again (ADR 0123).
+fn chain_duplicates(metrics: &Metrics) -> u64 {
+    metrics
+        .snapshot()
+        .series
+        .iter()
+        .filter(|s| s.name == names::LEDGER_DUPLICATES)
+        .filter(|s| {
+            !s.labels
+                .iter()
+                .any(|(k, v)| k == "kind" && v == "operation")
+        })
+        .map(|s| match &s.value {
+            MetricValue::Counter(v) => *v,
+            other => panic!("duplicates is not a counter: {other:?}"),
+        })
+        .sum()
+}
 
 fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + EVENTUALLY;
@@ -605,7 +685,7 @@ fn desk_fills_reach_the_ledger_balanced_attributed_and_acknowledged() {
         "acknowledged records stay queued"
     );
     wait_until("the ledger has booked three fills", || {
-        ledger.store().events().unwrap().len() == 3
+        ledger.store().fill_events().unwrap().len() == 3
     });
     let store = ledger.store();
     // Double entry: every unit closes to zero.
@@ -618,10 +698,28 @@ fn desk_fills_reach_the_ledger_balanced_attributed_and_acknowledged() {
         store.balance(&trading(), "obj-ACME").unwrap(),
         held(&platform)
     );
-    assert_eq!(store.balance(&trading(), "USD").unwrap(), -paid(&platform));
+    // Since ADR 0123 the ledger also holds the treasury's funding of the
+    // book, so its cash is the funding less what the fills paid, and the
+    // treasury holds the other side.
+    assert_eq!(
+        store.balance(&trading(), "USD").unwrap(),
+        expected_cash(&platform)
+    );
+    assert_eq!(
+        store
+            .balance(
+                &Account::Treasury {
+                    treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string()
+                },
+                "USD"
+            )
+            .unwrap(),
+        -platform.config().initial_equity,
+        "the treasury did not fund the book"
+    );
     // Every posting names the chain its order's decisions are filed under.
     let chains: Vec<_> = store
-        .events()
+        .fill_events()
         .unwrap()
         .iter()
         .map(|event| event.chain_correlation())
@@ -654,9 +752,12 @@ fn desk_fills_reach_the_ledger_balanced_attributed_and_acknowledged() {
 fn a_crash_between_send_and_acknowledgement_resends_and_posts_nothing_twice() {
     let fabric = Fabric::start();
     let mut platform = warm_platform().unwrap();
+    let mut first = fabric.shipper();
+    // The book's funding goes first and is acknowledged before any fill
+    // exists, so the batch this test crashes on is the chain's alone.
+    ship_funding(&mut first, &mut platform);
     fills(&mut platform, 2, "crash");
 
-    let mut first = fabric.shipper();
     let report = first.ship(&mut platform).unwrap();
     assert_eq!(report.outcome, ShipOutcome::InFlight, "{report:?}");
     // The broker holds the batch; this process dies before it reads the
@@ -674,7 +775,7 @@ fn a_crash_between_send_and_acknowledgement_resends_and_posts_nothing_twice() {
     let ledger_dir = temp_dir("ledger-crash");
     let ledger = fabric.start_ledger(&ledger_dir);
     wait_until("the ledger booked the first send", || {
-        ledger.store().events().unwrap().len() == 2
+        ledger.store().fill_events().unwrap().len() == 2
     });
     let balances = ledger.store().balances().unwrap();
 
@@ -685,11 +786,11 @@ fn a_crash_between_send_and_acknowledgement_resends_and_posts_nothing_twice() {
     wait_until("the broker holds the resend", || fabric.desk_records() == 4);
     wait_until(
         "the ledger absorbed both resent records as duplicates",
-        || counter(ledger.metrics(), names::LEDGER_DUPLICATES, None) >= 2,
+        || chain_duplicates(ledger.metrics()) >= 2,
     );
     std::thread::sleep(StdDuration::from_millis(300));
     assert_eq!(
-        ledger.store().events().unwrap().len(),
+        ledger.store().fill_events().unwrap().len(),
         2,
         "a resend posted again"
     );
@@ -747,7 +848,7 @@ fn a_broker_outage_leaves_the_desk_pending_and_a_retry_delivers_in_order() {
     let ledger_dir = temp_dir("ledger-outage");
     let ledger = fabric.start_ledger(&ledger_dir);
     wait_until("the ledger booked all three", || {
-        ledger.store().events().unwrap().len() == 3
+        ledger.store().fill_events().unwrap().len() == 3
     });
     assert_eq!(
         ledger
@@ -761,7 +862,7 @@ fn a_broker_outage_leaves_the_desk_pending_and_a_retry_delivers_in_order() {
     );
     assert_eq!(
         ledger.store().balance(&trading(), "USD").unwrap(),
-        -paid(&platform)
+        expected_cash(&platform)
     );
     assert!(ledger.store().parked().unwrap().is_empty());
     ledger.stop();
@@ -893,11 +994,11 @@ fn an_acknowledgement_the_platform_cannot_record_defers_the_batch_and_does_not_e
     });
     assert!(view.platform.pending_desk_outcomes().is_empty());
     wait_until("the ledger booked both records", || {
-        ledger.store().events().unwrap().len() == 2
+        ledger.store().fill_events().unwrap().len() == 2
     });
     std::thread::sleep(StdDuration::from_millis(300));
     assert_eq!(
-        ledger.store().events().unwrap().len(),
+        ledger.store().fill_events().unwrap().len(),
         2,
         "the resend posted a record twice"
     );
@@ -955,7 +1056,7 @@ fn a_poisoned_record_is_refused_counted_left_pending_and_does_not_stall_the_ledg
     );
 
     wait_until("the ledger booked the record before it", || {
-        ledger.store().events().unwrap().len() == 1
+        ledger.store().fill_events().unwrap().len() == 1
     });
     assert!(
         ledger.store().parked().unwrap().is_empty(),
@@ -970,7 +1071,7 @@ fn a_poisoned_record_is_refused_counted_left_pending_and_does_not_stall_the_ledg
     // The record is whole again (the real platform, no view): the rest follow.
     ship_all(&mut shipper, &mut platform);
     wait_until("the ledger booked all three", || {
-        ledger.store().events().unwrap().len() == 3
+        ledger.store().fill_events().unwrap().len() == 3
     });
     assert_eq!(
         ledger
@@ -1074,7 +1175,7 @@ fn with_a_fabric_the_queue_is_bounded_and_without_one_it_only_grows_loudly() {
     }
     assert!(peak <= 2, "the queue held more than one round: {peak}");
     wait_until("the ledger booked all eight", || {
-        ledger.store().events().unwrap().len() == 8
+        ledger.store().fill_events().unwrap().len() == 8
     });
     ledger.stop();
 
@@ -1130,7 +1231,8 @@ fn the_shutdown_flush_delivers_what_is_pending_within_its_budget() {
     let flushed = shipper
         .flush(&mut platform, StdDuration::from_secs(60))
         .unwrap();
-    assert_eq!(flushed.acknowledged, 3, "{flushed:?}");
+    // The three fills and the book's funding (ADR 0123).
+    assert_eq!(flushed.acknowledged, 4, "{flushed:?}");
     assert_eq!(flushed.pending, 0);
     assert!(platform.pending_desk_outcomes().is_empty());
     assert_eq!(fabric.desk_records(), 3);
@@ -1197,7 +1299,7 @@ fn a_crash_after_booking_before_any_ship_is_requeued_and_the_ledger_has_no_hole(
     let mut shipper = fabric.shipper();
     ship_all(&mut shipper, &mut second);
     wait_until("the ledger booked all four", || {
-        ledger.store().events().unwrap().len() == 4
+        ledger.store().fill_events().unwrap().len() == 4
     });
     assert_eq!(
         ledger
@@ -1288,15 +1390,16 @@ fn a_crash_after_the_fabric_acked_before_the_watermark_was_logged_resends_and_po
     let path = log_file("restart-b");
     {
         let mut first = warm_platform_at(&path).unwrap();
-        fills(&mut first, 2, "b");
         let mut shipper = fabric.shipper();
+        ship_funding(&mut shipper, &mut first);
+        fills(&mut first, 2, "b");
         shipper.ship(&mut first).unwrap();
         wait_until("the broker holds both", || fabric.desk_records() == 2);
         // Dies here: the worker's answer is never read, so no watermark.
     }
     let ledger = fabric.start_ledger(&temp_dir("ledger-restart-b"));
     wait_until("the ledger booked the first send", || {
-        ledger.store().events().unwrap().len() == 2
+        ledger.store().fill_events().unwrap().len() == 2
     });
     let balances = ledger.store().balances().unwrap();
 
@@ -1310,11 +1413,11 @@ fn a_crash_after_the_fabric_acked_before_the_watermark_was_logged_resends_and_po
     ship_all(&mut shipper, &mut second);
     wait_until("the broker holds the resend", || fabric.desk_records() == 4);
     wait_until("the ledger absorbed the resend", || {
-        counter(ledger.metrics(), names::LEDGER_DUPLICATES, None) >= 2
+        chain_duplicates(ledger.metrics()) >= 2
     });
     std::thread::sleep(StdDuration::from_millis(300));
     assert_eq!(
-        ledger.store().events().unwrap().len(),
+        ledger.store().fill_events().unwrap().len(),
         2,
         "a resend posted again"
     );
@@ -1357,14 +1460,14 @@ fn a_crash_after_the_watermark_was_logged_resends_nothing_the_ledger_has() {
     let mut shipper = fabric.shipper();
     ship_all(&mut shipper, &mut second);
     wait_until("the ledger booked all four", || {
-        ledger.store().events().unwrap().len() == 4
+        ledger.store().fill_events().unwrap().len() == 4
     });
     assert_eq!(
         fabric.desk_records(),
         4,
         "something already acknowledged was sent again"
     );
-    assert_eq!(counter(ledger.metrics(), names::LEDGER_DUPLICATES, None), 0);
+    assert_eq!(chain_duplicates(ledger.metrics()), 0);
     assert!(ledger.store().parked().unwrap().is_empty());
     ledger.stop();
 }
@@ -1525,7 +1628,7 @@ fn a_queue_longer_than_one_quota_window_still_drains() {
     let mut shipper = fabric.shipper();
     ship_all(&mut shipper, &mut platform);
     wait_until("the ledger booked all 300", || {
-        ledger.store().events().unwrap().len() == 300
+        ledger.store().fill_events().unwrap().len() == 300
     });
     ledger.stop();
 }
@@ -1634,7 +1737,7 @@ fn three_desks_ship_on_their_own_chains_to_one_ledger_without_fencing_or_forking
 
     let total: usize = per_desk.iter().sum();
     wait_until("the ledger booked every desk's fills", || {
-        ledger.store().events().unwrap().len() == total
+        ledger.store().fill_events().unwrap().len() == total
     });
     for (chain, count) in DESK_CHAINS.iter().zip(per_desk) {
         let tail = ledger
@@ -1652,7 +1755,7 @@ fn three_desks_ship_on_their_own_chains_to_one_ledger_without_fencing_or_forking
         ledger.store().parked().unwrap().is_empty(),
         "a chain was parked"
     );
-    let events = ledger.store().events().unwrap();
+    let events = ledger.store().fill_events().unwrap();
     for chain in DESK_CHAINS {
         let booked = events
             .iter()
@@ -1689,5 +1792,104 @@ fn a_shipper_refuses_records_from_another_desks_chain() {
         fabric.desk_records(),
         0,
         "a record from another chain reached the broker"
+    );
+}
+
+// --- ledger operations (ADR 0123) ------------------------------------------------
+
+/// The desk's treasury funding reaches the authoritative ledger through the
+/// broker and the consumer's operation arm, and a restart — which re-derives
+/// the same funding from the log and sends it again — books it once.
+///
+/// Mutation: drop the `Decoded::Operation` arm in `qip-ledgerd`'s step (pass
+/// operations over like any other topic) — the treasury never funds the book
+/// and the first balance assertion fails. Mutation: journal a fresh
+/// `DeskTreasuryFunded` on every start instead of reading the logged one —
+/// the restart sends a second digest under the same id, the ledger refuses
+/// it as a conflict and the "noted no refusal" assertion fails.
+#[test]
+fn the_desks_treasury_funding_reaches_the_ledger_once_across_restarts() {
+    let fabric = Fabric::start();
+    let path = log_file("funding");
+    let ledger = fabric.start_ledger(&temp_dir("ledger-funding"));
+    let equity = {
+        let mut platform = warm_platform_at(&path).unwrap();
+        assert_eq!(
+            platform.pending_desk_operations().len(),
+            1,
+            "premise: the book's funding is queued"
+        );
+        fill(&mut platform, dec!("10"), "funded");
+        let mut shipper = fabric.shipper();
+        ship_all(&mut shipper, &mut platform);
+        assert!(platform.pending_desk_operations().is_empty());
+        platform.config().initial_equity
+    };
+    let treasury = Account::Treasury {
+        treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string(),
+    };
+    wait_until("the ledger booked the funding", || {
+        ledger.store().balance(&treasury, "USD").unwrap() == -equity
+    });
+
+    // A restart, an hour later, re-queues the funding from the log and sends
+    // it again. Later on purpose: a funding recomputed at assembly instead of
+    // read from the log would carry the restart's time, a second digest
+    // under the same id.
+    let mut resumed = warm_platform_assembled_at(
+        PlatformConfig::default().with_event_log_file(&path),
+        start_time().saturating_add(Duration::from_hours(1)),
+    )
+    .unwrap();
+    assert_eq!(resumed.pending_desk_operations().len(), 1, "premise");
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut resumed);
+    wait_until("the broker holds the resend", || {
+        fabric.desk_operations() == 2
+    });
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(
+        ledger.store().balance(&treasury, "USD").unwrap(),
+        -equity,
+        "the restart funded the book twice"
+    );
+    assert!(
+        !ledger
+            .store()
+            .journal()
+            .unwrap()
+            .iter()
+            .any(|note| note.event == "operation_refused"),
+        "the resend was refused as a conflict: the funding's digest changed across a restart"
+    );
+    let trial = ledger.store().trial_balance().unwrap();
+    assert!(trial.values().all(|total| total.is_zero()), "{trial:?}");
+    ledger.stop();
+}
+
+/// An operation from another desk's chain is held back, not shipped under
+/// this producer's id.
+///
+/// Mutation: drop the origin check in `hand_over_operations` — the operation
+/// is shipped and the outcome is not `Refused`.
+#[test]
+fn a_shipper_refuses_operations_from_another_desks_chain() {
+    let fabric = Fabric::start();
+    let mut platform =
+        warm_platform_with(PlatformConfig::default().with_desk_chain(qip_api::DESK_CHAIN)).unwrap();
+    let mut shipper = fabric.shipper_for(qip_fastbrain::ship::PRODUCER_ID);
+    let report = shipper.ship(&mut platform).expect("bookkeeping holds");
+    assert_eq!(report.outcome, ShipOutcome::Refused, "{report:?}");
+    assert!(
+        report
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("desk_chain")),
+        "{report:?}"
+    );
+    assert_eq!(
+        fabric.desk_operations(),
+        0,
+        "an operation from another chain reached the broker"
     );
 }

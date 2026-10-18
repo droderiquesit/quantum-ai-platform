@@ -63,7 +63,8 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, sha256_hex};
 use qip_events::AnyEvent;
 use qip_events::event_fabric::bindings::{
-    EVENT_FABRIC_GAP, REFLEX_CHAIN_SPAN, REFLEX_OUTCOME_RECORDED, TopicBinding,
+    EVENT_FABRIC_GAP, LEDGER_OPERATION_RECORDED, REFLEX_CHAIN_SPAN, REFLEX_OUTCOME_RECORDED,
+    TopicBinding,
 };
 use qip_events::event_fabric::codec::Batch;
 use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
@@ -74,7 +75,9 @@ use qip_transport::event_fabric::transport::{FabricTransport, Timeouts};
 use qip_transport::retry::{RetryPolicy, Sleeper, ThreadSleeper};
 use serde::Serialize;
 
-use crate::store::{Delivery, Disposition, LedgerStore, P1Record};
+use crate::store::{
+    Delivery, Disposition, LedgerStore, OperationApplied, OperationDelivery, P1Record,
+};
 use crate::telemetry::LedgerTelemetry;
 
 /// Delivery offsets reserved per broker batch. A batch is at most 32 MiB
@@ -97,8 +100,12 @@ pub type Connect = Arc<dyn Fn() -> Result<Box<dyn FabricTransport + Send>> + Sen
 /// The topics the ledger reads, with the schema version it supports for each
 /// (`bindings`' own constants, so the producer and this reader cannot
 /// disagree about what version 1 is).
-const LEDGER_BINDINGS: [TopicBinding; 3] =
-    [REFLEX_OUTCOME_RECORDED, REFLEX_CHAIN_SPAN, EVENT_FABRIC_GAP];
+const LEDGER_BINDINGS: [TopicBinding; 4] = [
+    REFLEX_OUTCOME_RECORDED,
+    REFLEX_CHAIN_SPAN,
+    EVENT_FABRIC_GAP,
+    LEDGER_OPERATION_RECORDED,
+];
 
 /// The region the ledger stamps on the envelopes it opens: where they were
 /// read, not where they were produced. The batch wire carries no origin
@@ -179,6 +186,8 @@ pub enum Decoded {
     /// A producer-declared gap: books nothing; the chain discontinuity it
     /// leaves parks the cell at the store.
     Gap,
+    /// A non-fill ledger operation (ADR 0123), booked by operation id.
+    Operation(Box<OperationDelivery>),
     /// A record on a topic that is not a ledger record.
     Other,
 }
@@ -255,6 +264,22 @@ pub fn decode_batch(
             P1Record::Span(decode_as::<ChainSpan>(&event, REFLEX_CHAIN_SPAN)?)
         } else if event.topic == EVENT_FABRIC_GAP.topic {
             decoded.push((offset, Decoded::Gap));
+            continue;
+        } else if event.topic == LEDGER_OPERATION_RECORDED.topic {
+            // Validated on decode as on construction: the body is a
+            // `LedgerOperation`, whose deserialisation refuses what its
+            // constructor refuses, so a malformed one stalls here with
+            // nothing booked rather than reaching the store.
+            let operation = decode_as(&event, LEDGER_OPERATION_RECORDED)?;
+            decoded.push((
+                offset,
+                Decoded::Operation(Box::new(OperationDelivery {
+                    partition: partition.to_string(),
+                    offset,
+                    record_hash: sha256_hex(&record.payload),
+                    operation,
+                })),
+            ));
             continue;
         } else {
             decoded.push((offset, Decoded::Other));
@@ -438,6 +463,32 @@ impl PartitionWorker {
         Step::Retry
     }
 
+    /// Apply an operation until the store commits it or the worker is
+    /// stopped. A refusal is a commit (the cursor moved and a note was
+    /// written); only the store failing is retried.
+    fn apply_operation_until_committed(
+        &mut self,
+        delivery: &OperationDelivery,
+    ) -> Result<OperationApplied> {
+        loop {
+            match self.store.apply_operation(delivery) {
+                Ok(applied) => return Ok(applied),
+                Err(error) => {
+                    self.telemetry.store_retry();
+                    self.report(Some(format!(
+                        "the store refused operation {} of {}; retrying the same record: {error}",
+                        delivery.offset, self.label
+                    )));
+                    if self.stop.load(Ordering::SeqCst) {
+                        return Err(error);
+                    }
+                    let wait = self.backoff();
+                    self.config.sleeper.sleep(wait);
+                }
+            }
+        }
+    }
+
     /// Apply `delivery` until the store commits it or the worker is stopped.
     fn apply_until_committed(&mut self, delivery: &Delivery) -> Result<Disposition> {
         loop {
@@ -510,6 +561,23 @@ impl PartitionWorker {
         };
         let mut applied = 0usize;
         for (offset, record) in decoded {
+            if let Decoded::Operation(delivery) = &record {
+                match self.apply_operation_until_committed(delivery) {
+                    Ok(OperationApplied::Refused { detail }) => {
+                        self.report(Some(format!(
+                            "operation at {} of {} was refused and noted: {detail}",
+                            delivery.offset, self.label
+                        )));
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.seeked = false;
+                        return self.fail(&error);
+                    }
+                }
+                applied += 1;
+                self.count_applied(1);
+            }
             if let Decoded::Ledger(delivery) = record {
                 let disposition = match self.apply_until_committed(&delivery) {
                     Ok(disposition) => disposition,

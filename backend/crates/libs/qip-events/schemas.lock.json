@@ -1,5 +1,39 @@
 [
   {
+    "topic": "ledger.operation_recorded",
+    "version": 1,
+    "type_name": "qip_contracts::validated::Validated<qip_contracts::ledger_operation::LedgerOperationFields>",
+    "schema_id": "51dfffe8a822d82da0d797ba11055767cc676403855175d98129d757d7e0ec54",
+    "shape": {
+      "Object": {
+        "kind": {
+          "Object": {
+            "treasury_allocation": {
+              "Object": {
+                "amount": "String",
+                "book": {
+                  "Object": {
+                    "cell": "String",
+                    "strategy": "String"
+                  }
+                },
+                "phase": "String",
+                "treasury": "String",
+                "unit": "String"
+              }
+            }
+          }
+        },
+        "operation_id": "String",
+        "origin": "String",
+        "recorded_at": "String",
+        "schema_version": "Number",
+        "sequence": "Number",
+        "settlement": "String"
+      }
+    }
+  },
+  {
     "topic": "policy.distributed",
     "version": 1,
     "type_name": "qip_mesh::spine::PolicyFrame",

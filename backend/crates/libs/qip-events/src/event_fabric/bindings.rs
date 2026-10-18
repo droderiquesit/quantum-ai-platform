@@ -66,6 +66,15 @@ pub const REFLEX_OUTCOME_RECORDED: TopicBinding = TopicBinding {
     qos_class: QosClass::P1Outcomes,
 };
 
+/// ADR 0123: a non-fill ledger operation on the P1 outcomes stream. Not in
+/// [`ALL`], which is the reflex fabric's own six; the ledger's consumer and
+/// the desk's shipper name it.
+pub const LEDGER_OPERATION_RECORDED: TopicBinding = TopicBinding {
+    topic: Topic::LedgerOperationRecorded,
+    schema_version: 1,
+    qos_class: QosClass::P1Outcomes,
+};
+
 /// ADR 0100 §5's P1 row: "`ChainSpan` continuity records."
 pub const REFLEX_CHAIN_SPAN: TopicBinding = TopicBinding {
     topic: Topic::ReflexChainSpan,
