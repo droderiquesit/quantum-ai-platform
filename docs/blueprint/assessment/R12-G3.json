@@ -2935,13 +2935,16 @@
   },
   {
     "id": "R12-RES-10132",
-    "status": "PARTIAL",
-    "current": "GATE_SILENT_FEED refuses orders once max_staleness is crossed while heard venues continue (tested); no hedge/exit playbook on feed loss.",
+    "status": "COMPLETE",
+    "current": "GATE_SILENT_FEED refuses orders once max_staleness is crossed while heard venues continue, and resting orders at the silent venue are withdrawn; CellConfig::feed_loss_playbook (default FeedLossPlaybook::Hedge) then acts once per silence on each position held there: Hedge offsets it at a venue still heard that lists the instrument, through Cell::send at the touch, journaled as Decision::Hedged, or refuses under GATE_FEED_LOSS_PLAYBOOK naming why; Withdraw holds the position until the feed returns.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:241 FeedLossPlaybook and GATE_FEED_LOSS_PLAYBOOK; :3928 apply_feed_loss_playbook; :3964 hedge_blind_position; :4568 called from Cell::work after the halt check",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1435 a_position_at_a_venue_whose_feed_goes_silent_is_offset_once_at_a_venue_still_heard_and_journaled",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1486 a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_offset",
       "backend/crates/edge/qip-edge/src/cell.rs:360 GATE_SILENT_FEED",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:288"
     ],
-    "gap": "Hedge/exit playbook.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2952,7 +2955,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The playbook is a CellConfig default, so qip-edge-node's simulated passes run the Hedge arm; choosing Withdraw needs a composition-root setting the node does not yet read (lane L09's crate). No order reaches the silent venue. Mutations: not calling the playbook fails the hedge test at the journaled-hedge assertion; dropping the once-per-silence set fails it with the same silence hedged twice; ignoring Withdraw fails the withdraw test."
   },
   {
     "id": "R12-RES-10133",
