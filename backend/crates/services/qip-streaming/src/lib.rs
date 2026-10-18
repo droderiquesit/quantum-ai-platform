@@ -46,12 +46,13 @@
 //!
 //! # What production still needs
 //!
-//! The durable transport in this crate is real and it works. The managed
-//! Pub/Sub transport is a port: it names the GCP project, the topic and
-//! subscription, the gRPC client with TLS and the workload-identity binding it
-//! requires, and returns [`qip_core::Error::Unavailable`] until they exist. It
-//! never falls back to the local log and never fakes a connection. See
-//! [`pubsub`].
+//! The durable transport in this crate is real and it works. There is no
+//! managed Pub/Sub transport, not even a refusing port: §19.1 puts no managed
+//! broker between ingestion and the centre, and a transport kind that existed
+//! only to fail was still a kind a deployment could name. It was removed so the
+//! configuration surface cannot express that path at all, and
+//! `qip-acceptance`'s `event_fabric_bridge_boundary` refuses
+//! the old identifier anywhere in this crate's source.
 
 pub mod durable;
 pub mod envelope;
@@ -61,7 +62,6 @@ pub mod mesh;
 pub mod ports;
 pub mod processing;
 pub mod provenance;
-pub mod pubsub;
 pub mod registry;
 pub mod routing;
 pub mod schema;
@@ -79,7 +79,6 @@ pub use processing::{
 pub use provenance::{
     Confidence, CostMetadata, Region, SourceId, SourceIdentity, SourceType, Subject,
 };
-pub use pubsub::{PubSubBinding, PubSubTransport};
 pub use routing::{RoutingClass, TransportPath};
 pub use schema::{ENVELOPE_SCHEMA_VERSION, EnvelopeWire, SchemaCompatibility};
 pub use sequencing::{SequenceCoordinator, SequencedEnvelopes, StreamReset};

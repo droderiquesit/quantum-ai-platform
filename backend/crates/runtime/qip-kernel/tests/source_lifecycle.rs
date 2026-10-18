@@ -39,9 +39,9 @@ fn later() -> Timestamp {
 }
 
 fn platform() -> Result<Platform> {
-    // A named desk, not the shipped default: the default owner is the
-    // process's own name, and `assess_sources` refuses to catalogue under it
-    // (see `a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused`).
+    // A named desk other than the shipped default, so an entry's owner is
+    // visibly the configured one rather than whatever the default happens to
+    // be (see `a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused`).
     platform_owned_by("market-data")
 }
 
@@ -299,9 +299,10 @@ fn a_source_policy_quarantines_or_retires_is_no_longer_offered_by_the_mesh_catal
 fn a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused() -> Result<()> {
     // R12-DATA-2020. The catalogue entry a registration produces must be
     // owned by somebody who can be asked about the source later. The shipped
-    // default owner is `qip-platform` — the process's own name — and until
+    // default owner was `qip-platform` — the process's own name — and until
     // this seam went through `NamedOperator` every production deployment
-    // catalogued under it, so the owner field recorded nobody.
+    // catalogued under it, so the owner field recorded nobody. A deployment
+    // that configures that name, or any placeholder, is still refused.
     let mut named_probe = probe();
     let mut named = platform_owned_by("market-data")?;
     let assessment = named.assess_sources(candidates()?, &mut named_probe, start())?;
@@ -319,7 +320,7 @@ fn a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refus
         assert_eq!(named.catalog().require(dataset)?.owner, "market-data");
     }
 
-    // The same candidates under the shipped default: the registrations are
+    // The same candidates under the old default: the registrations are
     // kept (the finder's registry is not the catalogue), and no entry reaches
     // the mesh. Each refusal names the source and says what to configure.
     let mut default_probe = probe();
@@ -347,6 +348,43 @@ fn a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refus
             problem.contains("`qip-platform` names a process") && problem.contains("configure"),
             "a refusal that does not say what to fix: {problem}"
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_shipped_default_owner_is_one_the_catalogue_accepts() -> Result<()> {
+    // `46ef4c11` began refusing a process name as a catalogue owner while the
+    // shipped default was still `qip-platform`, so every default composition
+    // refused its own registrations and the end-to-end walk in
+    // `qip-acceptance`'s `e2e` failed on it, blocking the dev deploy. The
+    // refusal is right; a default that trips it is not. This pins the default
+    // through the same seam rather than through `NamedOperator` alone, because
+    // the failure was the composition, not the type.
+    let mut default_probe = probe();
+    let config = PlatformConfig::default();
+    let owner = config.owner.clone();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )?;
+    let assessment = platform.assess_sources(candidates()?, &mut default_probe, start())?;
+    assert!(
+        assessment.registered() > 0,
+        "the premise: the fixture registers at least one source"
+    );
+    assert!(
+        assessment.catalogue_problems.is_empty(),
+        "the default composition refused its own registrations: {:?}",
+        assessment.catalogue_problems
+    );
+    assert_eq!(assessment.catalogued.len(), assessment.registered());
+    for dataset in &assessment.catalogued {
+        assert_eq!(platform.catalog().require(dataset)?.owner, owner);
     }
     Ok(())
 }
