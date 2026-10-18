@@ -51,7 +51,7 @@
 
 use crate::compute::{
     CompiledTask, ComputeDecision, Formulation, InformationValue, Substrate, SubstrateRole,
-    SubstrateVerdict, TaskClass, TaskSpec,
+    SubstrateVerdict, TaskSpec, TaskStructure,
 };
 use crate::learning::{MeasurementOutcome, RoutingLearning, SolverMeasurement, SubstrateRecord};
 use crate::problem::{PortfolioProblem, QuboEncoding};
@@ -302,6 +302,22 @@ fn default_minimum_win_probability() -> f64 {
     0.05
 }
 
+fn default_quality_minimum_trials() -> u32 {
+    5
+}
+
+fn default_minimum_repeatability() -> f64 {
+    0.5
+}
+
+fn default_maximum_latency_share() -> f64 {
+    0.5
+}
+
+fn default_maximum_calibration_brier() -> f64 {
+    0.25
+}
+
 fn default_patience() -> u32 {
     GatewayLimits::default().patience_polls
 }
@@ -356,6 +372,29 @@ pub struct RoutingPolicy {
     /// being paid for.
     #[serde(default = "default_minimum_win_probability")]
     pub minimum_win_probability: f64,
+    /// Trials at a size before repeatability, latency and calibration can
+    /// stop a substrate being tried (R12-QUANT-4047). Win rate carries a
+    /// prior and gates from the first trial; these three are ratios with
+    /// none, so one unlucky trial would otherwise read as a verdict.
+    #[serde(default = "default_quality_minimum_trials")]
+    pub quality_minimum_trials: u32,
+    /// The share of trials whose answer verified below which a substrate
+    /// stops being tried. A substrate that wins when it answers but rarely
+    /// answers is not one a cycle can plan on.
+    #[serde(default = "default_minimum_repeatability")]
+    pub minimum_repeatability: f64,
+    /// The mean answer latency, as a share of `quantum_patience_cycles`,
+    /// above which a substrate stops being tried. A share rather than a
+    /// cycle count because no answer is ever read later than the patience,
+    /// so a ceiling at or above it is one that cannot fire.
+    #[serde(default = "default_maximum_latency_share")]
+    pub maximum_latency_share: f64,
+    /// The Brier score of the router's own win estimates above which, when
+    /// the estimates also ran above what the substrate delivered, it stops
+    /// being tried. A quarter is what a constant coin-flip estimate scores;
+    /// worse than that is an estimate that cannot be priced against.
+    #[serde(default = "default_maximum_calibration_brier")]
+    pub maximum_calibration_brier: f64,
     /// The most one quantum job may cost, in USD micro-units.
     ///
     /// Zero by default, which admits only a free provider — the in-tree
@@ -363,6 +402,24 @@ pub struct RoutingPolicy {
     /// budget an operator sets rather than one the router assumes.
     #[serde(default)]
     pub max_quantum_job_cost_micros: u64,
+    /// The most the quantum arm may be billed in total, in USD micro-units,
+    /// across every job this deployment's journal records as sent
+    /// (R12-QUANT-10068, 9046).
+    ///
+    /// A per-job cap alone bounds one bill and not the sum: a router that
+    /// sends one capped job per cycle spends without limit. The ledger this
+    /// is checked against is rebuilt from the journal on restart, so a
+    /// rollout does not reset it. Zero by default, which, like the per-job
+    /// cap, admits only a free provider.
+    #[serde(default)]
+    pub quantum_spend_budget_micros: u64,
+    /// What one unit of fractional objective improvement is worth to the
+    /// desk, in USD micro-units (R12-QUANT-4051). A job is sent only where
+    /// its expected gain at this price covers what it costs. Zero by default:
+    /// no value is assumed, so only a free job's information is worth
+    /// buying until an operator says what an improvement is worth.
+    #[serde(default)]
+    pub value_per_unit_gain_micros: u64,
     /// Cycles a quantum job may stay pending before it is abandoned.
     #[serde(default = "default_patience")]
     pub quantum_patience_cycles: u32,
@@ -393,7 +450,13 @@ impl Default for RoutingPolicy {
             time_budget: Duration::from_secs(60),
             qaoa: QaoaSettings::default(),
             minimum_win_probability: default_minimum_win_probability(),
+            quality_minimum_trials: default_quality_minimum_trials(),
+            minimum_repeatability: default_minimum_repeatability(),
+            maximum_latency_share: default_maximum_latency_share(),
+            maximum_calibration_brier: default_maximum_calibration_brier(),
             max_quantum_job_cost_micros: 0,
+            quantum_spend_budget_micros: 0,
+            value_per_unit_gain_micros: 0,
             quantum_patience_cycles: default_patience(),
             quantum_inspired: false,
             advantage_minimum_trials: default_advantage_minimum_trials(),
@@ -436,6 +499,45 @@ impl RoutingPolicy {
                 "minimum_win_probability {} is outside [0, 1); at one or above the quantum arm \
                  could never be tried, which is a disabled arm reading as an enabled one",
                 self.minimum_win_probability
+            )));
+        }
+        if !self.minimum_repeatability.is_finite()
+            || !(0.0..1.0).contains(&self.minimum_repeatability)
+        {
+            return Err(Error::invalid(format!(
+                "minimum_repeatability {} is outside [0, 1); at one or above a substrate is \
+                 stopped by any single unverified answer",
+                self.minimum_repeatability
+            )));
+        }
+        if !self.maximum_latency_share.is_finite()
+            || self.maximum_latency_share <= 0.0
+            || self.maximum_latency_share >= 1.0
+        {
+            return Err(Error::invalid(format!(
+                "maximum_latency_share {} is outside (0, 1): no answer is read later than the \
+                 patience, so a ceiling at or above it can never fire and one at zero stops \
+                 every substrate that is not instantaneous",
+                self.maximum_latency_share
+            )));
+        }
+        if !self.maximum_calibration_brier.is_finite()
+            || self.maximum_calibration_brier <= 0.0
+            || self.maximum_calibration_brier >= 1.0
+        {
+            return Err(Error::invalid(format!(
+                "maximum_calibration_brier {} is outside (0, 1); a Brier score lies in [0, 1], \
+                 so a ceiling of one or more can never fire",
+                self.maximum_calibration_brier
+            )));
+        }
+        if self.max_quantum_job_cost_micros > self.quantum_spend_budget_micros {
+            return Err(Error::invalid(format!(
+                "max_quantum_job_cost_micros {} is above quantum_spend_budget_micros {}: a job \
+                 the per-job cap admits could never be paid for by the total, which is a cap \
+                 reading as permission it does not grant. Raise the budget to at least the \
+                 per-job cap or lower the cap",
+                self.max_quantum_job_cost_micros, self.quantum_spend_budget_micros
             )));
         }
         if self.quantum_patience_cycles == 0 {
@@ -499,7 +601,6 @@ struct PendingJob {
 #[derive(Debug, Default)]
 struct ArmState {
     pending: Option<PendingJob>,
-    spent_micros: u64,
 }
 
 /// What the router has measured, held behind one lock: the learned routing
@@ -510,6 +611,10 @@ struct ArmState {
 struct Learned {
     learning: RoutingLearning,
     registry: SolverRegistry,
+    /// Every quantum job's declared price, summed at the cycle that sent it
+    /// and refolded from [`ComputeDecision::quantum_billed_micros`] on
+    /// replay: the ledger the cumulative spend ceiling is checked against.
+    quantum_billed_micros: u64,
 }
 
 impl Learned {
@@ -532,6 +637,7 @@ impl Learned {
         Self {
             learning: RoutingLearning::default(),
             registry,
+            quantum_billed_micros: 0,
         }
     }
 
@@ -712,6 +818,9 @@ impl ComputeRouter {
         let mut folded = 0usize;
         for decision in decisions {
             learned.absorb(&decision.measurements)?;
+            learned.quantum_billed_micros = learned
+                .quantum_billed_micros
+                .saturating_add(decision.quantum_billed_micros);
             folded += 1;
         }
         Ok(folded)
@@ -862,12 +971,10 @@ impl ComputeRouter {
     }
 
     /// Total declared cost of every job this router has submitted, in USD
-    /// micro-units.
+    /// micro-units, including those a replayed journal records as sent before
+    /// this process started: the ledger the spend ceiling is checked against.
     pub fn quantum_spend_micros(&self) -> Result<u64> {
-        match &self.quantum {
-            Some(arm) => Ok(arm.lock()?.spent_micros),
-            None => Ok(0),
-        }
+        Ok(self.learned()?.quantum_billed_micros)
     }
 
     /// Whether a quantum path would be attempted for this problem, and why.
@@ -1105,8 +1212,9 @@ impl ComputeRouter {
             if attempt_quantum && state.pending.is_none() {
                 let record = learned.learning.record(Substrate::Qpu, size);
                 let cost = arm.gateway.provider().capabilities().cost_per_job_micros;
+                let spent = learned.quantum_billed_micros;
                 let (estimate, refusal) =
-                    self.estimate(Substrate::Qpu, record, task.classical, cost);
+                    self.estimate(Substrate::Qpu, record, task.classical, cost, spent);
                 let predicted = estimate.win_probability;
                 information_value = Some(estimate);
                 match refusal {
@@ -1124,7 +1232,8 @@ impl ComputeRouter {
                                 dispatch.submitted = Some(ticket.id());
                                 dispatch.pending = Some(ticket.id());
                                 dispatch.cost_micros = cost;
-                                state.spent_micros = state.spent_micros.saturating_add(cost);
+                                learned.quantum_billed_micros =
+                                    learned.quantum_billed_micros.saturating_add(cost);
                                 dispatch.notes.push(format!(
                                     "submitted quantum job {}; a later cycle judges its answer \
                                      against that cycle's baseline",
@@ -1166,7 +1275,7 @@ impl ComputeRouter {
         } else {
             let record = learned.learning.record(Substrate::QuantumInspired, size);
             let (estimate, refusal) =
-                self.estimate(Substrate::QuantumInspired, record, task.classical, 0);
+                self.estimate(Substrate::QuantumInspired, record, task.classical, 0, 0);
             let predicted = estimate.win_probability;
             inspired_information_value = Some(estimate);
             match refusal {
@@ -1463,6 +1572,7 @@ impl ComputeRouter {
         record: SubstrateRecord,
         classical: Formulation,
         cost_micros: u64,
+        spent_micros: u64,
     ) -> (InformationValue, Option<String>) {
         let win_probability = if classical.is_exact() {
             0.0
@@ -1472,6 +1582,18 @@ impl ComputeRouter {
         let what = match substrate {
             Substrate::Qpu => "quantum",
             _ => substrate.as_str(),
+        };
+        let expected_gain = win_probability * self.policy.quantum_margin;
+        // The crossing from statistics to money: a probability-weighted
+        // fraction times a micro-USD price, floored to whole micro-units so a
+        // fraction of a micro-unit is never counted as covering a cost.
+        let expected_value_micros = {
+            let value = expected_gain * self.policy.value_per_unit_gain_micros as f64;
+            if value.is_finite() && value > 0.0 {
+                value.floor() as u64
+            } else {
+                0
+            }
         };
         let refusal = if classical.is_exact() {
             Some(format!(
@@ -1484,10 +1606,27 @@ impl ComputeRouter {
                  {:.3} below the {:.3} the policy requires; it stops being tried",
                 record.wins, record.trials, win_probability, self.policy.minimum_win_probability
             ))
+        } else if let Some(reason) = self.measured_shortfall(what, &record) {
+            Some(reason)
         } else if cost_micros > self.policy.max_quantum_job_cost_micros {
             Some(format!(
                 "a job costs {cost_micros} micro-USD, above the {} the policy allows per job",
                 self.policy.max_quantum_job_cost_micros
+            ))
+        } else if expected_value_micros < cost_micros {
+            Some(format!(
+                "a job costs {cost_micros} micro-USD and its expected gain of {expected_gain:.6} \
+                 is worth {expected_value_micros} micro-USD at the policy's {} per unit of \
+                 gain; the information is not worth its price, so no job is sent",
+                self.policy.value_per_unit_gain_micros
+            ))
+        } else if spent_micros.saturating_add(cost_micros) > self.policy.quantum_spend_budget_micros
+        {
+            Some(format!(
+                "the {what} arm has been billed {spent_micros} micro-USD and a job costs \
+                 {cost_micros}, which would pass the {} the policy allows in total; it stops \
+                 being tried until an operator raises the budget",
+                self.policy.quantum_spend_budget_micros
             ))
         } else {
             None
@@ -1497,16 +1636,61 @@ impl ComputeRouter {
                 trials: record.trials,
                 wins: record.wins,
                 win_probability,
-                expected_gain: win_probability * self.policy.quantum_margin,
+                expected_gain,
                 cost_micros,
                 cleared: refusal.is_none(),
                 substrate,
                 repeatability: record.repeatability(),
                 mean_latency_cycles: record.mean_latency_cycles(),
                 calibration_brier: record.calibration_brier(),
+                expected_value_micros,
+                spent_before_micros: spent_micros,
             },
             refusal,
         )
+    }
+
+    /// Why a substrate's measured record, beyond its win rate, stops it being
+    /// tried (R12-QUANT-4047), or `None`. Read only once the record holds
+    /// `quality_minimum_trials` trials.
+    fn measured_shortfall(&self, what: &str, record: &SubstrateRecord) -> Option<String> {
+        if record.trials < self.policy.quality_minimum_trials {
+            return None;
+        }
+        if let Some(repeatability) = record.repeatability()
+            && repeatability < self.policy.minimum_repeatability
+        {
+            return Some(format!(
+                "the {what} arm's answers verified in {} of {} trial(s), a repeatability of \
+                 {repeatability:.3} below the {:.3} the policy requires; it stops being tried",
+                record.verified, record.trials, self.policy.minimum_repeatability
+            ));
+        }
+        let ceiling =
+            self.policy.maximum_latency_share * f64::from(self.policy.quantum_patience_cycles);
+        if let Some(latency) = record.mean_latency_cycles()
+            && latency > ceiling
+        {
+            return Some(format!(
+                "the {what} arm's answers took {latency:.2} cycle(s) on average, above the \
+                 {ceiling:.2} the policy allows; an answer that late is judged on figures the \
+                 cycle has moved past, so it stops being tried"
+            ));
+        }
+        if let (Some(brier), Some(overconfidence)) =
+            (record.calibration_brier(), record.overconfidence())
+            && brier > self.policy.maximum_calibration_brier
+            && overconfidence > 0.0
+        {
+            return Some(format!(
+                "the router's estimates for the {what} arm scored a Brier of {brier:.3}, above \
+                 the {:.3} the policy allows, and ran {overconfidence:.3} above what it \
+                 delivered; an estimate that consistently over-promises cannot justify a \
+                 dispatch, so it stops being tried",
+                self.policy.maximum_calibration_brier
+            ));
+        }
+        None
     }
 
     /// What a later problem must share with a job's for the answer to be
@@ -1587,7 +1771,15 @@ impl ComputeRouter {
             constraints.push(format!("at most {cardinality} holdings"));
         }
         TaskSpec {
-            class: Some(TaskClass::CombinatorialOptimisation),
+            // The router declares what its answer is — a choice of holdings
+            // that minimises the problem's objective — and the compiler
+            // infers the class from that, rather than the router asserting
+            // it (R12-QUANT-4048).
+            class: None,
+            structure: Some(TaskStructure {
+                minimises_objective: true,
+                ..TaskStructure::default()
+            }),
             variables: Some(problem.dimension()),
             constraints: Some(constraints),
             objective: Some(format!(
@@ -1738,6 +1930,7 @@ impl ComputeRouter {
             inspired_information_value: extras.inspired_information_value,
             measurements: extras.measurements,
             ensemble: extras.ensemble,
+            quantum_billed_micros: dispatch.submitted.map_or(0, |_| dispatch.cost_micros),
             research_domain: Some(ROUTED_DOMAIN),
             advantage: extras.advantage,
         }

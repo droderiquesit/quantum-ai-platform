@@ -1457,13 +1457,15 @@
   {
     "id": "R12-QUANT-10068",
     "status": "PARTIAL",
-    "current": "qip-quantum always computes a classical baseline (tests), hosted results remain candidates; trust zones permit only optimisation to reach IBM. No QPU budget ledger tested; egress not applied.",
+    "current": "Every quantum path computes a classical baseline and hosted results remain candidates; the quantum arm is now a budgeted dependency: a cumulative spend ceiling (RoutingPolicy::quantum_spend_budget_micros) is enforced in ComputeRouter::estimate against a ledger rebuilt from the journal on restart, beside the per-job cap. Trust zones permit only optimisation to reach IBM. Egress is not applied and HostedProvider has no production caller.",
     "evidence": [
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 the_benchmark_computes_a_classical_baseline_even_when_a_quantum_solver_is_available",
       "backend/crates/libs/qip-quantum/tests/hosted.rs:631 a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1623 cumulative ceiling in estimate",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it"
     ],
-    "gap": "QPU spend budget enforcement and deployment.",
+    "gap": "IBM access itself: HostedProvider has no production caller and the egress proxy is not applied, so the budgeted gateway has never been in front of a real device. The spend budget is enforced and tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1471,10 +1473,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum",
+    "verification": "cargo test -p qip-optimization-engine --test optimization the_quantum_arm_stops_at_its_cumulative_spend_ceiling; cargo test -p qip-quantum",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L19: the budget half is closed (see R12-QUANT-9046); the remaining half is deploy-dependent and owner-gated."
   },
   {
     "id": "R12-FABRIC-10069",
