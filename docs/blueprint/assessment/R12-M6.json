@@ -869,12 +869,12 @@
   {
     "id": "R12-EXPAND-6040",
     "status": "PARTIAL",
-    "current": "Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in a ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window.",
+    "current": "Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in qip_ai::language::ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:271 GapSignal",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15155",
       "backend/crates/services/qip-training/src/estimators.rs degraded_models",
-      "backend/crates/apps/qip-deepbrain/src/language.rs:100 ReplyTally, :148 CountedModel::complete, :361 the installed adapter is wrapped",
+      "backend/crates/libs/qip-ai/src/language.rs:614 ReplyTally, :673 CountedModel::complete (beside the port, so ADR 0117's implementation list is unchanged); backend/crates/apps/qip-deepbrain/src/language.rs:255 the installed adapter is wrapped",
       "backend/crates/services/qip-expansion/src/detectors.rs:242 model_error_rate",
       "backend/crates/apps/qip-deepbrain/src/main.rs:862 the tally reaches the research loop",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:935 a_model_whose_replies_are_refused_past_the_rate_raises_one_error_rate_gap"
@@ -890,7 +890,7 @@
     "verification": "cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: counting and the error-rate gap added. Mutation: an Err reply counted as served in CountedModel::complete; the test raised no signal (0 vs 1); restored by byte compare. Kept PARTIAL because the behaviour depends on a hosted adapter no deployment installs; that is an operator act (ADR 0037), not code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: counting and the error-rate gap added. Mutation: an Err reply counted as served in CountedModel::complete; the test raised no signal (0 vs 1); restored by byte compare. Kept PARTIAL because the behaviour depends on a hosted adapter no deployment installs; that is an operator act (ADR 0037), not code. The wrapper first lived in qip-deepbrain/src/language.rs, which made qip-acceptance model_gateway_boundary fail twice (a new LanguageModel implementation and call site outside ADR 0117's list); it was moved into qip-ai/src/language.rs and the mutation re-run there (fired, 0 vs 1)."
   },
   {
     "id": "R12-EXPAND-6041",
