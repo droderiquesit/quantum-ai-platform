@@ -52,7 +52,11 @@ fn policy_document() -> Value {
                 "channels": ["paper-venue"],
                 "max_actions_per_window": 1,
                 "budget_units": 1000,
-                "revocation_path": "operator removes it from this file"
+                "revocation_path": "operator removes it from this file",
+                "provenance": "in-tree test fixture, no third-party dependency",
+                "sandbox_tests": ["quoter-sandbox-smoke"],
+                "cost_latency": {"cost_units": 1, "latency_ms": 100},
+                "allowed_callers": ["desk-agent"]
             }]
         },
         "evidence": [{
@@ -384,6 +388,9 @@ fn a_tool_declaration_missing_any_control_stops_the_binary_before_a_pass() {
         ("revocation_path", json!("")),
         ("disclosure_policy", json!("")),
         ("max_actions_per_window", json!(0)),
+        ("provenance", json!("")),
+        ("sandbox_tests", json!([])),
+        ("allowed_callers", json!([])),
     ] {
         let mut policy = policy_document();
         policy["guard"]["tools"][0][field] = blank;

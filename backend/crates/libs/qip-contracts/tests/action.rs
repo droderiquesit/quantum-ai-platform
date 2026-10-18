@@ -24,6 +24,13 @@ fn reg(tool: &str) -> ToolRegistration {
         max_actions_per_window: 2,
         budget_units: 10,
         revocation_path: "ops revoke".into(),
+        provenance: "in-tree test tool".into(),
+        sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+        cost_latency: qip_contracts::action::CostLatency {
+            cost_units: 1,
+            latency_ms: 1,
+        },
+        allowed_callers: ["agent-research"].into_iter().map(String::from).collect(),
     }
 }
 
@@ -99,6 +106,13 @@ fn a_tool_missing_any_of_its_declarations_cannot_be_registered() {
             "revocation",
             ToolRegistration {
                 revocation_path: String::new(),
+                provenance: "in-tree test tool".into(),
+                sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+                cost_latency: qip_contracts::action::CostLatency {
+                    cost_units: 1,
+                    latency_ms: 1,
+                },
+                allowed_callers: [" "].into_iter().map(String::from).collect(),
                 ..reg("g")
             },
         ),
@@ -300,4 +314,74 @@ fn the_same_opportunity_is_researched_and_kept_shadow_in_an_unlicensed_jurisdict
         [("AAA".to_string(), set(&["united_states"]))],
     );
     assert!(matches!(nothing.route("o", "AAA"), Routed::Shadow(_)));
+}
+
+/// Mutation: drop the `provenance` entry from the `missing` table in
+/// `ToolRegistry::register` — the registration without provenance is admitted.
+#[test]
+fn a_registration_missing_provenance_sandbox_tests_cost_latency_or_callers_is_refused_and_a_full_one_round_trips()
+ {
+    let mut registry = ToolRegistry::new();
+    assert!(
+        registry.register(reg("probe")).is_ok(),
+        "premise: the full registration is admitted"
+    );
+    type Wipe = fn(&mut ToolRegistration);
+    let cases: [(&str, Wipe); 5] = [
+        ("provenance", |t| t.provenance.clear()),
+        ("sandbox tests", |t| t.sandbox_tests.clear()),
+        ("cost and latency", |t| t.cost_latency.cost_units = 0),
+        ("cost and latency", |t| t.cost_latency.latency_ms = 0),
+        ("allowed callers", |t| t.allowed_callers.clear()),
+    ];
+    for (n, (field, wipe)) in cases.into_iter().enumerate() {
+        let mut broken = reg(&format!("tool-{n}"));
+        wipe(&mut broken);
+        let refused = registry.register(broken).unwrap_err().to_string();
+        assert!(refused.contains(field), "{field}: {refused}");
+        assert!(
+            registry.registration(&format!("tool-{n}")).is_none(),
+            "{field}: the refused tool was registered anyway"
+        );
+    }
+
+    // A per-call cost above the whole budget could never be admitted.
+    let mut dear = reg("dear");
+    dear.cost_latency.cost_units = dear.budget_units + 1;
+    assert!(
+        registry
+            .register(dear)
+            .unwrap_err()
+            .to_string()
+            .contains("no call could ever be admitted")
+    );
+
+    let text = serde_json::to_string(&reg("wire")).unwrap();
+    let back: ToolRegistration = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, reg("wire"));
+    // A document that omits the new declarations does not decode: they are
+    // required, not defaulted.
+    let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    value.as_object_mut().unwrap().remove("allowed_callers");
+    assert!(serde_json::from_value::<ToolRegistration>(value).is_err());
+}
+
+/// Mutation: make `permits_caller` return `Ok(())` unconditionally — the
+/// outsider is admitted.
+#[test]
+fn only_a_declared_caller_may_invoke_a_tool() {
+    let mut registry = ToolRegistry::new();
+    let mut tool = reg("quoter");
+    tool.allowed_callers = set(&["desk-agent"]);
+    registry.register(tool).unwrap();
+    assert!(registry.permits_caller("quoter", "desk-agent").is_ok());
+    let refused = registry
+        .permits_caller("quoter", "intruder")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("not among the callers allowed"),
+        "{refused}"
+    );
+    assert!(registry.permits_caller("absent", "desk-agent").is_err());
 }

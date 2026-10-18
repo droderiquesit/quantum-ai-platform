@@ -3955,5 +3955,43 @@ fn a_wallet_break_stops_the_desk_trading_the_halted_scope_and_nothing_else() -> 
             .contains("halted by the wallet reconciliation"),
     );
     assert_eq!(held.wallet_halt_for("obj-other", Side::Buy), None);
+
+    // Venue scope. A break at a prime the desk merely holds a statement for
+    // is that prime's, not the desk's: the halt is formed and journalled, and
+    // the desk's own buys go on. Without the `venue != desk_venue` return in
+    // `wallet_halt_for`, a USD break at any custodian refuses every desk buy.
+    let mut away = platform(PlatformConfig::default())?;
+    let equity = away.config().initial_equity;
+    let custodian = qip_capital_fabric::wallet::VenueAsset {
+        venue: VenueId::new("custodian-x"),
+        asset: qip_capital_fabric::wallet::Asset::new(Currency::USD.to_string())?,
+    };
+    away.observe_statement(
+        custodian.venue.clone(),
+        "USD",
+        equity + dec!("500"),
+        dec!("1"),
+        start(),
+    )?;
+    away.run_cycle(at);
+    assert!(
+        away.fabric_state()
+            .reconciliations()
+            .get(&custodian)
+            .is_some_and(ReconciliationOutcome::is_halt),
+        "premise: the custodian's cash is halted"
+    );
+    assert_eq!(away.wallet_halt_for(INSTRUMENT, Side::Buy), None);
+    trade(
+        &mut away,
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        at.saturating_add(Duration::from_secs(120)),
+    )?;
+    assert!(
+        !away.orders().fills().is_empty(),
+        "a break at another venue stopped the desk's own buy"
+    );
     Ok(())
 }

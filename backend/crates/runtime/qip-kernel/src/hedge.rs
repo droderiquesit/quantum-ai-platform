@@ -164,14 +164,29 @@ impl HedgeCandidateDeclaration {
     }
 }
 
-/// The book's Greeks. Delta is the book's net signed notional; gamma and vega
-/// are `None` because the risk aggregate carries signed notionals and no
-/// option sensitivities, and an unmeasured Greek must not read as a flat one.
+/// The book's Greeks. Delta is the book's net signed notional. Gamma and vega
+/// are `Some(0.0)` only when every held position is an instrument with no
+/// convexity or volatility sensitivity by construction (see
+/// [`is_linear`]); the catalogue carries no per-position option
+/// sensitivities, so a book holding anything else reports them `None`, and an
+/// unmeasured Greek must not read as a flat one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BookGreeks {
     pub delta: Decimal,
     pub gamma: Option<f64>,
     pub vega: Option<f64>,
+}
+
+/// The most pairs the survey keeps, so a large book does not journal its
+/// whole correlation matrix every cycle.
+pub const MAX_PAIR_CORRELATIONS: usize = 16;
+
+/// The correlation of two held positions' returns over their shared window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PairCorrelation {
+    pub a: String,
+    pub b: String,
+    pub correlation: f64,
 }
 
 /// The book read on every axis §14.1 lists (R12-RISK-4105).
@@ -187,6 +202,12 @@ pub struct ExposureSurvey {
     /// Mean pairwise correlation of the held positions' returns over their
     /// shared history; `None` below two measurable positions.
     pub correlation: Option<f64>,
+    /// The most strongly correlated held pairs, by absolute correlation, at
+    /// most [`MAX_PAIR_CORRELATIONS`] of them: the mean above hides a book
+    /// whose risk is two names moving together among many that do not.
+    /// Defaulted so a record journaled before the pairs were read decodes.
+    #[serde(default)]
+    pub pair_correlations: Vec<PairCorrelation>,
     /// Unfunded commitments and margin the survival waterfall withheld.
     pub funding: Decimal,
     /// Gross per counterparty.
@@ -249,24 +270,72 @@ impl ExposureSurvey {
     }
 }
 
-fn mean_pairwise_correlation(held: &[String], history: &BTreeMap<String, Vec<f64>>) -> Option<f64> {
-    let series: Vec<Vec<f64>> = held
+/// Whether an instrument type has no convexity and no volatility sensitivity
+/// by construction, so its gamma and vega are exactly zero rather than
+/// unknown. Deliberately a short list: every type not named here (options,
+/// variance swaps, convertibles, bonds, swaps, structured credit) is one the
+/// catalogue gives no sensitivities for, and stays unmeasured.
+fn is_linear(kind: qip_financial::asset_class::InstrumentType) -> bool {
+    use qip_financial::asset_class::InstrumentType as T;
+    matches!(
+        kind,
+        T::CommonStock
+            | T::PreferredStock
+            | T::DepositaryReceipt
+            | T::ExchangeTradedFund
+            | T::Index
+            | T::Future
+            | T::Forward
+            | T::FxSpot
+            | T::FxForward
+            | T::CommoditySpot
+            | T::CommodityFuture
+    )
+}
+
+/// The book's (gamma, vega): a measured zero when every held position is a
+/// linear instrument in the catalogue, `None` when any is not, or is absent
+/// from it and so cannot be known to be.
+fn book_option_greeks(held: &[String], universe: &Universe) -> (Option<f64>, Option<f64>) {
+    let linear = held.iter().all(|object| {
+        universe
+            .get(&ObjectId::from_string(object.clone()))
+            .is_some_and(|record| is_linear(record.instrument_type))
+    });
+    if linear {
+        (Some(0.0), Some(0.0))
+    } else {
+        (None, None)
+    }
+}
+
+/// Mean and per-pair correlation of the held positions' returns over their
+/// shared window. The pairs are the strongest by absolute value, ties broken
+/// by name, at most [`MAX_PAIR_CORRELATIONS`].
+fn correlations(
+    held: &[String],
+    history: &BTreeMap<String, Vec<f64>>,
+) -> (Option<f64>, Vec<PairCorrelation>) {
+    let series: Vec<(&String, Vec<f64>)> = held
         .iter()
-        .filter_map(|object| history.get(object))
-        .map(|prices| {
-            prices
+        .filter_map(|object| history.get(object).map(|prices| (object, prices)))
+        .map(|(object, prices)| {
+            let returns = prices
                 .windows(2)
                 .filter(|pair| pair[0] > 0.0 && pair[1].is_finite() && pair[0].is_finite())
                 .map(|pair| pair[1] / pair[0] - 1.0)
-                .collect::<Vec<f64>>()
+                .collect::<Vec<f64>>();
+            (object, returns)
         })
-        .filter(|returns| returns.len() >= 2)
+        .filter(|(_, returns)| returns.len() >= 2)
         .collect();
-    let window = series.iter().map(Vec::len).min()?;
+    let Some(window) = series.iter().map(|(_, r)| r.len()).min() else {
+        return (None, Vec::new());
+    };
     if series.len() < 2 || window < 2 {
-        return None;
+        return (None, Vec::new());
     }
-    let tails: Vec<&[f64]> = series.iter().map(|s| &s[s.len() - window..]).collect();
+    let tails: Vec<&[f64]> = series.iter().map(|(_, s)| &s[s.len() - window..]).collect();
     let n = window as f64;
     let stats: Vec<(f64, f64)> = tails
         .iter()
@@ -277,7 +346,7 @@ fn mean_pairwise_correlation(held: &[String], history: &BTreeMap<String, Vec<f64
         })
         .collect();
     let mut total = 0.0;
-    let mut pairs = 0usize;
+    let mut pairs = Vec::new();
     for i in 0..tails.len() {
         for j in (i + 1)..tails.len() {
             let (mi, si) = stats[i];
@@ -291,11 +360,27 @@ fn mean_pairwise_correlation(held: &[String], history: &BTreeMap<String, Vec<f64
                 .map(|(a, b)| (a - mi) * (b - mj))
                 .sum::<f64>()
                 / (n - 1.0);
-            total += cov / (si * sj);
-            pairs += 1;
+            let correlation = cov / (si * sj);
+            total += correlation;
+            pairs.push(PairCorrelation {
+                a: series[i].0.clone(),
+                b: series[j].0.clone(),
+                correlation,
+            });
         }
     }
-    (pairs > 0).then(|| total / pairs as f64)
+    if pairs.is_empty() {
+        return (None, pairs);
+    }
+    let mean = total / pairs.len() as f64;
+    pairs.sort_by(|x, y| {
+        y.correlation
+            .abs()
+            .total_cmp(&x.correlation.abs())
+            .then_with(|| (&x.a, &x.b).cmp(&(&y.a, &y.b)))
+    });
+    pairs.truncate(MAX_PAIR_CORRELATIONS);
+    (Some(mean), pairs)
 }
 
 /// Every world in `stress` with the book's loss in it, as the search reads
@@ -426,16 +511,15 @@ pub fn plan(inputs: &HedgeBrainInputs<'_>) -> HedgeBrainReport {
                 .collect()
         })
         .unwrap_or_default();
+    let (gamma, vega) = book_option_greeks(&held, inputs.universe);
+    let (correlation, pair_correlations) = correlations(&held, inputs.price_history);
     let survey = ExposureSurvey {
         drivers: axis(CAUSAL_DRIVER_AXIS),
         factors: axis(FACTOR_AXIS),
-        greeks: BookGreeks {
-            delta,
-            gamma: None,
-            vega: None,
-        },
+        greeks: BookGreeks { delta, gamma, vega },
         liquidity: state.days_to_liquidate.clone(),
-        correlation: mean_pairwise_correlation(&held, inputs.price_history),
+        correlation,
+        pair_correlations,
         funding: inputs.funding,
         counterparty: axis(COUNTERPARTY_AXIS),
         tail,
@@ -767,6 +851,161 @@ mod tests {
                 .is_some_and(|s| s.protected.is_empty())
         );
         assert!(report.plan.is_none());
+    }
+
+    fn catalogued(symbols: &[(&str, qip_financial::asset_class::InstrumentType)]) -> Universe {
+        use qip_financial::asset_class::Sector;
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::quality::Provenance;
+        let mut universe = Universe::new();
+        for (symbol, kind) in symbols {
+            universe
+                .insert(
+                    qip_financial::object::FinancialObject::builder(
+                        ObjectId::from_string(format!("obj-{symbol}")),
+                        *symbol,
+                        *kind,
+                        LiquidityProfile::listed(Decimal::from_int(1_000_000), 5.0),
+                    )
+                    .venue("XNAS")
+                    .geography("US")
+                    .sector(Sector::Financials)
+                    .provenance(Provenance::synthetic("catalogue", at()))
+                    .build(at())
+                    .expect("a record"),
+                )
+                .expect("a catalogue entry");
+        }
+        universe
+    }
+
+    fn survey_over(universe: &Universe, history: &BTreeMap<String, Vec<f64>>) -> ExposureSurvey {
+        let stress = stress(&[("venue-outage", 0.12)]);
+        plan(&HedgeBrainInputs {
+            declarations: &[],
+            universe,
+            snapshot: &MarketSnapshot::new(at()),
+            state: &state(),
+            stress: Some(&stress),
+            price_history: history,
+            equity: dec!("1000000"),
+            hedge_capacity: dec!("50000"),
+            funding: dec!("25000"),
+            tolerance: 0.20,
+            cycle: 7,
+            at: at(),
+        })
+        .survey
+    }
+
+    /// R12-RISK-4105: a book held entirely in linear instruments has a
+    /// measured zero gamma and vega; one holding anything the catalogue gives
+    /// no sensitivities for, or an instrument the catalogue does not know,
+    /// has neither, so a flat reading is never offered for convexity nobody
+    /// measured. Mutations: report `None` for a linear book (the first
+    /// assertion fails); admit `Option` in `is_linear` (the second fails);
+    /// skip the catalogue lookup (the unknown-instrument assertion fails).
+    #[test]
+    fn a_linear_book_has_a_measured_zero_gamma_and_vega_and_anything_else_has_none() {
+        use qip_financial::asset_class::InstrumentType;
+        let history = BTreeMap::new();
+        let linear = catalogued(&[
+            ("AAA", InstrumentType::CommonStock),
+            ("BBB", InstrumentType::ExchangeTradedFund),
+        ]);
+        let survey = survey_over(&linear, &history);
+        assert_eq!(survey.greeks.gamma, Some(0.0));
+        assert_eq!(survey.greeks.vega, Some(0.0));
+        assert!(
+            survey
+                .unmeasured()
+                .iter()
+                .all(|g| *g != "gamma" && *g != "vega")
+        );
+
+        for convex in [
+            InstrumentType::Option,
+            InstrumentType::VarianceSwap,
+            InstrumentType::VolatilityIndexFuture,
+            InstrumentType::ConvertibleBond,
+            InstrumentType::HedgeFund,
+        ] {
+            assert!(!is_linear(convex), "{convex:?} is not known to be linear");
+        }
+        assert!(is_linear(InstrumentType::CommonStock), "premise");
+
+        // A catalogued hedge-fund holding is something the catalogue gives no
+        // sensitivities for: known to it and still not known to be linear.
+        let swap = catalogued(&[
+            ("AAA", InstrumentType::CommonStock),
+            ("BBB", InstrumentType::HedgeFund),
+        ]);
+        let survey = survey_over(&swap, &history);
+        assert_eq!(
+            survey.greeks.gamma, None,
+            "a hedge-fund holding is not known to be linear"
+        );
+        assert_eq!(survey.greeks.vega, None);
+
+        let unknown = catalogued(&[("AAA", InstrumentType::CommonStock)]);
+        let survey = survey_over(&unknown, &history);
+        assert_eq!(survey.greeks.gamma, None, "obj-BBB is not in the catalogue");
+        assert_eq!(survey.greeks.vega, None);
+        assert_eq!(survey.unmeasured()[..2], ["gamma", "vega"]);
+    }
+
+    /// R12-RISK-4105: the survey names which pair is correlated, not only the
+    /// mean. Three held names, two moving together and one against them: the
+    /// mean sits between the pairs and names no one, the pair list puts the
+    /// co-moving pair first at +1 and the opposed pairs at -1. Mutations:
+    /// leave `pair_correlations` empty (the premise fails); sort ascending
+    /// (the strongest pair is no longer first).
+    #[test]
+    fn the_survey_reports_each_correlated_pair_and_not_only_their_mean() {
+        let up = |scale: f64| -> Vec<f64> {
+            [100.0, 101.0, 99.0, 102.0, 100.0, 103.0]
+                .iter()
+                .map(|p| p * scale)
+                .collect()
+        };
+        let down: Vec<f64> = [100.0, 99.0, 101.0, 98.0, 100.0, 97.0].to_vec();
+        let history = BTreeMap::from([
+            ("obj-AAA".to_string(), up(1.0)),
+            ("obj-BBB".to_string(), up(0.5)),
+            ("obj-CCC".to_string(), down),
+        ]);
+        let mut book = state();
+        book.position_notionals
+            .insert("obj-CCC".to_string(), dec!("100000"));
+        let stress = stress(&[("venue-outage", 0.12)]);
+        let survey = plan(&HedgeBrainInputs {
+            declarations: &[],
+            universe: &Universe::new(),
+            snapshot: &MarketSnapshot::new(at()),
+            state: &book,
+            stress: Some(&stress),
+            price_history: &history,
+            equity: dec!("1000000"),
+            hedge_capacity: dec!("50000"),
+            funding: dec!("25000"),
+            tolerance: 0.20,
+            cycle: 7,
+            at: at(),
+        })
+        .survey;
+        assert_eq!(survey.pair_correlations.len(), 3, "premise: three pairs");
+        let first = &survey.pair_correlations[0];
+        assert_eq!((first.a.as_str(), first.b.as_str()), ("obj-AAA", "obj-BBB"));
+        assert!((first.correlation - 1.0).abs() < 1e-9, "{first:?}");
+        assert!(
+            survey.pair_correlations[1..]
+                .iter()
+                .all(|pair| pair.correlation < -0.5),
+            "{:?}",
+            survey.pair_correlations
+        );
+        let mean = survey.correlation.expect("a mean over three pairs");
+        assert!(mean.abs() < 0.5, "the mean {mean} must hide the pairs");
     }
 
     fn hedge_record() -> qip_financial::object::FinancialObject {
