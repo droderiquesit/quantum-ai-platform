@@ -18,7 +18,10 @@
 //!
 //! and, across every draft released together, [`checks::check_coordinated_voices`]:
 //! the same message under more than one identity is fake consensus however
-//! each draft reads alone.
+//! each draft reads alone; and, over the steps of one pass,
+//! [`check_step_conduct`]: the action judged rather than its words — a
+//! deceptive method behind a clean draft, or one message released above
+//! [`MAX_RELEASES_PER_MESSAGE`] (R12-AGENCY-1060).
 //!
 //! What this replaced, because it is the failure each check now prevents:
 //! check 7 took a `_conduct_rules` argument it never read and refused only
@@ -29,7 +32,7 @@
 //!
 //! Shadow-only form: drafting and gating, with no live channel anywhere.
 
-use qip_contracts::action::{MANIPULATION_PHRASES, contains_phrase, words};
+use qip_contracts::action::{MANIPULATION_PHRASES, Method, contains_phrase, words};
 use qip_core::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -445,6 +448,65 @@ pub mod checks {
     }
 }
 
+/// How many times one pass may release the same message, by its words.
+/// A plan that says one thing four times in one pass is not informing
+/// anybody four times; it is flooding a channel to move the reader — the
+/// shape quote stuffing and a repeated push take — and no phrase list sees
+/// it, because every copy reads innocently alone (R12-AGENCY-1060).
+pub const MAX_RELEASES_PER_MESSAGE: usize = 3;
+
+/// The action behind one draft, as the guard sees it at the act stage: the
+/// tool, the method its affordance edge declares, and the draft it would
+/// release. The step, not only its words, is what the market sees.
+#[derive(Clone, Copy, Debug)]
+pub struct StepConduct<'a> {
+    pub tool: &'a str,
+    pub method: Method,
+    pub draft: &'a CommunicationDraft,
+}
+
+/// Check 8, over the steps of one pass (R12-AGENCY-1060): market conduct
+/// judged on the action rather than the vocabulary. Refuses a step whose
+/// method is deceptive or manipulative — refused here as well as at plan
+/// time, because the ambient door reaches the guard without a plan — and a
+/// message the pass would release more than [`MAX_RELEASES_PER_MESSAGE`]
+/// times.
+pub fn check_step_conduct(steps: &[StepConduct<'_>]) -> CheckResult {
+    const CHECK: &str = "step_conduct";
+    if let Some(step) = steps.iter().find(|s| s.method.is_deceptive()) {
+        return CheckResult::fail(
+            CHECK,
+            format!(
+                "step `{}` acts by {:?}, a deceptive or manipulative method; the conduct gate \
+                 refuses the action whatever its draft says",
+                step.tool, step.method
+            ),
+        );
+    }
+    let mut releases: BTreeMap<Vec<String>, usize> = BTreeMap::new();
+    for step in steps {
+        let said = words(&step.draft.content);
+        if !said.is_empty() {
+            *releases.entry(said).or_default() += 1;
+        }
+    }
+    if let Some((said, count)) = releases
+        .iter()
+        .find(|(_, count)| **count > MAX_RELEASES_PER_MESSAGE)
+    {
+        return CheckResult::fail(
+            CHECK,
+            format!(
+                "the pass would release the same message `{}` {count} times, above the {} one \
+                 pass may; repetition at that rate floods a channel rather than informs it",
+                said.join(" "),
+                MAX_RELEASES_PER_MESSAGE
+            ),
+        );
+    }
+    CheckResult::pass(CHECK)
+}
+
 /// The gate's configuration as a document, so a composition root or a
 /// request can carry it; [`ConductGate::new`] still refuses a bad one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,6 +631,12 @@ impl ConductGate {
             .into_iter()
             .filter(|r| !r.passed)
             .collect()
+    }
+
+    /// Check 8 over the steps of one pass; `None` when it passes.
+    pub fn step_failure(&self, steps: &[StepConduct<'_>]) -> Option<CheckResult> {
+        let result = check_step_conduct(steps);
+        (!result.passed).then_some(result)
     }
 
     /// Every failure across a set of drafts released together: each draft's
@@ -902,6 +970,37 @@ mod tests {
         let verdict = checks::check_coordinated_voices(&[&a, &puppet]);
         assert!(!verdict.passed);
         assert!(verdict.reason.unwrap().contains("analyst-02"));
+    }
+
+    /// R12-AGENCY-1060: the step check reads the action. A deceptive method
+    /// behind a clean draft is refused; a lawful one passes; the same words
+    /// released above the rate are refused and at the rate pass.
+    /// Mutation: make `check_step_conduct` skip the `is_deceptive` test —
+    /// the wash-trading step passes and the first assertion fails.
+    #[test]
+    fn the_step_check_refuses_a_deceptive_method_behind_clean_words_and_a_flooded_message() {
+        let draft = basic_draft();
+        assert!(
+            basic_gate().can_release(&draft),
+            "premise: the draft's words pass every per-draft check"
+        );
+        let face = |method| StepConduct {
+            tool: "quoter",
+            method,
+            draft: &draft,
+        };
+        let wash = check_step_conduct(&[face(Method::WashTrading)]);
+        assert!(!wash.passed, "a wash trade behind clean words is refused");
+        assert!(wash.reason.unwrap_or_default().contains("WashTrading"));
+        assert!(check_step_conduct(&[face(Method::Market)]).passed);
+
+        let at_rate = vec![face(Method::Market); MAX_RELEASES_PER_MESSAGE];
+        assert!(check_step_conduct(&at_rate).passed);
+        let mut flooded = at_rate;
+        flooded.push(face(Method::Communication));
+        let result = check_step_conduct(&flooded);
+        assert!(!result.passed, "four releases of one message are refused");
+        assert_eq!(result.check_name, "step_conduct");
     }
 
     #[test]

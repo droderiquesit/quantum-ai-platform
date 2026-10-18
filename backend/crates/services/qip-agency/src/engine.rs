@@ -47,6 +47,7 @@ use crate::plan::{
 };
 use qip_compliance::eligibility::{EligibilityRegister, Subject};
 use qip_contracts::action::{Method, ToolAudit};
+use qip_contracts::action_intent::ActionIntent;
 use qip_core::{Decimal, Error, Timestamp};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -272,6 +273,10 @@ pub struct Acted {
     /// The voices the guard admitted this pass: one per step sent, so the
     /// journal can carry what was said under which name (R12-AGENCY-1064).
     pub released: Vec<Voice>,
+    /// One §27 [`ActionIntent`] per step the guard cleared, in shadow as
+    /// when acting (R12-CONTRACT-7082); empty when no guard ran or it
+    /// refused.
+    pub intents: Vec<ActionIntent>,
 }
 
 /// A plan that has cleared the gate, and the context it is executed in.
@@ -352,7 +357,7 @@ pub fn execute(
                 )));
             }
         }
-        priced.push((step.clone(), edge.cost));
+        priced.push((step.clone(), edge.cost, edge.method));
     }
 
     let Some(guard) = guard else {
@@ -367,6 +372,7 @@ pub fn execute(
             execution: Execution::Shadow(steps),
             approvals: None,
             released: Vec::new(),
+            intents: Vec::new(),
         });
     };
     let (mut chain, cleared) = match guard.preflight(gated.goal, &priced) {
@@ -377,15 +383,18 @@ pub fn execute(
                 execution: Execution::Withheld(refusal.message().to_string()),
                 approvals: None,
                 released: Vec::new(),
+                intents: Vec::new(),
             });
         }
     };
+    let intents: Vec<ActionIntent> = cleared.iter().map(|c| c.intent.clone()).collect();
     if acting.is_none() {
         log.shadow_act()?;
         return Ok(Acted {
             execution: Execution::Shadow(steps),
             approvals: Some(chain),
             released: Vec::new(),
+            intents,
         });
     }
 
@@ -404,6 +413,7 @@ pub fn execute(
                 },
                 approvals: Some(chain),
                 released: guard.voices().skip(voices_from).cloned().collect(),
+                intents,
             });
         }
     }
@@ -412,6 +422,7 @@ pub fn execute(
         execution: Execution::Executed(steps),
         approvals: Some(chain),
         released: guard.voices().skip(voices_from).cloned().collect(),
+        intents,
     })
 }
 
@@ -787,6 +798,9 @@ pub struct Report {
     /// The voices the guard admitted this pass, one per step sent
     /// (R12-AGENCY-1064). Empty in shadow and when nothing was sent.
     pub released: Vec<Voice>,
+    /// The §27 intent of every step the guard cleared, in shadow as when
+    /// acting (R12-CONTRACT-7082).
+    pub intents: Vec<ActionIntent>,
     /// A label per candidate, in index order: `proposal N` for the
     /// operator's, the steps for a generated one.
     pub candidates: Vec<String>,
@@ -820,6 +834,7 @@ fn report(
         approvals: None,
         audit: Vec::new(),
         released: Vec::new(),
+        intents: Vec::new(),
         candidates: Vec::new(),
         simulations: Vec::new(),
         eligibility: Vec::new(),
@@ -1179,6 +1194,7 @@ fn stages(
     let mut done = finish(log, levers, refused, outcome);
     done.approvals = acted.approvals;
     done.released = acted.released;
+    done.intents = acted.intents;
     done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
     done.chosen = chosen;
     Ok(done)
