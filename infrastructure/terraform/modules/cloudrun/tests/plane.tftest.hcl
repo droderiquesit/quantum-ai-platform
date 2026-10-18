@@ -29,6 +29,11 @@ run "a_plane_the_module_names_is_admitted" {
   variables {
     plane = "cognition"
   }
+
+  assert {
+    condition     = google_service_account.workload.account_id != ""
+    error_message = "a plane the module names planned no workload identity, so the admission above was not exercised."
+  }
 }
 
 run "the_execution_plane_is_refused" {

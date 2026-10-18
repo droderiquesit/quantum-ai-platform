@@ -1,16 +1,15 @@
 [
   {
     "id": "R12-MODEL-4001",
-    "status": "PARTIAL",
-    "current": "lane_placement acceptance suite computes qip-edge-node's normal-dependency closure and requires it to equal the register's lane-0 set and to exclude qip-simulation-engine/qip-training/qip-twin/qip-world-model; qip-edge depends only on in-tree edge/lib crates. Inline models are DistilledModel with a validated cost bound.",
+    "status": "COMPLETE",
+    "current": "Lane 0 has a bounded worst-case cost in a pass, not only in DistilledModel::cost: the compiler refuses a plan over CompilerLimits::default().max_nodes (512), and performance.rs::an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget deploys the largest chain-tree DistilledModel plan it admits, with a live feature input and the model promoted through the cell's policy, into a Cell and times whole Cell::work passes against the same 5000 us ceiling the baseline pass uses (about 490 us per pass in the debug profile on the measuring machine). It also pins the node budget to the 512 the time was measured at. lane_placement.rs still holds the lane-0 closure structurally.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150 lane-0 set == reflex-node closure",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:154-175 slow crates absent from qip-edge-node",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178-202 no fast-lane crate depends on a slower one",
-      "backend/crates/edge/qip-edge/Cargo.toml [dependencies] in-tree edge/lib crates only",
-      "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost bound"
+      "backend/crates/tests/qip-acceptance/tests/performance.rs an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget",
+      "backend/crates/edge/qip-strategy/src/compile.rs CompilerLimits::default",
+      "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150"
     ],
-    "gap": "Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0. None for the constraint as written; nothing is deployed (execution_nodes = {}), so it is proven structurally only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -18,10 +17,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test lane_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test performance -- an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget",
     "work_item": "",
     "size": "S",
-    "notes": "Register is read from docs/architecture/lane-placement.md but the closure is computed from Cargo manifests, so the check is code-backed. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0."
+    "notes": "Re-graded 2026-10-18 (lane L08). The first draft of this test was vacuous and the register's closure would have been too: with constant model inputs the compiler folds the model into its answer, so the cell timed a plan of three nodes; the plan cost is now asserted to be within eight nodes of the budget. Mutations, each restored byte for byte: max_nodes raised to 20000 failed the pin at 'the compiler admits 20000 nodes; the pass budget below was measured at 512'; an 8 ms sleep in DistilledModel::evaluate failed the 5000 us ceiling at 8985 us per pass. A chain tree's evaluation is a cheap index walk (raising the budget forty-fold added under 100 us per pass), so the wall-clock ceiling alone would not catch a larger budget; the pin does. The ceiling is wall clock on shared hardware, loose by design; nothing is deployed."
   },
   {
     "id": "R12-MODEL-4002",
