@@ -610,14 +610,17 @@
   },
   {
     "id": "R12-GOV-3029",
-    "status": "PARTIAL",
-    "current": "ConductGate with seven independent checks, tested; nothing outside qip-agency constructs it and there is no communications channel.",
+    "status": "COMPLETE",
+    "current": "ConductGate's seven checks (truthfulness/provenance, identity/disclosure, channel policy, audience, jurisdiction, market conduct and the rest) are built inside ActionGuard and every communication draft passes them in ActionGuard::preflight before any adapter call; no adapter is ever called without a guard, and each check alone withholds the plan. The check (a draft failing any single check is blocked; removing a check lets a failing draft through) is met on the only acting path (qip-cli agency, shadow; under ADR 0114 every shipped adapter refuses, so no external channel exists yet).",
     "evidence": [
       "backend/crates/services/qip-agency/src/conduct_brain.rs:1-14 seven checks",
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:251 compliant_draft_passes_all_seven_checks",
+      "backend/crates/services/qip-agency/src/guard.rs:161 ConductGate built in ActionGuard; :311 campaign_failures in preflight",
+      "backend/crates/services/qip-agency/src/engine.rs:299 an acting pass must carry a guard",
+      "backend/crates/services/qip-agency/tests/agency.rs:1614 an_adapter_is_never_called_without_a_guard_even_at_narrow_reversible_authority",
+      "backend/crates/services/qip-agency/tests/agency.rs:1641 each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
       "backend/crates/services/qip-agency/tests/conduct_brain.rs:292 each_check_independently_enforced_factual_support"
     ],
-    "gap": "No production path; when a channel exists the gate must sit on it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -625,10 +628,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test conduct_brain",
+    "verification": "cargo test -p qip-agency --test agency each_guard_check_alone_withholds_the_plan_before_any_adapter_call; cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: clearing the gate's campaign failures in ActionGuard::preflight (guard.rs:311) fails the test at agency.rs:1713 (a draft failing one check was no longer withheld). The former gap ('no production path') is closed structurally: the gate sits on the guard every acting engine must carry, not on a channel that does not exist."
   },
   {
     "id": "R12-GOV-3030",
@@ -652,15 +655,16 @@
   },
   {
     "id": "R12-GOV-3031",
-    "status": "PARTIAL",
-    "current": "is_deceptive refused in plan feasibility; reachable via qip-cli agency shadow, tested through the binary.",
+    "status": "COMPLETE",
+    "current": "A plan using a deceptive or manipulative method is infeasible (plan.rs is_deceptive), reachable through qip-cli agency shadow; the communication half runs through the same ConductGate in ActionGuard::preflight that every acting pass must carry, so a draft using one is withheld before any adapter call. The check (a deceptive plan is infeasible; removing the is_deceptive check fails the test) is met.",
     "evidence": [
       "backend/crates/services/qip-agency/src/plan.rs:163-165 deceptive method refused",
-      "backend/crates/services/qip-agency/src/autonomy.rs:59-61",
       "backend/crates/services/qip-agency/tests/agency.rs:280 a_prohibited_method_or_side_effect_makes_the_plan_infeasible",
-      "backend/crates/apps/qip-cli/tests/agency.rs::deceptive method declined (line ~539)"
+      "backend/crates/services/qip-agency/src/guard.rs:161 ConductGate in ActionGuard; :311 preflight",
+      "backend/crates/services/qip-agency/tests/agency.rs:1641 each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs deceptive method declined"
     ],
-    "gap": "Communication half: ConductGate (substring matching) has no production caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -668,10 +672,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo test -p qip-agency --test agency a_prohibited_method_or_side_effect_makes_the_plan_infeasible; cargo test -p qip-agency --test agency each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The communication half is covered by the mutation recorded on R12-GOV-3029. The former gap ('ConductGate has no production caller') predated its construction inside ActionGuard."
   },
   {
     "id": "R12-WORLD-3032",
@@ -1449,13 +1453,16 @@
   },
   {
     "id": "R12-AMBIENT-3067",
-    "status": "PARTIAL",
-    "current": "Fundamental surprise series scanned by the observation detector in the cycle.",
+    "status": "COMPLETE",
+    "current": "NowStage::run compares live readings with NowEstimator expected states and raises SurpriseEvents; qip-deepbrain's ResearchLoop sweep turns each into AmbientSignals routed through the shared AttentionRouter, so a now-surprise raised in the cycle wakes the forecast, adversarial, sensing and risk specialists and is journaled with its score; without the agency or without a sweep nothing is drafted. The check (the sentinel runs on the default path, its output reaches the attention router, disabling it removes its signals) is met.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9305-9312",
-      "backend/crates/libs/qip-financial/src/intelligence.rs:308 surprise"
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs:217 NowStage::run",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1012-1025 surprises become AmbientSignals through the AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:548 a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:232 a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs:224 without_the_agency_or_without_a_sweep_nothing_is_drafted"
     ],
-    "gap": "Limited to fundamentals vs consensus; residuals not routed to attention.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1463,10 +1470,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-deepbrain --test research a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists; cargo test -p qip-deepbrain --test ambient_journal; cargo test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former evidence (platform.rs:9305-9312) now lands on drawdown code and is removed. No mutation run by this lane."
   },
   {
     "id": "R12-AMBIENT-3068",

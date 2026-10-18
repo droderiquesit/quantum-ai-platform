@@ -531,14 +531,16 @@
   },
   {
     "id": "R12-REFLEX-10025",
-    "status": "PARTIAL",
-    "current": "A node that finds a prior session arms awaiting_reconciliation and forms no order until the venue agrees; books rebuild from the feed. No Local SSD is declared.",
+    "status": "COMPLETE",
+    "current": "A node that finds a prior session arms the resume discipline; while it stands, Cell::work refuses under GATE_AWAITING_RECONCILIATION and forms no order, and the node's pass obtains the venue's own account and hands it to the cell before anything is formed, so the journal records venue_reconciled before order_sent; books rebuild from the feed. The check (a restarted node forms no order until venue reconciliation completes; removing the reconciliation arm fails) is met. Books, features and session state are held in process memory; the c4/c4d highcpu allowlist carries no Local SSD and 'RAM/Local SSD' is an alternative the statement permits.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:525-536 prior session arms reconciliation",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs:1793 a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order",
-      "backend/crates/edge/qip-edge/src/cell.rs:299 GATE_AWAITING_RECONCILIATION"
+      "backend/crates/apps/qip-edge-node/src/main.rs:525-536 a prior session arms reconciliation",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:291 the venue account is taken while the discipline stands",
+      "backend/crates/edge/qip-edge/src/cell.rs:299 GATE_AWAITING_RECONCILIATION; :4388 the refusal in Cell::work",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:1818 a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order",
+      "backend/crates/edge/qip-edge/tests/failure_isolation.rs:176 a_restarted_cell_forms_no_order_until_every_venue_has_answered_for_what_it_holds_open"
     ],
-    "gap": "No Local SSD scratch; not deployed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -548,10 +550,10 @@
       "R12-REFLEX-10024"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test pass a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order",
+    "verification": "cargo test -p qip-edge-node --test pass a_node_that_restarted_reconciles_with_its_venue_before_it_forms_an_order; cargo test -p qip-edge --test failure_isolation a_restarted_cell_forms_no_order_until_every_venue_has_answered_for_what_it_holds_open",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: the node's reconciliation arm no longer taking the venue account (pass.rs:292 `Some(_) => None`) fails the node test at pass.rs:1850 ('the node did not resume after its venue answered', left 0 orders). Removing only the cell's refusal (cell.rs:4388-4389) left the node test green because the arm still ran first, which is why the cell-side test in failure_isolation.rs is cited beside it. Not deployed, so deployable stays false."
   },
   {
     "id": "R12-FABRIC-10026",
@@ -2167,15 +2169,14 @@
   },
   {
     "id": "R12-REFLEX-10100",
-    "status": "PARTIAL",
-    "current": "Feed/sequence handling with gap flags, replay of venue bytes reproducing flags; driven from main through the pass loop under the simulated feed only.",
+    "status": "COMPLETE",
+    "current": "Venue frames are sequence-checked in the node's feed and the cell's sequencer: a dropped frame is never papered over, the hole is journaled and the stale book is rebuilt whole, and a replay of recorded venue bytes carries the abandoned gap out as an integrity flag with the lost-message count. The check (a sequence gap resets/flags the book and replay reproduces the flag) is met on the simulated feed, which is the only feed the node runs (ADR 0003).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327 replaying_one_recorded_session_of_venue_bytes_twice...",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:433 the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag...",
       "backend/crates/apps/qip-edge-node/src/feed.rs",
-      "backend/crates/apps/qip-edge-node/tests/sequence.rs"
+      "backend/crates/apps/qip-edge-node/tests/sequence.rs:200 a_dropped_frame_is_never_papered_over_and_the_book_it_left_stale_is_rebuilt_whole",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:433 the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count"
     ],
-    "gap": "Real feed adapters; deployment.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2183,10 +2184,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay",
+    "verification": "cargo test -p qip-acceptance --test tick_replay the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count; cargo test -p qip-edge-node --test sequence a_dropped_frame_is_never_papered_over_and_the_book_it_left_stale_is_rebuilt_whole",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Real feed adapters; deployment' is not a clause of the statement or its check. No mutation run by this lane."
   },
   {
     "id": "R12-RISK-10101",
@@ -2373,14 +2374,16 @@
   },
   {
     "id": "R12-GOV-10109",
-    "status": "PARTIAL",
-    "current": "Cells verify signed envelopes/payloads before applying; edge node has no cognitive-crate dependency (substring test).",
+    "status": "COMPLETE",
+    "current": "Cells apply only payloads verified down the signed path and nothing but the cell's own verification can mint a verified policy, halt or grant; the edge node links no cognitive crate; and a promoted distillate reaches the manifest only when a verified release pack names its artifact, with qip-api admitting an empty pack set (every distillate withheld) when QIP_MODEL_PACKS_PATH is unset. The check is met and model packages travel the same signed path.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/mesh.rs:12-22",
-      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:11",
-      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs"
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:113 with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path",
+      "backend/crates/tests/qip-acceptance/tests/arch_001_independent_reflex.rs:127 nothing_the_edge_node_links_directly_or_transitively_is_a_cognitive_crate",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:903 a distillate without a verified release pack is withheld",
+      "backend/crates/runtime/qip-kernel/tests/release_packs.rs:124 a_promoted_distillate_reaches_the_manifest_only_when_a_verified_release_pack_names_its_artifact",
+      "backend/crates/apps/qip-api/src/signing.rs:354-361 admit_model_packs; an unset path admits none"
     ],
-    "gap": "Model packages through the same signed path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2390,10 +2393,10 @@
       "R12-REFLEX-10085"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test downward_signed_path",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-kernel --test release_packs; cargo test -p qip-acceptance --test arch_001_independent_reflex",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former text ('substring test') was older than the manifest parser, and the former gap ('model packages through the same signed path') closed with ADR 0110's release packs. No mutation run by this lane."
   },
   {
     "id": "R12-MESH-10110",
