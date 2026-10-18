@@ -206,6 +206,54 @@ pub fn repeated_vetoes(declines: &[Decline], min_regrets: usize) -> Result<Vec<O
         .collect())
 }
 
+/// As [`repeated_vetoes`], with each decline's counterfactual earnings beside
+/// it, so the raised gap carries the money its gate forwent rather than a
+/// stated zero (R12-EXPAND-6048).
+///
+/// The failure it prevents: every detector here stated `economic_value`
+/// zero, so a gate that vetoed a hundred profitable orders ranked exactly
+/// level with one that vetoed a hundred worthless ones, and the curriculum's
+/// value-per-cost term could not tell them apart. The value is the sum of the
+/// positive earnings of the gate's *regretted* declines — what the gate
+/// forwent. A regretted decline that would still have lost forwent no gain
+/// and adds nothing; an unregretted decline adds nothing because the gate was
+/// right. The earnings are counterfactual (the twin's `Simulated` figure);
+/// the caller crosses them into `Decimal` for ranking only, and nothing here
+/// books or moves money.
+pub fn repeated_vetoes_priced(
+    declines: &[(Decline, Decimal)],
+    min_regrets: usize,
+) -> Result<Vec<Observation>> {
+    let plain: Vec<Decline> = declines.iter().map(|(d, _)| d.clone()).collect();
+    let mut forgone: BTreeMap<&str, Decimal> = BTreeMap::new();
+    for (decline, earned) in declines {
+        if decline.regret && earned.is_positive() {
+            let slot = forgone
+                .entry(decline.gate.as_str())
+                .or_insert(Decimal::ZERO);
+            *slot = slot.checked_add(*earned).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the earnings gate `{}` forwent overflow a decimal; the declines read are not plausible",
+                    decline.gate
+                ))
+            })?;
+        }
+    }
+    // Matched by the evidence id `repeated_vetoes` writes, not by position,
+    // so a change to which gates it raises cannot shift a value onto another.
+    let mut out = repeated_vetoes(&plain, min_regrets)?;
+    for observation in &mut out {
+        let gate = observation
+            .evidence
+            .iter()
+            .find_map(|e| e.strip_prefix("declined_scores:gate:"));
+        if let Some(value) = gate.and_then(|g| forgone.get(g)) {
+            observation.economic_value = *value;
+        }
+    }
+    Ok(out)
+}
+
 /// One feasibility or reconciliation refusal, by venue and constraint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {

@@ -768,6 +768,15 @@ impl ComputeRouter {
         match foundry.status(FamilyKind::PortfolioAllocation) {
             Some(FamilyStatus::Registered(family)) => {
                 checked_threshold(family.promotion_threshold())?;
+                if family.encoding() != PortfolioProblem::QUBO_ENCODER {
+                    return Err(Error::denied(format!(
+                        "the quantum foundry registers portfolio allocation with the encoding \
+                         `{}`, but the router's quantum arm encodes through `{}`; register the \
+                         family with the encoder the router runs",
+                        family.encoding(),
+                        PortfolioProblem::QUBO_ENCODER
+                    )));
+                }
             }
             other => {
                 return Err(Error::denied(format!(

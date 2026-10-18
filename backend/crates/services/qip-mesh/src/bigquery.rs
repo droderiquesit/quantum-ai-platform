@@ -65,6 +65,34 @@ const DEFAULT_MAX_QUERY_POLLS: u32 = 10;
 /// Milliseconds BigQuery is asked to hold a request open waiting for a job.
 const DEFAULT_QUERY_TIMEOUT_MS: u64 = 10_000;
 
+/// Column names that hold a copied document rather than a fact derived from
+/// one, refused by [`BigQueryWarehouse::insert`] (R12-DATA-8123).
+///
+/// The research warehouse is tier K3: derived facts, features, outcomes and
+/// research datasets. A vendor's article, filing or page streamed into it
+/// would be a mirror of the public world held in Google's storage under the
+/// platform's name, which is exactly what blueprint §9.2 forbids and what the
+/// event log already refuses for news (`qip_financial::intelligence::NewsItem`
+/// has no text field). This adapter does not know the table schema, so it
+/// cannot check that a column exists — but it can refuse one whose name says
+/// what it carries, at the one seam every row passes. Matched on the whole
+/// column name, case-insensitively: `body_hash` is a fact about a document and
+/// is admitted; `body` is the document.
+const DOCUMENT_COLUMNS: [&str; 12] = [
+    "body",
+    "text",
+    "html",
+    "content",
+    "document",
+    "article",
+    "raw",
+    "raw_payload",
+    "full_text",
+    "document_text",
+    "article_text",
+    "transcript",
+];
+
 /// Everything a deployment must decide before the warehouse can be used.
 #[derive(Clone, Debug)]
 pub struct BigQueryConfig {
@@ -547,6 +575,19 @@ impl BigQueryWarehouse {
                 return Err(Error::invalid(format!(
                     "row {index} is not a JSON object: a BigQuery row is a map of column name to \
                      value, and an array or a scalar has no columns to match against the schema"
+                )));
+            }
+            if let Some(column) = row.json.as_object().and_then(|columns| {
+                columns.keys().find(|name| {
+                    DOCUMENT_COLUMNS
+                        .iter()
+                        .any(|refused| name.eq_ignore_ascii_case(refused))
+                })
+            }) {
+                return Err(Error::invalid(format!(
+                    "row {index} carries a `{column}` column: the research warehouse holds facts \
+                     derived from a document, never the document. Persist the source's manifest \
+                     (locator and content hash) and the facts distilled from it instead"
                 )));
             }
             if let Some(id) = &row.insert_id
