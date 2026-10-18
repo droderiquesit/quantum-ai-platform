@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 405 | 26.7% |
+| Blueprint completion (COMPLETE) | 406 | 26.7% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1217 | 80.2% |
 | Integrated (reached from a composition root) | 849 | 55.9% |
-| Deployable (provisionable from committed config) | 206 | 13.6% |
-| End-to-end demonstrated | 18 | 1.2% |
+| Deployable (provisionable from committed config) | 207 | 13.6% |
+| End-to-end demonstrated | 19 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 405 |
-| PARTIAL | 966 |
+| COMPLETE | 406 |
+| PARTIAL | 965 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -41,7 +41,7 @@ register (ADR 0099), and there is no second one.
 | [DATA](#data) | 95 | 20 | 65 | 10 | 0 | 0 | 83 | 69 | 1 |
 | [EVID](#evid) | 25 | 2 | 23 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 14 | 80 | 3 | 0 | 0 | 93 | 82 | 1 |
-| [WORLD](#world) | 69 | 23 | 41 | 5 | 0 | 0 | 62 | 57 | 0 |
+| [WORLD](#world) | 69 | 24 | 40 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 12 | 27 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 19 | 27 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 31 | 31 | 0 | 7 | 0 | 63 | 61 | 0 |
@@ -809,7 +809,7 @@ register (ADR 0099), and there is no second one.
 | R12-WORLD-1178 | World Model Federation capability scope | Federation supports branch/merge/renew/expiry/calibration; not integrated. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
 | R12-WORLD-1181 | World-model arbitration & epistemic control capability scope | Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information. | PARTIAL | Decisions are recorded only: no branch or merge is executed, and contradiction detection is not a distinct mechanism. |  | P2 | inspection + crate tests per scope item |  |
 | R12-WORLD-3025 | World Model Arbitration Brain | Federation arbitration (four decisions with calibration) runs each UNDERSTAND pass and is journaled. | PARTIAL | Not constructed as a specialist Brain in the production organisation; no coverage registry drops its scope when removed; decisions are recorded, never acted on. |  | P2 | cargo test -p qip-investment-agents --test organisation |  |
-| R12-WORLD-3032 | Semantic memory of entities, relationships, definitions, policies | KnowledgeGraph in the world model is integrated (UNDERSTAND). qip-agents ResearchMemory (lessons) is constructed empty inside an Arc'd Desk and never written in production. | PARTIAL | Lessons/policies as semantic memory have no production writer. |  | P1 | cargo test -p qip-agents --test agents |  |
+| R12-WORLD-3032 | Semantic memory of entities, relationships, definitions, policies | The desk research memory is the platform slot research_memory: Upstream<ResearchMemory>, gated into Desk::memory the way world and market are, so the reviewer reads what LEARN writes. LEARN remember_resolved calls write_research_memory for each resolved thesis: one qip-agents Episode per directional analyst stance (correct when the series moved the way it leaned, occurred_at = the instant the outcome became knowable), and a per-claim-class caution lesson (supporting = resolutions that moved against the claim, contradicting = those that held, applies_when = the class, which the opportunity context names) promoted through ResearchMemory::promote under PromotionPolicy::default and superseded once it no longer clears it; at most one lesson per class, so the list is bounded by detector kinds. Promotions and retirements appear on the LEARN stage detail, journaled with the cycle. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-kernel --lib resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads && cargo +1.94.1 test -p qip-kernel --test episodic the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_research_memory |  |
 | R12-WORLD-3033 | Episodic memory of world, belief, action and outcome | Platform EpisodicMemory written by LEARN (remember_resolved) with market and world state; episodic digest issued. | PARTIAL | Episodes are per resolved thesis; 'what it did' (orders/fills) is not part of the episode record. |  | P1 | cargo test -p qip-kernel --test episodic |  |
 | R12-WORLD-3034 | Procedural memory of procedures, templates, adapters, playbooks | Only a MemoryKind::Procedural label in a contract enum; no procedure store, versioning or retrieval. | MISSING | Procedural memory store and reader. |  | P2 | new test |  |
 | R12-WORLD-3035 | Counterfactual memory of rejected and alternate actions | LEARN prices declined paths in score_declined and records them apart from observed outcomes. | COMPLETE |  |  | P1 | cargo test -p qip-kernel --test learning |  |

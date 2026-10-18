@@ -703,26 +703,27 @@
   },
   {
     "id": "R12-WORLD-3032",
-    "status": "PARTIAL",
-    "current": "KnowledgeGraph in the world model is integrated (UNDERSTAND). qip-agents ResearchMemory (lessons) is constructed empty inside an Arc'd Desk and never written in production.",
+    "status": "COMPLETE",
+    "current": "The desk research memory is the platform slot research_memory: Upstream<ResearchMemory>, gated into Desk::memory the way world and market are, so the reviewer reads what LEARN writes. LEARN remember_resolved calls write_research_memory for each resolved thesis: one qip-agents Episode per directional analyst stance (correct when the series moved the way it leaned, occurred_at = the instant the outcome became knowable), and a per-claim-class caution lesson (supporting = resolutions that moved against the claim, contradicting = those that held, applies_when = the class, which the opportunity context names) promoted through ResearchMemory::promote under PromotionPolicy::default and superseded once it no longer clears it; at most one lesson per class, so the list is bounded by detector kinds. Promotions and retirements appear on the LEARN stage detail, journaled with the cycle.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/graph.rs:336 KnowledgeGraph",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10385 stage_understand",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4525 ResearchMemory::new() handed to Desk",
-      "backend/crates/libs/qip-agents/tests/agents.rs:922 a_lesson_from_one_episode_is_not_promoted"
+      "backend/crates/runtime/qip-kernel/src/platform.rs desk.memory = research_memory.gate(...) in Platform::new",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn write_research_memory, called from remember_resolved",
+      "backend/crates/runtime/qip-kernel/src/platform.rs episodic_slot_tests::resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads",
+      "backend/crates/runtime/qip-kernel/tests/episodic.rs the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_research_memory",
+      "backend/crates/agents/qip-investment-agents/src/review.rs reads desk.memory hit_rate and applicable_lessons"
     ],
-    "gap": "Lessons/policies as semantic memory have no production writer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test agents",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads && cargo +1.94.1 test -p qip-kernel --test episodic the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_research_memory",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutations, each restored byte-for-byte: dropping the desk.memory gate failed the feeds premise; inverting correct gave hit rate Some(1.0); dropping the supersede left the lesson applicable after retirement; dropping the call in remember_resolved left the memory at 0 episodes against 2 stances. Research memory is in-process and not rebuilt from the event log on restart."
   },
   {
     "id": "R12-WORLD-3033",

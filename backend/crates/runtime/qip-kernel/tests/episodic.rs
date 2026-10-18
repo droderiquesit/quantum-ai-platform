@@ -947,6 +947,53 @@ fn the_learn_stage_reads_regime_experience_from_memory_and_journals_it_with_the_
     Ok(())
 }
 
+/// R12-WORLD-3032: the research organisation's memory — what the reviewer
+/// reads to object to a poor analyst or an applicable lesson — had no writer
+/// in any binary. The LEARN pass that remembers a resolved thesis now charges
+/// each analyst that leaned one way or the other to it, through the same
+/// slot the desk's gate reads.
+#[test]
+fn the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_research_memory()
+-> Result<()> {
+    let (t2, t3) = resolution_instants()?;
+    let (platform, _) = three_cycles(t2, t3)?;
+    let leaning: usize = platform
+        .remembered_episodes(t3)
+        .map(|episode| {
+            episode
+                .stances
+                .iter()
+                .filter(|stance| {
+                    matches!(
+                        stance.direction,
+                        qip_ai::memory::StanceDirection::Positive
+                            | qip_ai::memory::StanceDirection::Negative
+                    )
+                })
+                .count()
+        })
+        .sum();
+    // The premise: the resolved thesis had analysts who took a side, so an
+    // empty research memory below would be a missing writer, not a quiet panel.
+    assert!(
+        leaning > 0,
+        "premise: no analyst took a side on the resolved thesis"
+    );
+    let memory = platform.research_memory();
+    assert_eq!(
+        memory.episode_count(),
+        leaning,
+        "one research episode per directional stance on the resolved thesis"
+    );
+    assert!(
+        memory
+            .episodes()
+            .iter()
+            .all(|episode| episode.outcome.is_some())
+    );
+    Ok(())
+}
+
 /// R12-REASON-3109 at the kernel seam: a hypothesis the red team refuses on
 /// review never reaches DECIDE. The refusal was proven inside
 /// `qip-reasoning-engine`, where the review verdict is formed, and nothing
