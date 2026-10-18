@@ -732,15 +732,15 @@
   {
     "id": "R12-EVID-2032",
     "status": "PARTIAL",
-    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts and writes the ids onto the new record and Corroborates/Contradicts edges into the provenance graph (fabric.rs:657-765). The world fabric is now fed in production (evidence_intake.rs:103-150). Links are recorded on the new claim only: the earlier claim's corroborates/contradicts lists are not updated (fabric.rs:760-765 push onto `record`, the incoming one). The fabric is in-memory, bounded and evicts (fabric.rs:812-838); nothing journals it, and the intake module states durability is not claimed (evidence_intake.rs:33-38).",
+    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts. Since 2026-10-18 the relation is recorded on both claims: the incoming record names the held ones and each held record names the incoming one, with Corroborates/Contradicts edges in both directions in the provenance graph; when a claim is evicted, every survivor's lists drop it. The world fabric is fed in production (evidence_intake.rs). The fabric is in-memory, bounded and evicts; nothing journals it, and the intake module states durability is not claimed.",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-765",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:812-838",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:911 both-sides links in EvidenceFabric::admit",
+      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::evict prunes evicted ids from survivors",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:797 a_relation_is_recorded_on_both_claims_and_forgotten_on_both_when_one_is_evicted",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:33-38",
-      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
       "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
     ],
-    "gap": "Record the relation on both records, persist links to the event log, and a replay test proving links survive.",
+    "gap": "Persist links to the event log, and a replay test proving links survive. The intake's module doc names the blocker: EvidenceAttached already carries the symbolic stage's derivations, so evidence links need their own journal kind or topic, and a replay that re-admits journaled claims in order to rebuild the fabric.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -750,10 +750,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model evidence",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable. 2026-10-18 lane L23: both-sides recording landed; mutations fired - back-link loop skipped (a.corroborates left [], right [\"b\"]); eviction prune skipped (b still named the evicted a)."
   },
   {
     "id": "R12-EVID-2033",

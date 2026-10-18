@@ -2114,13 +2114,15 @@
   },
   {
     "id": "R12-FABRIC-8095",
-    "status": "PARTIAL",
-    "current": "P4 ack None; over-quota P4 produce is shed (refused) visibly; health served directly.",
+    "status": "COMPLETE",
+    "current": "Under pressure telemetry is shed at both ends. A P4 producer over its quota is answered Shed (existing), and since this lane a sample_or_shed stream whose consumer group trails the high watermark by more than the lag limit drops its oldest sealed segments past the limit and admits the newest batch, where a P0/P1 stream refuses the producer and P2/P3 keep their declared backlog. Broker::produce runs the check on every produce, so qip-fabricd applies it to the committed catalogue's telemetry.local stream (p4_telemetry, sample_or_shed). Health remains on the direct path.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs drops_oldest_for_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::drop_oldest_past_lag (from refuse_when_a_group_lags)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_pressure.rs a_lagging_p4_stream_drops_its_oldest_batches_and_admits_the_newest",
+      "infrastructure/event-fabric/streams.local.json telemetry.local sample_or_shed"
     ],
-    "gap": "Shed refuses the new batch; no drop-oldest behaviour under pressure, untested.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2128,10 +2130,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new pressure test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_pressure",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Pressure is consumer lag, not producer quota: dropping stored batches does not relieve a producer's rate, so an over-quota P4 batch is still shed (the newest) and a lagging P4 backlog loses its oldest. Granularity is a segment. Mutation: drops_oldest_for_lag returning false keeps offset 0 on the lagging telemetry stream. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 158 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-8096",
@@ -2169,7 +2171,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
       "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked; no measurement yet ties the default 3000 IOPS / 140 MiB/s to the catalogue's peak_bytes_per_second. The root object now carries journal_provisioned_iops and journal_provisioned_throughput_mibps and fabric.tf passes them (2bf53e03).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2180,7 +2182,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider. Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Re-graded after 2bf53e03 wired the two figures from the root: still PARTIAL, because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2208,11 +2210,14 @@
   {
     "id": "R12-FABRIC-8099",
     "status": "PARTIAL",
-    "current": "Template has no access_config and internal-only tag; addresses are an input variable, not reserved resources; no NCC.",
+    "current": "Each broker address is a reserved INTERNAL google_compute_address (purpose GCE_ENDPOINT) in the control-fabric subnet, and the machine takes its network_ip from that reservation; the template and machines declare no access_config, the template is tagged internal-only, and the folder's org policy denies every VM external address. No NCC hub or export exists. The module is instantiated only when event_fabric_broker is set, which no environment does.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:48-56,66"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:150 google_compute_address.event_fabric_broker (INTERNAL, subnet, one per broker)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:265 each_broker_address_is_a_reserved_internal_address_the_machine_takes",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:952 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
+      "infrastructure/foundation/main.tf google_org_policy_policy.vm_external_ip deny_all"
     ],
-    "gap": "Reserved internal addresses; NCC export.",
+    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: no NCC hub, spoke or export filter exists in the tree, and mirroring is refused for every stream class (fabric_083), so there is nothing yet to export. Not deployed: event_fabric_broker is null in every environment.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2222,10 +2227,10 @@
       "R12-GCP-8057"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment."
   },
   {
     "id": "R12-SEC-8100",

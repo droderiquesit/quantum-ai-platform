@@ -786,3 +786,60 @@ fn ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it()
         "new origin {new_origin} vs one copy {one_copy}"
     );
 }
+
+/// R12-EVID-2032: a corroboration or a contradiction is recorded on both
+/// claims. It was written onto the incoming claim only, so the earlier one —
+/// the claim a contest was opened on — read as uncontested for as long as it
+/// was held. When one side is evicted, the survivor stops naming it.
+/// Mutations: dropping the back-link loop leaves `a`'s lists empty; dropping
+/// the eviction prune leaves `b` naming the evicted `a`.
+#[test]
+fn a_relation_is_recorded_on_both_claims_and_forgotten_on_both_when_one_is_evicted() {
+    let mut fabric = EvidenceFabric::with_capacity(3, 16).unwrap();
+    fabric
+        .admit(
+            claim("a", "https://a.example", "rate is 1.10", "1.10", 1),
+            None,
+            at(20),
+        )
+        .unwrap();
+    fabric
+        .admit(
+            claim("b", "https://b.example", "the rate printed 1.10", "1.10", 2),
+            None,
+            at(20),
+        )
+        .unwrap();
+    let (c, _) = fabric
+        .admit(
+            claim("c", "https://c.example", "rate came in at 1.20", "1.20", 3),
+            None,
+            at(20),
+        )
+        .unwrap();
+    // Premise: the incoming claims named the earlier ones.
+    assert_eq!(fabric.get("b").unwrap().record.corroborates, ["a"]);
+    assert_eq!(c.contradicts.len(), 2, "{c:?}");
+
+    let a = &fabric.get("a").unwrap().record;
+    assert_eq!(a.corroborates, ["b"]);
+    assert_eq!(a.contradicts, ["c"]);
+    assert_eq!(fabric.get("b").unwrap().record.contradicts, ["c"]);
+
+    fabric
+        .admit(
+            claim("d", "https://d.example", "rate is 9.99", "9.99", 4),
+            None,
+            at(20),
+        )
+        .unwrap();
+    // Premise: the oldest claim was the one given up.
+    assert!(fabric.get("a").is_none());
+    let b = &fabric.get("b").unwrap().record;
+    assert!(
+        b.corroborates.is_empty(),
+        "b still names the evicted a: {b:?}"
+    );
+    // `d` disagrees with `b` too, and is held, so it is named.
+    assert_eq!(b.contradicts, ["c", "d"]);
+}
