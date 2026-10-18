@@ -117,6 +117,20 @@ pub struct LeaseReport {
     pub failed: BTreeMap<(String, u32), String>,
 }
 
+/// What [`Broker::relinquish_leases`] did, per partition this instance led.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseReport {
+    /// Partitions whose lease was lapsed in the database, so a follower can
+    /// take them now rather than at the TTL.
+    pub released: Vec<(String, u32)>,
+    /// Partitions led here whose lease had already been superseded.
+    pub superseded: Vec<(String, u32)>,
+    /// Partitions whose release the database refused or never answered, and
+    /// why. This instance has stopped acknowledging them all the same; their
+    /// leases lapse at the TTL.
+    pub failed: BTreeMap<(String, u32), String>,
+}
+
 /// The one key this broker's metadata store holds. A `DurableStore` rooted
 /// at its own directory, separate from every partition's data (FABRIC-065):
 /// the leader epoch is a fact about the broker process, not about any one
@@ -1205,6 +1219,38 @@ impl Broker {
                 }
                 Err(error) => {
                     report.failed.insert(key, error.to_string());
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Stop leading every managed partition and hand each lease back, so a
+    /// drained instance's follower takes over at once instead of after the
+    /// TTL (RES-8103). The instance stops acknowledging a partition the
+    /// moment its lease is forgotten here, before the database is asked, so
+    /// a release that fails costs the TTL and never an acknowledgement from a
+    /// broker that no longer intends to lead.
+    ///
+    /// Idempotent: a partition with no lease held is skipped. Nothing here
+    /// stops [`Self::tend_leases`] from taking the leases again; the caller
+    /// that drains must stop calling it, or call this again each pass.
+    pub fn relinquish_leases(&self) -> Result<ReleaseReport> {
+        let seat = self.managed.as_ref().ok_or_else(|| {
+            Error::invalid("relinquish_leases was called on a broker with no managed log")
+        })?;
+        let mut report = ReleaseReport::default();
+        for (stream, partition) in self.managed_partitions() {
+            let Some(lease) = seat.lease(&stream, partition) else {
+                continue;
+            };
+            seat.set_lease(&stream, partition, None);
+            let reference = PartitionRef::new(stream.clone(), partition);
+            match seat.log.release(&reference, &lease) {
+                Ok(true) => report.released.push((stream, partition)),
+                Ok(false) => report.superseded.push((stream, partition)),
+                Err(error) => {
+                    report.failed.insert((stream, partition), error.to_string());
                 }
             }
         }

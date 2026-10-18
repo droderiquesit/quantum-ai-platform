@@ -2308,13 +2308,16 @@
   {
     "id": "R12-RES-8103",
     "status": "PARTIAL",
-    "current": "Leadership is a lease with epoch fencing (fabricd managed mode, config.rs:59-90), so a broker taken down for upgrade is replaced by a peer after the lease TTL without losing acknowledged P0/P1 records (tests/managed.rs). There is no voluntary drain/lease release, no replica-health check between steps, no rolling-upgrade automation or runbook, and no drill.",
+    "current": "Leadership is a lease with epoch fencing (fabricd managed mode, config.rs:59-90), so a broker taken down for upgrade is replaced by a peer after the lease TTL without losing acknowledged P0/P1 records (tests/managed.rs). Since 2026-10-18 a broker can also be drained: ManagedLog::release lapses the holder's own lease row (Memory and Spanner adapters), Broker::relinquish_leases forgets then releases every led partition, and the lease thread in qip-fabricd/src/lib.rs does so on every pass once Running::drain is called or a DRAIN file appears in the data directory, and never renews again, so the follower leads at once with no database time passing. There is still no replica-health check between steps, no rolling-upgrade automation or runbook, and no drill.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/src/config.rs:59-90",
-      "apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_drained_leader_hands_its_lease_to_the_follower_with_no_acknowledged_record_lost",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_drain_file_hands_the_lease_over_and_the_drained_broker_does_not_take_it_back",
+      "backend/crates/apps/qip-fabricd/src/spanner.rs::tests::a_release_lapses_the_holders_own_lease_and_leaves_a_successors_alone",
       "docs/adr/0111-event-fabric-replication-is-delegated-to-a-managed-consensus-and-not-written-in-tree.md:165-168"
     ],
-    "gap": "Leadership drain (lease release), health verification, one-at-a-time upgrade automation, and a game day showing P0/P1 produce stays available.",
+    "gap": "Replica-health verification between steps (nothing asks a follower whether it is caught up before the leader is drained), one-at-a-time upgrade automation and runbook (nothing creates the DRAIN file or restarts a broker), and a game day showing P0/P1 produce stays available across a drain.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2324,10 +2327,10 @@
       "R12-FABRIC-8086"
     ],
     "blocked_by": "",
-    "verification": "game day",
+    "verification": "cargo test -p qip-fabricd --test managed; cargo test -p qip-fabricd --lib release",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL on the lease-based takeover only; ADR 0111 itself says the upgrade runbook automation is separate work."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL on the lease-based takeover only; ADR 0111 itself says the upgrade runbook automation is separate work. 2026-10-18 lane L17: the voluntary drain landed with mutation-verified tests; kept PARTIAL because verify-replica-health, replace-image and rejoin remain operator procedure with no automation or drill."
   },
   {
     "id": "R12-GCP-8104",
