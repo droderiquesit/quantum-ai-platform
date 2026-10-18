@@ -102,15 +102,13 @@
   {
     "id": "R12-REASON-9005",
     "status": "PARTIAL",
-    "current": "qip-reasoning-engine has deterministic rules, a constraint module, Bayesian belief updates and red-team challenges, composed into the kernel's REASON stage; there is no external solver and no proof object an independent checker re-verifies.",
+    "current": "Each formed hypothesis carries a SymbolicDerivation; symbolic_stage::verify is an in-tree checker that re-derives the rule verdict, timeline, posterior, acting answer, intervention, violated assumptions and uncertainty from the record and refuses at the first part that does not reproduce; corrupting any of them fails verification (five tests).",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:111 red_team",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:179 ReasoningEngine use",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs",
-      "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:768 replay",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654-748 five corruption tests"
     ],
-    "gap": "A checkable proof/constraint certificate type and a re-checker; Z3/OR-Tools are refused by ADR 0002 so an in-tree checker is the only route.",
+    "gap": "The checker runs only in tests: no binary or operator surface calls symbolic_stage::replay/verify on a journal, and reasoning does not run on separately provisioned compute (ADR 0002's refusal of an external solver stands).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -118,10 +116,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: the checkable artefact and its re-checker now exist and each part's comparison was mutation-verified (disable -> its test fails 'a corrupted derivation was accepted'); PARTIAL kept because nothing deployed runs the checker."
   },
   {
     "id": "R12-TICK-9006",
@@ -1778,25 +1776,27 @@
   {
     "id": "R12-SEC-9077",
     "status": "PARTIAL",
-    "current": "Two sandbox shapes exist. (1) The GitHub agent-sandbox job is ephemeral, holds no cloud identity, and is bounded in time by the lane budget (timeout-minutes plus agent-lanes.mjs accept). (2) The ADR 0102 fleet worker (infrastructure/fleet/main.tf) is a Cloud Run Job with task_count 1 and max_retries 0. Its service account holds only roles/aiplatform.user and roles/storage.objectUser on its own bucket, pinned by tests/fleet.tftest.hcl:94-117. It has spend ceilings and a HALT object (scripts/fleet/worker.mjs:13-31).",
+    "current": "Two sandbox shapes exist. (1) The GitHub agent-sandbox job is ephemeral, holds no cloud identity, and is bounded in time by the lane budget (timeout-minutes plus agent-lanes.mjs accept). (2) The ADR 0102 fleet worker (infrastructure/fleet/main.tf) is a Cloud Run Job with task_count 1 and max_retries 0. As written in the tree (not planned or applied): its service account holds roles/aiplatform.user and roles/monitoring.viewer at the project and prefix-conditioned objectViewer (packets/, HALT) and objectUser (output/, ledger/) on its own bucket; the Job's vpc_access sends ALL_TRAFFIC through a VPC whose firewall allows TCP 443 to 199.36.153.8/30 and denies 0.0.0.0/0; tests/fleet.tftest.hcl pins these. worker.mjs refuses a packet naming, or reading as a source or path, a dataset under data/ that scripts/fleet/synthetic-datasets.json does not mark synthetic or licensed-research, before any model call. It has spend ceilings and a HALT object.",
     "evidence": [
-      "infrastructure/fleet/main.tf:61-112",
-      "infrastructure/fleet/tests/fleet.tftest.hcl:94",
-      ".github/workflows/agent-sandbox.yml:44",
-      "scripts/fleet/worker.mjs:13-31"
+      "infrastructure/fleet/main.tf",
+      "infrastructure/fleet/outputs.tf",
+      "infrastructure/fleet/tests/fleet.tftest.hcl",
+      "scripts/fleet/worker.mjs:datasetProblems",
+      "scripts/fleet/synthetic-datasets.json",
+      "scripts/fleet/worker.test.mjs"
     ],
-    "gap": "Fleet stays in dev until ADR 0113's split; add VPC egress restricted to Google APIs, roles/monitoring.viewer only, a narrowed bucket grant, and worker-side refusal of non-synthetic datasets (ADR 0102 amendment, 2026-10-11).",
-    "implemented": false,
+    "gap": "Terraform was not run in the lane session (no terraform binary): fmt, validate and `terraform test` on infrastructure/fleet and a real plan are outstanding, and the objectListPrefix list condition is unevaluated until a first apply. Nothing is applied, so no egress is restricted in the cloud. The quota half (per-task CPU/memory is set; no project quota) and an end-to-end synthetic-only enforcement on the dispatcher side (dispatch.mjs shares validatePacket, so it inherits the refusal) are unproven by a plan.",
+    "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/fleet && terraform init -backend=false && terraform test; node --test scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real. Lane L25 2026-10-18 wrote the HCL and the worker refusal; worker mutations run: ignoring the dataset class, dropping the datasetProblems call and dropping the data/ path check each fail the tests that name them. The HCL test mutations were not run because terraform was unavailable."
   },
   {
     "id": "R12-SEC-9078",

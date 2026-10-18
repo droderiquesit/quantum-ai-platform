@@ -7,6 +7,7 @@ use qip_contracts::message::{BookSide, MarketMessage, MessageBody, TradeConditio
 use qip_contracts::venue::{Origin, VenueId};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
+use qip_simulation_engine::MessageBudget;
 use qip_simulation_engine::tick_replay::{
     ExecutionModel, ExecutionStatus, LegPlan, MultiLegPlan, OrderSide, ReplayOrder, ReplaySession,
     ReplayTick, replay,
@@ -62,6 +63,7 @@ fn model() -> ExecutionModel {
         fee_bps: 2.0,
         impact_bps_at_full_depth: 20.0,
         limit_ttl: Duration::from_secs(60),
+        message_budget: None,
     }
 }
 
@@ -409,4 +411,114 @@ fn a_zero_latency_or_a_single_leg_plan_is_refused() -> Result<()> {
     plan.legs.truncate(1);
     assert!(replay(model(), acme(), Vec::new(), vec![plan]).is_err());
     Ok(())
+}
+
+/// R12-TICK-2075/2088: a venue's message budget binds on replayed flow. Three
+/// one-lot buys arrive inside one 100ms window under a budget of two; the third
+/// is refused as throttled rather than filled, and a fourth arriving after the
+/// window has moved on is admitted again.
+///
+/// Mutation: make `ReplaySession::throttled` return `None` unconditionally —
+/// the third order fills and the throttle assertion fails. Mutation: make
+/// `MessageBudget::trailing_floor` return `i64::MIN`, so no arrival ever leaves
+/// the window — the fourth order is refused too.
+#[test]
+fn orders_beyond_the_venue_message_budget_are_refused_in_replay() -> Result<()> {
+    let mut ticks = acme();
+    ticks.push(tick("obj-ACME", 6, 300, level(BookSide::Ask, 103, 5)));
+    let orders = vec![
+        market_buy("o-1", 1, 5),
+        market_buy("o-2", 1, 6),
+        market_buy("o-3", 1, 7),
+        market_buy("o-4", 1, 200),
+    ];
+
+    // Premise: with no budget every order fills, so a refusal below is the
+    // budget's and not the book's.
+    let free = replay(model(), ticks.clone(), orders.clone(), Vec::new())?;
+    assert_eq!(free.executions.len(), 4);
+    assert!(
+        free.executions
+            .iter()
+            .all(|e| e.status == ExecutionStatus::Filled),
+        "premise: unthrottled, the book fills all four: {:?}",
+        free.executions
+    );
+
+    let throttled = ExecutionModel {
+        message_budget: Some(MessageBudget {
+            per_window: 2,
+            window: Duration::from_millis(100),
+        }),
+        ..model()
+    };
+    let run = replay(throttled, ticks, orders, Vec::new())?;
+    let status = |id: &str| {
+        run.executions
+            .iter()
+            .find(|e| e.order_id == id)
+            .map(|e| e.status.clone())
+    };
+    assert_eq!(status("o-1"), Some(ExecutionStatus::Filled));
+    assert_eq!(status("o-2"), Some(ExecutionStatus::Filled));
+    match status("o-3") {
+        Some(ExecutionStatus::Rejected { reason }) => assert!(
+            reason.split(':').next() == Some("throttled"),
+            "the third order was refused for another reason: {reason}"
+        ),
+        other => panic!("the third order inside the window was not refused: {other:?}"),
+    }
+    let o3 = run.executions.iter().find(|e| e.order_id == "o-3");
+    assert_eq!(
+        o3.map(|e| e.filled),
+        Some(Decimal::ZERO),
+        "a throttled order fills nothing"
+    );
+    assert_eq!(
+        status("o-4"),
+        Some(ExecutionStatus::Filled),
+        "an order after the window has moved on is admitted again"
+    );
+    Ok(())
+}
+
+/// A budget that admits nothing, or measures no window, is refused at
+/// construction rather than run.
+#[test]
+fn a_message_budget_of_zero_messages_or_zero_window_is_refused() {
+    for budget in [
+        MessageBudget {
+            per_window: 0,
+            window: Duration::from_millis(100),
+        },
+        MessageBudget {
+            per_window: 2,
+            window: Duration::ZERO,
+        },
+    ] {
+        let model = ExecutionModel {
+            message_budget: Some(budget),
+            ..model()
+        };
+        assert!(
+            ReplaySession::new(model, acme(), Vec::new(), Vec::new()).is_err(),
+            "{budget:?} was accepted"
+        );
+    }
+    assert!(
+        ReplaySession::new(
+            ExecutionModel {
+                message_budget: Some(MessageBudget {
+                    per_window: 2,
+                    window: Duration::from_millis(100),
+                }),
+                ..model()
+            },
+            acme(),
+            Vec::new(),
+            Vec::new()
+        )
+        .is_ok(),
+        "premise: a well-formed budget is accepted"
+    );
 }

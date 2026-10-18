@@ -193,15 +193,15 @@
   },
   {
     "id": "R12-FABRIC-8009",
-    "status": "PARTIAL",
-    "current": "Acceptance scan refuses Kafka/Pub/Sub client crates; qip-streaming's PubSub TransportKind refuses to build. But modules/trust-zones still declares Pub/Sub publisher/subscriber grants on a \"control_fabric_topic\" (passed null today).",
+    "status": "COMPLETE",
+    "current": "Neither managed broker is an internal runtime dependency: no crate declares a Kafka or Pub/Sub client (manifest scan), qip-streaming's PubSub transport kind and port are deleted with a source scan refusing their return, the trust-zones control-fabric grant path is gone, and blueprint_arch scans Terraform for Pub/Sub or Kafka resources beyond the two recorded peripheral topics.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
-      "backend/crates/services/qip-streaming/src/registry.rs:217,228 PubSub -> unreachable_transport",
-      "infrastructure/terraform/modules/trust-zones/main.tf:624-647 google_pubsub_topic_iam_member fabric_publish/fabric_attach",
-      "infrastructure/terraform/main.tf:500 control_fabric_topic = null"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs qip_streaming_source_names_no_pub_sub_transport",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
+      "backend/crates/services/qip-streaming/src/registry.rs TransportKind (Local, Durable, Mesh)"
     ],
-    "gap": "Remove the Pub/Sub control-fabric grant path from trust-zones and the PubSub TransportKind, and extend the scan to Terraform.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -209,10 +209,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary --test blueprint_arch && cargo test -p qip-streaming --test registry",
     "work_item": "",
     "size": "S",
-    "notes": "The trust-zones Pub/Sub 'control fabric' contradicts §1. The secret-rotation Pub/Sub topic in modules/secrets is a Secret Manager notification, not runtime messaging."
+    "notes": "Lane L21 2026-10-18. Gap text was half stale: the Terraform scan already existed (blueprint_arch.rs) and trust-zones had no Pub/Sub grant. Mutation: appending `pub struct PubSubBinding;` to registry.rs fails the scan naming that file."
   },
   {
     "id": "R12-FABRIC-8010",
@@ -913,13 +913,14 @@
   {
     "id": "R12-FINOPS-8041",
     "status": "PARTIAL",
-    "current": "Cloud Run services scale by instance bounds in modules/cloudrun; Bigtable cluster has autoscaling_config (gated); Spanner fixed at 100 PU.",
+    "current": "Cloud Run services carry instance bounds in their Config Connector RunService manifests (infrastructure/gitops/envs/<env>/*.yaml, scaling.minInstanceCount/maxInstanceCount, e.g. dev/fastbrain.yaml:44); the Bigtable cluster has autoscaling_config (gated); the Spanner instance is fixed at processing_units = 100 (modules/data/main.tf:400) and enable_spanner = false in dev, test, stage and prod.",
     "evidence": [
-      "infrastructure/terraform/modules/cloudrun/main.tf",
+      "infrastructure/gitops/envs/dev/fastbrain.yaml:44 maxInstanceCount",
       "infrastructure/terraform/modules/data/main.tf:322-345 bigtable autoscaling_config",
-      "infrastructure/terraform/modules/data/main.tf:391 processing_units = 100"
+      "infrastructure/terraform/modules/data/main.tf:400 processing_units = 100",
+      "infrastructure/environments/*/terraform.tfvars enable_spanner = false"
     ],
-    "gap": "Spanner autoscaling; AI component scaling.",
+    "gap": "Spanner autoscaling is an owner cost decision, not a lane edit: replacing the fixed 100 PU with an autoscaling_config changes what enabling Spanner costs (the managed autoscaler's limits set the floor, and the module comment's reason for 100 PU is to start below one node), and a mocked terraform test plan cannot show the API admits the chosen limits. Needs the owner to choose min/max processing units; then an autoscaling_config block behind a module variable plus a modules/data tftest asserting it renders. The Cloud Run half is met through the RunService manifests, not modules/cloudrun (the row's earlier evidence pointed there and that file carries no instance bounds).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -930,7 +931,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: not closed. terraform 1.9.8 fetched and checksum-verified for the session; no HCL changed because the remaining clause needs an owner cost choice. Cloud Run evidence corrected from modules/cloudrun/main.tf to the gitops RunService manifests."
   },
   {
     "id": "R12-GCP-8042",

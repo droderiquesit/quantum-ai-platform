@@ -1,5 +1,6 @@
 # The fleet worker's image (ADR 0102): the worker, the gateway it calls, and
-# the price table. Three files and a Node runtime, and nothing else.
+# the price table and the synthetic-dataset list. Four files and a Node runtime,
+# and nothing else.
 #
 #   podman build -f infrastructure/fleet/worker/Dockerfile -t fleet-worker scripts/
 #
@@ -7,7 +8,7 @@
 # checkout by design (ADR 0102 decision 1: a worker with the repository in its
 # image has the repository as its prompt-injection surface), and a context
 # that cannot see the tree cannot copy it in by a careless `COPY . .`. The
-# three COPY sources below are the whole of what reaches the image; the
+# COPY sources below are the whole of what reaches the image; the
 # dispatcher and every test stay on the desktop.
 #
 # The base is pinned by digest, not by tag: a tag is a name its owner can move
@@ -52,7 +53,7 @@ RUN set -eu; \
 # price table.
 WORKDIR /app/scripts
 COPY model-gateway.mjs ./
-COPY fleet/worker.mjs fleet/prices.json ./fleet/
+COPY fleet/worker.mjs fleet/prices.json fleet/synthetic-datasets.json ./fleet/
 
 # Non-root, like every other image here. The credential is the metadata
 # server's token for the attached account; nothing is mounted and no key

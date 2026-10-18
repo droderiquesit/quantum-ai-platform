@@ -78,8 +78,13 @@ impl Platform {
     /// which opportunities are routed at all.
     pub(crate) fn route_detected(&mut self, found: Vec<Opportunity>, now: Timestamp) -> Routing {
         let scope = self.executable_scope();
+        // Grown as opportunities are admitted, not reserved up front: a
+        // capacity taken from the length of a list the detectors produced is
+        // an allocation sized by input, which the SAST gate refuses
+        // (rust/uncontrolled-allocation-size, ci run 1015), and the list is
+        // short enough that the reallocations cost nothing worth reserving.
         let mut routing = Routing {
-            executable: Vec::with_capacity(found.len()),
+            executable: Vec::new(),
             shadowed: 0,
             problems: Vec::new(),
         };
