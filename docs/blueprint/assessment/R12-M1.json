@@ -3776,13 +3776,14 @@
   },
   {
     "id": "R12-REFLEX-1165",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip-edge Cell with orderbook, feature DAG, strategy, netting, risk gates and simulated venue adapters, composed by qip-edge-node; not deployed.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:52",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_reflex_node_scope_item_is_still_composed_where_the_node_assembles_it"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3790,10 +3791,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Inspection test added 2026-10-18. Netting (net(intents)) and the inventory-target read happen inside Cell::work, which the scheduler's run_pass calls, so they are pinned in qip-edge/src/cell.rs rather than as symbols of the node's composition root as the closure proposed; feature engine, mode and risk gates are pinned in assemble_with_risk, the strategy installer and gateway in main.rs, venue state in feed.rs. Mutations: netting line renamed and the risk-gate call reshaped each failed the test naming the item; restored."
   },
   {
     "id": "R12-MESH-1166",

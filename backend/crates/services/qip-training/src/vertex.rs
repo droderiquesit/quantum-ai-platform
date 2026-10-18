@@ -78,7 +78,9 @@
 //! [`TrainedTeacher`]: crate::local::TrainedTeacher
 
 use crate::dataset::TrainingDataset;
-use crate::job::{JobState, TrainingArtifact, TrainingJob, TrainingProvider, TrainingSpec};
+use crate::job::{
+    Capacity, JobState, QueueQuotas, TrainingArtifact, TrainingJob, TrainingProvider, TrainingSpec,
+};
 use qip_core::error::{Error, Result};
 use qip_core::{JobId, Timestamp};
 use qip_transport::{ClientLimits, HttpClient, HttpRequest, HttpResponse, Method, Url};
@@ -404,6 +406,8 @@ pub struct VertexAiProvider {
     jobs: BTreeMap<String, TrackedJob>,
     unresolved: Vec<UnresolvedSubmission>,
     stats: VertexStats,
+    /// Per-queue bounds on unfinished jobs, when declared.
+    quotas: Option<QueueQuotas>,
 }
 
 impl VertexAiProvider {
@@ -417,7 +421,16 @@ impl VertexAiProvider {
             jobs: BTreeMap::new(),
             unresolved: Vec::new(),
             stats: VertexStats::default(),
+            quotas: None,
         }
+    }
+
+    /// Bound each queue's unfinished jobs. A submit into a full queue, or
+    /// into a queue with no declared bound, is refused before a request is
+    /// built, so the refusal costs nothing at Vertex.
+    pub fn with_quotas(mut self, quotas: QueueQuotas) -> Self {
+        self.quotas = Some(quotas);
+        self
     }
 
     /// Construct with credentials asserted present, to exercise the
@@ -457,6 +470,7 @@ impl VertexAiProvider {
             jobs: BTreeMap::new(),
             unresolved: Vec::new(),
             stats: VertexStats::default(),
+            quotas: None,
         })
     }
 
@@ -955,6 +969,24 @@ impl TrainingProvider for VertexAiProvider {
                  fail the fit, which costs a queue slot to learn something checkable here",
             ));
         }
+        if spec.scheduling.capacity == Capacity::Spot
+            && matches!(self.config.workload, VertexWorkload::AutoMl { .. })
+        {
+            return Err(Error::invalid(
+                "an AutoML training pipeline has no Spot scheduling strategy; the spec asks for \
+                 interruptible capacity this workload cannot be placed on, so it is refused \
+                 rather than quietly run on demand",
+            ));
+        }
+        if let Some(quotas) = &self.quotas {
+            let queue = spec.scheduling.queue.as_str();
+            let active = self
+                .jobs
+                .values()
+                .filter(|t| !t.job.state.is_terminal() && t.job.spec.scheduling.queue == queue)
+                .count();
+            quotas.admit(queue, active)?;
+        }
         let rows = data.len();
         let display_name = display_name_for(&spec);
         let body =
@@ -1194,6 +1226,15 @@ impl VertexAiProvider {
                         }],
                         "baseOutputDirectory": {
                             "outputUriPrefix": self.config.staging_bucket,
+                        },
+                        // Interruptible jobs ask for Spot capacity; anything
+                        // else states on-demand explicitly rather than taking
+                        // whatever the service defaults to.
+                        "scheduling": {
+                            "strategy": match spec.scheduling.capacity {
+                                Capacity::Spot => "SPOT",
+                                Capacity::OnDemand => "STANDARD",
+                            },
                         },
                     },
                 })
