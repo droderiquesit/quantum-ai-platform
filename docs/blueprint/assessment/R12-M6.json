@@ -346,13 +346,15 @@
   {
     "id": "R12-MODEL-6016",
     "status": "PARTIAL",
-    "current": "LEARN grades resolved theses (ThesisEvaluator) and charges them to SelfModel components (detector, analyst, rung, strategy); world models and ensembles are not scored this way.",
+    "current": "LEARN grades resolved theses (ThesisEvaluator) and charges them to SelfModel components (detector, analyst, rung, strategy). Since 2026-10-18 world-model federation members are scored the same way: FederationStage keeps the probability each member gave each pending proposition and carries them on the journaled Resolution, and the Platform's federation pass charges each resolved forecast to ComponentKind::WorldModel keyed by member id through SelfModel::absorb_forecast (a forecast of exactly one half took no side and is not charged).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15155 calibrate_resolved",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:337 SelfModel",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:12064 the charge loop in the federation pass",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:960 Resolution.forecasts",
+      "backend/crates/services/qip-learning-engine/src/self_model.rs:404 SelfModel::absorb_forecast",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:627 a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_model",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:203"
     ],
-    "gap": "Scoring of world-model federation members and ensembles.",
+    "gap": "Ensembles are not charged: the federation's arbitrated view and the tournament's aggregate are scored by nothing in the self-model, only their members are.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -360,10 +362,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_model && cargo test -p qip-learning-engine --test self_model a_world_model_forecast_is_charged_by_the_side_it_took_and_never_freshens_the_self_model",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - skipping the charge loop in Platform's federation pass left markets.microstructure.home.micro (2 resolved forecasts) with no estimate; charging the outcome instead of the side taken gave hits 0 against 1; removing the sample_facts filter listed the member. World-model records are kept out of SelfModel::sample_facts: counting them freshened the self-model capability and lifted the sizing bound (valuation_seam's compounded budget came out at 0.75 of the expected factor instead of 0.5 until the filter landed). The kernel test lives in symbolic_federation.rs, not learning.rs as the closure proposed, because that suite already holds the tape fixture under which reality answers forecasts."
   },
   {
     "id": "R12-MODEL-6017",
@@ -2184,26 +2186,28 @@
   },
   {
     "id": "R12-AGENCY-6099",
-    "status": "PARTIAL",
-    "current": "ConductGate's seven checks read the given conduct rules as whole words plus the coordinated-voices check, run by ActionGuard::preflight in the CLI and the deepbrain ambient door before any adapter. Since 2026-10-18 the guard also detects the coordination pattern structurally, with no phrase involved: the same message (by its word fingerprint) released under a second identity in a later pass is refused as fake consensus, remembered across passes and resumed from the journal (R12-AGENCY-1064).",
+    "status": "COMPLETE",
+    "current": "Pattern detection rather than phrase matching, on both halves. Coordination: the same message by its word fingerprint under a second identity is refused within a pass (check_coordinated_voices) and across passes (ActionGuard::preflight's voice scan, remembered and resumed from the journal, R12-AGENCY-1064). Manipulation on the action: check_step_conduct refuses a deceptive method behind a clean draft and a message flooded above MAX_RELEASES_PER_MESSAGE per pass (R12-AGENCY-1060). All of it runs in ActionGuard::preflight before any adapter call, on qip-cli agency and on qip-deepbrain's ambient door (main.rs:884).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/guard.rs:400-412",
+      "backend/crates/services/qip-agency/src/guard.rs:428",
+      "backend/crates/services/qip-agency/src/conduct_brain.rs:474",
       "backend/crates/services/qip-agency/src/conduct_brain.rs::checks::check_coordinated_voices",
+      "backend/crates/services/qip-agency/tests/conduct_brain.rs::a_coordination_pattern_with_no_listed_phrase_is_still_blocked",
       "backend/crates/services/qip-agency/tests/agency.rs::the_same_message_released_under_a_second_identity_in_a_later_pass_is_withheld_as_fake_consensus",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::the_rules_given_decide_the_market_conduct_verdict"
+      "backend/crates/services/qip-agency/tests/agency.rs::a_pass_releasing_one_message_above_the_repetition_rate_is_withheld_before_any_adapter_call"
     ],
-    "gap": "Manipulation on the step itself (order sequence, exposure, channel) is still phrase-matched on the draft text rather than detected on the action (R12-AGENCY-1060). No external communication path exists to gate, by design (ADR 0114).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency the_same_message_released_under_a_second_identity && cargo +1.94.1 test -p qip-agency --test conduct_brain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test conduct_brain a_coordination_pattern && cargo +1.94.1 test -p qip-agency --test agency the_same_message_released_under_a_second_identity",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L10): the coordination half is pattern detection now (mutation: skipping the voice scan lets the second identity's pass execute). Held PARTIAL on step-level manipulation detection."
+    "notes": "Closed 2026-10-18 (lane L10), completing the earlier same-day re-grade whose only remaining gap was R12-AGENCY-1060. Mutation fired: keying check_coordinated_voices on raw `content` instead of its `words` lets the re-cased, re-punctuated copy under a second identity pass, and the conduct_brain test fails at its coordinated_voices assertion. No external communication path exists to gate, by design (ADR 0114)."
   },
   {
     "id": "R12-AGENCY-6100",

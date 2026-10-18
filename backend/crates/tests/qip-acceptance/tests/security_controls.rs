@@ -733,3 +733,130 @@ fn no_data_store_beyond_those_the_register_records_is_left_without_a_customer_ma
          the environment ring, with the service agent's encrypter grant ahead of it"
     );
 }
+
+/// The lines of `text` that name a Cloud KMS client or signer, case folded.
+/// A comment is included on purpose: a comment saying the cell "asks KMS to
+/// sign" is a description of a dependency the cell must not have.
+fn kms_mentions(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| {
+            let folded = line.to_ascii_lowercase();
+            folded.contains("kms")
+        })
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn the_edge_decision_path_names_no_kms_client() {
+    // R12-SEC-10052: key availability must not be required for the package
+    // that is already running. A cell that could call Cloud KMS on its pass
+    // would stop deciding the moment the key service was slow or the key was
+    // disabled, which is the dependency ADR 0008 ("cells decide alone") exists
+    // to refuse. Verification of a signed package uses the committed trust
+    // bundle (public keys only); signing is the centre's act, in qip-api.
+    let root = qip_acceptance::repository_root();
+    let mut scanned = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for crate_dir in [
+        "backend/crates/edge/qip-edge",
+        "backend/crates/apps/qip-edge-node",
+    ] {
+        let manifest = format!("{crate_dir}/Cargo.toml");
+        let mut files = vec![root.join(&manifest)];
+        files.extend(qip_acceptance::files_with_extension(
+            &format!("{crate_dir}/src"),
+            "rs",
+        ));
+        for file in files {
+            scanned += 1;
+            let text = std::fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
+            if !kms_mentions(&text).is_empty() {
+                offenders.push(
+                    file.strip_prefix(&root)
+                        .unwrap_or(&file)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    assert!(scanned > 20, "only {scanned} files were scanned");
+    assert_eq!(
+        offenders,
+        Vec::<String>::new(),
+        "the edge decision path names a Cloud KMS client or signer"
+    );
+
+    // The scan sees what it claims to, so the empty result is a finding.
+    assert_eq!(
+        kms_mentions("use qip_transport::kms::KmsSigner;\nlet x = 1;").len(),
+        1
+    );
+    assert!(kms_mentions("let signer = TrustBundle::load();").is_empty());
+}
+
+/// Secrets in `text` that lack a rotation period or an announcement topic,
+/// by resource name.
+fn secrets_without_rotation(text: &str) -> Vec<String> {
+    resources(text, "google_secret_manager_secret")
+        .into_iter()
+        .filter(|(_, body)| {
+            let rotated = nested(body, "rotation")
+                .is_some_and(|rotation| rotation.contains("rotation_period"));
+            let announced = nested(body, "topics")
+                .is_some_and(|topics| topics.contains("google_pubsub_topic.rotation.id"));
+            !(rotated && announced)
+        })
+        .map(|(name, _)| name)
+        .collect()
+}
+
+#[test]
+fn every_secret_carries_a_rotation_schedule_and_announces_it() {
+    // R12-SEC-9126: "with rotation". A secret with no rotation period is one
+    // nobody rotates, and a period with no topic is a timer nobody hears:
+    // Secret Manager only notifies through the topic, and Terraform never
+    // writes the new value. The topic is the one the SEC-9135 test pins as
+    // the only allowed Pub/Sub resource beside the asset feed.
+    let tree = terraform_tree();
+    let mut seen = 0usize;
+    let mut offenders = Vec::new();
+    for (_, text) in &tree {
+        seen += resources(text, "google_secret_manager_secret").len();
+        offenders.extend(secrets_without_rotation(text));
+    }
+    assert!(
+        seen > 0,
+        "no secret resource was found; the scan reads nothing"
+    );
+    assert_eq!(
+        offenders,
+        Vec::<String>::new(),
+        "a secret has no rotation schedule"
+    );
+    let module = tree
+        .iter()
+        .find(|(path, _)| path.ends_with("modules/secrets/main.tf"))
+        .expect("the secrets module is in the tree");
+    assert!(
+        module
+            .1
+            .contains("resource \"google_pubsub_topic\" \"rotation\""),
+        "the topic rotation announces on is not declared beside the secrets"
+    );
+
+    // The check fails on a copy with the rotation block deleted, and on one
+    // with the topic block deleted.
+    let without_rotation = module.1.replacen("rotation {", "renamed_block {", 1);
+    assert_eq!(
+        secrets_without_rotation(&without_rotation),
+        vec!["platform".to_string()]
+    );
+    let without_topic = module.1.replacen("topics {", "renamed_block {", 1);
+    assert_eq!(
+        secrets_without_rotation(&without_topic),
+        vec!["platform".to_string()]
+    );
+}

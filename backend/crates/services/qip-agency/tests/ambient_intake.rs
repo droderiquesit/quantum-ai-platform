@@ -560,6 +560,55 @@ fn ambient_types_cannot_reach_an_adapter_except_through_promote_and_the_guard() 
     );
 }
 
+/// R12-AGENCY-3002: every draft is guarded against a sub-goal the door's
+/// standing goal decomposes into, and the outbox records the sub-goal it
+/// served. A signal admitted at its very expiry leaves the sub-goal no
+/// horizon, so the decomposition refuses it and nothing is written or
+/// charged.
+/// Mutation: in `AmbientIntake::attempt`, guard against `self.goal` and
+/// skip `sub_goal` (record `None`) — the recorded sub-goal assertions fail
+/// and the at-expiry signal is drafted.
+#[test]
+fn each_draft_serves_a_validated_sub_goal_and_one_that_cannot_decompose_is_withheld() {
+    let mut door = intake();
+    let outcome = door
+        .admit(advisory("sig-30", "EURUSD basis"), APPROVER, at(120), 1)
+        .unwrap();
+    assert!(
+        matches!(outcome, Intake::Drafted { .. }),
+        "premise: {outcome:?}"
+    );
+    let written = drafts(door.outbox()).unwrap();
+    let sub_goal = written[0].sub_goal.as_ref().expect("a sub-goal recorded");
+    assert_eq!(sub_goal.budget, Decimal::ONE, "one draft's worth of budget");
+    assert_eq!(sub_goal.risk_envelope, Decimal::ZERO);
+    assert_eq!(sub_goal.acting_identity, IDENTITY);
+    assert_eq!(sub_goal.time_horizon_secs, 3_600, "capped by the parent");
+    assert!(
+        sub_goal.target_state.contains("sig-30"),
+        "{}",
+        sub_goal.target_state
+    );
+    for inherited in ["publish", "outreach", "pricing"] {
+        assert!(
+            sub_goal.prohibited_methods.iter().any(|m| m == inherited),
+            "the sub-goal keeps the parent's prohibition `{inherited}`"
+        );
+    }
+
+    let mut door = intake();
+    let outcome = door
+        .admit(advisory("sig-31", "EURUSD basis"), APPROVER, at(10_000), 1)
+        .unwrap();
+    let Intake::Withheld { reason } = outcome else {
+        panic!("expected withheld, got {outcome:?}")
+    };
+    assert!(reason.contains("does not decompose"), "{reason}");
+    assert!(reason.contains("time_horizon_secs"), "{reason}");
+    assert!(door.outbox().is_empty(), "nothing written");
+    assert!(door.guard().audit().is_empty(), "nothing charged");
+}
+
 /// R12-RES-7109: revoking the drafting tool stops the drafts already held for
 /// a retry, as well as the next new one. A held draft has cleared the guard
 /// once. Left queued, it would go out on the first retry after the tool is

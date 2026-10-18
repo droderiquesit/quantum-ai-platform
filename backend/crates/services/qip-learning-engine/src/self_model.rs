@@ -79,6 +79,11 @@ pub enum ComponentKind {
     Rung,
     /// A strategy family, keyed by its family name.
     Strategy,
+    /// A world-model federation member, keyed by its member id: charged when
+    /// a proposition it forecast resolves (R12-MODEL-6016). Not an origin
+    /// factor — a member's view reaches REASON through the federation's own
+    /// arbitration, not as the origin of a thesis.
+    WorldModel,
 }
 
 impl ComponentKind {
@@ -88,6 +93,7 @@ impl ComponentKind {
             Self::Analyst => "analyst",
             Self::Rung => "rung",
             Self::Strategy => "strategy",
+            Self::WorldModel => "world_model",
         }
     }
 
@@ -97,6 +103,7 @@ impl ComponentKind {
             "analyst" => Some(Self::Analyst),
             "rung" => Some(Self::Rung),
             "strategy" => Some(Self::Strategy),
+            "world_model" => Some(Self::WorldModel),
             _ => None,
         }
     }
@@ -389,6 +396,40 @@ impl SelfModel {
         Ok(components.len())
     }
 
+    /// Charge one resolved binary forecast to `key`: the side it put more
+    /// than half its probability on, at that probability, against what
+    /// happened. A forecast of exactly one half took no side and is not
+    /// charged — scoring it either way would invent a call it never made.
+    /// Returns whether it was charged.
+    pub fn absorb_forecast(
+        &mut self,
+        key: ComponentKey,
+        proposition: impl Into<String>,
+        probability: f64,
+        outcome: bool,
+        at: Timestamp,
+    ) -> Result<bool> {
+        if !(0.0..=1.0).contains(&probability) {
+            return Err(Error::invalid(format!(
+                "{key} forecast probability {probability} is not in [0, 1]; refuse the forecast \
+                 rather than charge it"
+            )));
+        }
+        let says_true = match probability.total_cmp(&0.5) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => return Ok(false),
+        };
+        let confidence = if says_true {
+            probability
+        } else {
+            1.0 - probability
+        };
+        let scored = ScoredOutcome::new(proposition, confidence, says_true == outcome, at)?;
+        self.record(key, scored);
+        Ok(true)
+    }
+
     pub fn get(&self, key: &ComponentKey) -> Option<&CapabilityEstimate> {
         self.components.get(key)
     }
@@ -462,13 +503,22 @@ impl SelfModel {
     /// not the reverse, so the facts cross as plain values rather than as a
     /// type it could name. Key order is what makes the first thin component
     /// the table names the same one on every replay.
+    ///
+    /// World-model members are left out. Their record says how well a
+    /// federation member forecast a proposition, not whether the components
+    /// that originate and size a thesis are measured, and counting it here
+    /// let a federation's resolutions read the self-model fresh and lift the
+    /// sizing bound the self-model's staleness holds (R12-MODEL-6016).
     pub fn sample_facts(&self) -> impl Iterator<Item = (String, usize, Option<Timestamp>)> + '_ {
-        self.components.iter().map(|(key, estimate)| {
-            (
-                key.to_string(),
-                estimate.sample_count(),
-                estimate.last_updated(),
-            )
-        })
+        self.components
+            .iter()
+            .filter(|(key, _)| key.kind != ComponentKind::WorldModel)
+            .map(|(key, estimate)| {
+                (
+                    key.to_string(),
+                    estimate.sample_count(),
+                    estimate.last_updated(),
+                )
+            })
     }
 }

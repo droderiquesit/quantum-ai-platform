@@ -182,6 +182,81 @@ impl PassLog {
     }
 }
 
+/// A log sink the decision thread can write to without waiting on whoever
+/// reads it (OBS-9142).
+///
+/// [`PassLog`] bounds how many lines a window writes, not how long one write
+/// takes. The loop handed it `std::io::stderr()` directly, and stderr is a
+/// pipe: when the collector behind it stalls, the pipe fills, `write` blocks,
+/// and the decision thread stops between its pass and its journal flush for
+/// as long as the reader is gone. The sampler made that rare, not
+/// impossible. Each complete line is handed to a writer thread over a bounded
+/// channel with `try_send`; a full channel drops the line and counts it, and
+/// nothing on the calling thread ever waits. A dropped line loses nothing the
+/// log alone held: every line the pass log writes is also a series and a
+/// journal entry (see [`PassLog`]).
+#[derive(Debug)]
+pub struct DetachedSink {
+    lines: std::sync::mpsc::SyncSender<Vec<u8>>,
+    pending: Vec<u8>,
+    dropped: u64,
+}
+
+impl DetachedSink {
+    /// Spawn the writer thread over `sink`, holding at most `capacity` lines
+    /// in flight. A zero capacity is refused: it would drop every line while
+    /// reading as a working log.
+    pub fn spawn<W: std::io::Write + Send + 'static>(mut sink: W, capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "a detached log sink with no capacity drops every line; give it room for at \
+                 least one",
+            ));
+        }
+        let (lines, inbox) = std::sync::mpsc::sync_channel::<Vec<u8>>(capacity);
+        std::thread::Builder::new()
+            .name("qip-edge-node-log".to_string())
+            .spawn(move || {
+                // Ends when the sender is dropped with the loop. A failed
+                // write is ignored for the reason `PassLog::write` gives.
+                while let Ok(line) = inbox.recv() {
+                    let _ = sink.write_all(&line);
+                    let _ = sink.flush();
+                }
+            })
+            .map_err(|error| Error::io(format!("the log writer thread did not start: {error}")))?;
+        Ok(Self {
+            lines,
+            pending: Vec::new(),
+            dropped: 0,
+        })
+    }
+
+    /// Lines refused because the writer thread was behind or gone.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+}
+
+impl std::io::Write for DetachedSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(bytes);
+        // Only whole lines travel, so a drop never leaves half a line in the
+        // log for the next one to be glued onto.
+        while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=end).collect();
+            if self.lines.try_send(line).is_err() {
+                self.dropped = self.dropped.saturating_add(1);
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The node's four golden signals, with the pass as its unit of work
 /// (OBS-018).
 ///
