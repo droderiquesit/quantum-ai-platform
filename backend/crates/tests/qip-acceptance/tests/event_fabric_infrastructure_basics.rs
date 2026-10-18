@@ -3,87 +3,84 @@
 //! Tests for fabric durability/replay, control distribution, regional infrastructure,
 //! transport security (QUIC/mTLS), and RF3 replication across zones.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReplicationFactor {
-    RF3,
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
+mod event_fabric_support;
+
+use event_fabric_support::{STREAM, batch, broker_module, broker_with, norm, spec};
+
+fn norm_text(text: &str) -> String {
+    text.lines().map(norm).collect::<Vec<_>>().join("\n")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Zone {
-    ZoneA,
-    ZoneB,
-    ZoneC,
-}
-
-#[derive(Debug, Clone)]
-struct BrokerNode {
-    zone: Zone,
-    is_leader: bool,
-    has_persistent_log: bool,
-}
-
-#[derive(Debug, Clone)]
-struct FabricRecord {
-    offset: u64,
-    _content: String,
-    is_durable: bool,
-    _replication_factor: ReplicationFactor,
-}
-
+/// FABRIC-006: every acknowledged record is retrievable in exact append order
+/// after a restart, and the log replays to the same bytes. The previous test
+/// pushed `FabricRecord`s into a `Vec` it built and counted them; this one
+/// appends through the broker, drops it, reopens the same data directory and
+/// reads back through `fetch`.
+///
+/// Mutation: cap `Broker::fetch`'s `high_watermark` at 50 — the reopened
+/// broker serves nothing for offset 50 onward and the test fails there,
+/// naming the offset; restored.
 #[test]
 fn fabric_006_fabric_records_are_durable_and_replayable() {
-    // FABRIC-006: Fabric records are durable and replayable: every acknowledged
-    // record must be retrievable in exact append order after any failure and
-    // throughout its retention period, and the append-log itself must be replayable
-    // to reconstruct state.
+    use qip_core::{Clock, ManualClock, Timestamp};
+    use qip_events::event_fabric::codec::{Batch, DecodeOutcome};
+    use qip_events::event_fabric::policy::QosClass;
+    use qip_events::event_fabric::policy::StreamPolicy;
+    use qip_storage::segment::log::SegmentLogConfig;
+    use qip_streaming::event_fabric::broker::Broker;
+    use std::sync::Arc;
 
-    #[derive(Debug, Clone)]
-    struct DurableLog {
-        records: Vec<FabricRecord>,
-        _last_durable_offset: u64,
+    let (broker, dir) = broker_with("fabric-006", 1, spec(QosClass::P1Outcomes));
+    let mut acknowledged = Vec::new();
+    for sequence in 0..100u64 {
+        let id = format!("record-{sequence}");
+        let produced = broker
+            .produce_to(STREAM, 0, batch("venue", 1, sequence, &id))
+            .expect("the broker answers")
+            .expect("the batch is admitted");
+        acknowledged.push((produced.base_offset(), id));
     }
+    assert_eq!(
+        acknowledged.len(),
+        100,
+        "premise: every batch was acknowledged"
+    );
+    assert!(
+        acknowledged.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "premise: acknowledged offsets rise in append order"
+    );
+    drop(broker);
 
-    let mut log = DurableLog {
-        records: Vec::new(),
-        _last_durable_offset: 0,
-    };
+    // A new process: same directory, nothing carried over in memory.
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 4)));
+    let reopened = Broker::open(dir, Arc::clone(&clock)).expect("the directory reopens");
+    reopened
+        .declare_stream(
+            STREAM,
+            1,
+            StreamPolicy::new(spec(QosClass::P1Outcomes)).expect("a permitted policy"),
+            SegmentLogConfig::new(clock).with_roll_after_bytes(10_000_000),
+        )
+        .expect("the stream is re-declared over its recovered log");
 
-    // Scenario 1: Every acknowledged record is persisted and retrievable
-    for i in 0..100 {
-        let record = FabricRecord {
-            offset: i,
-            _content: format!("record_{}", i),
-            is_durable: true,
-            _replication_factor: ReplicationFactor::RF3,
-        };
-        log.records.push(record);
-        log._last_durable_offset = i;
-    }
-
-    // All records persisted in order
-    assert_eq!(log.records.len(), 100);
-    assert_eq!(log._last_durable_offset, 99);
-
-    // Verify append order is preserved
-    for (idx, record) in log.records.iter().enumerate() {
-        assert_eq!(record.offset as usize, idx);
-    }
-
-    // Scenario 2: Replay reconstructs complete state
-    let mut replayed_count = 0;
-    for record in &log.records {
-        if record.is_durable {
-            replayed_count += 1;
+    let mut replayed = Vec::new();
+    for (offset, _) in &acknowledged {
+        let served = reopened
+            .fetch(STREAM, 0, *offset, 1)
+            .expect("an acknowledged offset is served");
+        let bytes = qip_core::hash::from_hex(served.batches()).expect("hex");
+        match Batch::decode(&bytes).expect("decodes") {
+            DecodeOutcome::Complete(batch) => {
+                assert_eq!(batch.base_offset, *offset);
+                replayed.push(batch.records[0].event_id.clone());
+            }
+            DecodeOutcome::Torn => panic!("offset {offset} was served torn after a restart"),
         }
     }
-
-    assert_eq!(replayed_count, 100);
-
-    // Scenario 3: Logs are retrievable throughout retention period
-    let _retention_hours = 24;
-    let records_in_retention = log.records.iter().filter(|r| r.is_durable).count();
-    assert!(records_in_retention > 0);
-    assert_eq!(records_in_retention, log.records.len());
+    let expected: Vec<String> = acknowledged.into_iter().map(|(_, id)| id).collect();
+    assert_eq!(replayed, expected, "replay is not the acknowledged order");
 }
 
 #[test]
@@ -165,85 +162,44 @@ fn fabric_007_fabric_distributes_capital_risk_and_strategy_control_to_reflex_cel
     );
 }
 
+/// FABRIC-008: a region's brokers are placed one to a zone and in the region,
+/// refused at plan otherwise. The previous test built two `RegionalBrokerCluster`
+/// fixtures with three nodes each and asserted three. What the module does is
+/// different and checkable: it plans one broker by default (RF1, FABRIC-086
+/// blocked on C2), and a lifecycle precondition on the machine resource
+/// refuses two brokers in one zone and any zone outside `var.region`.
+///
+/// Mutation: delete the `distinct(...)` precondition from
+/// `google_compute_instance_from_template` in the module — the zone-spread
+/// assertion fires; or change `broker_count`'s `1` to `3` — the default-count
+/// assertion fires.
 #[test]
 fn fabric_008_each_region_runs_fabric_on_dedicated_broker_vms_across_three_zones() {
-    // FABRIC-008: Each region runs its fabric on dedicated broker VMs across
-    // three zones, with no multi-tenant sharing of broker infrastructure.
-
-    #[derive(Debug, Clone)]
-    struct RegionalBrokerCluster {
-        _region: String,
-        brokers: Vec<BrokerNode>,
-    }
-
-    // US-West region
-    let usw_cluster = RegionalBrokerCluster {
-        _region: "us-west1".to_string(),
-        brokers: vec![
-            BrokerNode {
-                zone: Zone::ZoneA,
-                is_leader: true,
-                has_persistent_log: true,
-            },
-            BrokerNode {
-                zone: Zone::ZoneB,
-                is_leader: false,
-                has_persistent_log: true,
-            },
-            BrokerNode {
-                zone: Zone::ZoneC,
-                is_leader: false,
-                has_persistent_log: true,
-            },
-        ],
-    };
-
-    // EU-West region
-    let euw_cluster = RegionalBrokerCluster {
-        _region: "eu-west1".to_string(),
-        brokers: vec![
-            BrokerNode {
-                zone: Zone::ZoneA,
-                is_leader: true,
-                has_persistent_log: true,
-            },
-            BrokerNode {
-                zone: Zone::ZoneB,
-                is_leader: false,
-                has_persistent_log: true,
-            },
-            BrokerNode {
-                zone: Zone::ZoneC,
-                is_leader: false,
-                has_persistent_log: true,
-            },
-        ],
-    };
-
-    // Scenario 1: Each region has exactly 3 brokers
-    assert_eq!(usw_cluster.brokers.len(), 3);
-    assert_eq!(euw_cluster.brokers.len(), 3);
-
-    // Scenario 2: Brokers span three distinct zones
-    let usw_zones: Vec<Zone> = usw_cluster.brokers.iter().map(|b| b.zone).collect();
-    assert!(usw_zones.contains(&Zone::ZoneA));
-    assert!(usw_zones.contains(&Zone::ZoneB));
-    assert!(usw_zones.contains(&Zone::ZoneC));
-
-    let euw_zones: Vec<Zone> = euw_cluster.brokers.iter().map(|b| b.zone).collect();
-    assert!(euw_zones.contains(&Zone::ZoneA));
-    assert!(euw_zones.contains(&Zone::ZoneB));
-    assert!(euw_zones.contains(&Zone::ZoneC));
-
-    // Scenario 3: All brokers have persistent logs
-    assert!(usw_cluster.brokers.iter().all(|b| b.has_persistent_log));
-    assert!(euw_cluster.brokers.iter().all(|b| b.has_persistent_log));
-
-    // Scenario 4: Each region has one leader
-    let usw_leaders: usize = usw_cluster.brokers.iter().filter(|b| b.is_leader).count();
-    let euw_leaders: usize = euw_cluster.brokers.iter().filter(|b| b.is_leader).count();
-    assert_eq!(usw_leaders, 1);
-    assert_eq!(euw_leaders, 1);
+    let main = norm_text(&broker_module("main.tf"));
+    assert!(
+        main.contains("resource \"google_compute_instance_from_template\" \"event_fabric_broker\""),
+        "premise: the module declares the broker machine"
+    );
+    let machine = main
+        .split("resource \"google_compute_instance_from_template\"")
+        .nth(1)
+        .and_then(|rest| rest.split("resource \"google_dns_record_set\"").next())
+        .expect("the machine resource is followed by the DNS records");
+    assert!(
+        machine.contains(
+            "condition = length(distinct([for address in local.brokers : local.broker_zone[address]])) == length(local.brokers)"
+        ),
+        "two brokers may share a zone at plan: {machine}"
+    );
+    assert!(
+        machine
+            .contains("condition = startswith(local.broker_zone[each.value], \"${var.region}-\")"),
+        "a broker may be planned outside its region: {machine}"
+    );
+    assert!(
+        main.contains("broker_count = var.enabled ? 1 : 0"),
+        "the default is one broker per region (RF1), not three"
+    );
 }
 
 #[test]

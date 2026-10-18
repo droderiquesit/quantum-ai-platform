@@ -4464,13 +4464,15 @@
   {
     "id": "R12-FABRIC-10195",
     "status": "PARTIAL",
-    "current": "fabricd/streaming/ledgerd have real fault and property tests; a large set of event_fabric_* acceptance tests only assert fixtures they construct.",
+    "current": "fabricd/streaming/ledgerd have real fault and property tests. In event_fabric_infrastructure_basics.rs, fabric_006 (append, restart, replay through Broker::fetch), fabric_008 (module placement preconditions read from the Terraform) and fabric_010 (RF3 refusal) now drive code; the transport/integrity suite (036-041) and the delivery-semantics suite already did. fabric_007 (control distribution) and fabric_009 (QUIC + mTLS) still assert only fixtures they construct.",
     "evidence": [
       "backend/crates/apps/qip-fabricd/tests/broker.rs",
       "backend/crates/apps/qip-ledgerd/tests/store.rs:337",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:316 (fixture-only)"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:26 fabric_006 drives Broker across a restart",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs:177 fabric_008 reads the module's zone preconditions",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure_basics.rs fabric_007 and fabric_009 (fixture-only)"
     ],
-    "gap": "Convert fixture-only fabric acceptance tests into code-driving tests.",
+    "gap": "event_fabric_infrastructure_basics.rs fabric_007 (control distribution to cells) and fabric_009 (QUIC with mutual TLS; ADR 0100 records plaintext TCP and mTLS blocked, and fabric_036 already pins the no-QUIC fact) still assert structs they build; the infrastructure/scaling suites named by the grader (event_fabric_infrastructure.rs, event_fabric_scaling.rs) were not re-audited line by line and the cited line numbers are stale.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4478,10 +4480,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "mutation-verify each event_fabric_* acceptance test",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_infrastructure_basics",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L08 2026-10-18. fabric_006 mutation (Broker::fetch high_watermark capped at 50) failed at offset 50 'served torn after a restart'; fabric_008 mutation (distinct-zone precondition replaced by true) failed 'two brokers may share a zone at plan'; both restored. Dead fixture types ReplicationFactor, FabricRecord, Zone, BrokerNode removed. event_fabric_infrastructure_basics: 5 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-10196",
