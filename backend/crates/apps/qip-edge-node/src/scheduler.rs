@@ -73,6 +73,7 @@ use crate::reprice::Requoter;
 use crate::rollback::{RollbackOutcome, RollbackWire};
 use crate::share::RegionShareStatus;
 use crate::strategies::StrategyInstaller;
+use crate::telemetry::PeerSeries;
 use qip_contracts::market_event::MarketEvent;
 use qip_contracts::replay::{AppliedReadings, PassMarker, PressureRecord, WireRecord};
 use qip_core::canonical::canonical_json;
@@ -265,6 +266,7 @@ pub struct DecisionLoop {
     mesh: Option<MeshWorker>,
     mesh_health: Option<MeshHealth>,
     peers: Option<ReflexPort>,
+    peer_series: Option<PeerSeries>,
     peer_offers_dropped: u64,
     health: Option<(HealthSnapshot, HealthFacts)>,
     /// The fabric link's issued certificate under `QIP_TLS_MODE=cas` (ADR
@@ -329,6 +331,7 @@ impl DecisionLoop {
             mesh: None,
             mesh_health: None,
             peers: None,
+            peer_series: None,
             peer_offers_dropped: 0,
             health: None,
             certificate: None,
@@ -401,6 +404,13 @@ impl DecisionLoop {
     #[must_use]
     pub fn with_peers(mut self, port: ReflexPort) -> Self {
         self.peers = Some(port);
+        self
+    }
+
+    /// Record the peer link's measured latency into `series` every turn.
+    #[must_use]
+    pub fn with_peer_series(mut self, series: PeerSeries) -> Self {
+        self.peer_series = Some(series);
         self
     }
 
@@ -571,6 +581,9 @@ impl DecisionLoop {
                     self.peer_offers_dropped
                 );
             }
+        }
+        if let (Some(port), Some(series)) = (&self.peers, &self.peer_series) {
+            series.observe(&port.status());
         }
         if let Some((snapshot, facts)) = &self.health {
             snapshot.publish(self.health_body(facts, pressure, retained, now));

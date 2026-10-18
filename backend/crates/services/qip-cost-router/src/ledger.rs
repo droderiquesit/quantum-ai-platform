@@ -20,6 +20,7 @@ use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// One rung, charged once.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -55,12 +56,104 @@ fn to_micros(amount: Decimal) -> u64 {
     u64::try_from(micros).unwrap_or(u64::MAX)
 }
 
+/// The key a charge is reported under when the decision it served cannot
+/// name one.
+///
+/// Spelled out rather than left blank, so a report shows how much spend could
+/// not be attributed instead of folding it silently into whichever key sorts
+/// first. A cycle's compute serves every strategy the cycle looked at; billing
+/// it to one of them would be a number nobody computed.
+pub const UNATTRIBUTED: &str = "unattributed";
+
+/// The key a charge for a rung that calls no model is reported under on the
+/// model dimension.
+pub const NO_MODEL: &str = "no-model";
+
+/// Who a decision's spend is attributed to (R12-FINOPS-10136).
+///
+/// Set once per ledger, because one ledger is one decision: a decision made
+/// for a strategy, in a region, on a data source. Each part is optional
+/// because each is known only where it is known — a cycle-wide ledger knows
+/// its region and not a strategy — and a guessed key is worse than an
+/// honest [`UNATTRIBUTED`]. The model is not here: it is a fact about each
+/// rung, read off the rung's tier.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Attribution {
+    pub strategy: Option<String>,
+    pub data_source: Option<String>,
+    pub region: Option<String>,
+}
+
+impl Attribution {
+    /// Attributed to a region and nothing narrower.
+    pub fn region(region: impl Into<String>) -> Self {
+        Self {
+            region: Some(region.into()),
+            ..Self::default()
+        }
+    }
+}
+
+/// The dimensions a cost report can be cut by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum CostDimension {
+    Strategy,
+    Model,
+    DataSource,
+    Region,
+}
+
+/// One charge with all four of its keys, as a cost report reads it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CostEntry {
+    pub decision: String,
+    pub tier: IntelligenceTier,
+    pub cost: Decimal,
+    pub strategy: String,
+    pub model: String,
+    pub data_source: String,
+    pub region: String,
+}
+
+impl CostEntry {
+    /// The key this entry is reported under on one dimension.
+    pub fn key(&self, dimension: CostDimension) -> &str {
+        match dimension {
+            CostDimension::Strategy => &self.strategy,
+            CostDimension::Model => &self.model,
+            CostDimension::DataSource => &self.data_source,
+            CostDimension::Region => &self.region,
+        }
+    }
+}
+
+/// Spend per key on one dimension, summed exactly across ledgers.
+///
+/// Read off [`ComputeLedger::entries`], so the report and the ledger cannot
+/// disagree: a second computation of what a decision cost is a second claim
+/// about it, and the two drift the first time a budget truncates a bill.
+pub fn report_by<'a>(
+    ledgers: impl IntoIterator<Item = &'a ComputeLedger>,
+    dimension: CostDimension,
+) -> BTreeMap<String, Decimal> {
+    let mut report = BTreeMap::new();
+    for ledger in ledgers {
+        for entry in ledger.entries() {
+            *report
+                .entry(entry.key(dimension).to_string())
+                .or_insert(Decimal::ZERO) += entry.cost;
+        }
+    }
+    report
+}
+
 /// The running cost of one decision.
 #[derive(Clone, Debug)]
 pub struct ComputeLedger {
     decision: String,
     charges: Vec<TierCharge>,
     agents: BudgetLedger,
+    attribution: Attribution,
 }
 
 impl ComputeLedger {
@@ -77,7 +170,39 @@ impl ComputeLedger {
             decision,
             charges: Vec::new(),
             agents,
+            attribution: Attribution::default(),
         })
+    }
+
+    /// Attribute this decision's spend.
+    pub fn with_attribution(mut self, attribution: Attribution) -> Self {
+        self.attribution = attribution;
+        self
+    }
+
+    pub fn attribution(&self) -> &Attribution {
+        &self.attribution
+    }
+
+    /// Every charge with its strategy, model, data-source and region keys.
+    pub fn entries(&self) -> Vec<CostEntry> {
+        let key = |part: &Option<String>| part.clone().unwrap_or_else(|| UNATTRIBUTED.to_string());
+        self.charges
+            .iter()
+            .map(|charge| CostEntry {
+                decision: self.decision.clone(),
+                tier: charge.tier,
+                cost: charge.cost,
+                strategy: key(&self.attribution.strategy),
+                model: charge
+                    .tier
+                    .model_tier()
+                    .map_or(NO_MODEL, |model| model.as_str())
+                    .to_string(),
+                data_source: key(&self.attribution.data_source),
+                region: key(&self.attribution.region),
+            })
+            .collect()
     }
 
     /// A ledger for a decision made entirely in deterministic code.

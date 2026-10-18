@@ -21,7 +21,7 @@ use qip_contracts::edge::{DeductionKind, NetEdge};
 use qip_contracts::message::BookSide;
 use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
-use qip_core::{Decimal, ObjectId, Timestamp};
+use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_market::book::{BookLevel, OrderBook};
 
 fn at() -> Timestamp {
@@ -435,5 +435,64 @@ fn the_search_rate_carries_every_per_conversion_cost() -> Result<()> {
         .effective_rate()?;
     // The multiplier is 0.5 × (1 − 0.01) = 0.495, applied once.
     assert_eq!(after, before * d("0.495"));
+    Ok(())
+}
+
+/// R12-MESH-5069: cross-region coordination latency is a priced input. The
+/// same cycle, priced under longer and longer waits for a peer region to
+/// agree, loses net edge at every step until the scanner's own refusal —
+/// `NetEdge::is_positive` — would turn it away. Mutation: price the latency
+/// deduction over the round trip alone and the edge does not move.
+#[test]
+fn raising_cross_region_coordination_latency_lowers_the_net_edge_until_the_cycle_is_refused()
+-> Result<()> {
+    let (graph, depth) = triangular()?;
+    let candidates = search_candidates(&graph, &SearchSettings::default());
+    let candidate = candidates
+        .first()
+        .ok_or_else(|| qip_core::Error::invalid("no candidate"))?;
+    let pricing = price_path(&graph, &depth, candidate, d(SIZE))?;
+    let priced = |coordination: Duration| {
+        NetEdgeCalculator::new(EdgeAssumptions {
+            coordination_latency: coordination,
+            ..EdgeAssumptions::default()
+        })
+        .calculate(&pricing, at())
+    };
+
+    // Premise: alone in its region the cycle is worth taking, so the refusal
+    // below is the coordination wait and not a path that never paid.
+    let alone = priced(Duration::from_nanos(0))?;
+    assert!(alone.is_positive(), "{}", alone.summarise());
+
+    let mut previous = alone.net();
+    let mut refused_at = None;
+    for millis in [
+        50,
+        500,
+        5_000,
+        60_000,
+        3_600_000,
+        86_400_000,
+        7 * 86_400_000,
+        30 * 86_400_000,
+        365 * 86_400_000,
+    ] {
+        let edge = priced(Duration::from_millis(millis))?;
+        assert!(
+            edge.net() < previous,
+            "{millis} ms of coordination did not lower the net edge: {}",
+            edge.summarise()
+        );
+        previous = edge.net();
+        if !edge.is_positive() {
+            refused_at = Some(millis);
+            break;
+        }
+    }
+    assert!(
+        refused_at.is_some(),
+        "a year of cross-region coordination still left the cycle worth taking at {previous}"
+    );
     Ok(())
 }

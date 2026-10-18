@@ -382,6 +382,55 @@ fn a_bigquery_insert_that_answers_http_200_with_insert_errors_is_not_reported_as
     );
 }
 
+/// R12-DATA-8123: tier K3 holds derived facts, never copied documents. The
+/// adapter cannot see the table schema, so the guard is on the row: a column
+/// named for a document body is refused before any connection, and a column
+/// that only describes one (its hash, its length) is admitted — the second
+/// half is what distinguishes a guard from a refusal of everything.
+#[test]
+fn a_bigquery_row_carrying_a_document_body_column_is_refused_before_any_connection() {
+    let server = TestServer::always(Action::ok("{}"));
+    let warehouse = warehouse(&server);
+
+    for column in ["body", "Body", "html", "full_text", "transcript"] {
+        let mut row = serde_json::Map::new();
+        row.insert("item_id".into(), serde_json::json!("item-1"));
+        row.insert(
+            column.into(),
+            serde_json::json!("The quarter's shipments rose."),
+        );
+        let refused = warehouse.insert(
+            "news_facts",
+            vec![InsertRow::anonymous(serde_json::Value::Object(row))],
+        );
+        match refused {
+            Err(Error::Invalid(message)) => assert!(
+                message.contains(&format!("`{column}` column")),
+                "the refusal names a different column: {message}"
+            ),
+            other => panic!("a `{column}` column was not refused: {other:?}"),
+        }
+    }
+    assert_eq!(
+        server.served(),
+        0,
+        "a row carrying a document must not reach the network"
+    );
+
+    let admitted = warehouse.insert(
+        "news_facts",
+        vec![InsertRow::with_id(
+            "item-1",
+            serde_json::json!({"item_id": "item-1", "body_sha256": "ab12", "body_bytes": 64}),
+        )],
+    );
+    assert!(
+        admitted.is_ok(),
+        "a row describing a document by its hash was refused: {admitted:?}"
+    );
+    assert_eq!(server.served(), 1, "the admitted row was not sent");
+}
+
 #[test]
 fn an_empty_bigquery_batch_is_refused_before_any_connection() {
     let server = TestServer::always(Action::ok("{}"));

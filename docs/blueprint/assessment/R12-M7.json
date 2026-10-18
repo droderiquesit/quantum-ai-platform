@@ -2205,14 +2205,16 @@
   },
   {
     "id": "R12-RES-7100",
-    "status": "PARTIAL",
-    "current": "Cell quarantines a rejecting venue with a journaled reason; stalled feed gets no new order; resting orders withdrawn and reconciled on return.",
+    "status": "COMPLETE",
+    "current": "Cell quarantines a rejecting venue with a journaled reason; a stalled feed gets no new order; resting orders are withdrawn and reconciled on return; and an order that would have gone to a silent or quarantined venue is placed at a healthy venue listing the same instrument, because Cell::venue_for drops a withheld venue from the candidate set and journals the narrower set in VenueChosen.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:9552 venue_for skips a venue venue_withheld names (silent feed or quarantine), so the choice falls to a venue still heard",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1175 an_order_that_would_have_gone_to_a_silent_venue_is_placed_at_the_healthy_venue_listing_the_same_instrument: XLON chosen over XPAR while both are heard, then the same strategy's order goes to XPAR with XLON absent from the journaled candidates and nothing refused",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:288,535,604 stalled feed gets no new order; rejecting venue quarantined until cooldown",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:380,992",
       "backend/crates/edge/qip-edge/tests/failure_isolation.rs:176"
     ],
-    "gap": "Reroute/hedge-elsewhere half not verified by a named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2223,7 +2225,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: the reroute half is now a named test. Mutation: deleting the venue_withheld skip in Cell::venue_for fails the new test at the reroute assertion (the order goes to XLON's fallback and is refused) and the quarantine test at venue_failure.rs:562. Hedging elsewhere is not claimed: the row's clause reads rerouted/hedged and the reroute is what the cell does; a hedge on feed loss is R12-RES-10132's playbook."
   },
   {
     "id": "R12-RES-7101",
@@ -2780,25 +2782,27 @@
   },
   {
     "id": "R12-OBS-7126",
-    "status": "PARTIAL",
-    "current": "ledger-commit latency SLO (0.999, 100ms, Day) declared in critical_path_slos and evaluated by critical_paths::evaluate in unit test; ledgerd records the latency series. The only production evaluator is deepbrain's own snapshot, which never holds ledger series.",
+    "status": "COMPLETE",
+    "current": "The ledger-commit objective (0.999 of commits under 100 ms, Day window) is declared in critical_path_slos and is now evaluated in production by qip-ledgerd against its own registry: PartitionWorker::step calls LedgerTelemetry::evaluate_objectives once per applied batch, which evaluates every objective whose service is 'ledger' and records qip_slo_budget_consumed and qip_slo_observations. A test started through qip_ledgerd::start commits two fills and reads the objective measured over exactly two observations.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
-      "backend/crates/libs/qip-observability/src/critical_paths.rs::critical_path_slos",
-      "backend/crates/apps/qip-ledgerd/src/telemetry.rs"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs::critical_path_slos ledger-commit",
+      "backend/crates/apps/qip-ledgerd/src/telemetry.rs:142 LedgerTelemetry::evaluate_objectives",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:626 PartitionWorker::step call site",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:1073 a_ledger_that_commits_fills_reports_its_commit_objective_measured",
+      "backend/crates/libs/qip-observability/tests/critical_paths.rs"
     ],
-    "gap": "No production evaluation of ledger-commit against ledgerd's data.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "slo test",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_ledger_that_commits_fills_reports_its_commit_objective_measured; cargo test -p qip-observability --test critical_paths",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and two mutations that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: deleting the evaluate_objectives call in step times the test out waiting for the ledger-commit observations gauge. Mutation: dropping the service filter writes decision-latency as unmeasured in the ledger's registry and fails the last assertion. Scraping into Cloud Monitoring belongs to the ingestion rows that own workload_metrics_exist."
   },
   {
     "id": "R12-OBS-7127",
@@ -3094,24 +3098,27 @@
   },
   {
     "id": "R12-ARCH-7140",
-    "status": "PARTIAL",
-    "current": "qip-capital (treasury), capital-fabric corridors, risk engine exist; no asset registry.",
+    "status": "COMPLETE",
+    "current": "AssetClassRegistry::shipped holds all 15 asset classes and gates Platform::new (qip-kernel/tests/asset_classes.rs); qip-capital treasury, qip-capital-fabric corridors and the risk engine's pretrade gate exist; qip-acceptance names each and asserts the registry holds more than one class. The register text 'no asset registry' was stale.",
     "evidence": [
       "backend/crates/services/qip-capital/src/lib.rs",
-      "backend/crates/services/qip-capital-fabric/src/corridor.rs"
+      "backend/crates/services/qip-capital-fabric/src/corridor.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::phase_three_exits_with_a_registry_of_more_than_one_class_beside_treasury_corridors_and_risk",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs",
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs::shipped"
     ],
-    "gap": "Asset registry; multiple asset classes end to end.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Inspection row. Mutation 2026-10-18: renaming the kernel's gate test failed the inspection naming 'asset registry gate'; deleting the DigitalAsset record failed asset_class_registry.rs. Per-class trading-path gaps live in R12-COVERAGE-5099..5106, not here."
   },
   {
     "id": "R12-MESH-7141",
@@ -3602,20 +3609,21 @@
     "current": "An asset class registry exists in qip-kernel asset_class_registry.rs registering equity, fixed income, credit, rates, derivative, prediction, commodity, private, real asset, physical product.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/universe.rs",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs"
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
+      "backend/crates/tests/qip-acceptance/tests/asset_class_registry.rs::the_shipped_registry_holds_a_record_for_every_asset_class_the_object_model_names, ::an_instrument_of_each_constructible_class_assembles_through_platform_new"
     ],
-    "gap": "Composite checklist: constituent class rows (5099-5106) are PARTIAL; tokenized class and acceptance composite not shown.",
+    "gap": "The acceptance suite exists (2026-10-18): AssetClassRegistry::shipped holds a record for all 15 AssetClass variants including DigitalAsset (tokenized representations resolve into it), and Platform::new assembles over one instrument of each of the ten classes that can be built without a maturity record. Still PARTIAL as a composite: FixedIncome, Credit and Derivative are not assembled by the suite (every instrument type of theirs needs a maturity or extension record), Prediction and PhysicalProduct have no InstrumentType so no instrument can be in them, and constituent rows R12-COVERAGE-5099..5106 remain PARTIAL on trading-path integration.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test asset_class_registry",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Mutation 2026-10-18: deleting the DigitalAsset record from AssetClassRegistry::shipped failed all four tests; restored."
   },
   {
     "id": "R12-COVERAGE-7164",
@@ -3742,12 +3750,16 @@
   {
     "id": "R12-COVERAGE-7170",
     "status": "PARTIAL",
-    "current": "Brain/memory/ontology/capability types exist.",
+    "current": "Brain/memory/ontology/capability types exist. The ontology registry refuses a version not above the latest per name. Since 2026-10-18 the research registry does too: every verdict is kept as a numbered version (ResearchRegistry::record_version refuses zero and a version not above the latest; record takes the next), and the Source Registry versions each registration: a re-assessment later than the held record replaces it as the next version, one at the same instant keeps the version, and one older than the held record is refused.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:367-457",
-      "backend/crates/libs/qip-agents/src/registries.rs"
+      "backend/crates/libs/qip-agents/src/registries.rs",
+      "backend/crates/libs/qip-agents/src/research.rs:87 ResearchRegistry::record_version",
+      "backend/crates/services/qip-data-finder/src/decision.rs:548 RegisteredSource::succeeding",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_version_is_kept",
+      "backend/crates/services/qip-data-finder/tests/source_registry.rs a_re_registration_raises_the_source_version_and_a_stale_one_is_refused"
     ],
-    "gap": "Research and source registries versioned.",
+    "gap": "Research and source registries are now versioned (the source registry on the default path through Platform's DataFinder; the research registry is held by qip-expansion's desk, which no binary constructs). Remaining for the composite: the memory, brain, tool and model registries' versioning has not been checked against the same rule, and no acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3758,7 +3770,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - accepting a research version equal to the latest ('version 2 was accepted over latest 2'); accepting a source registration older than the held one (the stale assess no longer erred); not bumping the source version on a later registration (left Some(1), right Some(2))."
   },
   {
     "id": "R12-COVERAGE-7171",
@@ -3847,9 +3859,10 @@
     "current": "Quantum research gaps reach capability only through promotion::promote (four environments, nine criteria incl. IncrementalValue vs classical baseline), capability Simulate only; proven by a crate test in qip-expansion/tests/loop.rs.",
     "evidence": [
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436",
-      "backend/crates/services/qip-expansion/tests/loop.rs::quantum_research_reaches_capability_only_through_every_environment_and_criterion"
+      "backend/crates/services/qip-expansion/tests/loop.rs::quantum_research_reaches_capability_only_through_every_environment_and_criterion",
+      "backend/crates/tests/qip-acceptance/tests/quantum_promotion.rs::quantum_research_failing_any_single_criterion_is_refused_naming_that_criterion"
     ],
-    "gap": "Composite clause: constituent obligations are not all COMPLETE (e.g. EXPAND-6049 PARTIAL) and no qip-acceptance suite proves the composite; the proof is a crate test.",
+    "gap": "The acceptance suite exists (2026-10-18): promote is driven directly once per criterion for a ComputeQuantumResearch gap (each of the nine, IncrementalValue included, refuses naming itself) and once per truncated campaign (0..3 of 4 environments refused). Still PARTIAL as a composite because constituent R12-EXPAND-6049 (executors for data discovery, connector creation, specialist instantiation and simulation construction) is PARTIAL.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3857,10 +3870,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test quantum_promotion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Mutation 2026-10-18: filtering IncrementalValue out of EvaluationRecord::failed failed the per-criterion test; bypassing the campaign.is_complete() check failed the truncated-campaign test; both restored."
   },
   {
     "id": "R12-COVERAGE-7176",
@@ -3910,20 +3923,22 @@
     "current": "qip-kernel fusion.rs fuses world and market intelligence as of one instant with bitemporal discipline, measured reactions and mismatches; tested in qip-kernel tests/fusion.rs.",
     "evidence": [
       "backend/crates/services/qip-world-model",
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
+      "backend/crates/tests/qip-acceptance/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_changes_the_fused_state",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:652 the one production caller of fuse"
     ],
-    "gap": "Composite checklist: constituent rows not all COMPLETE; no acceptance suite proving the composite.",
+    "gap": "The acceptance suite exists (2026-10-18): a graph built only through qip-world-model's public API fuses with kernel traces, surfaces all three Mismatch kinds, is bitemporally filtered (a later event and a later tick change nothing at the fusion instant) and replays to the same digest. Not as the closure proposed: fuse is not called from Platform's UNDERSTAND stage and no fused mismatch is journaled there; its only production caller is qip-deepbrain tick_desk, which counts mismatches and ships the opportunity map. Journaling the fused state in UNDERSTAND is unbuilt code, not a test.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test fusion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Mutation 2026-10-18: removing the p.at <= as_of filter on market points failed the bitemporal test; widening events_at's recorded-by bound failed all three; both restored."
   },
   {
     "id": "R12-COVERAGE-7179",

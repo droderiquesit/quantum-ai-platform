@@ -802,16 +802,15 @@
   },
   {
     "id": "R12-EVID-2035",
-    "status": "PARTIAL",
-    "current": "admit skips same-origin corroboration and now credits authenticity per independent origin at other sources (capped), using normalised-statement and document-hash collapse; fed in production.",
+    "status": "COMPLETE",
+    "current": "EvidenceFabric::admit skips same-origin corroboration and credits authenticity per independent origin at other sources (capped at MAX_CORROBORATING_ORIGINS), collapsing copies by normalised-statement fingerprint and document hash; fed in production through the kernel's evidence intake. A test now asserts the supporting weight itself: the same probe claim earns an identical belief_weight and authenticity after ten copies of one press release as after one, and a strictly higher one after one copy plus an independent origin.",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/fabric.rs:595-622",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:667-679",
-      "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin",
-      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
-      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::admit"
+      "backend/crates/libs/qip-evidence/src/fabric.rs:758 EvidenceFabric::admit",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:840 authenticity credited per independent origin",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:719 ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
+      "qip-world-model/tests/evidence_fabric.rs::ten_copies_of_one_press_release_count_as_one_origin"
     ],
-    "gap": "No test asserts the supporting weight (not the origin count) is unchanged by copies; normalisation catches punctuation/case only, not reworded copies; belief_weight reaches no decision.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -819,10 +818,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoning",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: mutation fired - crediting per corroborating claim (others.len()) instead of per independent origin gave the ten-copy probe authenticity 0.6 against the one-copy probe's lower score. Limits that do not belong to this clause: normalisation collapses punctuation and case, not reworded copies; belief_weight reaches no decision. Round-2 independent audit, 2026-10-11: The verification asks for a property test; the tests are example-based. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-EVID-2036",
@@ -1347,7 +1346,7 @@
       "backend/crates/apps/qip-fabricd/src/archiver.rs:25 Archiver",
       "backend/crates/tests/qip-acceptance/tests/tick_hot_replay_indexes.rs:13-60 vacuous: tests a Vec built in the test"
     ],
-    "gap": "Applies to the event-fabric segment log, not a market-tick lake; no ranged read from the blob store.",
+    "gap": "Applies to the event-fabric segment log, not a market-tick lake. No ranged read, and one cannot be added as the closure proposed without weakening integrity: ArchiveReader::read_indexed (archive.rs:662) re-proves the whole segment's content hash (manifest.verify at archive.rs:716) before serving any batch, and the manifest's replay_index holds only (offset, byte_start) pairs, so a fetched byte range has nothing to be verified against. Closing it needs a per-batch digest in the replay index (a Manifest wire-format change, with a refusal or full-segment fallback for manifests written before it) and then BlobStore::get_range verified against that digest.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1360,7 +1359,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted."
+    "notes": "tick_hot_replay_indexes.rs would pass with all production code deleted (the 2026-10-18 triage reports it rewritten to drive the real archiver; not re-read by lane L23). 2026-10-18 lane L23: kept PARTIAL - a get_range that served bytes before the whole-segment hash was re-proved would break read_indexed's documented guarantee that it never returns unverified bytes; the per-batch digest is the missing design step."
   },
   {
     "id": "R12-TICK-2059",
@@ -1745,13 +1744,16 @@
   },
   {
     "id": "R12-TICK-2075",
-    "status": "PARTIAL",
-    "current": "The edge cell's quote budget and message-to-trade window refuse sends beyond budget (GATE_QUOTE_BUDGET) in the live cell; qip-simulation-engine has no rate-limit condition.",
+    "status": "COMPLETE",
+    "current": "The tick replay enforces a venue message budget: ExecutionModel.message_budget (conditions::MessageBudget, at most per_window order messages in any trailing window) makes ReplaySession::throttled refuse an order arriving into a full window as Rejected \"throttled: ...\" with nothing filled, and a later arrival is admitted once the window moves. MarketCondition::MessageBudget states the same limit as a scheduled condition, composing overlapping budgets to the tighter rate. The deep brain's tick desk replays its decisions under a 50-per-second budget in every configuration (TickDeskConfig::off is the base from_lookup builds on), so whenever QIP_DEEPBRAIN_TICK_EVERY turns the desk on, replayed flow is throttled. The edge cell's live-path quote budget is unchanged.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/quoting.rs quote budget",
-      "backend/crates/edge/qip-edge/tests/quoting.rs"
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs:989 ReplaySession::throttled",
+      "backend/crates/services/qip-simulation-engine/src/conditions.rs MessageBudget (validate, admits, trailing_floor, tighter) and MarketCondition::MessageBudget",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:125 message_budget: Some(MessageBudget { per_window: 50, window: 1s })",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs orders_beyond_the_venue_message_budget_are_refused_in_replay",
+      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs overlapping_message_budgets_compose_to_the_tighter_rate"
     ],
-    "gap": "Add rate limits to the replay simulator.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1759,10 +1761,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test quoting",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay --test market_conditions && cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations: ReplaySession::throttled returning None fills the third order (\"the third order inside the window was not refused: Some(Filled)\"); MessageBudget::trailing_floor returning i64::MIN refuses the fourth order after the window; MessageBudget::tighter always keeping self leaves the 10/s budget in the regime. The budget is omitted from the serialised ExecutionModel when None, so input digests of earlier runs are unchanged. The 50/s figure is the desk's stated configuration, not a measured venue limit."
   },
   {
     "id": "R12-TICK-2076",
@@ -2041,14 +2043,16 @@
   },
   {
     "id": "R12-TICK-2088",
-    "status": "PARTIAL",
-    "current": "Edge tape seeding caps aggressor fills by resting depth; the twin marks an alternative beyond calibrated participation unfillable; simulator venue is never more generous than reality. Queue priority and rate limits are absent from the replay simulator.",
+    "status": "COMPLETE",
+    "current": "Both halves hold in the replay simulator. Queue: a resting limit order joins behind the size already at its price and fills only after it trades through (tick_replay.rs work_resting; test a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price), and qip-simulation-engine venue.rs keeps a price-time queue. Rate limits: ExecutionModel.message_budget makes ReplaySession refuse an order arriving into a full trailing window as throttled, never filling it, and the deep brain's tick desk replays under a 50-per-second budget. The edge tape and twin caps on fills remain as before.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/tape.rs:207 no_fill_is_ever_larger_than_the_depth_the_tape_seeded",
-      "backend/crates/services/qip-twin/tests/twin.rs:389 an_alternative_beyond_the_calibrated_participation_is_unfillable_not_profitable",
-      "backend/crates/services/qip-simulation-engine/src/venue.rs:1-10"
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs orders_beyond_the_venue_message_budget_are_refused_in_replay",
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs:989 ReplaySession::throttled",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:125 message budget on the desk's execution model",
+      "backend/crates/apps/qip-edge-node/tests/tape.rs:207 no_fill_is_ever_larger_than_the_depth_the_tape_seeded"
     ],
-    "gap": "Queue/priority and rate limits in replay.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2058,10 +2062,10 @@
       "R12-TICK-2075"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test tape",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay && cargo test -p qip-edge-node --test tape",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Register text was stale on queue priority, which the replay already modelled. Rate-limit mutation: ReplaySession::throttled returning None fills the third order inside the window."
   },
   {
     "id": "R12-TICK-2089",

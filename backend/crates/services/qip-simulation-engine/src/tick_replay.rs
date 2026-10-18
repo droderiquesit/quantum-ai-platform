@@ -43,6 +43,7 @@
 //! Nothing here can reach a venue. An execution in this module is a
 //! simulated outcome over recorded history and is typed as one.
 
+use crate::conditions::MessageBudget;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::venue::VenueStatus;
 use qip_core::error::{Error, Result};
@@ -122,6 +123,14 @@ pub struct ExecutionModel {
     pub impact_bps_at_full_depth: f64,
     /// How long a resting limit order works before it is withdrawn.
     pub limit_ttl: Duration,
+    /// The venue's order-message rate limit. An order arriving when the
+    /// trailing window is full is refused with a throttle reason rather than
+    /// filled: a replay that ignored the limit would credit the burstiest
+    /// strategy with fills the venue never gave. `None` states that no limit
+    /// is modelled, and is omitted from the serialised model so the input
+    /// digest of a run recorded before the field existed is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_budget: Option<MessageBudget>,
 }
 
 impl ExecutionModel {
@@ -150,6 +159,9 @@ impl ExecutionModel {
                 "a resting order needs a positive time to live; zero withdraws it before it can \
                  queue",
             ));
+        }
+        if let Some(budget) = &self.message_budget {
+            budget.validate()?;
         }
         Ok(())
     }
@@ -440,6 +452,8 @@ pub struct ReplayCheckpoint {
     executions: Vec<ReplayExecution>,
     plans: Vec<PlanState>,
     next_seq: u64,
+    #[serde(default)]
+    admitted: Vec<Timestamp>,
 }
 
 impl ReplayCheckpoint {
@@ -468,6 +482,10 @@ pub struct ReplaySession {
     executions: Vec<ReplayExecution>,
     plans: Vec<PlanState>,
     next_seq: u64,
+    /// Arrival instants of orders the venue's message budget admitted, inside
+    /// the trailing window only; older ones are dropped as orders arrive, so
+    /// this holds at most `per_window` entries.
+    admitted: Vec<Timestamp>,
 }
 
 fn checked(value: Option<Decimal>, what: &str) -> Result<Decimal> {
@@ -587,6 +605,7 @@ impl ReplaySession {
             executions: Vec::new(),
             plans: Vec::new(),
             next_seq: 0,
+            admitted: Vec::new(),
         };
         let mut orders = orders;
         orders.sort_by(|a, b| a.decided_at.cmp(&b.decided_at).then(a.id.cmp(&b.id)));
@@ -664,6 +683,7 @@ impl ReplaySession {
         session.executions = checkpoint.executions.clone();
         session.plans = checkpoint.plans.clone();
         session.next_seq = checkpoint.next_seq;
+        session.admitted = checkpoint.admitted.clone();
         Ok(session)
     }
 
@@ -687,6 +707,7 @@ impl ReplaySession {
             executions: self.executions.clone(),
             plans: self.plans.clone(),
             next_seq: self.next_seq,
+            admitted: self.admitted.clone(),
         }
     }
 
@@ -945,11 +966,39 @@ impl ReplaySession {
                     None,
                     "history ended before the order arrived at the venue",
                 ))
+            } else if let Some(reason) = self.throttled(pending.arrival) {
+                Some(Self::rejected(
+                    &pending.order,
+                    Some(pending.arrival),
+                    &reason,
+                ))
             } else {
                 self.meet_book(&pending)?
             };
             self.resolve(pending, execution)?;
         }
+    }
+
+    /// The venue's answer to an order message arriving at `arrival` under the
+    /// model's message budget: `Some(reason)` when the trailing window is
+    /// full, and otherwise the arrival is counted against the window.
+    ///
+    /// Arrivals are released in time order, so the window only moves forward
+    /// and entries that fell out of it are dropped here, keeping the set
+    /// bounded by the budget itself.
+    fn throttled(&mut self, arrival: Timestamp) -> Option<String> {
+        let budget = self.model.message_budget?;
+        let floor = budget.trailing_floor(arrival);
+        self.admitted.retain(|sent| sent.as_nanos() > floor);
+        if budget.admits(&self.admitted, arrival) {
+            self.admitted.push(arrival);
+            return None;
+        }
+        Some(format!(
+            "throttled: the venue's message budget of {} per {:?} was already spent in the \
+             trailing window",
+            budget.per_window, budget.window
+        ))
     }
 
     fn rejected(

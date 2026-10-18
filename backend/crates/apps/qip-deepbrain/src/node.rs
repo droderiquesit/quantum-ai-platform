@@ -228,6 +228,19 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
     }
 }
 
+/// The model references a learning round found past their own drift
+/// threshold. One derivation for both readers — the research sweep, which
+/// raises a gap per model, and the operations timeline — so the two cannot
+/// disagree about which models drifted.
+fn drifted_references(learning: Option<&crate::learning::LearningRound>) -> Vec<String> {
+    learning
+        .iter()
+        .flat_map(|round| round.drift.iter())
+        .filter(|d| d.above_threshold)
+        .map(|d| d.reference.clone())
+        .collect()
+}
+
 /// A monotonic elapsed time as the platform's own [`Duration`].
 ///
 /// Saturating rather than wrapping: a measurement that overflowed would report
@@ -539,6 +552,7 @@ pub fn run_with(
         if let Some(research) = loops.research.as_deref_mut()
             && !shed
         {
+            research.note_drifted_models(drifted_references(outcome.learning.as_ref()));
             let (licensed, eligible) = evolution
                 .as_deref()
                 .and_then(|engine| engine.discovery_desk())
@@ -604,13 +618,7 @@ pub fn run_with(
             }
         }
         if let Some(operations) = loops.operations.as_deref_mut() {
-            let drifted: Vec<String> = outcome
-                .learning
-                .iter()
-                .flat_map(|round| round.drift.iter())
-                .filter(|d| d.above_threshold)
-                .map(|d| d.reference.clone())
-                .collect();
+            let drifted = drifted_references(outcome.learning.as_ref());
             let facts = crate::operations::IterationFacts {
                 at: now,
                 cycle: outcome.report.cycle,

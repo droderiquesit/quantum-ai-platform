@@ -164,6 +164,13 @@ pub struct PeerStatus {
     pub quotes_withheld: u64,
     /// Peers whose clock this node has a fresh measurement of (MESH-007).
     pub clocks_measured: u64,
+    /// The shortest round trip, in nanoseconds, among the fresh clock
+    /// samples across every peer: how far the nearest peer is, net of its
+    /// own holding time. Meaningful only while `clocks_measured` is
+    /// non-zero; zero otherwise, and a measured round trip is never zero
+    /// because the endpoint refuses a negative one and a wire cannot answer
+    /// in no time.
+    pub clock_round_trip_ns: u64,
     /// Cycles this node opened as coordinator.
     pub cycles_originated: u64,
     /// Times this node reserved its own legs of an epoch.
@@ -200,6 +207,7 @@ pub(crate) struct StatusCells {
     pub(crate) publish_failures: AtomicU64,
     pub(crate) quotes_withheld: AtomicU64,
     pub(crate) clocks_measured: AtomicU64,
+    pub(crate) clock_round_trip_ns: AtomicU64,
     pub(crate) cycles_originated: AtomicU64,
     pub(crate) reservations: AtomicU64,
     pub(crate) declines: AtomicU64,
@@ -256,6 +264,7 @@ impl ReflexPort {
             publish_failures: cells.publish_failures.load(Ordering::Relaxed),
             quotes_withheld: cells.quotes_withheld.load(Ordering::Relaxed),
             clocks_measured: cells.clocks_measured.load(Ordering::Relaxed),
+            clock_round_trip_ns: cells.clock_round_trip_ns.load(Ordering::Relaxed),
             cycles_originated: cells.cycles_originated.load(Ordering::Relaxed),
             reservations: cells.reservations.load(Ordering::Relaxed),
             declines: cells.declines.load(Ordering::Relaxed),

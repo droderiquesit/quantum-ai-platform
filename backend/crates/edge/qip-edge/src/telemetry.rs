@@ -211,6 +211,21 @@ pub const EDGE_VENUES_AWAITING_RECONCILIATION: &str = "qip_edge_venues_awaiting_
 /// history that produced it.
 pub const EDGE_FILL_TIME_MILLIS: &str = "qip_edge_fill_time_millis";
 
+/// How long each venue took from the instant the cell released an order to
+/// the venue's first answer on it over the order-entry channel, in
+/// milliseconds, by venue.
+///
+/// The venue's acknowledgement as the cell can observe it: the placer seam is
+/// synchronous, so the only answer with the venue's own timestamp is the
+/// first [`crate::cell::ExecutionReport`] on the order. That is a different
+/// fact from [`EDGE_FILL_TIME_MILLIS`], which waits for the *last* share of
+/// an order to trade: a venue that acknowledges at once and then fills
+/// slowly reads fast here and slow there, and an operator chasing a slow
+/// fill needs to know which half was slow. An order that rests and is never
+/// answered contributes nothing, because nothing the venue said can be
+/// timed; that silence is what the fill-time and expiry series report.
+pub const EDGE_VENUE_ACK_LATENCY_MILLIS: &str = "qip_edge_venue_ack_latency_ms";
+
 /// Legs of an arbitrage cycle the cell sent, by what the venue reported each
 /// of them completed (§32.1's size decomposition).
 ///
@@ -503,6 +518,11 @@ impl CellMetrics {
         m.describe(
             EDGE_FILL_TIME_MILLIS,
             "milliseconds from the cell's send to the venue's confirmed fill, by venue",
+        );
+        m.describe(
+            EDGE_VENUE_ACK_LATENCY_MILLIS,
+            "milliseconds from the cell's release of an order to the venue's first report \
+             on it over the order-entry channel, by venue",
         );
         m.describe(
             EDGE_CYCLE_LEGS,
@@ -934,6 +954,22 @@ impl CellMetrics {
         let millis = taken.as_nanos() as f64 / 1_000_000.0;
         self.metrics.observe_latency_ms(
             EDGE_FILL_TIME_MILLIS,
+            self.with("venue", venue.as_str()),
+            millis,
+        );
+    }
+
+    /// The venue's first answer on an order, timed from its release.
+    ///
+    /// Recorded once per order, where the cell books the first report on it,
+    /// and in milliseconds here for the reason [`Self::fill_time`] gives. A
+    /// report stamped before the release it answers is not a fast venue; the
+    /// caller does not record one.
+    pub fn venue_ack_latency(&self, venue: &VenueId, taken: Duration) {
+        #[allow(clippy::cast_precision_loss)]
+        let millis = taken.as_nanos() as f64 / 1_000_000.0;
+        self.metrics.observe_latency_ms(
+            EDGE_VENUE_ACK_LATENCY_MILLIS,
             self.with("venue", venue.as_str()),
             millis,
         );
