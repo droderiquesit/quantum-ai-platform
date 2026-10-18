@@ -369,3 +369,184 @@ fn a_derivative_order_is_refused_before_it_exists_until_the_desk_is_granted_that
     assert!(order(&mut platform, "obj-VAR").is_ok());
     Ok(())
 }
+
+/// A repo, an index and a synthetic basket, each with the extension the object
+/// model demands of its type.
+fn financing_and_composite_instruments() -> Result<Vec<FinancialObject>> {
+    use qip_financial::extensions::{
+        Extension, IndexDetails, RepoDetails, StructuredProductDetails,
+    };
+    let maturity = start().saturating_add(qip_core::time::Duration::from_days(30));
+    let repo = FinancialObject::builder(
+        ObjectId::from_string("obj-REPO-1M"),
+        "obj-REPO-1M",
+        InstrumentType::Repo,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::Financials)
+    .price(dec!("100"))
+    .extension(Extension::Repo(RepoDetails {
+        collateral_object: "obj-AAA".to_string(),
+        maturity,
+        repo_rate: 0.045,
+        haircut: 0.02,
+        is_reverse: false,
+        counterparty: "cp-1".to_string(),
+    }))
+    .provenance(Provenance::synthetic("asset-class-test", start()))
+    .build(start())?;
+    let index = FinancialObject::builder(
+        ObjectId::from_string("obj-IDX"),
+        "obj-IDX",
+        InstrumentType::Index,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .price(dec!("100"))
+    .extension(Extension::Index(IndexDetails {
+        methodology: "price weighted".to_string(),
+        constituent_count: 2,
+        rebalance_frequency: "quarterly".to_string(),
+        divisor: dec!("2"),
+        is_total_return: false,
+    }))
+    .provenance(Provenance::synthetic("asset-class-test", start()))
+    .build(start())?;
+    let basket = FinancialObject::builder(
+        ObjectId::from_string("obj-BASKET"),
+        "obj-BASKET",
+        InstrumentType::SyntheticBasket,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .price(dec!("100"))
+    .extension(Extension::Structured(StructuredProductDetails {
+        payoff_description: "equal weight of two names".to_string(),
+        maturity,
+        principal_protected: false,
+        participation_rate: 1.0,
+        barrier_level: None,
+        underlying_object_ids: vec!["obj-AAA".to_string(), "obj-BBB".to_string()],
+        issuer: "paper".to_string(),
+        greeks: None,
+    }))
+    .provenance(Provenance::synthetic("asset-class-test", start()))
+    .build(start())?;
+    Ok(vec![repo, index, basket])
+}
+
+/// R12-COVERAGE-5099 and -5100: a repo (Rates), an index (Equity) and a
+/// synthetic basket (StructuredProduct) assemble into the platform beside an
+/// equity, an order in each goes through the desk control path and fills at
+/// the simulated venue, and withdrawing the class record refuses the
+/// instrument naming it.
+///
+/// What this proves and what it does not: these instruments are *tradable
+/// records* on paper. It does not value an index from constituents, settle a
+/// repo's legs, or post a corporate action to the ledger; the register rows
+/// say so.
+///
+/// Mutation: delete the `Rates` (or `Equity`, or `StructuredProduct`) record
+/// from `AssetClassRegistry::shipped` and `assemble` refuses the universe at
+/// its first `?`; make `admit` return `Ok` and the narrowed-registry refusal
+/// below fails.
+#[test]
+fn a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class()
+-> Result<()> {
+    let mut objects = vec![object("obj-AAA", InstrumentType::CommonStock, None)?];
+    objects.extend(financing_and_composite_instruments()?);
+    let mut platform = assemble(universe_of(objects)?)?;
+    for class in [
+        AssetClass::Rates,
+        AssetClass::Equity,
+        AssetClass::StructuredProduct,
+    ] {
+        assert!(
+            platform.asset_class_registry().is_registered(class),
+            "premise: {} is registered",
+            class.as_str()
+        );
+    }
+    assert_eq!(
+        platform.orders().fills().len(),
+        0,
+        "premise: nothing filled"
+    );
+    for id in ["obj-REPO-1M", "obj-IDX", "obj-BASKET"] {
+        let order = platform.order_for(
+            ObjectId::from_string(id),
+            qip_execution_engine::order::Side::Buy,
+            dec!("10"),
+            dec!("100"),
+            "prop-coverage",
+            vec!["hyp-coverage".to_string()],
+            start(),
+        )?;
+        platform.submit_order(order, start())?;
+    }
+    let fills = platform.orders().fills();
+    let filled: Vec<&str> = fills
+        .iter()
+        .filter_map(|fill| {
+            platform
+                .orders()
+                .orders()
+                .find(|order| order.order_id == fill.order_id)
+                .map(|order| order.object_id.as_str())
+        })
+        .collect();
+    for id in ["obj-REPO-1M", "obj-IDX", "obj-BASKET"] {
+        assert!(filled.contains(&id), "{id} did not fill: {filled:?}");
+    }
+    assert!(
+        fills.iter().all(|fill| fill.simulated),
+        "a fill on the coverage path was not stamped simulated"
+    );
+
+    // And the refusing half, per class, on the table the platform assembled
+    // against with that one record withdrawn. A class another record hedges
+    // with cannot be withdrawn at all (`without` refuses, naming the hedge
+    // map), which is a stronger guard than the instrument's refusal; the
+    // test requires one of the two for every class and records which.
+    let mut refused_at_instrument = 0;
+    for (class, id) in [
+        (AssetClass::Rates, "obj-REPO-1M"),
+        (AssetClass::Equity, "obj-IDX"),
+        (AssetClass::StructuredProduct, "obj-BASKET"),
+    ] {
+        match platform.asset_class_registry().clone().without(class) {
+            Err(error) => assert!(
+                error.message().contains(class.as_str()) && error.message().contains("hedged with"),
+                "withdrawing {} was refused for another reason: {}",
+                class.as_str(),
+                error.message()
+            ),
+            Ok(narrowed) => {
+                let instrument = financing_and_composite_instruments()?
+                    .into_iter()
+                    .find(|o| o.object_id.as_str() == id)
+                    .expect("fixture holds it");
+                let message = narrowed
+                    .admit(&instrument)
+                    .err()
+                    .ok_or_else(|| qip_core::Error::invalid("an unregistered class was admitted"))?
+                    .message()
+                    .to_string();
+                assert!(
+                    message.contains(id)
+                        && message.contains(&format!("is a {} and no record", class.as_str())),
+                    "{message}"
+                );
+                refused_at_instrument += 1;
+            }
+        }
+    }
+    assert!(
+        refused_at_instrument >= 1,
+        "no class could be withdrawn, so the instrument-level refusal was never exercised"
+    );
+    Ok(())
+}

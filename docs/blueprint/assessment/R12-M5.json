@@ -2284,12 +2284,14 @@
   {
     "id": "R12-COVERAGE-5099",
     "status": "PARTIAL",
-    "current": "Equity registered with corporate actions (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:401-424); corporate actions in qip-market (backend/crates/libs/qip-market/src/corporate_action.rs). Fund registered.",
+    "current": "Equity is registered with corporate actions (asset_class_registry.rs; qip-market corporate_action.rs). A basket and an index are instruments already: InstrumentType::Index (Equity) with Extension::Index(IndexDetails { methodology, constituent_count, rebalance_frequency, divisor, is_total_return }) and InstrumentType::SyntheticBasket (StructuredProduct) with Extension::Structured naming its underlying_object_ids. Each assembles, an order in it passes the desk control path and fills at the simulated venue, and each is refused when its class record is withdrawn or that withdrawal is itself refused. Platform::apply_corporate_action adjusts the retained history and the open lot and journals the action in the event log.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:401",
-      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs:101"
+      "backend/crates/libs/qip-financial/src/extensions.rs::IndexDetails",
+      "backend/crates/libs/qip-financial/src/asset_class.rs (Index, SyntheticBasket)",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::apply_corporate_action"
     ],
-    "gap": "Baskets/indices as instruments; corporate-action application through the ledger.",
+    "gap": "Two things remain. (1) A basket or index is a record with no constituent weights: IndexDetails holds a count and a divisor and StructuredProductDetails holds underlying ids without weights, so nothing values either from its constituents or assembles an exposure through them. (2) An applied corporate action is journaled in the event log and adjusts the lot, but no LedgerEvent is posted for it, so the double-entry ledger of record never sees a split's unit change or a dividend. The triage closure's premise that no basket or index kind exists is wrong.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2300,17 +2302,19 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Same test and mutation as COVERAGE-5100 (AssetClassRegistry::admit returning Ok fires it). Posting a corporate action to the ledger needs a decision on which LedgerOperation carries a unit change and on how ledger and event log stay one claim; not taken here."
   },
   {
     "id": "R12-COVERAGE-5100",
     "status": "PARTIAL",
-    "current": "FixedIncome, Credit, Rates registered (backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:432-502); credit/valuation in qip-financial.",
+    "current": "FixedIncome, Credit and Rates are registered (asset_class_registry.rs). A repo is an instrument already: InstrumentType::Repo classed Rates, carrying Extension::Repo(RepoDetails { collateral_object, maturity, repo_rate, haircut, is_reverse, counterparty }), and the object model demands its maturity. A repo of that shape assembles into the platform, an order in it passes the desk control path and fills at the simulated venue (paper, stamped simulated), and the registry refuses it when its class record is withdrawn. qip-capital models FinancingFunction::Repo as a permission with a counterparty and jurisdiction.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:432",
-      "backend/crates/libs/qip-financial/tests/credit.rs"
+      "backend/crates/libs/qip-financial/src/extensions.rs::RepoDetails",
+      "backend/crates/libs/qip-financial/src/asset_class.rs (InstrumentType::Repo -> Rates)",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class",
+      "backend/crates/services/qip-capital/src/treasury.rs::FinancingFunction::Repo"
     ],
-    "gap": "Repo/funding interfaces.",
+    "gap": "No repo economics and no funding interface: nothing values a repo (cash lent against collateral value less haircut, accrued interest at repo_rate to maturity), nothing settles its two legs against the ledger accounts that exist for it (Account::Collateral, Account::Obligation, Account::Accrual) and nothing consumes FinancingFunction::Repo outside qip-capital's own tests. The triage closure's premise that no repo instrument exists in the workspace is wrong; its repo.rs would duplicate RepoDetails.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2321,7 +2325,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Test added: a_repo_an_index_and_a_basket_assemble_trade_on_paper_and_are_refused_without_their_class; mutation that fired: AssetClassRegistry::admit returning Ok -> the test fails (an unregistered class was admitted) alongside two older assembly tests. Withdrawing the Rates record is itself refused by AssetClassRegistry::without because FixedIncome is hedged with Rates, which the test records."
   },
   {
     "id": "R12-COVERAGE-5101",
