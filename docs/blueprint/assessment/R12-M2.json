@@ -1853,15 +1853,15 @@
   },
   {
     "id": "R12-TICK-2079",
-    "status": "PARTIAL",
-    "current": "Typed counterparty agents (passive, informed, momentum, competitor, maker) and conditions (illiquidity, venue outage, flash event, volatility spike, crossed market) exist, seeded and deterministic; kernel uses the synthetic market. No manipulation-pattern agent (spoofing/layering).",
+    "status": "COMPLETE",
+    "current": "The agent-based simulator models manipulation patterns: AgentKind::Spoofer shows one order of a stated size behind the calm touch on a seeded coin-flipped side and AgentKind::Layerer stacks two or more such orders step_bps apart, each cancelled in the step it was shown and recorded as FlowAction::Cancelled. Both draw from the agent's own seeded stream, withdraw under any injected condition, carry NOT_CALIBRATED_STATEMENT in their run-record rule, and are covered by the run digest. A cancelled layer is never rested in the book an order fills against. Passive, informed, momentum, competitor and maker agents and the condition set are unchanged; the kernel's capacity probe composes passive and maker agents only.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/agents.rs:328-455",
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:96-165",
-      "backend/crates/services/qip-simulation-engine/tests/agents.rs:204",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13457-13465"
+      "backend/crates/services/qip-simulation-engine/src/agents.rs Behaviour::Spoofer, Behaviour::Layerer, CounterpartyAgent::show_and_cancel",
+      "backend/crates/services/qip-simulation-engine/src/market.rs FlowAction::Cancelled in the run digest and apply_flow",
+      "backend/crates/services/qip-simulation-engine/tests/agents.rs a_spoofing_agent_generates_the_same_cancelled_layers_from_the_same_seed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs capacity probe with_agents"
     ],
-    "gap": "Add manipulation agents; agents are explicitly uncalibrated (NOT_CALIBRATED_STATEMENT).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1872,7 +1872,7 @@
     "verification": "cargo test -p qip-simulation-engine --test agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: placing every layer at step_bps collapses the ladder onto one price; drawing the side coin from a fresh seed puts every layer on one side. The layers are not added to the kernel's capacity probe because a cancelled layer never rests and so cannot change that probe's fills."
   },
   {
     "id": "R12-TICK-2080",

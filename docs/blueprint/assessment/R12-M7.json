@@ -4137,11 +4137,12 @@
   {
     "id": "R12-COVERAGE-7186",
     "status": "PARTIAL",
-    "current": "Levers, no-action baseline, adapters after simulation+gate tested; competing world models not used.",
+    "current": "Stage::Simulate now consults every competing structural model the request declares, and the act stage uses authority only when all of them agree: engine::counterfactually_supported (engine.rs:454, called at :338) withholds a narrow-reversible pass whose chosen plan any (model, scenario) branch says does not move the objective toward the goal, naming it weakly identified, with no adapter call; in shadow the same plan is simulated and shadowed. The models are the request's StructuralDecl models (generate.rs::Structural), not the deepbrain federation's members.",
     "evidence": [
-      "backend/crates/services/qip-agency/tests/agency.rs:298,572,741,997,1093 no-action baseline, deceptive step infeasible, weakly identified plan never executed, adapter only after simulation+gate, default authority shadow"
+      "backend/crates/services/qip-agency/src/engine.rs:454",
+      "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps"
     ],
-    "gap": "Simulation against federation models.",
+    "gap": "The federation's competing views (qip_kernel::federation_stage) are not consulted: no WorldSimulator seam in qip-agency is implemented over federation members in qip-deepbrain (lane L04), and the deepbrain ambient door does not run engine::run's simulate stage.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4149,10 +4150,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L10): disagreement between competing models now withholds action (mutation fired: consulting only the first branch lets the contested pass Execute). Kept PARTIAL: the competing models are declared ones, not the federation's."
   },
   {
     "id": "R12-COVERAGE-7187",

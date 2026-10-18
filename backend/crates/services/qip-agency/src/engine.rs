@@ -288,6 +288,10 @@ pub struct Gated<'a> {
     pub graph: &'a AffordanceGraph,
     pub plan: &'a InterventionPlan,
     pub facts: &'a BTreeSet<String>,
+    /// The chosen plan's simulation, one result per (model, scenario)
+    /// branch, when a structural model was declared. Authority to act is
+    /// used only over a plan every branch agrees helps (R12-MODEL-4014).
+    pub simulated: Option<&'a Simulated>,
 }
 
 /// The only caller of an [`Adapter`].
@@ -330,6 +334,17 @@ pub fn execute(
         Some(policy) if policy.authority() == Authority::NarrowReversible => Some(policy),
         _ => None,
     };
+    if acting.is_some()
+        && let Err(refusal) = counterfactually_supported(gated.simulated)
+    {
+        log.fail(Stage::Act)?;
+        return Ok(Acted {
+            execution: Execution::Withheld(refusal.message().to_string()),
+            approvals: None,
+            released: Vec::new(),
+            intents: Vec::new(),
+        });
+    }
     let mut priced = Vec::with_capacity(steps.len());
     for step in &steps {
         let edge = gated
@@ -426,6 +441,40 @@ pub fn execute(
         released: guard.voices().skip(voices_from).cloned().collect(),
         intents,
     })
+}
+
+/// R12-MODEL-4014 / R12-COVERAGE-7186: authority to act is used only over a
+/// plan simulated against counterfactual branches — every (model,
+/// scenario) the structural models declare, each comparing the world with
+/// the action to the same world without it — and only when every branch
+/// says the action moves the objective toward the goal. A plan nobody
+/// simulated is acted on by nothing; a plan the competing models disagree
+/// on is weakly identified, and a weakly identified effect is a reason to
+/// experiment, not to act. Shadow is not gated here: it sends nothing.
+fn counterfactually_supported(simulated: Option<&Simulated>) -> Result<(), Error> {
+    let results = simulated.map_or(&[][..], |s| s.results.as_slice());
+    if results.is_empty() {
+        return Err(Error::denied(
+            "authority to act is used only over a plan simulated against counterfactual \
+             branches, and this plan was simulated against none; declare a structural model",
+        ));
+    }
+    let against: Vec<String> = results
+        .iter()
+        .filter(|r| !(r.effect.is_finite() && r.effect > 0.0))
+        .map(|r| format!("{}/{} ({})", r.model, r.scenario, r.effect))
+        .collect();
+    if !against.is_empty() {
+        return Err(Error::denied(format!(
+            "the plan is weakly identified: {} of {} counterfactual branches do not move the \
+             objective toward the goal ({}); competing models that disagree are a reason to \
+             experiment, not to act",
+            against.len(),
+            results.len(),
+            against.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// R12-AGENCY-6103: a policy gains authority by this path only, and the
@@ -1197,6 +1246,9 @@ fn stages(
         graph: &graph,
         plan: &plan,
         facts: &request.observed_facts,
+        simulated: chosen
+            .as_ref()
+            .and_then(|c| simulations.iter().find(|s| s.label == c.label)),
     };
     let mut guard = guard;
     let acted = execute(&mut log, policy, gated, guard.as_deref_mut(), adapter)?;

@@ -288,12 +288,15 @@
   {
     "id": "R12-MODEL-4014",
     "status": "PARTIAL",
-    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint (cost, authority, budget, risk envelope) holds and always offers do-nothing; select is the only ranker. It is reached only from qip-cli; no simulator or counterfactual-branch evaluation gates authority.",
+    "current": "qip-agency plan.rs builds intervention plans only when every hard constraint holds and always offers do-nothing. Since 2026-10-18 authority is used only over a plan evaluated against simulators and counterfactual branches: engine::execute (engine.rs:338) refuses to act at narrow-reversible authority unless the chosen candidate's Simulated record (Gated::simulated) holds at least one (model, scenario) branch — each the world with the action against the same world without it — and every branch moves the objective toward the goal (counterfactually_supported, engine.rs:454). A plan nobody simulated, or one the competing models disagree on, is withheld at Act with no adapter call; shadow is not gated. Reached from qip-cli agency (operator tool) only.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/plan.rs header (AGENCY-001/005/016/042/043/047)",
+      "backend/crates/services/qip-agency/src/engine.rs:338",
+      "backend/crates/services/qip-agency/src/engine.rs:454",
+      "backend/crates/services/qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps",
+      "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/apps/qip-cli/src/agency.rs only caller"
     ],
-    "gap": "Simulation/counterfactual evaluation before authority; integration beyond the CLI.",
+    "gap": "Integration beyond the CLI: no deployed binary acts under authority (qip-deepbrain's ambient door only drafts and never runs engine::execute), and the branches come from the request's declared structural models, not qip-twin futures.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -301,10 +304,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency authority_is_used_only_over_a_plan_every_competing_model",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L10): the simulation-before-authority half is met; kept PARTIAL on integration, as the closure itself said it would stay. Mutation fired: reading only the first branch in counterfactually_supported lets the contested pass Execute."
   },
   {
     "id": "R12-MODEL-4015",
