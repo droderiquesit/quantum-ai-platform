@@ -12,11 +12,20 @@
 //!
 //! # Advisory, and structurally so
 //!
-//! Nothing here reaches the order path. [`FederationStage::run`] takes a
-//! [`FederationInputs`] by reference and returns a record; it holds no handle
-//! to a thesis, a sizing, a reservation or a broker, and the kernel calls it
-//! from UNDERSTAND, before any hypothesis exists. An arbitrated probability
-//! that moved a size would be a control nobody chose and no ADR admits.
+//! [`FederationStage::run`] takes a [`FederationInputs`] by reference and
+//! returns a record; it holds no handle to a thesis, a sizing, a reservation
+//! or a broker, and the kernel calls it from UNDERSTAND, before any
+//! hypothesis exists. An arbitrated probability that moved a size would be a
+//! control nobody chose.
+//!
+//! One power reaches DECIDE, and ADR 0125 decision 4 admits it: a *narrowing*.
+//! [`narrowings_of`] reads each instrument's own arbitration and
+//! [`Narrowing::of_spread`] maps a material spread to a multiplier in
+//! `(0, 1)` from [`NARROWING_SCHEDULE`]; [`narrow`] multiplies it into
+//! DECIDE's caps beside ADR 0063's and ADR 0066's. It has no arm above one,
+//! it never creates a proposal, it moves no probability or conviction, and an
+//! instrument with no arbitration (thin history, an uncovered scope, a silent
+//! member) earns nothing, because absence is not disagreement.
 //!
 //! # What each member is, honestly
 //!
@@ -476,6 +485,98 @@ fn after_tail_moves(xs: &[f64]) -> (f64, usize) {
 
 fn tail(xs: &[f64]) -> &[f64] {
     &xs[xs.len().saturating_sub(20)..]
+}
+
+/// A narrowing the federation may apply to an instrument's weight bound, in
+/// `(0, 1]` (ADR 0125 decision 4).
+///
+/// The only way to obtain one is [`Narrowing::of_spread`], and it has no arm
+/// above one, so a federation that disagrees can only subtract from a size and
+/// an agreeing population changes nothing. The field is private for the same
+/// reason `Stance::multiplier` has no constructor taking a number: a bound that
+/// could be raised from here would be a control nobody chose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Narrowing(f64);
+
+/// The multiplier a disagreement of at least this spread earns, widest first.
+/// Declared rather than fitted: the first band starts at the federation's own
+/// definition of a material disagreement
+/// ([`qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD`]), and a
+/// spread below it is not disagreement worth a smaller size. Nobody fitted
+/// these numbers; LEARN has not scored them (ADR 0125, "What it costs").
+pub const NARROWING_SCHEDULE: [(f64, f64); 2] = [(0.4, 0.5), (0.2, 0.75)];
+
+impl Narrowing {
+    /// The narrowing a disagreement of `spread` earns, or `None` where it
+    /// earns none. A spread that is not a finite number earns none either: a
+    /// view nobody could measure is absence, which ADR 0125 says is not
+    /// disagreement.
+    pub fn of_spread(spread: f64) -> Option<Self> {
+        if !spread.is_finite() {
+            return None;
+        }
+        NARROWING_SCHEDULE
+            .iter()
+            .find(|(at_least, _)| spread >= *at_least)
+            .map(|(_, multiplier)| Self(*multiplier))
+    }
+
+    /// The multiplier, in `(0, 1)`.
+    pub const fn multiplier(self) -> f64 {
+        self.0
+    }
+}
+
+/// The narrowings this review's arbitrations earn, by instrument.
+///
+/// Read from the arbitration of each instrument's own proposition at the
+/// review's cycle, so an instrument with no arbitration (too little history,
+/// an uncovered scope, a silent member) earns nothing.
+pub fn narrowings_of(
+    review: &FederationReview,
+    subjects: impl IntoIterator<Item = String>,
+) -> BTreeMap<String, (Narrowing, f64)> {
+    let mut narrowed = BTreeMap::new();
+    for subject in subjects {
+        let proposition = instrument_proposition(&subject, review.cycle);
+        let Some(arbitration) = review
+            .arbitrations
+            .iter()
+            .find(|arbitration| arbitration.proposition == proposition)
+        else {
+            continue;
+        };
+        let spread = arbitration.disagreement.spread;
+        if let Some(narrowing) = Narrowing::of_spread(spread) {
+            narrowed.insert(subject, (narrowing, spread));
+        }
+    }
+    narrowed
+}
+
+/// Write the federation's narrowings into DECIDE's `caps` map, multiplying an
+/// existing entry (ADR 0125 decision 6) and naming each one in `notes`.
+///
+/// One narrowing per instrument per construction, however many theses name it,
+/// for the reason `regime_allocation::narrow` gives: applying it per thesis
+/// would square it.
+pub fn narrow(
+    caps: &mut BTreeMap<String, f64>,
+    notes: &mut Vec<String>,
+    objects: impl IntoIterator<Item = String>,
+    narrowings: &BTreeMap<String, (Narrowing, f64)>,
+) {
+    let distinct: std::collections::BTreeSet<String> = objects.into_iter().collect();
+    for object in distinct {
+        let Some((narrowing, spread)) = narrowings.get(&object) else {
+            continue;
+        };
+        *caps.entry(object.clone()).or_insert(1.0) *= narrowing.multiplier();
+        notes.push(format!(
+            "{object}: the world models disagree by {spread:.2}, narrowed to {:.2} of the bound",
+            narrowing.multiplier()
+        ));
+    }
 }
 
 /// The proposition one instrument's next close answers.
