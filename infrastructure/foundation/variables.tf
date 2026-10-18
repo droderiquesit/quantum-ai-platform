@@ -151,6 +151,18 @@ variable "org_policies_enabled" {
   default     = true
 }
 
+variable "hierarchical_firewall_enabled" {
+  description = <<-EOT
+    Whether to set the hierarchical firewall policy on the platform folder.
+    Needs `roles/compute.orgFirewallPolicyAdmin` (and
+    `roles/compute.orgSecurityResourceAdmin` to associate it) on the folder;
+    an owner without them sets this false and `controls_not_applied` says
+    what is missing. Ignored in no-org mode, where there is no folder.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "allowed_policy_member_customer_ids" {
   description = <<-EOT
     Optional domain-restricted sharing: the Workspace / Cloud Identity
