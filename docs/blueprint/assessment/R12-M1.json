@@ -2188,14 +2188,16 @@
   {
     "id": "R12-COMMERCE-1093",
     "status": "PARTIAL",
-    "current": "Commerce research reached from qip-deepbrain charges customs duty and purchase tax into each candidate's all-in cost and journals both; test asserts the exact difference through real cycles.",
+    "current": "Commerce research reached from qip-deepbrain charges customs duty and purchase tax into each candidate's all-in cost, journals both, and books each received unit into the inventory ledger at all_in_cost / quantity, so the unit's cost basis carries its share of the duty and the tax; tests assert both through real cycles.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/commerce.rs:254",
+      "backend/crates/libs/qip-financial/src/commerce.rs:337 all_in_cost = landed.total() + purchase_tax",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:686 cost_basis = all_in_cost / quantity",
       "backend/crates/libs/qip-financial/src/commerce.rs:9 paper only, structurally",
       "backend/crates/libs/qip-financial/tests/commerce.rs",
-      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_duty_and_purchase_tax_in_the_plan_are_charged_into_the_all_in_cost_and_journaled"
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_duty_and_purchase_tax_in_the_plan_are_charged_into_the_all_in_cost_and_journaled",
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs:387 a_received_units_cost_basis_carries_its_duty_and_purchase_tax"
     ],
-    "gap": "The test asserts the journaled assessment, not the inventory ledger: no test shows duty/tax in a unit's cost basis or settlement.",
+    "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it. The ledger effect itself is now tested.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2203,10 +2205,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test commerce",
+    "verification": "cargo test -p qip-deepbrain --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: the ledger half is closed by a_received_units_cost_basis_carries_its_duty_and_purchase_tax (mutation: self.duty dropped from LandedCost::total; the basis rose over the duty-free assessment by the tax alone, 36.824 vs 55.236; restored). Kept PARTIAL with its siblings 1090/1091/1094 because the plane runs only under the owner switch QIP_DEEPBRAIN_BREADTH_PLAN."
   },
   {
     "id": "R12-COMMERCE-1094",
@@ -3205,26 +3207,31 @@
   },
   {
     "id": "R12-AMBIENT-1141",
-    "status": "PARTIAL",
-    "current": "The scheduled deep-brain research sweep runs DetectorRegistry anomaly scans and opportunity detectors (repeated_vetoes, PersistenceTracker -> MissedOpportunity -> SignalClass::Opportunity); anomaly signals and router decisions are journaled and tested.",
+    "status": "COMPLETE",
+    "current": "The deep-brain research sweep (ResearchLoop::sweep_over, run every cycle by default from node::run_with) feeds flagged subjects to PersistenceTracker; a discrepancy persisting PERSIST_SWEEPS (3) sweeps raises GapTrigger::MissedOpportunity, research::signal_class maps it to SignalClass::Opportunity, and AmbientJournal::record journals it on the hash-chained ambient journal alongside the anomaly scans.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:94 Detection",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::signal_class",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
+      "backend/crates/services/qip-expansion/src/detectors.rs::PersistenceTracker::observe",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:375 a_discrepancy_persisting_for_the_sweep_count_is_journaled_as_an_opportunity_class_signal",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::an_anomaly_scan_is_journaled_as_signals_each_with_the_routers_decision"
     ],
-    "gap": "No test asserts an Opportunity-class signal from the opportunity scans is journaled.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cargo test -p qip-deepbrain --test ambient_journal",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Lane L20 2026-10-18: the opportunity half is now proven on the journal through the default sweep, driven by the persistent-discrepancy scan rather than repeated vetoes (vetoes need scored declines a unit test cannot cheaply produce; both map through the same signal_class arm). Mutation: GapTrigger::MissedOpportunity mapped to SignalClass::Assumption in research::signal_class; the new test failed with the record journaled as class Assumption; restored."
   },
   {
     "id": "R12-AMBIENT-1142",

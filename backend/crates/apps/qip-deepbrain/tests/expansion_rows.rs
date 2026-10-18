@@ -830,3 +830,155 @@ fn a_tick_campaign_the_sweep_opens_reaches_the_curriculum_as_a_signal_naming_its
         "a tick-campaign signal does not carry the fills' instrument"
     );
 }
+
+/// R12-EXPAND-6046: the models the learning round found drifted reach the
+/// sweep as exactly one `ModelDrift` signal per model, and a sweep with no
+/// new drift raises none, so a drift measured once is not re-reported for
+/// ever. Before this the learning round's drifted list reached only the
+/// operations timeline, and `GapTrigger::ModelDrift` had no producer.
+///
+/// Mutation: delete the `observations.extend(model_drift(..))` line in
+/// `sweep_over`; the drift is noted and no signal names the detector.
+#[test]
+fn a_drifted_model_raises_exactly_one_model_drift_gap() {
+    let mut research = deployed(BTreeMap::new());
+    let platform = platform_over(Universe::new());
+    let (licensed, eligible) = deployed_bounds();
+    let from_drift = |round: &qip_deepbrain::research::ResearchRound| -> Vec<Vec<String>> {
+        round
+            .signals
+            .iter()
+            .filter(|s| {
+                s.evidence_ids().first().map(String::as_str) == Some("detector:model_drift")
+            })
+            .map(|s| s.evidence_ids().to_vec())
+            .collect()
+    };
+    // Premise: an empty platform with no drift noted raises no drift signal.
+    let quiet = research
+        .sweep_over(&platform, &[], &[], t0(), &licensed, &eligible)
+        .unwrap();
+    assert!(
+        from_drift(&quiet).is_empty(),
+        "premise: no drift, no signal"
+    );
+
+    // The node hands the sweep the learning round's list; one model listed
+    // twice is still one model.
+    research.note_drifted_models(["ridge@3".to_string(), "ridge@3".to_string()]);
+    let round = research
+        .sweep_over(&platform, &[], &[], t0(), &licensed, &eligible)
+        .unwrap();
+    let raised = from_drift(&round);
+    assert_eq!(raised.len(), 1, "exactly one drift signal: {raised:?}");
+    assert!(raised[0].iter().any(|e| e == "model:ridge@3"), "{raised:?}");
+
+    let after = research
+        .sweep_over(&platform, &[], &[], t0(), &licensed, &eligible)
+        .unwrap();
+    assert!(
+        from_drift(&after).is_empty(),
+        "a drift is reported once per learning round"
+    );
+}
+
+/// A stand-in for a hosted model that refuses every second call. No
+/// provider is reached from a test: the tally wraps whatever model it is
+/// given, and this is the model.
+#[derive(Debug, Default)]
+struct HalfRefusing {
+    calls: std::sync::atomic::AtomicU64,
+}
+
+impl qip_ai::language::LanguageModel for HalfRefusing {
+    fn name(&self) -> &str {
+        "half-refusing"
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn complete(
+        &self,
+        _request: &qip_ai::language::ModelRequest,
+        now: Timestamp,
+    ) -> qip_core::error::Result<qip_ai::language::Completion> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call.is_multiple_of(2) {
+            return Err(qip_core::error::Error::unavailable("the provider refused"));
+        }
+        Ok(qip_ai::language::Completion {
+            text: "an answer".to_string(),
+            structured: None,
+            model: "half-refusing".to_string(),
+            input_tokens: 1,
+            output_tokens: 1,
+            finish_reason: qip_ai::language::FinishReason::Complete,
+            produced_at: now,
+        })
+    }
+}
+
+/// R12-EXPAND-6040: refused and malformed hosted-model replies are counted
+/// where the adapter answers, and once enough have accumulated a rate past
+/// `MODEL_ERROR_RATE` raises exactly one error-rate surprise naming the
+/// model; the next sweep starts a fresh window. Before this the chain fell
+/// through every refusal to the templates and nothing anywhere could tell a
+/// provider refusing half its calls from one that never failed.
+///
+/// Mutation: count an `Err` reply as served in `CountedModel::complete`; the
+/// rate reads zero and no signal is raised.
+#[test]
+fn a_model_whose_replies_are_refused_past_the_rate_raises_one_error_rate_gap() {
+    use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel, ModelRequest};
+    use qip_deepbrain::language::ReplyTally;
+    use qip_deepbrain::research::{MODEL_ERROR_RATE, MODEL_REPLIES_MIN};
+
+    let tally = ReplyTally::new();
+    let chain = FallbackChain::new(vec![
+        tally.wrap(Arc::new(HalfRefusing::default())),
+        Arc::new(DeterministicModel::new()),
+    ]);
+    let mut research = deployed(BTreeMap::new()).with_reply_tally("half-refusing".into(), tally);
+    let platform = platform_over(Universe::new());
+    let (licensed, eligible) = deployed_bounds();
+    let request = ModelRequest::new("narrate", "the cycle");
+    let call = |n: u64| {
+        for _ in 0..n {
+            let _ = chain.complete(&request, t0());
+        }
+    };
+    let error_signals = |research: &mut ResearchLoop| -> Vec<Vec<String>> {
+        research
+            .sweep_over(&platform, &[], &[], t0(), &licensed, &eligible)
+            .unwrap()
+            .signals
+            .iter()
+            .filter(|s| {
+                s.evidence_ids().first().map(String::as_str) == Some("detector:model_error_rate")
+            })
+            .map(|s| s.evidence_ids().to_vec())
+            .collect()
+    };
+
+    // Premise: half refused is past the stated rate, and one call short of
+    // the minimum sample nothing is judged.
+    const { assert!(0.5 > MODEL_ERROR_RATE) };
+    call(MODEL_REPLIES_MIN - 1);
+    assert!(
+        error_signals(&mut research).is_empty(),
+        "premise: below the sample, no judgement"
+    );
+
+    call(1);
+    let raised = error_signals(&mut research);
+    assert_eq!(raised.len(), 1, "exactly one error-rate signal: {raised:?}");
+    assert!(
+        raised[0].iter().any(|e| e == "model:half-refusing"),
+        "{raised:?}"
+    );
+
+    // The window was taken: the same failures are not reported twice.
+    assert!(error_signals(&mut research).is_empty());
+}

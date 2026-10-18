@@ -856,6 +856,11 @@ fn run() -> Result<()> {
                     .storage
                     .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
             );
+    if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
+        (&language_model.replies, &language_model.hosted)
+    {
+        research = research.with_reply_tally(hosted.model.clone(), tally.clone());
+    }
     println!(
         "  compiler:         promoted research is distilled into bounded reflex packages; no \
          package signer is installed, so packages are held unsigned and none is published"
