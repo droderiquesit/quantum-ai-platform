@@ -600,17 +600,14 @@
   },
   {
     "id": "R12-WORLD-9026",
-    "status": "PARTIAL",
-    "current": "Lattice Calibrator scores resolved forecasts with Brier, pinball and interval coverage per horizon and per regime; per-horizon scorecards and score records journaled each cycle and gauged.",
+    "status": "COMPLETE",
+    "current": "Every resolved forecast is scored by the Calibrator under the regime label it was issued under: the ScoreRecord carries the regime, LatticeReview::scored journals it whole each cycle, and the calibrator keeps a Scorecard per (horizon, regime) (bounded, overflow filed under 'other'). The journaled records rebuild the per-regime Brier mean and pinball sum the calibrator holds, so regime score history is durable in the log.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn, :15155 calibrate_resolved, :8901 learn_from",
-      "backend/crates/libs/qip-observability/src/metrics.rs:1023-1034 Brier metrics",
-      "backend/crates/services/qip-prediction/src/scoring.rs",
-      "backend/crates/services/qip-prediction/tests/scoring.rs",
-      "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeReview"
+      "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::score",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeReview::scored",
+      "runtime/qip-kernel/tests/now_lattice.rs::forecasts_resolved_in_two_regimes_are_scored_under_each_and_the_journal_rebuilds_the_regime_cards"
     ],
-    "gap": "Regime scorecards live in memory only (LatticeReview journals per-horizon scorecards); kernel test asserts horizon scoring, not regime; no durable regime scorecard history.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -618,10 +615,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations in Calibrator::score: blanking ScoreRecord.regime -> 'premise: two distinct regimes' left {\"\"}; filing every resolution under 'other' -> 'no card for quiet/normal'; both restored (now_lattice: 11 passed). Stated limit: the test drives LatticeStage with explicit regime labels because Platform's own label (market/volatility regime) reads the fundamental-surprise series that bars never feed, so a bars-only cycle labels every instrument quiet/normal; two regimes on a running root need a fundamentals feed. Direction Brier at p=0.5 is 0.25 for every call, so pinball carries the regime difference."
   },
   {
     "id": "R12-WORLD-9027",

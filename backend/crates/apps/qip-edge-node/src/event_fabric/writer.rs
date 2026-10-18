@@ -258,6 +258,7 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::CycleRested { .. }
         | Decision::CycleAbandoned { .. }
         | Decision::StrategyWithdrawn { .. }
+        | Decision::PlanAdmitted { .. }
         | Decision::RegionShareApplied { .. }
         | Decision::RegionOutlookChanged { .. }
         | Decision::ReconciliationRequired { .. }
