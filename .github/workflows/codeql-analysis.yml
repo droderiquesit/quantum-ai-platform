@@ -70,6 +70,36 @@ jobs:
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
 
+      # The repository's own CodeQL model pack, for the Rust analysis only
+      # (ADR 0117 Amendment 3; `.github/codeql/qip-models/README.md` holds
+      # every row's claim and its evidence). It tells the analyser which
+      # name-matched values carry no printable secret, so that one
+      # `from_secret(..)?` inside a constructor no longer marks every field of
+      # every `Platform` as sensitive and every test assertion printing an
+      # order id as a leak — 33 such findings turned `sast` red on 2026-10-18.
+      #
+      # Why this route: the action's `packs` input and the `packs` key of its
+      # config accept only `scope/name[@version]` from a registry
+      # (init/action.yml), so a pack that lives in the checkout cannot go
+      # there. `CODEQL_ACTION_EXTRA_OPTIONS` is the action's hook for extra
+      # CLI options, read by `getExtraOptionsEnvParam` (src/util.ts) and
+      # applied per command by `getExtraOptions` (src/codeql.ts);
+      # `database run-queries` is the command that resolves model packs, and
+      # these are the two flags `codeql database analyze` takes locally for
+      # the same effect. Unset, the action reads `{}`, which is what the
+      # TypeScript matrix entry gets.
+      #
+      # `sast` runs only on a push to `main` (ci.yml), so the merge that
+      # carries this step is the first run that exercises it. If the pack does
+      # not load, `run-queries` fails and the job is red; if the options were
+      # ignored, the 33 findings return and the gate below is red. Neither is
+      # worse than today, and the fix for either is in this file and the pack,
+      # both reviewed paths.
+      - name: Load the repository's CodeQL model pack (Rust only)
+        if: matrix.language == 'rust'
+        run: |
+          printf 'CODEQL_ACTION_EXTRA_OPTIONS={"database":{"run-queries":["--additional-packs=%s/.github/codeql/qip-models","--model-packs=qip/rust-models"]}}\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
       # The SARIF is written to a directory as well as uploaded, so the next
       # step can read what the analysis found rather than only whether it
       # ran.

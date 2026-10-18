@@ -6995,3 +6995,443 @@ fn the_ceiling_the_paper_check_reads_is_paper_trading_in_every_manifest_it_could
         }
     }
 }
+
+// --- ADR 0114: the control plane runs controllers and nothing else -------------
+
+/// The bootstrap components ADR 0114 admits, by directory name under
+/// `bootstrap/`, and the controller each installs. Config Sync and Argo
+/// Rollouts are not here on purpose: ADR 0114 decides the baseline is
+/// reconciled by Config Connector and progressive delivery is Cloud Run's
+/// own instance bounds (R12 CICD-9113), so a directory for either is a
+/// decision reopened without an ADR.
+const CONTROLLERS: [(&str, &str); 5] = [
+    ("argocd", "Argo CD"),
+    ("cert-manager", "cert-manager"),
+    (
+        "config-connector",
+        "the ConfigConnector object and the qip-run namespace",
+    ),
+    ("config-connector-operator", "the Config Connector operator"),
+    ("kargo", "Kargo"),
+];
+
+/// The kinds and the API group a control plane would carry if a reconciler
+/// ADR 0114 refused had been vendored anyway. Matched on the whole `kind`
+/// value, never as a substring, because `Rollout` is a token inside
+/// `argoproj.io` documentation strings and a substring match would refuse the
+/// very manifests the cluster needs.
+const REFUSED_KINDS: [(&str, &str); 3] = [
+    (
+        "RootSync",
+        "Config Sync (ADR 0114: Config Connector reconciles the baseline)",
+    ),
+    (
+        "RepoSync",
+        "Config Sync (ADR 0114: Config Connector reconciles the baseline)",
+    ),
+    (
+        "Rollout",
+        "Argo Rollouts (ADR 0114: R12 CICD-9113 is Cloud Run's instance bounds)",
+    ),
+];
+const REFUSED_API_GROUP: &str = "configsync.gke.io/";
+
+/// The immediate subdirectories of a repository path, by name.
+fn subdirectories(relative: &str) -> Vec<String> {
+    let root = repository_root().join(relative);
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .unwrap_or_else(|error| panic!("cannot list {relative}: {error}"))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names() {
+    // The failure: a fifth reconciler — Config Sync, Argo Rollouts, anything
+    // with a `Deployment` — lands under `bootstrap/` with an overlay, and
+    // `infra.yml`'s bootstrap step applies whatever has one. The register
+    // kept asking for Config Sync for a year after ADR 0114 decided against
+    // it; this test is where that decision stops being prose.
+    let components = subdirectories(BOOTSTRAP);
+    assert!(
+        components.len() >= CONTROLLERS.len(),
+        "{BOOTSTRAP} holds {components:?}; ADR 0036 decision 2 vendors at least the {} \
+         controllers",
+        CONTROLLERS.len()
+    );
+    let mut applied: Vec<String> = Vec::new();
+    for component in &components {
+        let directory = format!("{BOOTSTRAP}/{component}");
+        // A component is applied to an environment exactly when it carries an
+        // overlay for it (`infra.yml`: `if [ -d .../overlays/${ENVIRONMENT} ]`).
+        let overlays: Vec<&str> = ENVIRONMENTS
+            .iter()
+            .copied()
+            .filter(|environment| {
+                repository_root()
+                    .join(format!("{directory}/overlays/{environment}"))
+                    .is_dir()
+            })
+            .collect();
+        let admitted = CONTROLLERS.iter().any(|(name, _)| name == component);
+        if admitted {
+            assert_eq!(
+                overlays,
+                ENVIRONMENTS.to_vec(),
+                "{directory} carries overlays for {overlays:?}; a controller ADR 0114 admits is \
+                 applied to every environment's control plane or the environments differ in \
+                 what reconciles them"
+            );
+            applied.push(component.clone());
+        } else {
+            assert!(
+                overlays.is_empty(),
+                "{directory} carries overlays for {overlays:?} and is not a controller ADR 0114 \
+                 names ({:?}); the bootstrap step would apply it, and a reconciler the ADR \
+                 refused reaches the cluster",
+                CONTROLLERS
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    assert_eq!(
+        applied,
+        CONTROLLERS
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect::<Vec<_>>(),
+        "the components with overlays are not exactly the controllers ADR 0114 names"
+    );
+
+    // What those components render — the vendored installs and every base
+    // and overlay the step applies — carries none of the refused kinds and no
+    // trading binary. A `qip-*` image in any Pod spec is ADR 0114's own
+    // "what would make this wrong".
+    let upstream = upstream_documents();
+    // (path, kind, apiVersion, text) for every document the step could apply:
+    // the upstream installs, read line by line, and every base and overlay
+    // document, parsed.
+    let mut documents: Vec<(String, String, String, String)> = upstream
+        .iter()
+        .map(|document| {
+            let api_version = document
+                .text
+                .lines()
+                .find_map(|line| line.strip_prefix("apiVersion: "))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            (
+                document.path.clone(),
+                document.kind.clone(),
+                api_version,
+                document.text.clone(),
+            )
+        })
+        .collect();
+    for manifest in manifests_under(BOOTSTRAP) {
+        documents.push((
+            manifest.path.clone(),
+            manifest.kind(),
+            manifest.api_version(),
+            manifest.value.to_string(),
+        ));
+    }
+    assert!(
+        documents.len() > upstream.len(),
+        "{BOOTSTRAP} renders no document outside the upstream installs; the bases and overlays \
+         were not read"
+    );
+    let mut workloads = 0usize;
+    for document in &upstream {
+        if matches!(
+            document.kind.as_str(),
+            "Deployment" | "StatefulSet" | "CronJob" | "DaemonSet"
+        ) {
+            workloads += 1;
+            let owner = CONTROLLERS.iter().any(|(name, _)| {
+                let prefix = name.replace('-', "");
+                document.name.replace('-', "").starts_with(&prefix)
+            });
+            assert!(
+                owner,
+                "{} `{}` in {} is a workload no controller ADR 0114 names owns",
+                document.kind, document.name, document.path
+            );
+        }
+    }
+    assert!(
+        workloads >= 4,
+        "only {workloads} controller workloads were found in the upstream installs; Argo CD, \
+         Kargo, cert-manager and the operator are more"
+    );
+    for (path, kind, api_version, text) in &documents {
+        for (refused, why) in REFUSED_KINDS {
+            assert_ne!(
+                kind, refused,
+                "{path} declares a `{refused}`, which is {why}"
+            );
+        }
+        assert!(
+            !api_version.starts_with(REFUSED_API_GROUP),
+            "{path} declares a {kind} of {api_version}, which is Config Sync's API group (ADR \
+             0114: Config Connector reconciles the baseline)"
+        );
+        for image in images_in(text) {
+            assert!(
+                trading_binary_of(&image).is_none(),
+                "{path} runs `{image}`, a trading binary, on the control plane; ADR 0036 and ADR \
+                 0114 keep every qip-* binary off Kubernetes"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap() {
+    // Two owners of one object is the failure Config Sync was once proposed
+    // to solve and ADR 0114 solved by having one: the bootstrap step applies
+    // the controllers and the Argo CD Application applies the environment,
+    // and nothing is in both trees. Were a `RunService` or a `Namespace` in
+    // both, the step and the controller would fight over it, and a reviewer
+    // would read the losing side's manifest as the running system.
+    for environment in ENVIRONMENTS {
+        // Every base and overlay document under `bootstrap/` (the kustomize
+        // reader refuses a file patch, and the bootstrap's bases use one), so
+        // the set is a superset of what any one environment's step applies —
+        // which errs towards finding a collision, never towards missing one.
+        let mut bootstrap: BTreeSet<(String, String)> = BTreeSet::new();
+        for manifest in manifests_under(BOOTSTRAP) {
+            if manifest.kind() != "Kustomization" {
+                bootstrap.insert((manifest.kind(), manifest.name()));
+            }
+        }
+        for document in upstream_documents() {
+            bootstrap.insert((document.kind.clone(), document.name.clone()));
+        }
+        for manifest in kustomize(&format!("{ARGOCD}/overlays/{environment}")) {
+            bootstrap.insert((manifest.kind(), manifest.name()));
+        }
+        for manifest in kargo_rendered(environment) {
+            bootstrap.insert((manifest.kind(), manifest.name()));
+        }
+        assert!(
+            bootstrap.len() >= 100,
+            "the bootstrap for {environment} renders only {} objects; the controllers' installs \
+             alone are more",
+            bootstrap.len()
+        );
+        let application: Vec<(String, String)> = kustomize(&format!("{ENVS}/{environment}"))
+            .iter()
+            .map(|manifest| (manifest.kind(), manifest.name()))
+            .collect();
+        assert!(
+            application.iter().any(|(kind, _)| kind == "RunService"),
+            "{ENVS}/{environment} renders no RunService; the Application would apply nothing \
+             that runs"
+        );
+        for object in &application {
+            assert!(
+                !bootstrap.contains(object),
+                "{} `{}` is rendered by both {ENVS}/{environment} (the Argo CD Application) and \
+                 the bootstrap for {environment}; two appliers of one object fight, and the \
+                 one that loses is the one a reviewer reads",
+                object.0,
+                object.1
+            );
+        }
+    }
+}
+
+// --- ADR 0115: one build, promoted by digest ------------------------------------
+
+/// The `deploy.yml` properties that make a later environment a reader of
+/// dev's registry and never a builder, checked over the text so the check
+/// can be fed a mutated copy without touching the protected workflow.
+fn assert_later_environments_only_read_the_build_registry(
+    deploy: &str,
+    root_variables: &str,
+    root_main: &str,
+    promotion_tf: &str,
+) {
+    let build_environment: Vec<&str> = deploy
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("BUILD_ENVIRONMENT:"))
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        build_environment,
+        vec!["dev"],
+        "deploy.yml declares BUILD_ENVIRONMENT {build_environment:?}; exactly one, dev, is the \
+         environment every image is built into (ADR 0115)"
+    );
+    let refusal = deploy
+        .lines()
+        .position(|line| {
+            line.trim() == "- name: a promotion attests the image built once and never builds one"
+        })
+        .unwrap_or_else(|| {
+            panic!("deploy.yml has no step refusing to build for a later environment (ADR 0115)")
+        });
+    let condition = deploy
+        .lines()
+        .skip(refusal + 1)
+        .map(str::trim)
+        .find(|line| line.starts_with("if:"))
+        .unwrap_or_else(|| panic!("the refusal step has no `if:`; it would fire on every build"));
+    assert!(
+        condition.contains("env.TARGET_ENVIRONMENT != env.BUILD_ENVIRONMENT"),
+        "the refusal step's condition is `{condition}`; it must fire exactly when the target is \
+         not the build environment, or dev refuses its own build and a later environment \
+         builds one"
+    );
+    assert!(
+        condition.contains("steps.existing.outputs.digest == ''"),
+        "the refusal step's condition is `{condition}`; it must fire when the build registry \
+         holds no digest for the commit, which is the only case in which a promotion would \
+         otherwise build"
+    );
+    assert!(
+        deploy
+            .lines()
+            .any(|line| line.trim().starts_with("echo \"registry=")
+                && line.contains("qip-${BUILD_ENVIRONMENT}")),
+        "deploy.yml's registry output does not name qip-${{BUILD_ENVIRONMENT}}; a dispatch for \
+         a later environment would then look for the digest in a registry nothing built into"
+    );
+    assert!(
+        root_variables.contains("variable \"registry_promotion_readers\""),
+        "variables.tf declares no registry_promotion_readers; later environments have no \
+         identity that may read the build registry"
+    );
+    assert!(
+        root_main
+            .lines()
+            .any(|line| collapsed(line) == "promotion_readers = var.registry_promotion_readers"),
+        "main.tf does not pass registry_promotion_readers to the registry module"
+    );
+    let roles: Vec<&str> = promotion_tf
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("role"))
+        .map(|rest| rest.trim_start_matches([' ', '=']).trim().trim_matches('"'))
+        .collect();
+    assert_eq!(
+        roles,
+        vec!["roles/artifactregistry.reader"],
+        "modules/registry/promotion.tf grants {roles:?}; a later environment reads the build \
+         registry and nothing that writes, or a promotion could push bytes nobody built"
+    );
+}
+
+#[test]
+fn later_environments_read_the_build_registry_and_build_nothing() {
+    // The failure removed on 2026-10-11: each environment built into its own
+    // registry, so a promotion to test wrote dev's digest under a path that
+    // held no such bytes, and a rebuild there would have been a different
+    // image from the one dev tested. The register still said "single
+    // artifact promoted across environments" was the gap.
+    assert_later_environments_only_read_the_build_registry(
+        &read(".github/workflows/deploy.yml"),
+        &read(ROOT_VARIABLES),
+        &read("infrastructure/terraform/main.tf"),
+        &read(&format!("{MODULES}/registry/promotion.tf")),
+    );
+}
+
+// --- R12 GCP-10143: the blueprint's environments, mapped -------------------------
+
+#[test]
+fn every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage() {
+    // The blueprint names integration, replay and paper environments; the
+    // tree has four Terraform environments and a six-link Kargo chain. The
+    // failure is a stage a person reads as an environment with a project,
+    // secrets and a control plane behind it when it is a gate that records a
+    // freight and runs nothing — or the reverse, an environment directory the
+    // chain never reaches. Each Stage is one or the other, and the README
+    // says which.
+    let readme = read(&format!("{KARGO}/README.md"));
+    let stages = stages_by_name(&kargo_rendered("dev"));
+    assert_eq!(stages.len(), CHAIN.len(), "the chain is not {CHAIN:?}");
+    let environment_directories = environment_directories();
+    let mut environments = 0usize;
+    let mut gates = 0usize;
+    for name in stages.keys() {
+        let tfvars = format!("infrastructure/environments/{name}/terraform.tfvars");
+        let overlay = format!("{ENVS}/{name}/kustomization.yaml");
+        let freight = format!("{GITOPS}/gates/{name}/freight.yaml");
+        let has_tfvars = repository_root().join(&tfvars).is_file();
+        let has_overlay = repository_root().join(&overlay).is_file();
+        let has_freight = repository_root().join(&freight).is_file();
+        if has_tfvars {
+            environments += 1;
+            assert!(
+                has_overlay,
+                "stage `{name}` has {tfvars} and no {overlay}; the Application would have \
+                 nothing to apply"
+            );
+            assert!(
+                environment_directories
+                    .iter()
+                    .any(|directory| directory == name),
+                "stage `{name}` has {tfvars} but is not among the environment directories the \
+                 Argo CD Applications target"
+            );
+            assert!(
+                !has_freight,
+                "stage `{name}` is an environment and also has {freight}; a gate record on an \
+                 environment stage is a second account of what it runs"
+            );
+        } else {
+            gates += 1;
+            assert!(
+                !has_overlay,
+                "stage `{name}` has {overlay} and no {tfvars}; an environment with manifests and \
+                 no project is applied nowhere"
+            );
+            assert!(
+                has_freight,
+                "stage `{name}` has no environment and no {freight}; a gate that records nothing \
+                 has no audit trail"
+            );
+            // The README names it, as a delimited token, in the sentence that
+            // says gates have no environment.
+            let documented = readme.lines().any(|line| {
+                line.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|token| token == name)
+                    && line.contains("no environment")
+            });
+            assert!(
+                documented,
+                "{KARGO}/README.md does not say `{name}` is a stage with no environment"
+            );
+        }
+    }
+    assert_eq!(
+        environments, 4,
+        "{environments} stages are environments; dev, test, stage and prod are four"
+    );
+    assert_eq!(
+        gates, 2,
+        "{gates} stages are gates; replay and paper are two"
+    );
+    // The blueprint's "integration" environment is the chain's `test`, and
+    // the README says so in those words.
+    let mapped = readme.lines().any(|line| {
+        let tokens: Vec<&str> = line
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .collect();
+        tokens.contains(&"integration") && tokens.contains(&"test")
+    });
+    assert!(
+        mapped,
+        "{KARGO}/README.md does not map the blueprint's integration environment to `test`"
+    );
+}

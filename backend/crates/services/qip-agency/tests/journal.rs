@@ -10,7 +10,7 @@ use qip_agency::affordance::{Method, ToolEdgeDraft};
 use qip_agency::attribution::{Effect, EffectAttribution, HorizonObservation, Identification};
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::comparison::ComparisonDraft;
-use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, EvidenceCitation};
+use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
 use qip_agency::engine::{
     Adapter, EdgeDecl, Governance, LeverEvidence, Outcome, ProposalDraft, Request, VariableDecl,
     run_governed,
@@ -130,7 +130,10 @@ fn pass(rate_window: u64) -> PassDecl {
                     evidence_id: "spread-series-1".into(),
                     confidence_bps: 9000,
                 }],
-                disclosures: vec![],
+                disclosures: vec![Disclosure {
+                    kind: "paper_venue".into(),
+                    text: "Paper venue: no live order is placed".into(),
+                }],
                 target_audience: "venue-a participants".into(),
                 jurisdiction: "US".into(),
             },
@@ -152,7 +155,7 @@ fn guard() -> ActionGuard {
         conduct: ConductPolicy {
             authorized_sources: vec!["venue-feed".into()],
             authorized_identities: vec!["desk-agent".into()],
-            required_disclosures: vec![],
+            required_disclosures: vec!["paper_venue".into()],
             channel_policies: BTreeMap::from([(
                 "paper-venue".to_string(),
                 vec!["venue-a participants".to_string()],
@@ -551,4 +554,92 @@ fn a_goal_touching_a_venue_not_eligible_in_its_jurisdiction_chooses_nothing() {
             .iter()
             .any(|r| r.contains("not declared in `touches`"))
     );
+}
+
+/// R12-OBS-7131: the records of one pass answer a lineage query as one
+/// connected chain, and a chain with a record missing is reported broken at
+/// the link, not read as approved. Mutation: in `PassLineage::verify`, drop
+/// the `(None, Some(_))` arm for the plan approval — the replayed log then
+/// verifies.
+#[test]
+fn one_pass_folds_into_one_connected_lineage_and_a_dropped_approval_breaks_it() {
+    let policy = narrow();
+    let mut guard = guard();
+    let registry = register("US");
+    let mut adapter = Refusing::default();
+    let report = run_governed(
+        request(1),
+        Governance {
+            policy: Some(&policy),
+            guard: Some(&mut guard),
+            eligibility: Some((&registry, Timestamp::from_secs(100))),
+        },
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Refused { .. }),
+        "premise: {:?}",
+        report.outcome
+    );
+    let mut log = EventLog::in_memory();
+    journal::record_pass(
+        &mut log,
+        PassEntry {
+            pass: 1,
+            provenance: &provenance(),
+            report: &report,
+            widening: None,
+            audit_from: 0,
+            goal_target: "spread under 5 bps",
+            acting_identity: "desk-agent",
+            learning: None,
+            at: Timestamp::from_secs(100),
+        },
+    )
+    .unwrap();
+
+    let lineage = journal::lineage_of(&log, 1)
+        .unwrap()
+        .expect("pass 1 is on the log");
+    lineage
+        .verify()
+        .expect("one intervention is one connected chain");
+    assert_eq!(lineage.goal_target.as_deref(), Some("spread under 5 bps"));
+    let goal = lineage.goal_approval.as_ref().unwrap();
+    let plan = lineage.plan_approval.as_ref().unwrap();
+    let execution = lineage.execution.as_ref().unwrap();
+    assert_eq!(plan.goal, goal.id);
+    assert_eq!(execution.plan, plan.id);
+    assert_eq!(lineage.tool_decisions.len(), 1);
+    assert_eq!(
+        lineage.released.len(),
+        1,
+        "the admitted step's voice is on the chain"
+    );
+    assert_eq!(lineage.released[0].identity, "desk-agent");
+    assert_eq!(lineage.outcome.as_deref(), Some("refused"));
+    assert!(journal::lineage_of(&log, 2).unwrap().is_none());
+
+    // The same log with the plan approval gone: the execution cites a plan
+    // approval the pass never made.
+    let mut dropped = EventLog::in_memory();
+    for event in log.events() {
+        if event.event_id.as_str().ends_with("plan-approved") {
+            continue;
+        }
+        dropped.append(event).unwrap();
+    }
+    let broken = journal::lineage_of(&dropped, 1).unwrap().unwrap();
+    assert!(
+        broken.plan_approval.is_none(),
+        "premise: the approval is gone"
+    );
+    assert!(
+        broken.execution.is_some(),
+        "premise: the execution is still there"
+    );
+    let err = broken.verify().unwrap_err();
+    assert!(err.message().contains("the execution"), "{err}");
+    assert!(err.message().contains("no plan approval"), "{err}");
 }

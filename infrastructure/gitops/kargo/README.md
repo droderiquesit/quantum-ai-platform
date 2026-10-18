@@ -7,6 +7,12 @@ adds: one project, one warehouse, six links —
 refused by its own first step. `base/` is the whole chain; `overlays/<env>/`
 only names the Argo CD application that environment's Kargo can reach.
 
+The blueprint's environment names map onto the chain as follows: its
+`integration` environment is the chain's `test` (the first environment after
+dev, with its own project and control plane); `replay` and `paper` are the
+two gate stages below, which have no environment; `stage` and `prod` are
+themselves.
+
 ## One registry, one build, the same digest everywhere
 
 `deploy.yml` builds each commit **once**, into the build registry —

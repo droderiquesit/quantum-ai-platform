@@ -75,6 +75,10 @@ locals {
     # (SEC-056). Without it a vulnerability disclosed after the push is never
     # recorded against the digest; only the one-time pre-push CI scan exists.
     "containerscanning.googleapis.com" = "Artifact Analysis scanning of the images in modules/registry"
+    # Cloud Asset Inventory (R12 SEC-9135): the asset-change feeds in the
+    # root's audit-logs.tf, and the 35-day asset history the API keeps
+    # without one.
+    "cloudasset.googleapis.com" = "the asset-change feeds in the root audit-logs.tf"
   }
 
   # Conditional, keyed the same way and merged in only when the flag that

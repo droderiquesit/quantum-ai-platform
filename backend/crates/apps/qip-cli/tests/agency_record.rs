@@ -35,7 +35,7 @@ fn policy_document() -> Value {
             "conduct": {
                 "authorized_sources": ["venue-feed"],
                 "authorized_identities": ["desk-agent"],
-                "required_disclosures": [],
+                "required_disclosures": ["paper_venue"],
                 "channel_policies": {"paper-venue": ["venue-a participants"]},
                 "permitted_jurisdictions": ["US"],
                 "conduct_rules": [
@@ -135,7 +135,7 @@ fn request(window: u64) -> Value {
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
                     "confidence_bps": 9000
                 }],
-                "disclosures": [],
+                "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
                 "target_audience": "venue-a participants",
                 "jurisdiction": "US"
             }},
