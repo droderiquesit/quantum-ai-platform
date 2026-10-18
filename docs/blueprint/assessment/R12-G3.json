@@ -336,7 +336,7 @@
       "backend/crates/apps/qip-ledgerd/src/main.rs:62 hard-coded broker address 127.0.0.1:9090",
       "backend/crates/apps/qip-ledgerd/src/config.rs::LedgerConfig::fabric_url"
     ],
-    "gap": "No broker DNS/SRV instantiated; no client resolves SRV (qip-transport connects to literal URL authority).",
+    "gap": "Decided by ADR 0135 (accepted 2026-10-18): Fabric clients bootstrap from the broker module's SRV record through an in-tree DNS query in qip-transport, keep the last good answer for a bounded staleness and fall back to configured addresses; the cluster map is a broker request arm. Code left: the SRV query and parser in qip-transport with RFC vectors, and the cached/configured fallback with a resolver-loss test.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -347,7 +347,7 @@
     "verification": "terraform plan shows SRV records; ledgerd config test resolving SRV",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D11; gap before it: No broker DNS/SRV instantiated; no client resolves SRV (qip-transport connects to literal URL authority)."
   },
   {
     "id": "R12-API-10017",
@@ -874,18 +874,18 @@
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:268 google_alloydb_cluster records"
     ],
-    "gap": "Enable and wire a writer.",
+    "gap": "Owner decision O01 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a Postgres wire client (crate or in-tree) and an AlloyDB instance for workflow metadata, reversing ADR 0113's refusal of AlloyDB. Enables: AlloyDB adapter behind StorageTarget::AlloyDb and workflow state off the journal. Costs: A new crate or an in-tree wire protocol plus TLS; an AlloyDB cluster billed per vCPU-hour from creation.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O01 (design-decisions-2026-10-18)",
     "verification": "terraform plan with enable_alloydb=true",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O01; gap before it: Enable and wire a writer."
   },
   {
     "id": "R12-LEDGER-10041",
@@ -1592,18 +1592,18 @@
       "backend/crates/apps/qip-edge-node/src/pass.rs:249 run_pass (simulated gateway only)",
       "backend/crates/apps/qip-edge-node/tests/pass.rs"
     ],
-    "gap": "Real venue connectivity is out of scope (paper).",
+    "gap": "Owner decision O14 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a real venue connection, even market-data-only (ADR 0003/0021). Enables: Native venue feeds into the reflex node. Costs: A venue licence, credential and account; the paper boundary's feed half changes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "ADR 0003 paper trading: no live venue path",
+    "blocked_by": "owner decision O14 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-edge-node --test pass",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O14; gap before it: Real venue connectivity is out of scope (paper)."
   },
   {
     "id": "R12-MESH-10075",
@@ -1614,18 +1614,18 @@
       "backend/crates/services/qip-mesh/tests/peer.rs:246 no_leg_is_sent_and_no_message_is_applied_at_or_after_the_epoch_expiry",
       "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs (PeerEndpoint used only in tests)"
     ],
-    "gap": "Default-on/committed-deployment peer configuration; QUIC.",
+    "gap": "Owner decision O07 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit a QUIC crate under ADR 0109, after ADR 0112 §4's committed cross-region TCP+TLS versus QUIC measurement. Enables: QUIC for the fabric hop and the peer link. Costs: A new transport crate and its closure; the measurement needs a second region.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "QUIC transport needs a dependency ADR (ADR 0002/0009)",
+    "blocked_by": "owner decision O07 (design-decisions-2026-10-18)",
     "verification": "two-node integration test over a socket",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O07; gap before it: Default-on/committed-deployment peer configuration; QUIC."
   },
   {
     "id": "R12-FABRIC-10076",
@@ -1658,7 +1658,7 @@
       "backend/crates/apps/qip-api/src/mesh.rs:73-74 spine wiring",
       "backend/crates/edge/qip-edge/src/mesh.rs:1-20 signed downlink verification"
     ],
-    "gap": "Fabric P0 control streams.",
+    "gap": "Decided by ADR 0128 (accepted 2026-10-18): The qip-mesh spine is the platform's control fabric for signed downward frames and cell deltas; the event fabric carries outcomes and records; an acceptance scan admits no third cross-process path. Code left: catalogue CapitalGrantFrame, PolicyFrame, HaltFrame and the delta frame beside the fabric's streams.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1671,7 +1671,7 @@
     "verification": "integration test via qip-fabricd",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04; gap before it: Fabric P0 control streams."
   },
   {
     "id": "R12-FABRIC-10078",
@@ -1918,18 +1918,18 @@
       "Makefile:123 sbom",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs the_pipeline_no_longer_moves_a_service_and_still_signs_attests_and_refuses_prod"
     ],
-    "gap": "Build provenance (SLSA) attached to images.",
+    "gap": "Owner decision O19 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Choose the provenance producer: a pinned third-party action or a gcloud-only SLSA statement. Enables: SLSA provenance attached to every pushed image. Costs: A third-party action in the supply chain, or in-tree statement generation; deploy.yml is a protected path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O19 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O19; gap before it: Build provenance (SLSA) attached to images."
   },
   {
     "id": "R12-OBS-10089",
@@ -2076,18 +2076,18 @@
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112",
       "backend/crates/tests/qip-acceptance/tests/quantum_routing_central_plane.rs:92"
     ],
-    "gap": "GPU/TPU rungs.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-quantum",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: GPU/TPU rungs."
   },
   {
     "id": "R12-MODEL-10096",
@@ -2142,7 +2142,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:550 RiskEnvelopeSnapshot",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
     ],
-    "gap": "HedgePlan not distributed to regions; not over Fabric.",
+    "gap": "Decided by ADR 0126 (accepted 2026-10-18): The downward capital authority is the signed CapitalEnvelope alone; it gains a drawdown bound, the CapitalGrant is stated from it rather than sent beside it, and a hedge plan reaches a cell only as a narrowing frame it may refuse. Code left: a signed HedgeFrame on the qip-mesh spine and the cell's narrowing acceptance rule, with a qip-edge-node/tests/degraded.rs test that a cell refuses an order moving away from the hedge target.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2153,7 +2153,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D02; gap before it: HedgePlan not distributed to regions; not over Fabric."
   },
   {
     "id": "R12-REASON-10099",
@@ -2163,7 +2163,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:1392 DistilledModelContract",
       "backend/crates/services/qip-training/src/distill.rs"
     ],
-    "gap": "Signed package output and Reflex consumption.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: a KMS PackageSigner under the model-pack key installed in qip-deepbrain main.rs, so ResearchLoop publishes instead of held_unsigned.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2176,7 +2176,7 @@
     "verification": "cargo test -p qip-training",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D07; gap before it: Signed package output and Reflex consumption."
   },
   {
     "id": "R12-REFLEX-10100",
@@ -2231,7 +2231,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:924 SpoolWriter::open; :1095 Drain::open",
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:330 every_entry_reaches_p2_and_every_outcome_also_reaches_p1_with_its_journal_digest"
     ],
-    "gap": "Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured.",
+    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: a per-pass FeatureSnapshot P2 record from the node, bounded by configured instruments, with a test that ticks are counted and not shipped.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2244,7 +2244,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement names ticks and feature snapshots, which are not appended as records. ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Per-tick and feature-snapshot records on P1/P2; fabric partition only drains when a URL is configured."
   },
   {
     "id": "R12-TICK-10103",
@@ -2918,7 +2918,7 @@
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1054",
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1308"
     ],
-    "gap": "Automatic peer-loss detection; mirror catch-up.",
+    "gap": "Already decided by ADR 0119: Cross-region mirroring is decided: an in-tree asynchronous fabric-mirror consumer (ADR 0119, accepted 2026-10-11); the rows' 'C8 refuses mirroring' text is stale and what is left is the build and a second region to deploy into.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2929,7 +2929,7 @@
     "verification": "cargo test -p qip-edge --test cross_region; cargo test -p qip-edge-node --test dark",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision E01; gap before it: Automatic peer-loss detection; mirror catch-up."
   },
   {
     "id": "R12-RES-10132",
@@ -3344,7 +3344,7 @@
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:3099 every_image_under_gitops_is_pinned_by_digest_and_is_either_attested_by_the_pipeline_or_vendored",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_workflow_depends_on_a_repository_variable"
     ],
-    "gap": "Signed environment configuration.",
+    "gap": "Decided by ADR 0131 (accepted 2026-10-18): Reflex packages sign under the existing model-pack class (ADR 0110 decision 1 already names Cognitive Compiler packages), two-person; promotion drafts the signable qip_contracts ModelPack with the kernel pack id as lineage; configuration becomes a fifth artefact class, two-person, verified by the central composition roots before they read configuration. Code left: the configuration artefact class and key, a signing step in deploy.yml (protected path, patch for a person), and start-up verification in qip-api, qip-fastbrain and qip-deepbrain refusing an unsigned environment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3357,7 +3357,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D07; gap before it: Signed environment configuration."
   },
   {
     "id": "R12-RES-10151",
@@ -3886,7 +3886,7 @@
       "backend/crates/services/qip-cost-router/src/router.rs",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Accelerators, benchmark memory.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3896,11 +3896,11 @@
       "R12-QUANT-10066",
       "R12-AMBIENT-10094"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "per-deliverable checks above",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Accelerators, benchmark memory."
   },
   {
     "id": "R12-CAPITAL-10174",
@@ -3983,7 +3983,7 @@
       "backend/crates/services/qip-mesh/src/spine.rs",
       "backend/crates/apps/qip-ledgerd/src/main.rs:59-65"
     ],
-    "gap": "Move spine contracts onto Fabric streams or record the spine as a Fabric-equivalent in an ADR.",
+    "gap": "Decided by ADR 0128 (accepted 2026-10-18): The qip-mesh spine is the platform's control fabric for signed downward frames and cell deltas; the event fabric carries outcomes and records; an acceptance scan admits no third cross-process path. Code left: a qip-acceptance transport scan refusing any cross-process send outside the spine, the fabric producer, the peer link and named synchronous routes.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3998,7 +3998,7 @@
     "verification": "acceptance scan of transports",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04; gap before it: Move spine contracts onto Fabric streams or record the spine as a Fabric-equivalent in an ADR."
   },
   {
     "id": "R12-FABRIC-10178",
@@ -4130,7 +4130,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2643",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:2033"
     ],
-    "gap": "Prod reconciliation path (refused while paper/ADR).",
+    "gap": "Owner decision O20 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Reopen prod reconciliation from Git (ADR 0036/0093). Enables: Production reconciled by the control plane. Costs: Reopens prod promotion, which the deploy gate and gitops.rs refuse.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4140,11 +4140,11 @@
       "R12-CICD-10087",
       "R12-CICD-10048"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O20 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O20; gap before it: Prod reconciliation path (refused while paper/ADR)."
   },
   {
     "id": "R12-SEC-10183",
@@ -4201,7 +4201,7 @@
       "backend/crates/apps/qip-edge-node/tests/gateway.rs:215",
       "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt"
     ],
-    "gap": "Custody statement ingestion; authoritative store.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the gateway's PositionSnapshot custody statement on P1 and the ledger's comparison, with a seeded-break test in qip-ledgerd/tests/store.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4214,7 +4214,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Custody statement ingestion; authoritative store."
   },
   {
     "id": "R12-RES-10186",
@@ -4251,7 +4251,7 @@
       "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs",
       "backend/crates/libs/qip-contracts/src/forecast.rs::ForecastFields"
     ],
-    "gap": "Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it.",
+    "gap": "Delegable decision D13 (design-decisions-2026-10-18.json), ADR not yet written: Thesis beliefs, feature forecasts and capital-fabric demand forecasts carry qip_contracts::forecast::Forecast. Needs that ADR, then the code.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4262,7 +4262,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D13; gap before it: Calibration may be Uncalibrated (no score); thesis beliefs and other forecasts (ForecastLattice in feature.rs, demand forecasts) do not use this contract, so not every material forecast carries it."
   },
   {
     "id": "R12-MODEL-10188",
@@ -4322,7 +4322,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:619-650",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:155 a_benchmark_whose_classical_baseline_fails_reports_nothing_at_all"
     ],
-    "gap": "Accelerator fit measurement.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4331,11 +4331,11 @@
     "depends_on": [
       "R12-QUANT-10066"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-kernel model_serving; cargo test -p qip-quantum",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Accelerator fit measurement."
   },
   {
     "id": "R12-TICK-10191",
@@ -4570,18 +4570,18 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10742 a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the_deny_still_closes_everything_else",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5073"
     ],
-    "gap": "Agent identities with no production write grants.",
+    "gap": "Owner decision O18 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Give agent sessions their own identity (a Workload Identity pool) and scoped per-run credentials. Enables: A principal that distinguishes an agent from a person; sandboxed credentials. Costs: New IAM pool and providers; issuing credentials to agents.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O18 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: Agent identities with no production write grants."
   },
   {
     "id": "R12-MODEL-10202",
@@ -4727,7 +4727,7 @@
       "backend/crates/libs/qip-quantum/tests/hosted.rs:631",
       "backend/crates/tests/qip-acceptance/tests/quantum_routing_central_plane.rs:92"
     ],
-    "gap": "GPU coordination; deployment.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4736,10 +4736,10 @@
     "depends_on": [
       "R12-QUANT-10068"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-quantum",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: GPU coordination; deployment."
   }
 ]

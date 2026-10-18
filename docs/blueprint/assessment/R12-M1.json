@@ -59,7 +59,7 @@
       "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
       "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
     ],
-    "gap": "Advisory only: no REASON/DECIDE code reads the federation; decisions still use the single WorldModel. Federation::branch is never called in the cycle, so no hypothesis branches.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the federation narrowing schedule in Platform::construct_from's caps map, with a test that an agreeing population leaves every cap at one and a disagreeing one narrows; Federation::branch still has no cycle caller.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -70,7 +70,7 @@
     "verification": "cargo test -p qip-kernel (new test: cycle consults >1 federated model)",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Advisory only: no REASON/DECIDE code reads the federation; decisions still use the single WorldModel. Federation::branch is never called in the cycle, so no hypothesis branches."
   },
   {
     "id": "R12-REASON-1004",
@@ -82,7 +82,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs:38",
       "backend/crates/runtime/qip-kernel/src/platform.rs:179 kernel imports reasoning engine/hypothesis only"
     ],
-    "gap": "Wire rules/temporal/constraint into the kernel's REASON stage as a verifier of neural proposals; add executable proof traces.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the veto arm in reason_symbolically's caller (derive moved before approval) and a kernel test that a rule-refused hypothesis forms no proposal.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -93,7 +93,7 @@
     "verification": "cargo test -p qip-kernel (new: a neural proposal rejected by a symbolic rule)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Wire rules/temporal/constraint into the kernel's REASON stage as a verifier of neural proposals; add executable proof traces."
   },
   {
     "id": "R12-AMBIENT-1005",
@@ -289,18 +289,18 @@
       "backend/crates/libs/qip-contracts/tests/ambient.rs:879 allocation tests",
       "backend/crates/services/qip-cost-router/src/router.rs:43 RoutingPolicy (model tiers)"
     ],
-    "gap": "A hardware router with real GPU/TPU/QPU backends; Vertex AI is disabled (enable_vertex_ai = false).",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "XL",
-    "notes": "infrastructure/environments/dev/terraform.tfvars:285 enable_vertex_ai = false"
+    "notes": "infrastructure/environments/dev/terraform.tfvars:285 enable_vertex_ai = false ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: A hardware router with real GPU/TPU/QPU backends; Vertex AI is disabled (enable_vertex_ai = false)."
   },
   {
     "id": "R12-EXPAND-1014",
@@ -544,7 +544,7 @@
       "backend/crates/services/qip-reasoning-engine/src/rules.rs:38 Op",
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs:45 Form"
     ],
-    "gap": "Place symbolic verification between model output and decision; emit proof traces.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the same veto slice as REASON-1004; SymbolicDerivation is already the trace.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -557,7 +557,7 @@
     "verification": "cargo test -p qip-reasoning-engine",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Place symbolic verification between model output and decision; emit proof traces."
   },
   {
     "id": "R12-AGENCY-1025",
@@ -618,7 +618,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/main.tf:3 module exists",
       "infrastructure/workload-register.json:216 no module block instantiates the broker"
     ],
-    "gap": "Deploy the broker and route central/edge pub/sub through it.",
+    "gap": "Decided by ADR 0128 (accepted 2026-10-18): The qip-mesh spine is the platform's control fabric for signed downward frames and cell deltas; the event fabric carries outcomes and records; an acceptance scan admits no third cross-process path. Code left: the same catalogue entries as FABRIC-10077.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -629,7 +629,7 @@
     "verification": "cargo test -p qip-fabricd; cargo test -p qip-acceptance --test event_fabric",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D04; gap before it: Deploy the broker and route central/edge pub/sub through it."
   },
   {
     "id": "R12-FABRIC-1028",
@@ -1611,7 +1611,7 @@
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:4441 net(intents)"
     ],
-    "gap": "No cross-cell or cross-venue wash detection; nothing deployed.",
+    "gap": "Decided by ADR 0136 (accepted 2026-10-18): Cross-cell wash activity is made impossible by giving each venue-instrument book one owning cell through a signed policy slot, with handovers that gap and never overlap, not by a central pre-trade hop. Code left: BookOwnership and the books slot, the cell's refusal gate and stale-slot reduce-only rule, withdrawal on loss, and the centre's overlap check.",
     "implemented": false,
     "tested": false,
     "integrated": true,
@@ -1622,7 +1622,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. ADR lane 2026-10-18: gap re-graded against decision D12; gap before it: No cross-cell or cross-venue wash detection; nothing deployed."
   },
   {
     "id": "R12-EXEC-1068",
@@ -2254,7 +2254,7 @@
       "backend/crates/services/qip-portfolio-engine/src",
       "backend/crates/services/qip-lifecycle/src/gates.rs"
     ],
-    "gap": "Explicit brain boundary/contract and autonomous loop.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the asset brain (qip-portfolio-engine, qip-lifecycle).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2265,7 +2265,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
   },
   {
     "id": "R12-CAPITAL-1096",
@@ -2275,7 +2275,7 @@
       "backend/crates/services/qip-capital/tests/treasury.rs:58",
       "backend/crates/runtime/qip-kernel/src/platform.rs:12668 deployable_capital"
     ],
-    "gap": "Explicit brain boundary/contract and autonomous loop.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the capital brain (qip-capital less treasury).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2286,7 +2286,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
   },
   {
     "id": "R12-CAPITAL-1097",
@@ -2296,7 +2296,7 @@
       "backend/crates/libs/qip-risk/src/limits.rs:118",
       "backend/crates/services/qip-risk-engine/src/autonomy.rs:120"
     ],
-    "gap": "Explicit brain boundary/contract and autonomous loop.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the risk brain (qip-risk, qip-risk-engine).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2307,7 +2307,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
   },
   {
     "id": "R12-CAPITAL-1098",
@@ -2317,7 +2317,7 @@
       "backend/crates/services/qip-capital-fabric/src/corridor.rs",
       "backend/crates/services/qip-capital-fabric/src/custody.rs"
     ],
-    "gap": "Explicit brain boundary/contract and autonomous loop.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: the qip-treasury extraction and its arch test (shared with COVERAGE-7157).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2328,7 +2328,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
   },
   {
     "id": "R12-CAPITAL-1099",
@@ -2338,7 +2338,7 @@
       "backend/crates/libs/qip-contracts/src/ledger.rs:103 Posting",
       "backend/crates/apps/qip-ledgerd/src/main.rs:1"
     ],
-    "gap": "Explicit brain boundary/contract and autonomous loop.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the ledger brain (qip-ledgerd over qip_contracts::ledger and ledger_operation).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2349,7 +2349,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
   },
   {
     "id": "R12-CAPITAL-1100",
@@ -2359,7 +2359,7 @@
       "backend/crates/services/qip-capital-fabric/src/settlement.rs",
       "backend/crates/edge/qip-edge/tests/settlement.rs:274"
     ],
-    "gap": "Explicit brain boundary/contract and autonomous loop.",
+    "gap": "Decided by ADR 0127 (accepted 2026-10-18): The six capital-side brains are crate boundaries proven by closure tests and loops the kernel composes, not new binaries; treasury and the survival kernel are extracted first. Code left: a closure test for the settlement brain (qip-capital-fabric settlement and qip-edge settlement).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2370,7 +2370,7 @@
     "verification": "cargo test -p qip-capital -p qip-capital-fabric -p qip-risk",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D03; gap before it: Explicit brain boundary/contract and autonomous loop."
   },
   {
     "id": "R12-DATA-1101",
@@ -3843,18 +3843,18 @@
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:309",
       "backend/crates/tests/qip-acceptance/tests/quote_loop.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Complete the remaining scope items and integrate them."
   },
   {
     "id": "R12-EXEC-1169",
@@ -4160,18 +4160,18 @@
       "backend/crates/libs/qip-contracts/src/action.rs:281",
       "backend/crates/libs/qip-contracts/src/action.rs:378 audit"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Owner decision O16 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Reopen ADR 0114 D8 for an outbound channel or external action surface. Enables: A real channel behind ConductGate, surveys, public adapters. Costs: A public channel, its credential and account, and reputational exposure.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O16 (design-decisions-2026-10-18)",
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O16; gap before it: Complete the remaining scope items and integrate them."
   },
   {
     "id": "R12-AGENCY-1184",
@@ -4476,7 +4476,7 @@
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts"
     ],
-    "gap": "Settlement and inventory linkage. No producer observes a venue settlement (the simulated venue settles at the fill and the desk's settlement register is a projection), and the commerce inventory ledger is reachable only under a breadth plan no environment commits, so neither has an honest operation to record (ADR 0123 'Consequences': each kind needs a producer that observes the fact).",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: Decision::Settled booked end to end (a T+2 fill reaches cash on the second simulated day); inventory stays with commerce_research's producer.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4487,7 +4487,7 @@
     "verification": "cargo test -p qip-ledgerd; cargo test -p qip-kernel --test central",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Three of four named destinations are absent. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination is now met and the gap names the two that are not and why. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination now holds in both directions and the gap is unchanged."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Three of four named destinations are absent. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination is now met and the gap names the two that are not and why. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination now holds in both directions and the gap is unchanged. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Settlement and inventory linkage. No producer observes a venue settlement (the simulated venue settles at the fill and the desk's settlement register is a projection), and the commerce inventory ledger is reachable only under a breadth plan no environment commits, so neither has an honest operation to record (ADR 0123 'Consequences': each kind needs a producer that observes the fact)."
   },
   {
     "id": "R12-MODEL-1198",
