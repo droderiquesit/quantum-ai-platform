@@ -125,6 +125,8 @@ pub enum AgentKind {
     Momentum,
     Competitor,
     Maker,
+    Spoofer,
+    Layerer,
 }
 
 impl AgentKind {
@@ -135,6 +137,8 @@ impl AgentKind {
             Self::Momentum => "momentum",
             Self::Competitor => "competitor",
             Self::Maker => "maker",
+            Self::Spoofer => "spoofer",
+            Self::Layerer => "layerer",
         }
     }
 }
@@ -221,6 +225,32 @@ pub enum Behaviour {
         skew_bps: f64,
         max_inventory: Decimal,
     },
+    /// **Spoofer.** With probability `participation` each step, shows one
+    /// order of `size` on a coin-flipped side, `away_bps` behind the calm
+    /// touch, and cancels it before anything can trade against it. Withdraws
+    /// under any injected condition.
+    ///
+    /// A manipulation pattern, not a liquidity provider: the size is there
+    /// to be seen and never to be hit. It is recorded as
+    /// [`FlowAction::Cancelled`] and never rested in the book an order fills
+    /// against, so a strategy that sized against displayed depth including
+    /// it would find it gone, and a surveillance check over the flow record
+    /// has the pattern to find.
+    Spoofer {
+        size: Decimal,
+        away_bps: f64,
+        participation: f64,
+    },
+    /// **Layerer.** As the spoofer, but `levels` orders of `size` stacked on
+    /// one side, the `k`-th `step_bps × k` behind the calm touch, all
+    /// cancelled in the step they were shown — the ladder that makes one
+    /// side look deep.
+    Layerer {
+        size: Decimal,
+        levels: usize,
+        step_bps: f64,
+        participation: f64,
+    },
 }
 
 impl Behaviour {
@@ -231,6 +261,8 @@ impl Behaviour {
             Self::Momentum { .. } => AgentKind::Momentum,
             Self::Competitor { .. } => AgentKind::Competitor,
             Self::Maker { .. } => AgentKind::Maker,
+            Self::Spoofer { .. } => AgentKind::Spoofer,
+            Self::Layerer { .. } => AgentKind::Layerer,
         }
     }
 
@@ -284,6 +316,21 @@ impl Behaviour {
             } => format!(
                 "quotes {size} both sides at ±{half_spread_bps:.1}bp of the calm mid, widening the unwanted side by up to {skew_bps:.1}bp on inventory; withdraws past {max_inventory} or under any condition"
             ),
+            Self::Spoofer {
+                size,
+                away_bps,
+                participation,
+            } => format!(
+                "with probability {participation:.2} shows {size} {away_bps:.1}bp behind the calm touch on a coin-flipped side and cancels it before it can trade; {NOT_CALIBRATED_STATEMENT}"
+            ),
+            Self::Layerer {
+                size,
+                levels,
+                step_bps,
+                participation,
+            } => format!(
+                "with probability {participation:.2} shows {levels} layer(s) of {size}, {step_bps:.1}bp apart behind the calm touch on a coin-flipped side, and cancels them all before any can trade; {NOT_CALIBRATED_STATEMENT}"
+            ),
         }
     }
 }
@@ -308,6 +355,24 @@ fn finite_threshold(name: &str, threshold: f64) -> Result<()> {
     if !threshold.is_finite() || threshold < 0.0 {
         return Err(Error::invalid(format!(
             "agent {name} needs a finite, non-negative threshold; {threshold} is not one"
+        )));
+    }
+    Ok(())
+}
+
+/// A shown order behind the touch needs a positive distance (at zero it sits
+/// at the touch, where it could trade, which is not what either pattern does)
+/// and a participation probability.
+fn manipulation_terms(name: &str, away_bps: f64, participation: f64) -> Result<()> {
+    if !away_bps.is_finite() || away_bps <= 0.0 {
+        return Err(Error::invalid(format!(
+            "agent {name} needs a positive distance behind the touch; {away_bps}bp would rest a \
+             layer where it can trade"
+        )));
+    }
+    if !participation.is_finite() || !(0.0..=1.0).contains(&participation) {
+        return Err(Error::invalid(format!(
+            "agent {name} needs a participation probability in [0, 1]; {participation} is not one"
         )));
     }
     Ok(())
@@ -452,6 +517,54 @@ impl CounterpartyAgent {
         })
     }
 
+    /// See [`Behaviour::Spoofer`].
+    pub fn spoofer(
+        name: impl Into<String>,
+        size: Decimal,
+        away_bps: f64,
+        participation: f64,
+    ) -> Result<Self> {
+        let name = named(name)?;
+        positive_quantity(&name, "size", size)?;
+        manipulation_terms(&name, away_bps, participation)?;
+        Ok(Self {
+            name,
+            behaviour: Behaviour::Spoofer {
+                size,
+                away_bps,
+                participation,
+            },
+        })
+    }
+
+    /// See [`Behaviour::Layerer`]. One level is a spoofer, so at least two
+    /// are required.
+    pub fn layerer(
+        name: impl Into<String>,
+        size: Decimal,
+        levels: usize,
+        step_bps: f64,
+        participation: f64,
+    ) -> Result<Self> {
+        let name = named(name)?;
+        positive_quantity(&name, "size", size)?;
+        manipulation_terms(&name, step_bps, participation)?;
+        if levels < 2 {
+            return Err(Error::invalid(format!(
+                "agent {name} needs at least two layers; {levels} is a spoofer, so name it one"
+            )));
+        }
+        Ok(Self {
+            name,
+            behaviour: Behaviour::Layerer {
+                size,
+                levels,
+                step_bps,
+                participation,
+            },
+        })
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -495,6 +608,14 @@ pub enum FlowAction {
         ask: Decimal,
         size: Decimal,
     },
+    /// Showed `size` at `price` on `side` and cancelled it within the same
+    /// step, before any order could reach it. Never rested in a book an order
+    /// fills against.
+    Cancelled {
+        side: Side,
+        price: Decimal,
+        size: Decimal,
+    },
 }
 
 /// One agent's action at one instant, at one venue, for one instrument.
@@ -521,7 +642,7 @@ impl FlowRecord {
                 side: Side::Sell,
                 quantity,
             } => Some(-quantity),
-            FlowAction::Quote { .. } => None,
+            FlowAction::Quote { .. } | FlowAction::Cancelled { .. } => None,
         }
     }
 }
@@ -913,8 +1034,76 @@ impl CounterpartyAgent {
                     });
                 }
             }
+            Behaviour::Spoofer {
+                size,
+                away_bps,
+                participation,
+            } => {
+                self.show_and_cancel(step, rng, *size, 1, *away_bps, *participation, &mut actions)?;
+            }
+            Behaviour::Layerer {
+                size,
+                levels,
+                step_bps,
+                participation,
+            } => {
+                self.show_and_cancel(
+                    step,
+                    rng,
+                    *size,
+                    *levels,
+                    *step_bps,
+                    *participation,
+                    &mut actions,
+                )?;
+            }
         }
         Ok(actions)
+    }
+
+    /// The spoofer's and layerer's step: `levels` cancelled orders on one
+    /// side, the `k`-th `k × step_bps` behind the calm touch.
+    ///
+    /// Both coins are flipped before the stress check, as the passive agent's
+    /// are, so a schedule change never redraws the calm steps.
+    #[allow(clippy::too_many_arguments)]
+    fn show_and_cancel(
+        &self,
+        step: &StepContext<'_>,
+        rng: &mut Xoshiro256,
+        size: Decimal,
+        levels: usize,
+        step_bps: f64,
+        participation: f64,
+        actions: &mut Vec<FlowAction>,
+    ) -> Result<()> {
+        let shows = rng.bernoulli(participation);
+        let bids = rng.bernoulli(0.5);
+        if step.stressed() || !shows {
+            return Ok(());
+        }
+        let (side, touch) = if bids {
+            (Side::Buy, step.calm_bid()?)
+        } else {
+            (Side::Sell, step.calm_ask()?)
+        };
+        for level in 1..=levels {
+            let away = step_bps * level as f64;
+            let offset = step.price.checked_apply_bps(away).ok_or_else(|| {
+                Error::numeric(format!(
+                    "agent {}'s layer {away}bp behind the touch cannot be applied to {}",
+                    self.name, step.price
+                ))
+            })?;
+            let price = match side {
+                Side::Buy => touch - offset,
+                Side::Sell => touch + offset,
+            };
+            if price.is_positive() {
+                actions.push(FlowAction::Cancelled { side, price, size });
+            }
+        }
+        Ok(())
     }
 }
 

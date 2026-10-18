@@ -701,7 +701,7 @@
       "infrastructure/terraform/catalogue.tf Cloud Run catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6357 every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance"
     ],
-    "gap": "No per-service latency SLO tied to instance floor; dev runs no workload.",
+    "gap": "The closure cannot be built as written: modules/cloudrun has no min_instances input to put a validation on, because the service is a Config Connector manifest (ADR 0036) and min and max instances live in infrastructure/gitops/envs/*/*.yaml and in catalogue.tf. What holds today: infrastructure.rs::every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance pins both brains to a floor of one with a written justification. Missing: a declared latency or cold-start bound per workload, and a rule that a workload with a zero floor says it tolerates a cold start. Building that is a new catalogue field consumed by nothing but the test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -712,7 +712,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module; status unchanged."
   },
   {
     "id": "R12-DATA-10033",
@@ -936,14 +936,13 @@
   },
   {
     "id": "R12-MODEL-10043",
-    "status": "PARTIAL",
-    "current": "qip-training holds a Vertex adapter with tests; the ai module declares a metadata store and endpoint, gated off.",
+    "status": "COMPLETE",
+    "current": "qip-contracts carries Algorik types and names no cloud vendor's model or data API: no production source or manifest in the crate holds the words vertex, aiplatform, googleapis, gemini, google, bigquery or spanner (camelCase split), and model_gateway_boundary.rs::the_contract_layer_names_no_cloud_vendor_model_or_data_api holds that. The provider endpoint itself is pinned to the declared adapters by only_the_declared_adapters_name_a_model_provider_endpoint.",
     "evidence": [
-      "backend/crates/services/qip-training/src/vertex.rs",
-      "backend/crates/services/qip-training/tests/vertex.rs",
-      "infrastructure/terraform/modules/ai/main.tf:95 vertex metadata store; :113 endpoint"
+      "backend/crates/tests/qip-acceptance/tests/model_gateway_boundary.rs the_contract_layer_names_no_cloud_vendor_model_or_data_api",
+      "backend/crates/tests/qip-acceptance/tests/model_gateway_boundary.rs only_the_declared_adapters_name_a_model_provider_endpoint"
     ],
-    "gap": "Not enabled; no guard that contracts never name Vertex types.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -951,10 +950,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training --test vertex",
+    "verification": "cd backend && cargo test -p qip-acceptance --test model_gateway_boundary -- the_contract_layer_names_no_cloud_vendor_model_or_data_api",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: pub struct VertexRequest appended to qip-contracts/src/lib.rs failed the test naming that file and the word vertex; restored byte for byte. Comment lines are skipped, so the one doc comment saying a cell 'cannot reach Google' (trust.rs) is not a finding. The test covers the contract crate only; other shared vocabularies are not scanned."
   },
   {
     "id": "R12-MODEL-10044",
@@ -1005,7 +1004,7 @@
       "infrastructure/terraform/modules/registry/main.tf:33 immutable_tags = true",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4801 the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it"
     ],
-    "gap": "Cross-region replication of critical artifacts.",
+    "gap": "Not built. A second-region replica of the images repository is a new paid resource plus a copy step in deploy.yml (a protected path) so the replica holds the signed digests; moving the existing repository to a multi-region location instead forces its replacement, which would delete the repository holding the signed images. Needs an owner decision on replica versus multi-region, and the deploy.yml step, before a tftest is meaningful.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1016,7 +1015,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading modules/registry/main.tf; status unchanged."
   },
   {
     "id": "R12-SEC-10047",
@@ -1256,13 +1255,16 @@
   },
   {
     "id": "R12-OBS-10058",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Cloud Run captures stderr by default; NAT/flow logs are configured; the edge node bounds per-event lines to 5 per 10 s. No log sinks or retention policy declared.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:874 PassLog::new(5, 10s)",
-      "infrastructure/terraform/modules/execution-node/main.tf:140 flow logs"
+      "infrastructure/terraform/modules/execution-node/main.tf:140 flow logs",
+      "infrastructure/terraform/modules/observability/logging.tf",
+      "infrastructure/terraform/modules/observability/tests/logging.tftest.hcl",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_workload_log_bucket_has_a_retention_bounded_by_a_validated_variable"
     ],
-    "gap": "Log sinks/retention.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1270,10 +1272,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test pass (PassLog bound)",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- log_; cd infrastructure/terraform/modules/observability && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18. A dedicated bucket qip-<env>-workloads with retention_days = var.log_retention_days (default 90, whole days 1 to 400) and a sink routing only this environment's Cloud Run revisions and execution nodes to it; the project's own _Default bucket is deliberately not managed because this repository did not create it. No exclusion for per-pass stderr was written: volume is bounded at the source by PassLog::new(5, 10s) and a filter against a log shape no deployed process has produced would drop lines on a guess. Not applied anywhere: plan-time only. terraform 1.9.8 (checksum-verified) `Success! 10 passed, 0 failed.` for the module, `terraform validate` on the root valid. Mutation, restored: a literal retention of 9999 failed the acceptance test naming the bounded variable."
   },
   {
     "id": "R12-OBS-10059",
@@ -1313,14 +1315,16 @@
   },
   {
     "id": "R12-ARCH-10061",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "catalogue.tf holds one entry per Cloud Run workload (binary, plane, trust zone, traffic, variables, secrets) with acceptance tests on parity; no degraded-mode or scaling-model field, and VMs/managed stores are outside it.",
     "evidence": [
       "infrastructure/terraform/catalogue.tf:1-30 workload catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_deployable_binary_in_the_workspace_has_a_workload",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held",
+      "infrastructure/terraform/catalogue.tf state_owner/scaling/degraded_mode on api, fastbrain, deepbrain",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode"
     ],
-    "gap": "Add state owner, protocol, scaling and degraded-mode fields and cover non-Cloud-Run services.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1328,10 +1332,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- state_owner pinned_to_one blanked_contract; cd infrastructure/terraform && terraform init -backend=false && terraform validate",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered."
   },
   {
     "id": "R12-FABRIC-10062",
@@ -2446,13 +2450,14 @@
   },
   {
     "id": "R12-MESH-10111",
-    "status": "PARTIAL",
-    "current": "Peer protocol is separate from Fabric streams; the acceptance test for this (fabric_005) asserts its own fixtures.",
+    "status": "COMPLETE",
+    "current": "No Reflex Mesh frame type is a Fabric stream, as a code-level guard: event_fabric_foundations.rs::no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one reads every PeerMessage kind and MeshFunction from qip-peer and the stream catalogue (infrastructure/event-fabric/streams.local.json), requires their names to be disjoint (full name and stem), and requires that no source in qip-peer or qip-peer-link holds a stream's name. fabric_005 separately proves the cell's mesh files name no fabric client.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs:20 fabric_005 (fixture-only: asserts its own topology struct)"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs fabric_005_reflex_mesh_coordination_stays_off_the_fabric",
+      "infrastructure/event-fabric/streams.local.json"
     ],
-    "gap": "Peer transport; a code-level guard.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2462,10 +2467,10 @@
       "R12-MESH-10075"
     ],
     "blocked_by": "",
-    "verification": "acceptance scan of stream catalogue vs peer frames",
+    "verification": "cd backend && cargo test -p qip-acceptance --test event_fabric_foundations -- no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: pub const LEAK = \"telemetry.local\" appended to qip-peer/src/lib.rs failed the test naming the file and the stream; a MeshFunction called Control, applied to a copy of the source inside the test, is reported as colliding with the control.local stem (a real variant would also fail the exhaustive match in PeerMessage::function, so the copy is the only way to exercise the check). lib.rs restored byte for byte. The catalogue read is the committed local one; no other stream list exists."
   },
   {
     "id": "R12-MESH-10112",
@@ -2801,13 +2806,14 @@
   {
     "id": "R12-RES-10126",
     "status": "PARTIAL",
-    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry; the Fabric-keeps-journaling half is unwired; no cross-region cover.",
+    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry (degraded.rs). Since 2026-10-18 the Fabric half is proven through the node's decision loop: with a centre that accepts and never answers, the cell keeps placing orders, applies no new policy, and its OrderSent journal entries reach the fabric spool the drain ships from; the drain to the regional broker is a separate thread and endpoint (fabric_envelope.rs).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_envelope_expires",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_the_sink_sends_is_read_back_from_the_broker_as_the_same_envelopes"
     ],
-    "gap": "Fabric journaling during outage; deployment.",
+    "gap": "Other regions covering eligible functions is deployment work (cross-region cover needs deployed cells); no execution node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2817,10 +2823,10 @@
       "R12-RES-10124"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage; cargo test -p qip-edge-node --test decision_loop a_cell_whose_centre_has_gone_silent",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the 'Fabric journaling during outage' half is now tested. Mutation: skipping Cell::flush in DecisionLoop::turn until the mesh worker has a health reading (which a silent centre never gives) made the test abort on its watchdog; restored byte for byte. Kept PARTIAL for cross-region cover."
   },
   {
     "id": "R12-RES-10127",
@@ -4182,12 +4188,14 @@
   {
     "id": "R12-TICK-10184",
     "status": "PARTIAL",
-    "current": "Replay re-drives run_pass from recorded tape/control/clock and reproduces sessions byte-for-byte (tests); source is local recordings, not Fabric/GCS.",
+    "current": "Venue-bytes replay exists and is deterministic: qip-orderbook::replay re-decodes, re-sequences and re-books a recorded ITCH session and reproduces every event, book, fill and flag, twice and from a checkpoint, against a committed digest (backend/crates/tests/qip-acceptance/tests/tick_replay.rs). The node-level replay the earlier text described does not exist: backend/crates/apps/qip-edge-node/src/replay.rs is a three-line module doc (ADR 0100 §8, SLICE-39) with no code, so nothing re-drives run_pass from recorded tape, control and clock inputs. The recorded inputs it would read exist: PassInputs {marker: PassMarker, applied} reach the fabric spool (event_fabric::inputs).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/replay.rs:1-3",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327"
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_reproduces_every_event_book_fill_and_flag",
+      "backend/crates/edge/qip-orderbook/src/replay.rs",
+      "backend/crates/apps/qip-edge-node/src/replay.rs:1-3 (module doc only)",
+      "backend/crates/libs/qip-contracts/src/replay.rs PassMarker"
     ],
-    "gap": "Replay from Fabric segments/GCS archive.",
+    "gap": "Build the node replay (ADR 0100 §8 SLICE-39): read PassInputs and control frames from spool or archived segments (qip_storage::segment::archive::ArchiveReader over a BlobStore), rebuild the cell from the marker's config and plan digests, re-drive run_pass over ManualClock and compare the reproduced journal; then source it from the GCS archive, which needs enable_cloud_storage. Decision and outcome history are not reconstructed by anything today.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4201,7 +4209,7 @@
     "verification": "cargo test -p qip-acceptance --test tick_replay",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: the earlier 'current' credited replay.rs with re-driving run_pass, but the file holds no code. The triage closure (Replay::from_archive) presupposes a Replay type that does not exist; building it is size L and was not attempted in this lane."
   },
   {
     "id": "R12-LEDGER-10185",

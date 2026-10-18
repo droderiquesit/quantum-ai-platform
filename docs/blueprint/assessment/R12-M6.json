@@ -280,13 +280,14 @@
   },
   {
     "id": "R12-WORLD-6013",
-    "status": "PARTIAL",
-    "current": "qip-ai episodic store is capacity-bounded with a graded sampler choosing what to give up; no consolidation into abstractions or deduplication of near-duplicates.",
+    "status": "COMPLETE",
+    "current": "The episodic store consolidates as it forgets. At capacity, EpisodicMemory spends a calm episode whose pattern (instrument, regime, claim direction) it still holds another instance of before a unique calm one, even an older unique one; the tail reserve of §54.2's sampler is untouched. Every evicted episode is folded into an EpisodeAbstraction for its pattern: the count folded, the newest 32 member ids as lineage, the mean realised move over resolved members, and the known-at span. Abstractions are bounded by the store's capacity. The kernel holds EpisodicMemory::default() on every Platform, so this runs on the default path.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/memory/store.rs:220 bounded capacity refused at zero",
-      "backend/crates/libs/qip-ai/src/memory/store.rs:350 remember evicts beyond capacity"
+      "backend/crates/libs/qip-ai/src/memory/store.rs EpisodicMemory::stale_calm, abstract_away, EpisodeAbstraction",
+      "backend/crates/runtime/qip-kernel/src/platform.rs episodes: EpisodicMemory::default()",
+      "backend/crates/libs/qip-ai/tests/episodic.rs at_capacity_a_stale_near_duplicate_is_folded_into_an_abstraction_before_a_unique_episode_goes"
     ],
-    "gap": "Abstraction/consolidation step and dedup of near-duplicate episodes.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -294,10 +295,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ai",
+    "verification": "cargo test -p qip-ai --test episodic && cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: stale_calm returning the oldest calm slot evicts the stale duplicate's older unique neighbour instead; skipping abstract_away produces no abstraction. qip-kernel: 930 passed, 0 failed across 62 binaries with the new eviction in force."
   },
   {
     "id": "R12-TICK-6014",
@@ -616,13 +617,14 @@
   },
   {
     "id": "R12-EXPAND-6028",
-    "status": "PARTIAL",
-    "current": "Bounded episodic memory with graded eviction; MemoryEntry contract with retention/value policy; no MemoryPack/EpisodeCluster.",
+    "status": "COMPLETE",
+    "current": "Memories consolidate, summarise and deduplicate on the default path: the kernel's EpisodicMemory evicts a near-duplicate (same instrument, regime and claim direction) before a unique episode and folds every evicted episode into an EpisodeAbstraction, the consolidation record, carrying the folded count, member episode ids as lineage (newest 32), the mean realised move of the resolved members and the known-at span, bounded by the store's capacity. MemoryEntry's retention/value contract is unchanged.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/memory/store.rs:350",
-      "backend/crates/libs/qip-contracts/src/expansion.rs:549 MemoryEntry"
+      "backend/crates/libs/qip-ai/src/memory/store.rs EpisodeAbstraction, EpisodicMemory::abstractions",
+      "backend/crates/libs/qip-ai/tests/episodic.rs at_capacity_a_stale_near_duplicate_is_folded_into_an_abstraction_before_a_unique_episode_goes",
+      "backend/crates/runtime/qip-kernel/src/platform.rs episodes: EpisodicMemory::default()"
     ],
-    "gap": "Consolidation into packs/clusters.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -630,10 +632,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing MemoryPack / EpisodeCluster)",
+    "verification": "cargo test -p qip-ai --test episodic",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. The record is EpisodeAbstraction in qip-ai, keyed by pattern rather than the triage proposal's EpisodeCluster in qip-contracts keyed by embedding bucket: a pattern key states what made two episodes the same lesson, where an LSH bucket co-locates unrelated episodes by projection. No deep-brain call was added; consolidation runs inside the kernel's store on every eviction. Mutation: skipping abstract_away produces no abstraction."
   },
   {
     "id": "R12-EXPAND-6029",
@@ -1648,12 +1650,15 @@
   },
   {
     "id": "R12-REFLEX-6075",
-    "status": "PARTIAL",
-    "current": "Distillation refuses a student whose step cost exceeds the latency budget; no resource or failure-mode budget; no regional deployment path.",
+    "status": "COMPLETE",
+    "current": "A distilled student is held to three deterministic budgets before approved_student hands it out: worst-case evaluation steps (existing), serialised parameter bytes (FidelityReport.parameter_bytes against FidelityPolicy.maximum_parameter_bytes, 64 KiB by default) and failure modes on bound inputs (non-finite, refused, or far outside the teacher's probe range at the probe box's corners and per-feature edges, against maximum_failure_modes, zero by default). The deep brain's learning desk names a distillate to the cells only through approved_student(&FidelityPolicy::default()), so all three run on its default round.",
     "evidence": [
-      "backend/crates/services/qip-training/src/distill.rs:217"
+      "backend/crates/services/qip-training/src/distill.rs FidelityPolicy::shortfalls (parameter bytes, failure modes) and failure_modes",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs approved_student(&FidelityPolicy::default())",
+      "backend/crates/services/qip-training/tests/training.rs a_student_over_its_memory_or_failure_mode_budget_is_refused_by_name",
+      "backend/crates/services/qip-training/tests/training.rs a_student_too_expensive_for_the_hot_path_is_refused_by_name"
     ],
-    "gap": "Resource and failure-mode budgets and a deployment gate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1661,10 +1666,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cargo test -p qip-training --test training && cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: zeroing failure_modes hands out the extrapolating student (fails on 0 bound inputs); scaling the byte bound by a million hands out the student over an 8-byte budget. qip-training and qip-deepbrain suites: 400 passed, 0 failed with the default budgets in force."
   },
   {
     "id": "R12-EXPAND-6076",
@@ -1689,14 +1694,15 @@
   },
   {
     "id": "R12-EXPAND-6077",
-    "status": "PARTIAL",
-    "current": "Models (calibrated baseline), tools (cited evaluation) and agency policies (identified attribution) need evidence before authority; other capability kinds have no authority path.",
+    "status": "COMPLETE",
+    "current": "Each authority-widening path requires a measured-value record and one suite enumerates them: authority_paths.rs::every_authority_widening_path_refuses_without_a_measured_value_record drives the calibrated-baseline gate (qip-kernel central/models.rs), the tool-scope promotion (qip-agents tools.rs, citing its evaluation) and the action-policy widening (qip-agency autonomy.rs, on an identified attribution and an approver) with empty or inadequate evidence, requires each to refuse and the authority to stay put, then admits complete evidence through the same seams.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
-      "backend/crates/libs/qip-agents/src/tools.rs:126",
-      "backend/crates/services/qip-agency/src/autonomy.rs:87"
+      "backend/crates/tests/qip-acceptance/tests/authority_paths.rs every_authority_widening_path_refuses_without_a_measured_value_record",
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:65 require_calibrated_baseline",
+      "backend/crates/libs/qip-agents/src/tools.rs promote",
+      "backend/crates/services/qip-agency/src/autonomy.rs widen"
     ],
-    "gap": "Uniform rule across capability kinds.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1704,10 +1710,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency -p qip-agents",
+    "verification": "cd backend && cargo test -p qip-acceptance --test authority_paths",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations, each restored byte for byte: the blank-evaluation check in tools.rs::promote replaced by false failed the test at the blank-evaluation assertion; the is_identified check in ActionPolicy::widen replaced by false failed it at the policy assertion; an early Ok in require_calibrated_baseline failed it at the baseline assertion. The suite adds qip-agency as a dev-dependency of qip-acceptance (a workspace member; Cargo.lock gains one line, no third-party package). Kinds without a path cannot receive authority by construction; a fourth seam added elsewhere is not found by this test and needs its line here."
   },
   {
     "id": "R12-AGENCY-6078",

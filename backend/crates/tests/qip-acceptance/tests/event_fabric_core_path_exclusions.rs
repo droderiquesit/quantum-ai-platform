@@ -108,3 +108,90 @@ fn no_terraform_or_workflow_file_provisions_eventarc_or_cloud_tasks() {
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
+
+/// `text` with `//` line comments removed, so prose naming a type to say it
+/// is not used does not count as using it.
+fn rust_code(text: &str) -> String {
+    text.lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The body of the first `fn {name}(` in `source`, through its closing brace.
+fn body_of<'a>(source: &'a str, name: &str) -> &'a str {
+    let start = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("no fn {name} in the scanned source"));
+    let mut depth = 0usize;
+    let mut opened = false;
+    for (offset, ch) in source[start..].char_indices() {
+        match ch {
+            '{' => {
+                depth += 1;
+                opened = true;
+            }
+            '}' => {
+                depth -= 1;
+                if opened && depth == 0 {
+                    return &source[start..=start + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("fn {name} never closes");
+}
+
+/// COVERAGE-7193: a fabric outage cannot block market-event-to-order
+/// execution, because the reflex node's decision thread reaches the fabric
+/// only through a bounded handoff it never waits on. Crate tests prove the
+/// behaviour (a stalled writer, a stalled store, a silent centre); this
+/// proves the composite's shape across the crate boundary: the one handoff
+/// the decision thread holds offers with `try_send`, and neither the loop
+/// nor the pass names the spool or its writer, so no edit inside either can
+/// append to the spool on the decision thread without this failing.
+///
+/// Mutation: make `HandoffSender::offer` call the blocking `send` and the
+/// "waits on the writer" assertion fails; name `SegmentLog` anywhere in
+/// `scheduler.rs` outside a comment and the per-file assertion does.
+#[test]
+fn the_reflex_decision_thread_reaches_the_fabric_only_through_a_handoff_it_never_waits_on() {
+    let writer = rust_code(&read(
+        "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs",
+    ));
+    let offer = body_of(&writer, "offer");
+    assert!(
+        offer.contains("Offer::Full"),
+        "premise: the scan is reading HandoffSender::offer:\n{offer}"
+    );
+    assert!(
+        !offer.replace(".try_send(", "").contains(".send("),
+        "HandoffSender::offer waits on the writer:\n{offer}"
+    );
+    assert!(
+        offer.contains("self.inner.try_send("),
+        "HandoffSender::offer no longer offers without waiting:\n{offer}"
+    );
+    assert!(
+        writer.contains("sync_channel("),
+        "the handoff is no longer a bounded channel"
+    );
+
+    for file in [
+        "backend/crates/apps/qip-edge-node/src/scheduler.rs",
+        "backend/crates/apps/qip-edge-node/src/pass.rs",
+    ] {
+        let source = rust_code(&read(file));
+        assert!(
+            source.contains("run_pass") || source.contains("fn turn("),
+            "premise: {file} is on the decision thread"
+        );
+        for name in ["SpoolWriter", "SegmentLog", "HandoffReceiver"] {
+            assert!(
+                !source.contains(name),
+                "{file} names {name}: the decision thread can reach the spool without the handoff"
+            );
+        }
+    }
+}

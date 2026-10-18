@@ -163,27 +163,25 @@
   {
     "id": "R12-DATA-3008",
     "status": "PARTIAL",
-    "current": "Kernel source_discovery joins knowledge gaps and forecast errors into discovery targets; the deep brain's DiscoveryDesk reads them at the start of every pass, and dev commits the pass's cadence.",
+    "current": "Kernel source_discovery joins knowledge gaps and forecast errors into discovery targets; the deep brain's DiscoveryDesk reads them at the start of every pass. No environment commits the pass's cadence.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/source_discovery.rs:1-20 targets_from wiring",
       "backend/crates/runtime/qip-kernel/tests/source_discovery.rs",
       "backend/crates/apps/qip-deepbrain/src/discovery.rs:327 platform.discovery_targets(now) before any candidate",
-      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
-      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value"
     ],
-    "gap": "Targets are produced on the committed dev path; e2e needs a dev apply with the deep brain serving (control plane suspended, ADR 0093). Acting on a target still needs a mounted candidate catalogue (owner decision).",
+    "gap": "The pass is off in every environment: dev's cadence (53340778) was withdrawn because blueprint_arch's R12-GCP-10144 guard pins dev to no data-source key a later environment lacks. Turning it on needs an owner decision: set it in the later environments too, or narrow the guard with an argument. Acting on a target still needs a mounted candidate catalogue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
     "verification": "cargo test -p qip-kernel --test source_discovery && cargo +1.94.1 test -p qip-acceptance --test gitops every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test."
+    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test. Orchestrator 2026-10-18 18:10: withdrawn from dev; main's ci on ec1c81ce failed dev_declares_no_more_data_sources_than_any_later_environment with the cadence set."
   },
   {
     "id": "R12-MODEL-3009",

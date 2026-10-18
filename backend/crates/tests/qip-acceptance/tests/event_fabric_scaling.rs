@@ -889,14 +889,36 @@ fn external_address_defects(main_tf: &str) -> Vec<String> {
                 defects.push("the machines are not one per internal address".to_string());
             }
             let interface = hcl_block(&machine.join("\n"), "network_interface {");
-            if !interface
-                .as_deref()
-                .is_some_and(|block| has_line(block, "network_ip = each.value"))
-            {
+            if !interface.as_deref().is_some_and(|block| {
+                has_line(
+                    block,
+                    "network_ip = google_compute_address.event_fabric_broker[each.value].address",
+                )
+            }) {
                 defects.push("a machine is not pinned to its stable internal address".to_string());
             }
         }
         None => defects.push("the broker machine is not declared".to_string()),
+    }
+    // FABRIC-8099: the address is a reservation, not only a literal on the
+    // interface, so a replaced machine leaves it held rather than free.
+    match hcl_block(
+        main_tf,
+        "resource \"google_compute_address\" \"event_fabric_broker\" {",
+    ) {
+        Some(reserved) => {
+            for want in [
+                "for_each = local.brokers",
+                "address_type = \"INTERNAL\"",
+                "subnetwork = var.subnet_id",
+                "address = each.value",
+            ] {
+                if !has_line(&reserved, want) {
+                    defects.push(format!("a broker address reservation lacks `{want}`"));
+                }
+            }
+        }
+        None => defects.push("no broker address is reserved as an internal address".to_string()),
     }
     if !main_tf.lines().any(|line| {
         norm(line)
@@ -923,14 +945,16 @@ fn external_address_defects(main_tf: &str) -> Vec<String> {
 ///
 /// Mutation: add `access_config {}` to the machine's `network_interface` —
 /// the module assertion fires. Mutation: set the folder policy's `deny_all`
-/// to `"FALSE"` — the policy assertion fires.
+/// to `"FALSE"` — the policy assertion fires. Mutation: set the address
+/// reservation's `address_type` to `"EXTERNAL"` — the reservation defect
+/// fires (FABRIC-8099).
 #[test]
 fn fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one() {
     let main = broker_module("main.tf");
     assert_eq!(external_address_defects(&main), Vec::<String>::new());
     let injected = main.replacen(
-        "network_ip = each.value",
-        "network_ip = each.value\n    access_config {}",
+        "network_ip = google_compute_address.event_fabric_broker[each.value].address",
+        "network_ip = google_compute_address.event_fabric_broker[each.value].address\n    access_config {}",
         1,
     );
     assert_ne!(
@@ -943,12 +967,31 @@ fn fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_p
             .any(|defect| defect.contains("an external address is declared")),
         "the checker did not notice an injected access_config"
     );
-    let unpinned = main.replacen("network_ip = each.value", "", 1);
+    let unpinned = main.replacen(
+        "network_ip = google_compute_address.event_fabric_broker[each.value].address",
+        "",
+        1,
+    );
     assert!(
         external_address_defects(&unpinned)
             .iter()
             .any(|defect| defect.contains("stable internal address")),
         "the checker did not notice a machine with no pinned address"
+    );
+    let unreserved = main.replacen(
+        "address_type = \"INTERNAL\"",
+        "address_type = \"EXTERNAL\"",
+        1,
+    );
+    assert_ne!(
+        unreserved, main,
+        "premise: the reservation's type was found to break"
+    );
+    assert!(
+        external_address_defects(&unreserved)
+            .iter()
+            .any(|defect| defect.contains("address_type = \"INTERNAL\"")),
+        "the checker did not notice an external reservation"
     );
 
     let foundation = qip_acceptance::read("infrastructure/foundation/main.tf");
@@ -1070,8 +1113,9 @@ fn fabric_092_gap_capacity_is_added_by_hand_and_a_streams_partitions_cannot_be_r
 /// GAP PIN. FABRIC-093 asks that a broker upgrade proceed one broker at a
 /// time: drain its leadership, verify replica health, replace its immutable
 /// image, let it rejoin, advance. Nothing orchestrates that. The broker
-/// module declares exactly four resources — an instance template, one
-/// machine per address, an A record and an SRV record — and no managed
+/// module declares exactly five resources — a reserved internal address and
+/// one machine per address, an instance template, an A record and an SRV
+/// record — and no managed
 /// instance group, no update policy and no rolling step; the module says why
 /// (a group's surge would put a second writer on one chain). The CI/CD
 /// module's rolling replacement is the execution node's and "nothing else
@@ -1084,7 +1128,10 @@ fn fabric_092_gap_capacity_is_added_by_hand_and_a_streams_partitions_cannot_be_r
 fn fabric_093_gap_no_orchestration_upgrades_brokers_one_at_a_time() {
     let main = broker_module("main.tf");
     let declared: BTreeSet<(String, String)> = resources(&main).into_iter().collect();
+    // The address reservation (FABRIC-8099) holds an IP and neither rolls
+    // nor drains anything, so it joins the set without moving this pin.
     let expected: BTreeSet<(String, String)> = [
+        ("google_compute_address", "event_fabric_broker"),
         ("google_compute_instance_template", "event_fabric_broker"),
         (
             "google_compute_instance_from_template",

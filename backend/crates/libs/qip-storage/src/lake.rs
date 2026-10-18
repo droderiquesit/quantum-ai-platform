@@ -13,10 +13,11 @@
 //! A segment is written once. A second write to a sealed key is refused, and
 //! the writer has no delete: removal belongs to the governed retention policy
 //! (blueprint TICK-037), which is not this API. The existence check here is a
-//! read followed by a write, so two writers racing on one key can both pass it;
-//! the Cloud Storage adapter must add `ifGenerationMatch=0` to close that, and
-//! until it does this refuses the sequential overwrite and not the concurrent
-//! one.
+//! read followed by a write, so two writers racing on one key can both pass
+//! it; the seal itself is therefore [`BlobStore::put_if_absent`], atomic with
+//! its own check in every adapter (a lock in memory, a hard link on disk,
+//! `ifGenerationMatch=0` in Cloud Storage), and the writer that loses the race
+//! is refused.
 //!
 //! Raw venue bytes are retained only where the entitlement permits it. Where
 //! it does not, the segment record still carries the raw payload's SHA-256 so
@@ -304,6 +305,18 @@ impl<'a> Lake<'a> {
         let key = format!("{}/{segment_id}{}", partition.prefix(), self.codec.suffix());
         let canonical_sha256 = sha256_hex(&canonical);
         let raw_sha256 = raw.as_deref().map(sha256_hex);
+        let stored = self.codec.encode(&canonical)?;
+        // The check above refuses the sequential overwrite; this refuses the
+        // concurrent one, which passed that check in both writers. The seal
+        // comes before the raw bytes, so only the writer that won it writes
+        // them: written first, a losing writer's raw bytes replaced the
+        // winner's under the one raw key.
+        if !self.store.put_if_absent(&key, stored)? {
+            return Err(Error::denied(format!(
+                "{key} was sealed by another writer while this one was writing it; history is \
+                 never overwritten, write a new segment that references it"
+            )));
+        }
         let raw_key = match raw {
             Some(bytes) if partition.entitlement.raw_retention_permitted => {
                 let raw_key = format!("{}/{segment_id}.raw", partition.prefix());
@@ -312,8 +325,6 @@ impl<'a> Lake<'a> {
             }
             _ => None,
         };
-        let stored = self.codec.encode(&canonical)?;
-        self.store.put(&key, stored)?;
         Ok(SegmentRecord {
             partition: partition.clone(),
             key,

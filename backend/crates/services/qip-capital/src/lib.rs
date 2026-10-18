@@ -188,4 +188,4 @@ pub use obligations::LedgerObligations;
 pub use recall::{RecallOrder, RecallReason, RecallRegister, RecallState};
 pub use reservation::{MAXIMUM_RESERVATION_VALIDITY, Reservation, ReservationLedger};
 pub use shadow::{AllocationVariant, ShadowAllocation, ShadowPortfolioUniverse, ShadowScore};
-pub use survival::{CapitalSurvivalState, SurvivalReport};
+pub use survival::{CapitalSurvivalState, SurvivalReport, SurvivalTier, TierFunding};

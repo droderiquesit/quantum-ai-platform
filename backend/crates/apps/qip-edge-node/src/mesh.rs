@@ -120,7 +120,26 @@ impl MeshSettings {
         MeshConfig::new(format!("{name}:{}", self.cell), &self.peer)
             .with_seed(self.seed)
             .with_retry(RetryPolicy::default())
-            .with_limits(ClientLimits::default())
+            .with_limits(centre_limits())
+    }
+}
+
+/// The largest answer the centre may give one poll or publish, in bytes
+/// (MESH-9181). A response declaring more is refused before any of it is
+/// read or allocated, never truncated to fit: a truncated batch of signed
+/// frames is a batch whose tail nobody signed. Four mebibytes is the
+/// transport's own default, now stated where the centre link is built so a
+/// change to that default cannot silently widen it; a poll holds at most
+/// `max_poll_batch` frames (512), so the bound allows about eight kibibytes
+/// a frame.
+pub const MAX_CENTRE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The client limits every half of the centre link uses: the transport's
+/// defaults with the response bound pinned.
+fn centre_limits() -> ClientLimits {
+    ClientLimits {
+        max_body: MAX_CENTRE_RESPONSE_BYTES,
+        ..ClientLimits::default()
     }
 }
 
@@ -443,6 +462,28 @@ pub struct MeshInbound {
     policy: std::result::Result<PolicyBatch, String>,
 }
 
+impl MeshInbound {
+    /// Apply this poll's halt commands to `cell` now and keep its capital
+    /// and policy for later, returning how many halts applied.
+    ///
+    /// The decision loop holds new control while the fabric cannot journal
+    /// it (RES-7113), and a halt is the one control that may never wait for
+    /// that: holding a halt is the one way holding control could make the
+    /// cell less safe. What remains goes through [`apply_inbound`] once the
+    /// fabric recovers, with no halts left in it to apply twice.
+    pub fn apply_halts(&mut self, cell: &mut Cell, now: Timestamp) -> usize {
+        let Ok(batch) = self.policy.as_mut() else {
+            return 0;
+        };
+        let halts = std::mem::take(&mut batch.halts);
+        let applied = halts.len();
+        for halt in halts {
+            cell.apply_halt(halt, now);
+        }
+        applied
+    }
+}
+
 /// Apply what one poll brought back: capital first, then halts, then policy,
 /// then the desk installer — the order and routing a tick always used.
 ///
@@ -676,8 +717,15 @@ impl MeshWorker {
     /// Every poll waiting, oldest first, at most the channel's capacity.
     /// Never waits.
     pub fn take_inbound(&self) -> Vec<MeshInbound> {
+        self.take_inbound_at_most(self.capacity)
+    }
+
+    /// [`Self::take_inbound`], taking at most `limit` polls. What is left
+    /// stays in the channel, and once the channel is full the worker waits
+    /// on its own thread: nothing is dropped. Never waits.
+    pub fn take_inbound_at_most(&self, limit: usize) -> Vec<MeshInbound> {
         let mut taken = Vec::new();
-        while taken.len() < self.capacity {
+        while taken.len() < limit.min(self.capacity) {
             match self.inbound.try_recv() {
                 Ok(inbound) => taken.push(inbound),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,

@@ -257,10 +257,11 @@
     "current": "Connector polls run an evidence check before release, forward evidence into the world model's fabric (Platform::absorb_evidence) in production, and derive a knowledge-delta pack the deep brain can store.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:45 every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:544 drain_evidence has no production caller",
-      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence"
+      "backend/crates/apps/qip-deepbrain/src/connectors.rs:499 drain_evidence into Platform::absorb_evidence (the production caller the earlier evidence line said was missing)",
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::absorb_evidence",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs:575 an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and_weighs_nothing"
     ],
-    "gap": "No memory/episode update from acquired facts; typed facts do not update world-model state beyond the evidence fabric; no test that bypassing a gate fails.",
+    "gap": "No memory/episode update from acquired facts; typed facts do not update world-model state beyond the evidence fabric. (The gate-bypass test now exists: a claim on an impossible timeline forwarded under a forged admissible verdict is held inadmissible at zero weight by the world fabric's own re-check.)",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -270,10 +271,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_runtime",
+    "verification": "cargo test -p qip-market-ingestion --test connector_runtime && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Evidence-check stage added on the production poll path; the delta->world model step is still unwired. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L23: bypass test added in the kernel's evidence_intake suite (absorb_evidence lives in qip-kernel, not qip-market-ingestion as the closure proposed); mutation fired - the fabric's admissibility ignoring its own temporal check held the forgery admissible (inadmissible left 0, right 1)."
   },
   {
     "id": "R12-DATA-2013",
@@ -731,15 +732,15 @@
   {
     "id": "R12-EVID-2032",
     "status": "PARTIAL",
-    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts and writes the ids onto the new record and Corroborates/Contradicts edges into the provenance graph (fabric.rs:657-765). The world fabric is now fed in production (evidence_intake.rs:103-150). Links are recorded on the new claim only: the earlier claim's corroborates/contradicts lists are not updated (fabric.rs:760-765 push onto `record`, the incoming one). The fabric is in-memory, bounded and evicts (fabric.rs:812-838); nothing journals it, and the intake module states durability is not claimed (evidence_intake.rs:33-38).",
+    "current": "EvidenceFabric::admit links a new claim to held claims of the same key as corroborates/contradicts. Since 2026-10-18 the relation is recorded on both claims: the incoming record names the held ones and each held record names the incoming one, with Corroborates/Contradicts edges in both directions in the provenance graph; when a claim is evicted, every survivor's lists drop it. The world fabric is fed in production (evidence_intake.rs). The fabric is in-memory, bounded and evicts; nothing journals it, and the intake module states durability is not claimed.",
     "evidence": [
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-765",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:812-838",
+      "backend/crates/libs/qip-evidence/src/fabric.rs:911 both-sides links in EvidenceFabric::admit",
+      "backend/crates/libs/qip-evidence/src/fabric.rs::EvidenceFabric::evict prunes evicted ids from survivors",
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:797 a_relation_is_recorded_on_both_claims_and_forgotten_on_both_when_one_is_evicted",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:33-38",
-      "qip-world-model/tests/evidence_fabric.rs::a_second_independent_source_corroborates_and_a_copy_of_the_same_document_does_not",
       "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
     ],
-    "gap": "Record the relation on both records, persist links to the event log, and a replay test proving links survive.",
+    "gap": "Persist links to the event log, and a replay test proving links survive. The intake's module doc names the blocker: EvidenceAttached already carries the symbolic stage's derivations, so evidence links need their own journal kind or topic, and a replay that re-admits journaled claims in order to rebuild the fabric.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -749,10 +750,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model evidence",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Links now populated; not durable. 2026-10-18 lane L23: both-sides recording landed; mutations fired - back-link loop skipped (a.corroborates left [], right [\"b\"]); eviction prune skipped (b still named the evicted a)."
   },
   {
     "id": "R12-EVID-2033",
@@ -886,15 +887,15 @@
   {
     "id": "R12-EVID-2038",
     "status": "PARTIAL",
-    "current": "Contests keep every hypothesis and now resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser.",
+    "current": "Contests keep every hypothesis and resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser. Since 2026-10-18 capacity eviction takes the oldest claim standing in no open contest, so a full fabric no longer drops a competing hypothesis; only when every held claim is contested does the oldest go anyway, keeping the bound.",
     "evidence": [
+      "backend/crates/libs/qip-evidence/src/fabric.rs:1006 contest-exempt eviction",
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-704",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
-      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "Hypotheses are dropped on capacity eviction and nothing persists contests across restart; nothing downstream reads contests.",
+    "gap": "Nothing persists contests or their resolutions across restart (the fabric is in-memory and unjournaled; see R12-EVID-2032 for the topic blocker), and nothing downstream reads contests. A fabric whose every held claim is contested still evicts the oldest contested claim.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -904,10 +905,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine contradiction",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed)."
   },
   {
     "id": "R12-EVID-2039",
@@ -938,10 +939,14 @@
   },
   {
     "id": "R12-EVID-2040",
-    "status": "PARTIAL",
-    "current": "quantum_evidence.rs asserts SolverKind advisory typing.",
-    "evidence": [],
-    "gap": "No compile-fail/structural guard proving no path to authenticity/belief fields.",
+    "status": "COMPLETE",
+    "current": "No path exists from a quantum result type to an authenticity or belief field: qip-evidence, qip-world-model and qip-reasoning-engine reach neither qip-quantum nor qip-optimization-engine through any chain of dependencies (architecture.rs::nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver), and none of their sources or manifests names SolverResult, SolverKind, DecisionRequest, RoutingDecision, ChosenPath or qip_quantum (quantum_evidence.rs::evidence_the_world_model_and_the_reasoning_engine_do_not_name_a_quantum_result_type).",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver",
+      "backend/crates/tests/qip-acceptance/tests/quantum_evidence.rs evidence_the_world_model_and_the_reasoning_engine_do_not_name_a_quantum_result_type",
+      "backend/crates/tests/qip-acceptance/tests/quantum_evidence.rs quantum_results_are_typed_as_advisory_candidates"
+    ],
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -951,10 +956,10 @@
       "R12-EVID-2033"
     ],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture --test quantum_evidence",
     "work_item": "",
     "size": "S",
-    "notes": "Vacuously satisfied today; recorded MISSING because no guard exists. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: qip-quantum added to qip-world-model's manifest failed the graph test naming the reachable solver; a function taking qip_contracts::quantum::SolverResult appended to qip-reasoning-engine/src/lib.rs failed the name scan naming the file; manifest, lockfile and source restored byte for byte. A crate outside the three that converted a result into evidence is not covered; the three are the ones that hold authenticity and belief fields."
   },
   {
     "id": "R12-TICK-2041",
@@ -1187,13 +1192,13 @@
   {
     "id": "R12-TICK-2051",
     "status": "PARTIAL",
-    "current": "CapturedMarketEvent holds event/receive/normalized time and clock uncertainty; central Tick types and the edge lake line carry event and capture time only; CaptureStream has no production caller.",
+    "current": "MarketEvent and CapturedMarketEvent hold event, receive and normalized time and clock uncertainty as distinct fields (qip-contracts tests/market_event.rs). Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. The central plane's Tick (backend/crates/libs/qip-market/src/quote.rs) still carries event and capture time only.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/tick_capture.rs:10 three times plus uncertainty",
-      "backend/crates/libs/qip-market/src/quote.rs:47",
-      "backend/crates/edge/qip-sequencing/src/lib.rs:50 CaptureStream re-export only"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/libs/qip-contracts/tests/market_event.rs"
     ],
-    "gap": "Normalized time and uncertainty on production records.",
+    "gap": "The central Tick in qip-market quote.rs carries no normalized time or uncertainty; the edge lake line now does.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1201,20 +1206,21 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts market_event",
+    "verification": "cargo test -p qip-contracts market_event; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Receive time added centrally; normalized time/uncertainty still not in production."
+    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane."
   },
   {
     "id": "R12-TICK-2052",
     "status": "PARTIAL",
-    "current": "ClockDiscipline estimates venue offset and bounds it with an uncertainty from observations, with tests; not used outside qip-sequencing; no PTP/GPS hardware integration.",
+    "current": "ClockDiscipline estimates venue offset and bounds it with an uncertainty from observations. Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. The bound is published per tick on the lake line, not yet as a gauge, and the time source is the host clock: no PTP/GPS integration.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/src/clock.rs:96-140 ClockCorrection, ClockDiscipline",
-      "backend/crates/edge/qip-sequencing/tests/clock.rs:35 the_estimate_recovers_a_known_offset_once_a_packet_arrives_without_queuing"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/edge/qip-sequencing/src/clock.rs ClockDiscipline"
     ],
-    "gap": "Wire ClockDiscipline into the node; hardware time source needs a deployed node.",
+    "gap": "PTP/GPS-grade time source and the game-day measurement against a reference need a deployed node; a qip_edge_clock_uncertainty gauge is not yet published (LakeSink::discipline exposes the bound for one).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1222,10 +1228,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test clock",
+    "verification": "cargo test -p qip-sequencing --test clock; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: ClockDiscipline now has a production caller through CaptureStream on the drain."
   },
   {
     "id": "R12-TICK-2053",
@@ -1273,13 +1279,17 @@
   {
     "id": "R12-TICK-2055",
     "status": "PARTIAL",
-    "current": "Lake segments are checksummed and sealed with manifests; overwrite is refused by a get-then-put check, which does not prevent a concurrent overwrite; Cloud Storage disabled.",
+    "current": "Lake segments are checksummed and sealed with manifests. Since 2026-10-18 the seal is BlobStore::put_if_absent, atomic with its own check in every adapter (a lock in MemoryBlobStore, a hard link in FileBlobStore, ifGenerationMatch=0 with 412 read as 'already there' in CloudStorageBlobStore; the trait default refuses), so a concurrent writer that passed the get-then-put check is refused; the raw bytes are written after the seal, by the winner only. Cloud Storage remains disabled.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/lake.rs:231 get(&key) is_some -> denied; :246 put",
+      "backend/crates/libs/qip-storage/src/lake.rs:314 the conditional seal in Lake::write_segment",
+      "backend/crates/libs/qip-storage/src/fsio.rs:106 create_atomic",
+      "backend/crates/libs/qip-storage/tests/lake.rs:240 two_writers_racing_one_segment_id_seal_exactly_one",
+      "backend/crates/libs/qip-storage/tests/lake.rs a_file_store_creates_an_object_once_and_leaves_an_existing_one_untouched",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:1089 a_cloud_storage_put_if_absent_asks_for_generation_zero_and_reads_412_as_already_there",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)"
     ],
-    "gap": "Conditional (if-absent) write; durable store enabled.",
+    "gap": "Durable store enabled: enable_cloud_storage is false in every environment, an owner switch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1287,10 +1297,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-storage --test lake",
+    "verification": "cargo test -p qip-storage --test lake --test gcp --test outcome_lake",
     "work_item": "",
     "size": "M",
-    "notes": "lake.rs's own doc states the ifGenerationMatch gap. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge writer added; race and durability gaps remain."
+    "notes": "2026-10-18 lane L23: mutations fired - sealing with put reported as created ('both writers sealed one segment id'); file create published by write_atomic's rename (the second create reported true); ifGenerationMatch dropped ('the create was not conditional'); 412 read as created. outcome_lake's Faulty store now refuses on put_if_absent as on put, since the seal moved to that seam."
   },
   {
     "id": "R12-TICK-2056",
@@ -1737,12 +1747,14 @@
   {
     "id": "R12-TICK-2074",
     "status": "PARTIAL",
-    "current": "DelayedFeed, Latency and LatencySpike conditions are monotonically adverse; tapes release by known_at. Not driven by measured latency.",
+    "current": "Data-arrival delay is driven by measurement on the default path: the kernel's capacity probe runs behind Platform::calibrated_feed_delay, the largest mean of the publication delays the real sources have shown, as a DelayedFeed condition. The simulator can now calibrate both conditions from samples: MarketCondition::latency_from_measured centres the uniform latency band on the measured median (half-width the nearer of its distances to p10 and p90) and delayed_feed_from_measured takes the median; both refuse an empty or negative sample set. Decision latency is still not driven by measurement anywhere, because nothing measures it: SimulatedBroker stamps a configured acknowledgement latency and venue_measurement refuses it as untimed.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:151-157",
-      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs"
+      "backend/crates/services/qip-simulation-engine/src/conditions.rs MarketCondition::latency_from_measured, delayed_feed_from_measured",
+      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs conditions_calibrated_from_measured_samples_reproduce_the_sample_median",
+      "backend/crates/runtime/qip-kernel/src/platform.rs calibrated_feed_delay and the capacity probe's DelayedFeed",
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency"
     ],
-    "gap": "Calibrate arrival/decision latency from captured telemetry.",
+    "gap": "No binary measures decision-to-arrival latency (the paper venue stamps a declared latency, which venue_measurement refuses as untimed), so latency_from_measured has no production sample set to calibrate from; closing needs a timed acknowledgement path and a caller passing its samples into the replay or capacity probe.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1753,7 +1765,7 @@
     "verification": "cargo test -p qip-simulation-engine --test market_conditions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay)."
   },
   {
     "id": "R12-TICK-2075",
@@ -1853,15 +1865,15 @@
   },
   {
     "id": "R12-TICK-2079",
-    "status": "PARTIAL",
-    "current": "Typed counterparty agents (passive, informed, momentum, competitor, maker) and conditions (illiquidity, venue outage, flash event, volatility spike, crossed market) exist, seeded and deterministic; kernel uses the synthetic market. No manipulation-pattern agent (spoofing/layering).",
+    "status": "COMPLETE",
+    "current": "The agent-based simulator models manipulation patterns: AgentKind::Spoofer shows one order of a stated size behind the calm touch on a seeded coin-flipped side and AgentKind::Layerer stacks two or more such orders step_bps apart, each cancelled in the step it was shown and recorded as FlowAction::Cancelled. Both draw from the agent's own seeded stream, withdraw under any injected condition, carry NOT_CALIBRATED_STATEMENT in their run-record rule, and are covered by the run digest. A cancelled layer is never rested in the book an order fills against. Passive, informed, momentum, competitor and maker agents and the condition set are unchanged; the kernel's capacity probe composes passive and maker agents only.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/agents.rs:328-455",
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:96-165",
-      "backend/crates/services/qip-simulation-engine/tests/agents.rs:204",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13457-13465"
+      "backend/crates/services/qip-simulation-engine/src/agents.rs Behaviour::Spoofer, Behaviour::Layerer, CounterpartyAgent::show_and_cancel",
+      "backend/crates/services/qip-simulation-engine/src/market.rs FlowAction::Cancelled in the run digest and apply_flow",
+      "backend/crates/services/qip-simulation-engine/tests/agents.rs a_spoofing_agent_generates_the_same_cancelled_layers_from_the_same_seed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs capacity probe with_agents"
     ],
-    "gap": "Add manipulation agents; agents are explicitly uncalibrated (NOT_CALIBRATED_STATEMENT).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1872,7 +1884,7 @@
     "verification": "cargo test -p qip-simulation-engine --test agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: placing every layer at step_bps collapses the ladder onto one price; drawing the side coin from a fresh seed puts every layer on one side. The layers are not added to the kernel's capacity probe because a cancelled layer never rests and so cannot change that probe's fills."
   },
   {
     "id": "R12-TICK-2080",
@@ -2082,13 +2094,15 @@
   },
   {
     "id": "R12-TICK-2089",
-    "status": "PARTIAL",
-    "current": "CaptureStream records ClockCorrection and round-trips it through the lake in tests; no production path uses CaptureStream.",
+    "status": "COMPLETE",
+    "current": "Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/tests/capture.rs:126 a_captured_event_round_trips_through_the_tick_lake_with_its_corrections",
-      "backend/crates/edge/qip-sequencing/src/lib.rs:50 no production caller"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/libs/qip-contracts/src/captured_event.rs ClockCorrectionLineage"
     ],
-    "gap": "Corrections carried on production stored events.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2099,10 +2113,10 @@
       "R12-TICK-2052"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test align",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock; cargo test -p qip-sequencing --test align",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-18 by lane L09: every correction the discipline applies is written into the stored lake line's corrections array on the production path, and the test fails if the lineage differs from the discipline's. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte."
   },
   {
     "id": "R12-TICK-2090",

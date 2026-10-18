@@ -257,3 +257,42 @@ run "provisioned_journal_performance_on_a_persistent_disk_type_is_refused" {
 
   expect_failures = [var.disk_type]
 }
+
+# FABRIC-8099: every broker address is a reserved INTERNAL address in the
+# broker's subnet, and the machine takes its address from that reservation
+# rather than from the literal, so a replaced machine cannot leave the name
+# pointing at an address anything else may claim.
+run "each_broker_address_is_a_reserved_internal_address_the_machine_takes" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = ["10.0.20.10", "10.0.20.11", "10.0.20.12"]
+    managed_log = {
+      spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_address.event_fabric_broker) == 3
+    error_message = "Three broker addresses were given and the plan does not reserve three."
+  }
+
+  assert {
+    condition = alltrue([
+      for address, reserved in google_compute_address.event_fabric_broker :
+      reserved.address_type == "INTERNAL"
+      && reserved.address == address
+      && reserved.subnetwork == "projects/test-project/regions/us-east4/subnetworks/control-fabric"
+    ])
+    error_message = "A broker address is not reserved as INTERNAL in the broker's subnet."
+  }
+
+  assert {
+    condition = alltrue([
+      for address, machine in google_compute_instance_from_template.event_fabric_broker :
+      machine.network_interface[0].network_ip == google_compute_address.event_fabric_broker[address].address
+      && length(machine.network_interface[0].access_config) == 0
+    ])
+    error_message = "A broker machine is not on its reserved address, or has an external one."
+  }
+}

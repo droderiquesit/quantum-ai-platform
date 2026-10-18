@@ -1113,15 +1113,13 @@
   },
   {
     "id": "R12-CAPITAL-9048",
-    "status": "PARTIAL",
-    "current": "Now integrated: kernel survival.rs SurvivalGovernor runs the qip_capital waterfall (cash, margin, collateral, settlement, funding, emergency, hedge, stressed liquidity) every construction before sizing; reserves beyond the book refuse; binaries apply survival policy at start-up.",
+    "status": "COMPLETE",
+    "current": "The survival waterfall is ordered and the order is tested: qip_capital::CapitalSurvivalState::waterfall funds the eight reserve tiers in SurvivalTier::PRIORITY from the total capital, each receiving the lesser of what it requires and what the tiers above left, so a book that runs out mid-waterfall funds the higher tiers, funds one partly and leaves every lower tier at zero. capital_survival_kernel.rs::a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero asserts the funded vector exactly. opportunity_capital still refuses when the reserves do not fit.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/survival.rs",
-      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs:15 a_paper_book_withholds_reserves_in_priority_order_before_releasing_opportunity_capital, :58",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::SurvivalGovernor::size",
-      "backend/crates/apps/qip-api/src/main.rs::apply_survival_policy"
+      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero",
+      "backend/crates/services/qip-capital/src/survival.rs CapitalSurvivalState::waterfall, SurvivalTier::PRIORITY"
     ],
-    "gap": "No test fails when the waterfall is reordered: acceptance test only checks a commutative sum; cell-envelope composition absent.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1129,10 +1127,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test capital_survival_kernel; kernel integration test",
+    "verification": "cd backend && cargo test -p qip-acceptance --test capital_survival_kernel",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register was right that the acceptance tests asserted a commutative sum: the code held no ordered accounting either, and the module doc's 'a refusal at any tier stops release at that tier and all below it' had nothing behind it. waterfall() is that accounting, added beside opportunity_capital without changing it. Mutation: Margin and Collateral swapped in SurvivalTier::PRIORITY failed the test with funded [400,300,150,150,0,0,0,0] against [400,300,200,100,0,0,0,0]; restored byte for byte. Nothing in the kernel's decision path calls waterfall() yet; it is the ordered record for audit and for naming the short tier, and opportunity_capital remains the gate."
   },
   {
     "id": "R12-RISK-9049",
@@ -1285,7 +1283,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:47",
       "infrastructure/terraform/modules/data/main.tf:117,219"
     ],
-    "gap": "Class guard on writes; enable buckets.",
+    "gap": "Class guard on writes; enable buckets (the enable_cloud_storage switch is the owner's). The guard is not a one-line refusal in CloudStorageBlobStore::validate_key: the store is reached two ways with different key shapes. qip-fabricd opens it with a configurable archive prefix (QIP_EVENT_FABRIC_ARCHIVE_PREFIX) and writes segments/sha256/<hash>, manifests/<stream>/<partition>/<offset> and fabricd/startup-probe under it; StorageProvider::blob (provider.rs, StorageTarget::CloudStorage) makes the namespace the prefix and writes arbitrary keys under it, and deepbrain's namespaces include model-artifacts, knowledge-packs, lake, tick-desk, reflex-packages, now-surprise/ and preflight. A guard needs a declared class per store (the namespace or the archive role) checked against a committed list, refusing construction for an undeclared namespace; a fixed prefix list in validate_key would refuse real writes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1296,7 +1294,7 @@
     "verification": "cargo test -p qip-fabricd",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: kept PARTIAL after reading both construction paths; not implemented because the closure's fixed-prefix refusal would have refused fabricd's prefixed archive and every provider namespace outside the four it named."
   },
   {
     "id": "R12-AMBIENT-9056",
@@ -2456,7 +2454,7 @@
       ".github/workflows/deploy.yml:510-540",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:1071 is_digest_pinned"
     ],
-    "gap": "Publish packages/bundles or drop the repositories.",
+    "gap": "Nothing publishes to the rust_packages or deployment_bundles repositories (modules/registry/main.tf), but removing them is not this lane's to do: it deletes Artifact Registry resources on the next apply, needs the explicit approval naming the resource that the infrastructure rules require, and contradicts pipeline_waivers.rs, which asserts both repositories are declared. The choice is the owner's: publish to them (a deploy.yml step, a protected path) or remove them together with that waiver test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2467,7 +2465,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it."
   },
   {
     "id": "R12-CICD-9108",
@@ -3511,7 +3509,7 @@
       "infrastructure/terraform/modules/network/main.tf:271",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:248"
     ],
-    "gap": "Connectivity tests.",
+    "gap": "Not built. A google_network_management_connectivity_test needs a concrete source and destination (instance, IP, forwarding rule); the execution-node-to-API path has an internal Cloud Run service as its destination, which Connectivity Tests do not take as an endpoint, and execution nodes are not deployed in any environment (execution_nodes_enabled is false). A test declared against endpoints that do not exist would plan to nothing or fail on apply.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3522,7 +3520,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the network and execution-node modules; status unchanged. Buildable once a node exists: declare the test beside the node, keyed on the node count."
   },
   {
     "id": "R12-OBS-9156",
@@ -3996,25 +3994,27 @@
   },
   {
     "id": "R12-RES-9178",
-    "status": "PARTIAL",
-    "current": "deploy.yml, infra.yml and image.yml are workflow_dispatch-able by a human and no runtime calls an agent service; no test asserts this.",
+    "status": "COMPLETE",
+    "current": "deploy.yml, infra.yml and image.yml each declare workflow_dispatch and none is triggered by or calls an agent workflow (cicd_governance.rs::the_human_release_pipeline_never_depends_on_the_autonomous_development_plane), and no source under backend/crates/apps names a model host, so no deployable binary calls an agent service (no_deployable_binary_names_a_model_host_so_no_runtime_component_calls_an_agent_service).",
     "evidence": [
-      ".github/workflows/deploy.yml:58",
-      ".github/workflows/infra.yml:123",
-      ".github/workflows/image.yml:106"
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs the_human_release_pipeline_never_depends_on_the_autonomous_development_plane",
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs no_deployable_binary_names_a_model_host_so_no_runtime_component_calls_an_agent_service",
+      ".github/workflows/deploy.yml workflow_dispatch",
+      ".github/workflows/infra.yml workflow_dispatch",
+      ".github/workflows/image.yml workflow_dispatch"
     ],
-    "gap": "A test asserting the property.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test cicd_governance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). The workflow half was already held by an existing test; this adds the runtime half. Mutation: api.anthropic.com written into qip-api/src/lib.rs failed the new test naming that file; restored byte for byte. The workflow half was not re-mutated here. The scan names five hosts and is not exhaustive; a provider off the list is still caught by the port and invocation tests in model_gateway_boundary.rs."
   },
   {
     "id": "R12-REFLEX-9179",
@@ -4060,13 +4060,15 @@
   {
     "id": "R12-MESH-9181",
     "status": "PARTIAL",
-    "current": "qip-mesh PeerLimits bound frame size and fan-out (refused, not truncated; tested); the edge-node's mesh link uses qip-transport rather than qip-mesh; no compression.",
+    "current": "qip-mesh PeerLimits and qip-peer-link's node_limits bound peer frame size (MAX_FRAME 64 KiB) and fan-out (MAX_EDGE_PEERS), refused not truncated. Since 2026-10-18 the deployed centre link states its own bound: every half of MeshLink is built with centre_limits() (backend/crates/apps/qip-edge-node/src/mesh.rs), pinning max_body to MAX_CENTRE_RESPONSE_BYTES (4 MiB), so an answer declaring more is refused before it is read or allocated; a poll carries at most max_poll_batch = 512 frames (backend/crates/libs/qip-transport/src/mesh.rs), and the centre link addresses exactly one peer by construction (MeshSettings.peer). No raw tick stream crosses the mesh: the uplink carries CellStateDelta.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:421-431,607",
-      "backend/crates/services/qip-mesh/tests/peer_rules.rs:130",
-      "backend/crates/apps/qip-edge-node/src/mesh.rs"
+      "backend/crates/apps/qip-edge-node/src/mesh.rs MAX_CENTRE_RESPONSE_BYTES, centre_limits",
+      "backend/crates/libs/qip-transport/src/mesh.rs max_poll_batch: 512",
+      "backend/crates/edge/qip-peer-link/src/wire.rs:845 limits_with",
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs::a_centre_answer_larger_than_the_bound_is_refused_before_it_is_read_and_the_cell_keeps_running"
     ],
-    "gap": "Apply bounds on the deployed link; compression.",
+    "gap": "Compression: frames travel as JSON with the compact touch encoding; a compressing codec would be a new persisted-codec dependency and needs its own ADR (ADR 0109). Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4074,10 +4076,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_rules",
+    "verification": "cargo test -p qip-mesh --test peer_rules; cargo test -p qip-edge-node --test mesh a_centre_answer_larger_than_the_bound",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: bounds now explicit and tested on the deployed link. Mutation: doubling max_body in centre_limits made the client wait for the declared body and fail with 'the peer closed the connection while sending the body', so the test reported 'the over-size answer was not refused for its size'; restored byte for byte. Kept PARTIAL on compression."
   },
   {
     "id": "R12-FABRIC-9182",

@@ -13912,3 +13912,188 @@ fn no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_bench
          this scan is reading the wrong files"
     );
 }
+
+// --- the service contract: state owner, scaling, degraded mode ---------------
+
+/// The catalogue fields every workload owes beyond its identity
+/// (R12-ARCH-10061): who owns its state, how it scales, and what it does
+/// degraded. A service with none of these written down is one whose second
+/// instance, or whose loss, somebody discovers in production.
+const SERVICE_CONTRACT_FIELDS: [&str; 3] = ["state_owner", "scaling", "degraded_mode"];
+
+/// The contract fields an entry leaves absent or blank.
+fn blank_contract_fields(body: &str) -> Vec<&'static str> {
+    SERVICE_CONTRACT_FIELDS
+        .into_iter()
+        .filter(|field| {
+            !body.lines().any(|line| {
+                let indent = line.len() - line.trim_start().len();
+                line.split_once('=').is_some_and(|(key, value)| {
+                    indent == 6
+                        && key.trim() == *field
+                        && !value.trim().trim_matches('"').trim().is_empty()
+                })
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode() {
+    let workloads = catalogue_workloads();
+    assert!(
+        !workloads.is_empty(),
+        "premise: the catalogue has workloads"
+    );
+    for (name, body) in &workloads {
+        let blank = blank_contract_fields(body);
+        assert!(
+            blank.is_empty(),
+            "catalogue workload `{name}` leaves {blank:?} blank; write who owns its state, \
+             how it scales and what it does degraded"
+        );
+    }
+}
+
+#[test]
+fn a_workload_pinned_to_one_instance_says_it_does_not_scale() {
+    // The prose must not contradict the numbers beside it: an entry capped at
+    // one instance that describes itself as horizontal is a description a
+    // reader would act on.
+    for (name, body) in catalogue_workloads() {
+        let max = catalogue_field(&body, "max_instances");
+        let scaling = catalogue_field(&body, "scaling");
+        if max == "1" {
+            assert!(
+                scaling.starts_with("none"),
+                "`{name}` is capped at one instance but its scaling reads: {scaling}"
+            );
+        } else {
+            assert!(
+                !scaling.starts_with("none"),
+                "`{name}` may run {max} instances but its scaling says it does not scale"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_blanked_contract_field_is_found_by_the_scan() {
+    // The scan run on a mutated copy of an entry: the committed catalogue is
+    // never touched.
+    let (name, body) = catalogue_workloads()
+        .into_iter()
+        .next()
+        .expect("the catalogue has a workload");
+    assert!(
+        blank_contract_fields(&body).is_empty(),
+        "premise: `{name}` is complete before it is mutated"
+    );
+    for field in SERVICE_CONTRACT_FIELDS {
+        let blanked: String = body
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with(field) && line.contains('=') {
+                    format!("      {field} = \"\"")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(blank_contract_fields(&blanked), vec![field]);
+        let removed: String = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with(field))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(blank_contract_fields(&removed), vec![field]);
+    }
+}
+
+// --- log retention -----------------------------------------------------------
+
+/// The `retention_days` expression of the observability module's workload log
+/// bucket, and whether that bucket is the project's own `_Default`.
+fn workload_bucket_retention(logging: &str) -> Option<String> {
+    let code = without_comments(logging);
+    let body = terraform_resources(&code, "google_logging_project_bucket_config")
+        .into_iter()
+        .find(|(name, _)| name == "workloads")?
+        .1;
+    body.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "retention_days").then(|| value.trim().to_string())
+    })
+}
+
+#[test]
+fn the_workload_log_bucket_has_a_retention_bounded_by_a_validated_variable() {
+    let logging = read("infrastructure/terraform/modules/observability/logging.tf");
+    let retention = workload_bucket_retention(&logging)
+        .expect("the observability module declares a workload log bucket with a retention");
+    assert_eq!(
+        retention, "var.log_retention_days",
+        "the retention is not the bounded variable"
+    );
+
+    let variables = read("infrastructure/terraform/modules/observability/variables.tf");
+    let block = variables
+        .split("variable \"log_retention_days\"")
+        .nth(1)
+        .expect("the module declares log_retention_days");
+    let block = &block[..block.find("\nvariable ").unwrap_or(block.len())];
+    let default: u32 = block
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "default").then(|| v.trim().parse().ok())?
+        })
+        .expect("the retention has a numeric default");
+    assert!(
+        (1..=400).contains(&default),
+        "the default {default} is outside the bound"
+    );
+    assert!(
+        block.contains("<= 400") && block.contains(">= 1"),
+        "the variable no longer bounds the retention on both sides"
+    );
+    assert!(
+        !without_comments(&logging).contains("bucket_id      = \"_Default\""),
+        "the module manages the project's _Default bucket, which this repository did not create"
+    );
+    assert!(
+        terraform_resources(&without_comments(&logging), "google_logging_project_sink")
+            .iter()
+            .any(|(name, body)| name == "workloads"
+                && body.contains("google_logging_project_bucket_config.workloads")),
+        "no sink routes the platform's logs to the bounded bucket"
+    );
+}
+
+#[test]
+fn an_unbounded_or_missing_log_retention_is_found_by_the_scan() {
+    let logging = read("infrastructure/terraform/modules/observability/logging.tf");
+    assert!(
+        workload_bucket_retention(&logging).is_some(),
+        "premise: the unmutated module declares a retention"
+    );
+    let literal = logging
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("retention_days") {
+                "  retention_days = 0".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(workload_bucket_retention(&literal).as_deref(), Some("0"));
+    let removed = logging
+        .lines()
+        .filter(|l| !l.contains("retention_days"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(workload_bucket_retention(&removed), None);
+}
