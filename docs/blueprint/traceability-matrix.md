@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 329 | 21.7% |
+| Blueprint completion (COMPLETE) | 331 | 21.8% |
 | Implemented (behaviour exists in code) | 1327 | 87.4% |
 | Tested (a named test demonstrates it) | 1205 | 79.4% |
 | Integrated (reached from a composition root) | 817 | 53.8% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 329 |
-| PARTIAL | 1042 |
+| COMPLETE | 331 |
+| PARTIAL | 1040 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -45,9 +45,9 @@ register (ADR 0099), and there is no second one.
 | [REASON](#reason) | 41 | 9 | 30 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 13 | 33 | 2 | 0 | 0 | 46 | 43 | 6 |
 | [AGENCY](#agency) | 69 | 30 | 32 | 0 | 7 | 0 | 63 | 61 | 0 |
-| [MODEL](#model) | 81 | 15 | 62 | 3 | 1 | 0 | 76 | 69 | 0 |
+| [MODEL](#model) | 81 | 16 | 61 | 3 | 1 | 0 | 76 | 69 | 0 |
 | [QUANT](#quant) | 78 | 18 | 34 | 26 | 0 | 0 | 52 | 51 | 0 |
-| [EXPAND](#expand) | 68 | 16 | 50 | 2 | 0 | 0 | 65 | 64 | 1 |
+| [EXPAND](#expand) | 68 | 17 | 49 | 2 | 0 | 0 | 65 | 64 | 1 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 9 | 12 | 3 | 2 | 0 | 21 | 21 | 2 |
@@ -1052,7 +1052,7 @@ register (ADR 0099), and there is no second one.
 | R12-MODEL-1157 | Model foundry capability scope | In-tree estimators, boosted trees, distillation, model registry with calibrated baselines; no foundation models, RL or unsupervised. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
 | R12-MODEL-1159 | Strategy factory capability scope | qip-evolution generate/mutate/promotion and qip-lifecycle demotion run from deepbrain; scale of thousands not measured. | PARTIAL | Complete the remaining scope items and integrate them. |  | P2 | inspection + crate tests per scope item |  |
 | R12-MODEL-1198 | Outcomes, episodes and missed opportunities feed the learning brain | stage_learn calls calibrate_resolved, score_declined (missed opportunities) and score_filled; no tick/microstructure model update. | PARTIAL | Tick/microstructure model update path. |  | P1 | cargo test -p qip-kernel --test learning |  |
-| R12-MODEL-3009 | Cognitive Core trains models | qip-training and deepbrain learning assembly exist; covered in MODEL slice. | PARTIAL | Assessed in the foundry slice; here only noted that the deep brain owns training. |  | P2 | cargo test -p qip-training |  |
+| R12-MODEL-3009 | Cognitive Core trains models | The deep brain trains models from its own bars in the slow lane: LearningDesk::maybe_learn fits a baseline and a challenger with qip_training::local::LocalTrainer on the subject's observed bars, promote_candidate promotes a candidate that beats every incumbent on held-out rows through the platform's serving provider (journalled as a ModelPromotion naming the artifact digest), and main.rs writes the PublishedArtifact into the blob store under MODEL_ARTIFACTS_NAMESPACE as <digest>.json, readable back by that digest with the promoted reference as its manifest. | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-deepbrain --test model_artifacts |  |
 | R12-MODEL-3089 | Population of thousands of specialist forecasters | qip-learning-engine's Tournament holds up to MAX_FORECASTERS=4096 forecasters, standing or temporary with expiry (services/qip-learning-engine/src/tournament.rs:53, :574-650). A unit test admits a thousand forecasters to one question. The kernel's TournamentStage opens a question per directional hypothesis. The forecasters it admits are one `detector:<class>` per hypothesis class plus one `analyst:<agent>` per informative panel finding, all as ForecasterKind::Specialist (runtime/qip-kernel/src/model_tournament.rs:10-23, :412-420). The stage runs in the cycle every binary drives (platform.rs:356, :4896). | PARTIAL | A production population of thousands of independent specialist and temporary models. The live population is detector classes plus panel analysts (tens), and no temporary forecaster is admitted outside tests. |  | P3 | new test to be written (see gap); cargo test -p <owning crate> |  |
 | R12-MODEL-3090 | Influence earned from calibration, information value, regime accuracy, cost, latency | Influence multiplies market share, calibration, information value, cost, latency and regime survival per regime; information value now earns/loses weight (duplicates lose), with tests for information, cost and latency. | PARTIAL | Detectors are not metered, so their cost and latency enter as zero and those factors are unmeasured for them; the aggregate feeds no decision. |  | P2 | new test to be written (see gap); cargo test -p <owning crate> |  |
 | R12-MODEL-3091 | Forecaster disagreement preserved as research signal | Through a real cycle, opposite member views are journaled as a disagreement with both views kept and no merged number, and the material disagreement raises a research task citing the record; the tournament also raises tasks on spread. | COMPLETE | None for the requirement; not deployed. |  | P2 | new test to be written (see gap); cargo test -p <owning crate> |  |
@@ -1205,7 +1205,7 @@ register (ADR 0099), and there is no second one.
 | R12-EXPAND-1120 | Intelligence Expansion Engine provides benchmark-gated capability promotion | The deployed sweep promotes a campaign's capability only when its recorded benchmark beats the incumbent uncorrected twin; a worse candidate is refused, its null recorded, and no CapabilityEntry or package created. | COMPLETE | None for the requirement; not deployed. |  | P2 | cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain |  |
 | R12-EXPAND-1173 | Intelligence expansion engine capability scope | qip-expansion now runs in deepbrain ResearchLoop (gaps, curriculum, campaigns). | PARTIAL | Ontology/memory/brains/tools expansion items absent. |  | P3 | inspection + crate tests per scope item |  |
 | R12-EXPAND-1174 | Collective intelligence fabric capability scope | Cells report outcomes to the centre and the LEARN stage learns from cells; no episode/residual/lesson exchange between brains. | PARTIAL | Complete the remaining scope items and integrate them. |  | P3 | inspection + crate tests per scope item |  |
-| R12-EXPAND-6010 | Research prompts from failure clusters and unexplained residuals | Kernel ResearchLedger clusters failed theses; deepbrain unexplained_residuals raises items from fill-twin residuals. | PARTIAL | Residuals are fill residuals only, not P&L/model; no binary-path test asserting exactly one prompt per residual. |  | P2 | cargo test -p qip-kernel --test learning |  |
+| R12-EXPAND-6010 | Research prompts from failure clusters and unexplained residuals | Both prompt sources run on default paths. The kernel's LEARN stage feeds every graded thesis to the ResearchLedger, which raises one research prompt per cluster of failed theses of one class; the deep brain's default sweep (ResearchLoop::sweep_over, every cycle unless QIP_DEEPBRAIN_RESEARCH_EVERY=0) feeds each fill's twin error to qip_expansion::detectors::unexplained_residuals, which raises one UnexplainedPnl gap per subject (venue) whose mean absolute residual exceeds RESIDUAL_BPS, however many fills missed. Residuals are fill-twin residuals; the requirement names unexplained residuals without naming their kind. | COMPLETE |  |  | P2 | cd backend && cargo +1.94.1 test -p qip-kernel --test learning a_cluster_of_failed_theses && cargo +1.94.1 test -p qip-deepbrain --test expansion_rows one_fill_residual |  |
 | R12-EXPAND-6011 | Novelty and knowledge-gap detection | backend/crates/apps/qip-deepbrain/src/research.rs:449 sweep runs low_confidence, incompetent_specialists, contradictions, unexplained_residuals, coverage, anomaly_clusters, repeated_vetoes, refusal_clusters | PARTIAL | Contradictory evidence and missing causal links share one detector over price-direction readings; nothing reads the evidence fabric's contested claims or the causal graph for missing links. |  | P2 | cargo test -p qip-expansion |  |
 | R12-EXPAND-6023 | New capability evaluated, sandboxed, lineage-tracked, gate-promoted | Tools start read-only and widen only on a cited evaluation; models move through ModelStage with calibrated baseline gate; other capability kinds (ontology, specialists, memory) have contracts but no promotion gate in a running path. | PARTIAL | Gates for ontology, specialist, memory capability kinds. |  | P1 | cargo test -p qip-agents && cargo test -p qip-kernel --test models |  |
 | R12-EXPAND-6024 | Expansion engine sits above the brains, off the decision path | Enforced by qip-acceptance architecture test; only qip-deepbrain (an app) depends on qip-expansion. | COMPLETE |  |  | P1 | cargo test -p qip-acceptance --test architecture |  |

@@ -209,14 +209,16 @@
   },
   {
     "id": "R12-EXPAND-6010",
-    "status": "PARTIAL",
-    "current": "Kernel ResearchLedger clusters failed theses; deepbrain unexplained_residuals raises items from fill-twin residuals.",
+    "status": "COMPLETE",
+    "current": "Both prompt sources run on default paths. The kernel's LEARN stage feeds every graded thesis to the ResearchLedger, which raises one research prompt per cluster of failed theses of one class; the deep brain's default sweep (ResearchLoop::sweep_over, every cycle unless QIP_DEEPBRAIN_RESEARCH_EVERY=0) feeds each fill's twin error to qip_expansion::detectors::unexplained_residuals, which raises one UnexplainedPnl gap per subject (venue) whose mean absolute residual exceeds RESIDUAL_BPS, however many fills missed. Residuals are fill-twin residuals; the requirement names unexplained residuals without naming their kind.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/research.rs:73 observe",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8958-8962 LEARN feeds research ledger",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:99 cluster raises one prompt closing onto a task"
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_learn, self.research.observe(&evaluations, now)",
+      "backend/crates/services/qip-expansion/src/detectors.rs unexplained_residuals",
+      "backend/crates/apps/qip-deepbrain/src/research.rs sweep_over, unexplained_residuals(&residuals, RESIDUAL_BPS)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cluster_of_failed_theses_raises_one_research_prompt_that_closes_onto_a_named_task",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::one_fill_residual_past_its_threshold_raises_exactly_one_unexplained_pnl_gap"
     ],
-    "gap": "Residuals are fill residuals only, not P&L/model; no binary-path test asserting exactly one prompt per residual.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -224,10 +226,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning a_cluster_of_failed_theses && cargo +1.94.1 test -p qip-deepbrain --test expansion_rows one_fill_residual",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L04. Both halves mutation-verified this session: replacing the stage_learn research.observe call with Ok(()) fails the kernel cluster test at 'exactly one prompt for one cluster' (left 0); flipping mean > threshold_bps to < in unexplained_residuals fails the new node test at the count assertion (left 0). Two fills at one venue past the threshold queue one residual-derived item, counted by lineage rule detector:unexplained_residual, and a venue inside the threshold queues none."
   },
   {
     "id": "R12-EXPAND-6011",
