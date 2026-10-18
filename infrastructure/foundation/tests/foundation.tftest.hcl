@@ -303,3 +303,71 @@ run "a_label_carrying_an_address_is_refused" {
 
   expect_failures = [var.labels]
 }
+
+# R12-SEC-9131: a hierarchical firewall policy on the folder, evaluated before
+# any project's VPC rules, denying internet ingress and handing private and
+# Google front-end ranges on to the project.
+run "the_folder_carries_a_hierarchical_firewall_policy_that_denies_internet_ingress" {
+  command = plan
+
+  # The folder's id is computed, so under a mocked plan the policy's parent
+  # and the association's target are unknown; their references to
+  # google_folder.platform are held by qip-acceptance's infrastructure suite,
+  # which reads the file. Here: both are planned, once each.
+  assert {
+    condition     = length(google_compute_firewall_policy.platform) == 1 && length(google_compute_firewall_policy_association.platform) == 1
+    error_message = "The platform folder carries no hierarchical firewall policy and association (R12-SEC-9131)."
+  }
+
+  assert {
+    condition = (
+      google_compute_firewall_policy_rule.deny_internet_ingress_ipv4[0].action == "deny" &&
+      contains(flatten([for m in google_compute_firewall_policy_rule.deny_internet_ingress_ipv4[0].match : m.src_ip_ranges]), "0.0.0.0/0") &&
+      google_compute_firewall_policy_rule.deny_internet_ingress_ipv6[0].action == "deny" &&
+      contains(flatten([for m in google_compute_firewall_policy_rule.deny_internet_ingress_ipv6[0].match : m.src_ip_ranges]), "::/0")
+    )
+    error_message = "The folder policy does not deny ingress from every IPv4 and IPv6 source."
+  }
+
+  # The delegation is evaluated first and never allows: it hands traffic to
+  # the project's own rules, and covers none of the public internet.
+  assert {
+    condition = (
+      google_compute_firewall_policy_rule.delegate_private_and_google[0].action == "goto_next" &&
+      google_compute_firewall_policy_rule.delegate_private_and_google[0].priority < google_compute_firewall_policy_rule.deny_internet_ingress_ipv4[0].priority &&
+      !contains(flatten([for m in google_compute_firewall_policy_rule.delegate_private_and_google[0].match : m.src_ip_ranges]), "0.0.0.0/0")
+    )
+    error_message = "The delegation rule must be goto_next, ahead of the deny, and must not cover 0.0.0.0/0."
+  }
+}
+
+run "an_owner_without_firewall_policy_admin_can_turn_it_off_and_is_told" {
+  command = plan
+
+  variables {
+    hierarchical_firewall_enabled = false
+  }
+
+  assert {
+    condition     = length(google_compute_firewall_policy.platform) == 0 && length(google_compute_firewall_policy_association.platform) == 0 && length(google_folder.platform) == 1
+    error_message = "hierarchical_firewall_enabled = false should keep the folder and drop only the firewall policy."
+  }
+
+  assert {
+    condition     = contains(output.controls_not_applied, "hierarchical firewall policy (the platform root's network firewall policy still denies ingress per network)")
+    error_message = "The missing hierarchical firewall policy is not reported."
+  }
+}
+
+run "no_org_mode_plans_no_hierarchical_firewall_policy" {
+  command = plan
+
+  variables {
+    org_id = null
+  }
+
+  assert {
+    condition     = length(google_compute_firewall_policy.platform) == 0 && length(google_project_service.seed_compute) == 0
+    error_message = "No-org mode planned a hierarchical firewall policy with no folder to hold it."
+  }
+}
