@@ -26,6 +26,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use qip_contracts::control::{
+    InformationRequest as ActiveSensingRequest, InformationRequestFields,
+};
 use qip_contracts::expansion::EffectAttribution;
 use qip_contracts::forecast::{
     Calibration as ForecastCalibration, Forecast, ForecastFields, OutcomeDistribution, OutcomeMass,
@@ -308,6 +311,20 @@ pub struct Arbitration {
     /// The research task this arbitration raised, when the disagreement was
     /// material and no task on the proposition was already open.
     pub research: Option<ResearchTask>,
+}
+
+/// What resolving one proposition's disagreement is worth and may cost
+/// (AMBIENT-10093, CONTRACT-6111): the account-currency exposure that
+/// rides on the proposition, the share of its value of information a
+/// request may spend, when an answer stops being useful, and any sources
+/// beyond the disagreeing models' own evidence lineages the request may
+/// draw on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InformationStake {
+    pub exposure: Decimal,
+    pub budget_share_bp: u32,
+    pub deadline: Timestamp,
+    pub extra_sources: Vec<String>,
 }
 
 /// A question the models' disagreement put to research (WORLD-061).
@@ -883,6 +900,89 @@ impl Federation {
             expired,
             research,
         })
+    }
+
+    /// The §24.9 active-sensing request an arbitration's disagreement is
+    /// worth issuing, or `None` where it is not (AMBIENT-10093).
+    ///
+    /// The value of information is the spread between the views times the
+    /// exposure riding on the proposition: a disagreement of a tenth on a
+    /// position of a million is worth a hundred thousand to settle, and the
+    /// same disagreement on nothing held is worth nothing. Issued only for a
+    /// material spread ([`MATERIAL_DISAGREEMENT_SPREAD`]) and a positive
+    /// value, so a small conflict or an unheld proposition asks nobody for
+    /// anything; the contract itself refuses a request with no budget, no
+    /// source or a deadline at issue, which is the point of emitting the
+    /// contract rather than a looser local record (CONTRACT-6111). The
+    /// allowed sources are the disagreeing models' declared evidence
+    /// lineages plus the stake's own, so the request can only draw on what
+    /// the models already cite.
+    pub fn information_request(
+        &self,
+        arbitration: &Arbitration,
+        stake: &InformationStake,
+    ) -> Result<Option<ActiveSensingRequest>> {
+        let spread = arbitration.disagreement.spread;
+        if spread < MATERIAL_DISAGREEMENT_SPREAD || !stake.exposure.is_positive() {
+            return Ok(None);
+        }
+        // Statistic to money: the spread (a probability difference) scales
+        // the exposure (account currency) into a value of information.
+        let spread_dec = Decimal::from_f64(spread).ok_or_else(|| {
+            Error::numeric(format!(
+                "the spread on `{}` ({spread}) has no decimal form",
+                arbitration.proposition
+            ))
+        })?;
+        let share = Decimal::from_f64(f64::from(stake.budget_share_bp) / 10_000.0)
+            .ok_or_else(|| Error::numeric("the budget share has no decimal form"))?;
+        let (Some(value), Some(budget)) = (
+            stake.exposure.checked_mul(spread_dec),
+            stake
+                .exposure
+                .checked_mul(spread_dec)
+                .and_then(|v| v.checked_mul(share)),
+        ) else {
+            return Err(Error::numeric(format!(
+                "the value of information on `{}` overflows the account currency",
+                arbitration.proposition
+            )));
+        };
+        if !(value.is_positive() && budget.is_positive()) {
+            return Ok(None);
+        }
+        let models: Vec<&str> = arbitration
+            .disagreement
+            .views
+            .iter()
+            .map(|v| v.model.as_str())
+            .collect();
+        let mut allowed: BTreeSet<String> = stake.extra_sources.iter().cloned().collect();
+        for model in &models {
+            if let Ok(node) = self.node(model) {
+                allowed.extend(node.spec.evidence_lineage().iter().cloned());
+            }
+        }
+        let request = ActiveSensingRequest::new(InformationRequestFields {
+            schema_version: InformationRequestFields::SCHEMA_VERSION,
+            request_id: format!(
+                "ir:{}@{}",
+                arbitration.proposition,
+                arbitration.at.as_nanos()
+            ),
+            question: format!(
+                "does `{}` hold? {} disagree by {spread:.3}: {}",
+                arbitration.proposition,
+                models.join(", "),
+                arbitration.reason
+            ),
+            expected_information_value: value,
+            issued_at: arbitration.at,
+            deadline: stake.deadline,
+            allowed_sources: allowed.into_iter().collect(),
+            budget,
+        })?;
+        Ok(Some(request))
     }
 
     /// AGENCY-002: Apply an effect attribution to the federation. Updates the

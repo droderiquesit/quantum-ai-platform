@@ -12,9 +12,9 @@ use qip_core::error::{Error, Result};
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::now::{
-    Candidate, Catalogue, Constraint, Domain, EstimatorKind, Evidence, KalmanFilter, ManifestRef,
-    NowBrain, NowConfig, NowVariable, Observation, PartitionKey, Prior, RateOfChange, Scale, Scope,
-    ScopeKind, Specialist, StateFilter, VariableKey, VariableSpec,
+    Candidate, Catalogue, Constraint, Domain, EstimatorKind, Evidence, GraphFilter, KalmanFilter,
+    ManifestRef, NowBrain, NowConfig, NowVariable, Observation, PartitionKey, Prior, RateOfChange,
+    Scale, Scope, ScopeKind, Specialist, StateFilter, VariableKey, VariableSpec,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -322,6 +322,102 @@ fn two_estimators_on_one_variable_both_contribute_and_their_disagreement_is_reco
         .expect("the disagreement is recorded");
     let views: BTreeSet<&str> = dispute.views.iter().map(|w| w.id.as_str()).collect();
     assert_eq!(views, BTreeSet::from(["kalman-local-level", "graph-shift"]));
+}
+
+/// WORLD-3078: the graph estimator over the scope graph contributes beside
+/// the Kalman filter once the containing scope has a belief, and their
+/// disagreement is recorded. The global `return` is promoted first at zero;
+/// the instrument then reads +0.05 with a wide measurement, so the graph
+/// member, pulled toward the tight global belief, sits well below the
+/// Kalman member and the dispute names both. Before any containing belief
+/// exists the graph member abstains, so the first step reads one estimator.
+/// Mutation: make `GraphFilter::propose` return `Ok(None)` always — the
+/// second step reads one estimator and no dispute is raised.
+#[test]
+fn the_graph_estimator_reads_the_containing_scopes_belief_and_disagrees_with_the_kalman_filter() {
+    let mut brain = kalman_only().with_worker(Box::new(GraphFilter));
+    let token = brain.lead();
+    let instrument = VariableKey::new(scope(ScopeKind::Instrument, "AAA"), "return").unwrap();
+    let global = VariableKey::new(Scope::global(), "return").unwrap();
+    // Step one: a tight global belief at zero, and the instrument read alone
+    // — nothing contains it yet, so the graph member abstains on it.
+    let first = brain
+        .step(
+            token,
+            vec![
+                obs(
+                    Scope::global(),
+                    "return",
+                    Domain::Markets,
+                    "global",
+                    0.0,
+                    "s1",
+                    t0(),
+                ),
+                obs(
+                    Scope::global(),
+                    "return",
+                    Domain::Markets,
+                    "global",
+                    0.0,
+                    "s2",
+                    t0(),
+                ),
+                ret("AAA", "US", 0.01, "s1", t0()),
+            ],
+            t0(),
+        )
+        .unwrap();
+    assert_eq!(
+        only(&first, &global).ensemble,
+        1,
+        "premise: the global is promoted"
+    );
+    assert_eq!(
+        only(&first, &instrument).ensemble,
+        1,
+        "premise: with no containing belief the graph member abstains"
+    );
+    // Step two: the instrument alone reads far from the global belief.
+    let t1 = later(t0(), 60);
+    let second = brain
+        .step(token, vec![ret("AAA", "US", 0.05, "s1", t1)], t1)
+        .unwrap();
+    let v = only(&second, &instrument);
+    assert_eq!(v.ensemble, 2, "both estimators contributed: {second:?}");
+    assert!(v.disagreement > 0.0, "{}", v.disagreement);
+    let dispute = second
+        .disagreements
+        .iter()
+        .find(|d| {
+            d.disputed_propositions
+                .iter()
+                .any(|p| p.contains(&instrument.to_string()))
+        })
+        .expect("the disagreement on the instrument is recorded");
+    let views: BTreeSet<&str> = dispute.views.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(
+        views,
+        BTreeSet::from(["kalman-local-level", "graph-hierarchical"])
+    );
+    // The ensemble mean sits between the reading and the global belief: the
+    // graph member pulled it toward zero by the global belief's precision.
+    let kalman_alone = {
+        let mut brain = kalman_only();
+        let token = brain.lead();
+        brain
+            .step(token, vec![ret("AAA", "US", 0.01, "s1", t0())], t0())
+            .unwrap();
+        let step = brain
+            .step(token, vec![ret("AAA", "US", 0.05, "s1", t1)], t1)
+            .unwrap();
+        only(&step, &instrument).mean
+    };
+    assert!(
+        v.mean < kalman_alone,
+        "with the graph member the ensemble sits below the Kalman answer: {} vs {kalman_alone}",
+        v.mean
+    );
 }
 
 /// WORLD-9019: a missing worker reduces diversity rather than failing

@@ -2018,12 +2018,14 @@
   {
     "id": "R12-AMBIENT-10093",
     "status": "PARTIAL",
-    "current": "An InformationRequest type exists in world-model federation and an adversary review exists in the kernel; no VOI-gated trigger from forecast conflict.",
+    "current": "Federation::information_request builds the qip_contracts::control::InformationRequest for an arbitration whose spread is material (MATERIAL_DISAGREEMENT_SPREAD) on a proposition with positive exposure at stake: expected_information_value = spread x exposure, budget a stated share of it, deadline and allowed sources (the disagreeing models declared evidence lineages plus the stakes own); a small conflict or an unheld proposition issues nothing. FederationStage::run issues one per such arbitration using the exposure set through set_stakes and journals them on FederationReview::information_requests.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:252 InformationRequest",
-      "backend/crates/runtime/qip-kernel/src/adversary_review.rs"
+      "backend/crates/services/qip-world-model/src/federation.rs::Federation::information_request and InformationStake",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_stakes, run (information_requests), REQUEST_BUDGET_SHARE_BP, REQUEST_DEADLINE",
+      "backend/crates/services/qip-world-model/tests/federation.rs::a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_material_disagreement_on_a_subject_with_exposure_at_stake_issues_an_information_request"
     ],
-    "gap": "Conflict-to-request trigger with VOI.",
+    "gap": "platform.rs::understand_federation does not yet call set_stakes from positions_at_cost before the pass, nor forward review.information_requests into the research intake the deep-brain sweep reads (both call sites are in the L14 lane report for L01), so on the deployed path no request is issued or consumed yet.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2031,10 +2033,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: inverting the exposure gate in Federation::information_request failed the world-model test (no request for a million at stake); skipping the stake lookup in FederationStage::run failed the kernel test at 0 requests vs 1."
   },
   {
     "id": "R12-AMBIENT-10094",

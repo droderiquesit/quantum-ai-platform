@@ -2431,13 +2431,14 @@
   {
     "id": "R12-CONTRACT-6111",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/control.rs:48 InformationRequest = Validated<InformationRequestFields>, deny_unknown_fields decode and invariant checks",
+    "current": "qip-world-model federation.rs now constructs the contract: Federation::information_request returns qip_contracts::control::InformationRequest (question, expected information value, deadline, allowed sources, budget) through Validated::new, and FederationStage::run consumes it onto FederationReview::information_requests, which is journaled and decodes as the contract. The local federation InformationRequest (proposition, models) remains the arbitration decisions payload. A federation test proves the emitted request round-trips as the contract and is refused without a budget.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/control.rs:48 type",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:452 an_information_request_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:462 an_information_request_refuses_each_broken_invariant"
+      "backend/crates/services/qip-world-model/src/federation.rs::Federation::information_request",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationReview::information_requests",
+      "backend/crates/services/qip-world-model/tests/federation.rs::a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not",
+      "backend/crates/libs/qip-contracts/src/control.rs:48 InformationRequest = Validated<InformationRequestFields>"
     ],
-    "gap": "No production seam constructs or consumes InformationRequest (grep of InformationRequestFields outside qip-contracts finds nothing). Production uses qip_contracts::ambient::InfoRequest and services/qip-world-model/src/federation.rs:258 InformationRequest instead.",
+    "gap": "The constructing seam runs only when FederationStage::set_stakes has been called, and platform.rs does not call it yet (patch in the L14 lane report for L01); until then no deployed binary constructs or consumes the contract. qip_contracts::ambient::InfoRequest is still what the ambient path uses.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2445,10 +2446,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding InformationRequest exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: inverting the exposure gate failed the test (no contract emitted for a million at stake)."
   },
   {
     "id": "R12-CONTRACT-6112",

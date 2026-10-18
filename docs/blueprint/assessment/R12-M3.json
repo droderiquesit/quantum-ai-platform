@@ -1701,26 +1701,30 @@
   {
     "id": "R12-WORLD-3078",
     "status": "PARTIAL",
-    "current": "StateFilter registry with Kalman (state-space), particle and robust filters; two estimators on one variable both contribute and ModelDisagreement is recorded; Constraint vetoes symbolic violations.",
+    "current": "NowBrain::standard registers four estimators: Kalman (state-space), particle, robust and the graph estimator GraphFilter (EstimatorKind::Graph), which reads the same variables promoted belief at the scopes containing it (the regions, the global) from Evidence::related and proposes the precision-weighted combination, abstaining where nothing contains the variable. NowStage::new builds the standard brain, so the graph member runs in every cycle; two estimators on one variable both contribute and their ModelDisagreement is recorded.",
     "evidence": [
-      "backend/crates/libs/qip-numerics/src/hmm.rs",
-      "backend/crates/services/qip-world-model/src/now.rs::NowBrain",
-      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run"
+      "backend/crates/services/qip-world-model/src/now.rs::GraphFilter",
+      "backend/crates/services/qip-world-model/src/now.rs::RelatedBelief and Evidence::related",
+      "backend/crates/services/qip-world-model/src/now.rs::NowBrain::related and NowBrain::standard",
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::new",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::the_graph_estimator_reads_the_containing_scopes_belief_and_disagrees_with_the_kalman_filter",
+      "backend/crates/services/qip-world-model/tests/now_brain.rs::two_estimators_on_one_variable_both_contribute_and_their_disagreement_is_recorded",
+      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests (four estimators registered)"
     ],
-    "gap": "EstimatorKind names Neural, Graph and Causal but no implementation exists outside test doubles.",
+    "gap": "EstimatorKind::Causal has no implementation: a causal estimator needs the CausalGraph at the NOW step, which NowInputs does not carry (a call site in platform.rs). EstimatorKind::Neural has no model in qip-numerics. The graph estimator reads the region and global scopes only; sector membership is not known to the brain, so an instrument is not shrunk toward its sector.",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-WORLD-3075"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test now_brain the_graph_estimator && cargo +1.94.1 test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L14): the graph model now contributes on the default path. Mutation: making GraphFilter::propose always abstain failed the test at ensemble 1 vs 2. Causal and neural remain open, so PARTIAL."
   },
   {
     "id": "R12-AMBIENT-3079",

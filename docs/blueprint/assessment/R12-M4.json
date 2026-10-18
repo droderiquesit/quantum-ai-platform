@@ -181,11 +181,14 @@
   {
     "id": "R12-MODEL-4009",
     "status": "PARTIAL",
-    "current": "UNDERSTAND runs FederationStage over regional, horizon and scenario members, each Brier-scored against later closes; each arbitration carries its Disagreement, opposite views give no merged probability, and a review is journaled every cycle (qip-kernel symbolic_federation, 4 passed).",
+    "current": "FederationStage declares one domain member per asset class the composition root names through set_asset_classes (domain.<class>.global.meso, domain = the class, hypothesis cross-sectional-breadth), fed on every instrument proposition of that class with the classs breadth (share of class members whose short-window mean return is positive), so an instrument rising while its class falls is arbitrated between its tape members and its domain member and the Disagreement and research task record both. covers(\"domain\", ..) reads the family. Regional, horizon and scenario members unchanged.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:1-12 Federation/Arbitration/Disagreement"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::set_asset_classes, declare_domain_members, class_breadth, domain_member",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::run (domain_view fed per instrument)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::tests::a_domain_member_fed_its_asset_classs_breadth_disagrees_with_the_tape_members_and_is_recorded",
+      "backend/crates/services/qip-world-model/src/federation.rs::Federation::arbitrate"
     ],
-    "gap": "No domain-model members: the statement names domain/regional/horizon/scenario and only the last three exist; members are declared statistics, not fitted models.",
+    "gap": "platform.rs::understand_federation does not yet call FederationStage::set_asset_classes (InstrumentView carries no asset class and is built by a struct literal there; the call-site patch is in the L14 lane report for L01), so no deployed cycle declares a domain member yet. domain is deliberately not in REQUIRED_FAMILIES until that call lands. Members remain declared statistics rather than fitted models.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -193,10 +196,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "kernel integration test reading an arbitrated federation view",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutation: feeding the domain member a constant breadth of one half failed the test at the views probability (1/3 expected)."
   },
   {
     "id": "R12-MODEL-4010",

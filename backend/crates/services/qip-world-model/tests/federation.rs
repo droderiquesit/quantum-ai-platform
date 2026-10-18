@@ -12,8 +12,8 @@ use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
     Abstraction, Assessment, Calibration, CalibrationClaim, Decision, Declaration, Event,
-    Federation, MATERIAL_DISAGREEMENT_SPREAD, ModelKind, Scope, Status, WorldModelSpec,
-    lineage_from_journal,
+    Federation, InformationStake, MATERIAL_DISAGREEMENT_SPREAD, ModelKind, Scope, Status,
+    WorldModelSpec, lineage_from_journal,
 };
 
 fn at(secs: i64) -> Timestamp {
@@ -911,5 +911,91 @@ fn live_specs_exclude_a_member_exactly_at_its_expiry() -> Result<()> {
     assert_eq!(f.live_specs(at(99)).len(), 2);
     let ids: Vec<&str> = f.live_specs(at(100)).iter().map(|s| s.id()).collect();
     assert_eq!(ids, vec!["b"]);
+    Ok(())
+}
+
+/// AMBIENT-10093 and CONTRACT-6111: a material disagreement on a proposition
+/// with exposure at stake is issued to active sensing as the §24.9 contract
+/// — value of information = spread x exposure, budget a stated share of it,
+/// allowed sources the disagreeing models' own evidence lineages — and a
+/// small conflict, or one on nothing held, issues nothing. The emitted
+/// request decodes as the contract and the contract refuses it without a
+/// budget. Mutation: return `Ok(None)` from `Federation::information_request`
+/// whatever the spread — the material case issues nothing.
+#[test]
+fn a_material_disagreement_with_exposure_at_stake_issues_the_contract_information_request_and_a_small_one_does_not()
+-> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("bull", 1_000))?;
+    register(
+        &mut f,
+        full(
+            "bear",
+            scope(
+                "macro",
+                "global",
+                30,
+                Abstraction::Macro,
+                "base",
+                ModelKind::Observational,
+            ),
+            1_000,
+        ),
+    )?;
+    f.assess("bull", view("q", 0.9, 0.5, 0.3, 5))?;
+    f.assess("bear", view("q", 0.2, 0.5, 0.3, 5))?;
+    let wide = f.arbitrate("q", at(6))?;
+    assert!(
+        wide.disagreement.spread >= MATERIAL_DISAGREEMENT_SPREAD,
+        "premise: the views are far apart: {}",
+        wide.disagreement.spread
+    );
+    let stake = |exposure: i64| InformationStake {
+        exposure: qip_core::Decimal::from_int(exposure),
+        budget_share_bp: 1_000,
+        deadline: at(1_000),
+        extra_sources: vec!["src-bls".into()],
+    };
+    let request = f
+        .information_request(&wide, &stake(1_000_000))?
+        .expect("a material disagreement on a million at stake is worth asking about");
+    // spread 0.7 x 1,000,000 = 700,000; budget a tenth of it.
+    assert_eq!(
+        request.expected_information_value,
+        qip_core::Decimal::from_int(700_000)
+    );
+    assert_eq!(request.budget, qip_core::Decimal::from_int(70_000));
+    assert_eq!(request.deadline, at(1_000));
+    assert_eq!(request.issued_at, wide.at);
+    assert_eq!(
+        request.allowed_sources,
+        vec!["feed:rates".to_string(), "src-bls".to_string()],
+        "the models' declared lineages plus the stake's own"
+    );
+    assert!(request.question.contains("bull") && request.question.contains("bear"));
+    // Nothing held: nothing to learn for.
+    assert!(f.information_request(&wide, &stake(0))?.is_none());
+    // A small conflict on a large stake: not worth asking.
+    f.assess("bull", view("r", 0.55, 0.5, 0.3, 7))?;
+    f.assess("bear", view("r", 0.50, 0.5, 0.3, 7))?;
+    let narrow = f.arbitrate("r", at(8))?;
+    assert!(
+        narrow.disagreement.spread < MATERIAL_DISAGREEMENT_SPREAD,
+        "premise"
+    );
+    assert!(f.information_request(&narrow, &stake(1_000_000))?.is_none());
+    // It is the contract: it round-trips as one and refuses a missing budget.
+    let json = serde_json::to_value(&request)?;
+    let back: qip_contracts::control::InformationRequest = serde_json::from_value(json.clone())?;
+    assert_eq!(back, request);
+    let mut stripped = json;
+    stripped
+        .as_object_mut()
+        .expect("an object")
+        .remove("budget");
+    assert!(
+        serde_json::from_value::<qip_contracts::control::InformationRequest>(stripped).is_err(),
+        "a request with no budget is refused at decode"
+    );
     Ok(())
 }
