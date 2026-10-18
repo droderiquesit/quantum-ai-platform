@@ -2442,12 +2442,13 @@
   {
     "id": "R12-AMBIENT-3107",
     "status": "PARTIAL",
-    "current": "InfoRequest::should_halt now called in deepbrain research sweep at creation and per sweep.",
+    "current": "InfoRequest::record_acquisition shrinks the criteria remaining uncertainty reduction by the acquisition cost (basis points of the decision value, floored), so should_halt compares the marginal net value left after earlier purchases instead of the value fixed at creation. qip-deepbrain research.rs launches each request once and reports its launch rank read before the purchase.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:737 should_halt",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:699 info_request_should_halt_checks_deadline_and_minimum_viable_value"
+      "backend/crates/libs/qip-contracts/src/ambient.rs InfoRequest::record_acquisition / should_halt",
+      "backend/crates/apps/qip-deepbrain/src/research.rs launch_ranked",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value"
     ],
-    "gap": "Net value fixed at creation; not recomputed as marginal value after each acquisition.",
+    "gap": "The shrinkage is a proxy by cost, and production never makes a second acquisition against a request: deepbrain launch_ranked records exactly one acquisition and the next sweep completes it, so the marginal halt is proven on the contract but gates nothing on a running path. Closing needs repeated scout rounds against one request and the realised information gain fed back in place of the cost proxy.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2457,10 +2458,10 @@
       "R12-AMBIENT-3104"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-contracts --test ambient a_request_viable",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 L12: mutation that fired: removing the uncertainty_reduction_bp shrinkage left it at 9000 where the test expects 8100. Kept PARTIAL: contract half only."
   },
   {
     "id": "R12-REASON-3108",

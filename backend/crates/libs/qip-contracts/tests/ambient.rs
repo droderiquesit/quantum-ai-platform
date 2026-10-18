@@ -1129,3 +1129,60 @@ fn an_attention_event_missing_any_contract_field_is_refused_on_decode() {
     granted["authority"] = serde_json::json!("execution");
     assert!(serde_json::from_value::<AttentionEvent>(granted).is_err());
 }
+
+/// Mutation: remove the `uncertainty_reduction_bp` shrinkage in
+/// `InfoRequest::record_acquisition` — the request then stays viable however
+/// much has been bought, and the final assertion fails.
+#[test]
+fn a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value() {
+    let mut req = InfoRequest::new(
+        "req-1",
+        "decision-1",
+        criteria(10_000, 9_000, 8_000, 1_000),
+        at(1_000),
+        at(0),
+    )
+    .expect("valid request");
+    let floor = 2_000;
+    let initial = req.criteria().net_value_bp();
+    assert_eq!(
+        initial, 6_480,
+        "premise: 1.0 * 0.9 * 0.8 * 0.9 of the scale"
+    );
+    assert!(
+        !req.should_halt(at(1), floor),
+        "premise: the request is viable at creation"
+    );
+
+    // One purchase of 1,000 bp keeps nine tenths of the reduction on offer.
+    req.record_acquisition(1_000).expect("valid cost");
+    assert_eq!(req.criteria().uncertainty_reduction_bp, 8_100);
+    assert!(req.criteria().net_value_bp() < initial);
+
+    let mut purchases = 1;
+    while !req.should_halt(at(1), floor) {
+        let before = req.criteria().net_value_bp();
+        req.record_acquisition(1_000).expect("valid cost");
+        purchases += 1;
+        assert!(
+            req.criteria().net_value_bp() < before,
+            "a purchase did not lower the marginal value"
+        );
+        assert!(purchases < 100, "the request never halted");
+    }
+    assert!(req.criteria().net_value_bp() < floor);
+    assert_eq!(req.cumulative_cost_bp(), purchases * 1_000);
+
+    // An acquisition that costs the whole decision value leaves nothing to buy.
+    let mut all = InfoRequest::new(
+        "req-2",
+        "decision-2",
+        criteria(10_000, 10_000, 10_000, 0),
+        at(1_000),
+        at(0),
+    )
+    .expect("valid request");
+    all.record_acquisition(10_000).expect("valid cost");
+    assert_eq!(all.criteria().net_value_bp(), 0);
+    assert!(all.should_halt(at(1), 1));
+}

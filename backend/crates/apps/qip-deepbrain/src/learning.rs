@@ -1040,6 +1040,9 @@ impl LearningDesk {
             .map(ModelCard::reference)
             .collect();
         if degraded.is_empty() {
+            // Said even when nothing drifted, so a drift the last round saw
+            // and this one does not is cleared rather than remembered.
+            platform.observe_model_drift(&self.registry);
             return Ok(Vec::new());
         }
         // MODEL-057: a rollback moves the alias too, and names this desk.
@@ -1062,6 +1065,10 @@ impl LearningDesk {
                 reactivated,
             });
         }
+        // What is still drifted after the rollbacks narrows the centre's
+        // sizing through the self-model row (R12-RES-7101): a card the
+        // rollback retired no longer counts, one it could not roll back does.
+        platform.observe_model_drift(&self.registry);
         Ok(rolled_back)
     }
 
@@ -1749,6 +1756,56 @@ mod tests {
             qip_risk::limits::LimitSet::conservative_default(),
             Box::new(InTreeProvider),
         )
+    }
+
+    #[test]
+    fn a_drifted_model_with_nothing_to_return_to_still_narrows_the_centre_until_it_recovers()
+    -> Result<()> {
+        // The failure this guards (R12-RES-7101): a model that drifted with no
+        // predecessor to fall back to was refused decisions and nothing else,
+        // so the centre kept sizing as if its panel were healthy. The round
+        // reports what is still drifted after it has rolled back what it could.
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        desk.promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+
+        // Premise: healthy, and nothing is named.
+        assert!(desk.roll_back_degraded(&mut platform, at())?.is_empty());
+        assert!(platform.drifted_models().is_empty());
+
+        let threshold = desk
+            .registry
+            .get(&reference)
+            .map(|card| card.drift_threshold)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        desk.registry.record_drift(&reference, threshold * 2.0)?;
+        let later = at().saturating_add(qip_core::Duration::from_mins(1));
+        assert!(
+            desk.roll_back_degraded(&mut platform, later)?.is_empty(),
+            "premise: a lone model has nothing to roll back to"
+        );
+        assert!(
+            platform.drifted_models().contains(&reference),
+            "the drifted model is not named to the platform: {:?}",
+            platform.drifted_models()
+        );
+
+        // Recovery clears the reading on the next round.
+        desk.registry.record_drift(&reference, 0.0)?;
+        desk.roll_back_degraded(&mut platform, later)?;
+        assert!(platform.drifted_models().is_empty());
+        Ok(())
     }
 
     #[test]
