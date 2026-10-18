@@ -665,6 +665,7 @@ fn gap_wanting(
         evidence: vec![evidence.into()],
         severity: 0.6,
         economic_value: dec(5),
+        risk_value: Decimal::ZERO,
     })
     .unwrap()
 }
