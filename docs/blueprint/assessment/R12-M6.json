@@ -2302,7 +2302,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
     ],
-    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced; the one attribution the platform computes itself (simulated::evidence after a shadowed pass) is of the simulation at the plan's own horizon, and nothing measures an effect after an intervention.",
+    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced, and the triage closure (require two distinct horizons in EffectAttribution::validate) cannot land alone. Both default-path producers build exactly one HorizonObservation: qip-agency simulated.rs:178 (the shadowed pass's simulated effect, at the plan's own horizon) and qip-deepbrain ambient_agency.rs:663 (the measured null effect of a draft read again on a later sweep). Each must first observe a second distinct horizon, from the simulator's path or a second sweep. Raising the bound alone broke 14 tests across qip-agency (agency, causal, journal), qip-cli (agency_record), qip-deepbrain (ambient_agency) and qip-world-model (federation).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2313,7 +2313,7 @@
     "verification": "cargo test -p qip-agency -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
+    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL."
   },
   {
     "id": "R12-AGENCY-6105",
