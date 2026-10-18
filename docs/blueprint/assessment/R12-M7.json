@@ -3740,12 +3740,16 @@
   {
     "id": "R12-COVERAGE-7170",
     "status": "PARTIAL",
-    "current": "Brain/memory/ontology/capability types exist.",
+    "current": "Brain/memory/ontology/capability types exist. The ontology registry refuses a version not above the latest per name. Since 2026-10-18 the research registry does too: every verdict is kept as a numbered version (ResearchRegistry::record_version refuses zero and a version not above the latest; record takes the next), and the Source Registry versions each registration: a re-assessment later than the held record replaces it as the next version, one at the same instant keeps the version, and one older than the held record is refused.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:367-457",
-      "backend/crates/libs/qip-agents/src/registries.rs"
+      "backend/crates/libs/qip-agents/src/registries.rs",
+      "backend/crates/libs/qip-agents/src/research.rs:87 ResearchRegistry::record_version",
+      "backend/crates/services/qip-data-finder/src/decision.rs:548 RegisteredSource::succeeding",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_version_is_kept",
+      "backend/crates/services/qip-data-finder/tests/source_registry.rs a_re_registration_raises_the_source_version_and_a_stale_one_is_refused"
     ],
-    "gap": "Research and source registries versioned.",
+    "gap": "Research and source registries are now versioned (the source registry on the default path through Platform's DataFinder; the research registry is held by qip-expansion's desk, which no binary constructs). Remaining for the composite: the memory, brain, tool and model registries' versioning has not been checked against the same rule, and no acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3756,7 +3760,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - accepting a research version equal to the latest ('version 2 was accepted over latest 2'); accepting a source registration older than the held one (the stale assess no longer erred); not bumping the source version on a later registration (left Some(1), right Some(2))."
   },
   {
     "id": "R12-COVERAGE-7171",
