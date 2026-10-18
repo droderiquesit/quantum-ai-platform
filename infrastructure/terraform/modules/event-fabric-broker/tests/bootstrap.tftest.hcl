@@ -13,7 +13,7 @@ variables {
   enabled                   = true
   network_id                = "projects/test-project/global/networks/default"
   subnet_id                 = "projects/test-project/regions/us-central1/subnetworks/default"
-  machine_type              = "c3-standard-4"
+  machine_type              = "c4-standard-4"
   boot_image                = "projects/test-project/global/images/qip-broker-image"
   service_account_email     = "qip-broker@test-project.iam.gserviceaccount.com"
   dns_zone_name             = "event-fabric.internal"

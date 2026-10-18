@@ -1345,14 +1345,16 @@
   },
   {
     "id": "R12-GCP-8061",
-    "status": "PARTIAL",
-    "current": "Every Cloud NAT translates named subnets to reserved addresses with logging (tested); Envoy egress proxy sidecar for api/deepbrain; execution node has its own NAT and venue firewall. No Secure Web Proxy; no separate crawler identity.",
+    "status": "COMPLETE",
+    "current": "Internet egress is controlled and attributable. Every Cloud NAT translates named subnets to reserved addresses with logging (gcp_placement.rs). The one workload that can reach a vendor, the deep brain (source discovery and catalogued connectors), carries the qip-egress proxy sidecar in every environment's manifest, whose allow-list the egress suite pins host by host, and runs under a service account no other workload shares; the fast brain carries no proxy. egress.rs::the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares holds the sidecar and the identity.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_egress_proxy_is_attached_to_the_workloads_that_need_it_and_to_nothing_else",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:163 every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it",
       "infrastructure/egress/envoy.yaml",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs"
+      "infrastructure/terraform/modules/cloudrun/main.tf google_service_account.workload"
     ],
-    "gap": "Dedicated crawler/agent egress identity and domain policy evidence.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1360,10 +1362,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement --test egress",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gcp_placement --test egress",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Reading of the clause: no separate crawler workload exists, so the deep brain is the crawler and agent egress identity; it is dedicated in that no other workload shares its account, not in that it does only crawling. No Secure Web Proxy is deployed: the requirement admits Cloud NAT, and the Envoy sidecar is the domain control. Mutations: the deep brain's account renamed to the API's in envs/dev/deepbrain.yaml failed the identity assertion; the sidecar container renamed away failed the sidecar assertion; file restored byte for byte. Nothing is applied, so no egress observation exists."
   },
   {
     "id": "R12-SEC-8062",
@@ -2114,13 +2116,15 @@
   },
   {
     "id": "R12-FABRIC-8095",
-    "status": "PARTIAL",
-    "current": "P4 ack None; over-quota P4 produce is shed (refused) visibly; health served directly.",
+    "status": "COMPLETE",
+    "current": "Under pressure telemetry is shed at both ends. A P4 producer over its quota is answered Shed (existing), and since this lane a sample_or_shed stream whose consumer group trails the high watermark by more than the lag limit drops its oldest sealed segments past the limit and admits the newest batch, where a P0/P1 stream refuses the producer and P2/P3 keep their declared backlog. Broker::produce runs the check on every produce, so qip-fabricd applies it to the committed catalogue's telemetry.local stream (p4_telemetry, sample_or_shed). Health remains on the direct path.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs drops_oldest_for_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::drop_oldest_past_lag (from refuse_when_a_group_lags)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_pressure.rs a_lagging_p4_stream_drops_its_oldest_batches_and_admits_the_newest",
+      "infrastructure/event-fabric/streams.local.json telemetry.local sample_or_shed"
     ],
-    "gap": "Shed refuses the new batch; no drop-oldest behaviour under pressure, untested.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2128,23 +2132,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new pressure test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_pressure",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Pressure is consumer lag, not producer quota: dropping stored batches does not relieve a producer's rate, so an over-quota P4 batch is still shed (the newest) and a lagging P4 backlog loses its oldest. Granularity is a segment. Mutation: drops_oldest_for_lag returning false keeps offset 0 on the lagging telemetry stream. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 158 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-8096",
     "status": "PARTIAL",
-    "current": "Root instantiates modules/event-fabric-broker (infrastructure/terraform/fabric.tf:79). The module creates at most one broker: broker_count = enabled ? 1 : 0 (modules/event-fabric-broker/main.tf:14). Its variables.tf:143-144 refuses more than one broker_internal_addresses, citing ADR 0100 §3 RF1. Every machine sits in a single var.zone, the machine type defaults to c3-standard-4 (module variables.tf:57-61; root variables.tf:1694), and event_fabric_broker is null in every environment (root variables.tf:1682-1700).",
+    "current": "The root's event_fabric_broker object instantiates modules/event-fabric-broker (fabric.tf) with one to three addresses (two or three only beside ADR 0111's Spanner managed log). Each broker is a google_compute_instance_from_template in the zone its address is named into (zone for the first, additional_zones in order for the rest), on a reserved internal address; the module refuses two brokers in one zone and a zone outside the region at plan, and machine_type defaults to and is validated as a C4/C4D shape. event_fabric_broker is null in every environment, because no broker boot image has been baked.",
     "evidence": [
-      "infrastructure/terraform/fabric.tf:79",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:14",
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:143",
-      "infrastructure/terraform/variables.tf:1682",
-      "tests/qip-acceptance/tests/gcp_placement.rs::every_machine_the_repository_defines_boots_with_secure_boot_a_vtpm_and_integrity_monitoring"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:181 instance zone = local.broker_zone[each.value]; one-per-zone and in-region preconditions",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:197 broker_zones; machine_type default c4-standard-4 validated ^c4d?-",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:312 three_brokers_are_placed_in_three_zones, two_brokers_in_one_zone_are_refused, a_broker_zone_outside_the_region_is_refused, a_c3_broker_shape_is_refused",
+      "infrastructure/terraform/tests/fabric.tftest.hcl:183 three_brokers_behind_the_spanner_lease_are_provisioned (three zones), additional_brokers_without_a_zone_each_are_refused",
+      "infrastructure/terraform/fabric.tf broker_zones from zone + additional_zones; placement precondition on their lengths"
     ],
-    "gap": "Three C4/C4D brokers per production region, one per zone, meets the requirement's minimum (ADR 0111 Amendment 1). Open the module to multiple addresses, refuse two per zone and any non-C4/C4D shape, and show a prod plan.",
+    "gap": "Five per production region: the module caps a region at three (ADR 0111's lease ceiling; ADR 0111 Amendment 1 treats three, one per zone, as the requirement's minimum), and prod sets no event_fabric_broker, so no prod plan shows any broker.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2154,10 +2158,10 @@
       "R12-FABRIC-8086"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cd infrastructure/terraform && terraform test -filter=tests/fabric.tftest.hcl; cargo test -p qip-acceptance --test event_fabric_scaling",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The Terraform cap of one broker is stale against ADR 0111, which seats two or three fabricd instances per region on a Spanner lease. The broker code supports that (broker.rs with_managed_log/tend_leases), but the module still refuses a second address, citing RF1. ADR 0111 specifies 2-3 instances, not five, so whether ADR 0111's shape satisfies 8096 needs an owner decision."
+    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed."
   },
   {
     "id": "R12-FABRIC-8097",
@@ -2169,7 +2173,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
       "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked; no measurement yet ties the default 3000 IOPS / 140 MiB/s to the catalogue's peak_bytes_per_second. The root object now carries journal_provisioned_iops and journal_provisioned_throughput_mibps and fabric.tf passes them (2bf53e03).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2180,7 +2184,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider. Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Re-graded after 2bf53e03 wired the two figures from the root: still PARTIAL, because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2208,11 +2212,14 @@
   {
     "id": "R12-FABRIC-8099",
     "status": "PARTIAL",
-    "current": "Template has no access_config and internal-only tag; addresses are an input variable, not reserved resources; no NCC.",
+    "current": "Each broker address is a reserved INTERNAL google_compute_address (purpose GCE_ENDPOINT) in the control-fabric subnet, and the machine takes its network_ip from that reservation; the template and machines declare no access_config, the template is tagged internal-only, and the folder's org policy denies every VM external address. No NCC hub or export exists. The module is instantiated only when event_fabric_broker is set, which no environment does.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:48-56,66"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:150 google_compute_address.event_fabric_broker (INTERNAL, subnet, one per broker)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:265 each_broker_address_is_a_reserved_internal_address_the_machine_takes",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:952 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
+      "infrastructure/foundation/main.tf google_org_policy_policy.vm_external_ip deny_all"
     ],
-    "gap": "Reserved internal addresses; NCC export.",
+    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: no NCC hub, spoke or export filter exists in the tree, and mirroring is refused for every stream class (fabric_083), so there is nothing yet to export. Not deployed: event_fabric_broker is null in every environment.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2222,10 +2229,10 @@
       "R12-GCP-8057"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment."
   },
   {
     "id": "R12-SEC-8100",

@@ -514,3 +514,88 @@ fn a_pricing_the_node_cannot_read_is_refused_at_start_and_unset_deploys_nothing(
     assert!(node.cell.deployed_strategies().is_empty());
     Ok(())
 }
+
+#[test]
+fn a_rollback_to_the_previous_payload_redeploys_its_plan_from_memory_at_the_next_install()
+-> Result<()> {
+    // REFLEX-10105: the previous package stays rollback-ready. The cell
+    // keeps its previous policy payload for the operator's rollback wire,
+    // but the installer kept only the plan in hand, so rolling the payload
+    // back named a plan the installer had to read from disk and compile
+    // again — on a hung mount, never. Here plan A is deployed, plan B
+    // replaces it, both plan files are then deleted, and the rollback to
+    // payload 1 redeploys A from memory at the next install.
+    use qip_contracts::policy::PlanDigest;
+    use qip_edge_node::strategies::CompiledPlan;
+    let dir = scratch("rollback");
+    let (path, digest_a, count_a) = plan_file(&dir, &[spec("alpha", "10")]);
+    let plan_a = CompiledPlan::read_and_compile(
+        &path,
+        &PlanDigest {
+            digest: digest_a.clone(),
+            strategies: count_a,
+        },
+    )?;
+    let (_, digest_b, count_b) = plan_file(&dir, &[spec("alpha", "20")]);
+    let plan_b = CompiledPlan::read_and_compile(
+        &path,
+        &PlanDigest {
+            digest: digest_b.clone(),
+            strategies: count_b,
+        },
+    )?;
+    assert_ne!(digest_a, digest_b, "premise: two different plans");
+
+    let (mut node, _gateway, _feed) = node_with_feed()?;
+    let mut installer = StrategyInstaller::new(Some(path.clone()), Some(PricingPolicy::Marketable));
+    installer.offer(grant("alpha")?)?;
+    node.cell
+        .apply_policy(policy(1, t(10), &digest_a, count_a)?, t(10))?;
+    installer.activate(plan_a);
+    let first = installer.install_compiled(&mut node.cell, t(10));
+    assert_eq!(
+        first.deployed,
+        vec!["alpha".to_string()],
+        "{}",
+        first.describe()
+    );
+
+    node.cell
+        .apply_policy(policy(2, t(20), &digest_b, count_b)?, t(20))?;
+    installer.activate(plan_b);
+    let second = installer.install_compiled(&mut node.cell, t(20));
+    assert_eq!(
+        second.deployed,
+        vec!["alpha".to_string()],
+        "{}",
+        second.describe()
+    );
+    assert_eq!(installer.compiled_digest(), Some(digest_b.as_str()));
+    assert_eq!(installer.parent_digest(), Some(digest_a.as_str()));
+
+    // Nothing on disk to fall back on.
+    fs::remove_dir_all(&dir).map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+    assert_eq!(
+        node.cell.roll_back_policy(t(30))?,
+        1,
+        "premise: back to payload 1"
+    );
+    let rolled = installer.install_compiled(&mut node.cell, t(30));
+    assert_eq!(
+        rolled.deployed,
+        vec!["alpha".to_string()],
+        "the rollback did not redeploy the parent plan: {}",
+        rolled.describe()
+    );
+    assert_eq!(
+        installer.compiled_digest(),
+        Some(digest_a.as_str()),
+        "the plan in hand is not the parent after the rollback"
+    );
+    assert_eq!(
+        installer.parent_digest(),
+        Some(digest_b.as_str()),
+        "the plan rolled away from is not kept for a rollback forward"
+    );
+    Ok(())
+}

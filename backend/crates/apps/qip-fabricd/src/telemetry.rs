@@ -1,7 +1,9 @@
 //! Observability and metrics emission for the event fabric broker.
 //! See ADR 0100 § 1 for this module's role.
 
-use qip_observability::metrics::{Labels, Metrics, names};
+use qip_observability::critical_paths;
+use qip_observability::metrics::{Labels, Metrics, labels, names};
+use qip_observability::slo::{Slo, fabric_archive_backlog};
 use qip_streaming::event_fabric::broker::LeaseReport;
 use std::sync::Arc;
 
@@ -24,6 +26,9 @@ pub const SEGMENTS_RETAINED: &str = "qip_fabricd_segments_retained_total";
 #[derive(Debug)]
 pub struct FabricdTelemetry {
     metrics: Arc<Metrics>,
+    /// The `fabric-archive-backlog` objective, evaluated on every lag
+    /// reading by the one process that measures the lag.
+    backlog: Slo,
 }
 
 impl FabricdTelemetry {
@@ -97,7 +102,15 @@ impl FabricdTelemetry {
             "archived segments whose local copy was deleted; their history hydrates from the archive",
         );
 
-        Self { metrics }
+        m.describe(
+            names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+            "archive-lag readings judged against the fabric-archive-backlog ceiling, by outcome",
+        );
+
+        Self {
+            metrics,
+            backlog: fabric_archive_backlog(),
+        }
     }
 
     /// One lease pass: how many managed partitions this instance leads,
@@ -236,11 +249,35 @@ impl FabricdTelemetry {
             .count(names::EVENT_FABRIC_SEGMENTS_SEALED, labels);
     }
 
-    /// Archive lag in segments.
+    /// Archive lag in segments, and the `fabric-archive-backlog` objective
+    /// evaluated over every reading so far.
+    ///
+    /// The objective was declared with a ceiling and a target and evaluated
+    /// by nothing, so a backlog that grew past its ceiling moved a gauge and
+    /// missed no objective anywhere. Each reading is now judged against the
+    /// ceiling and counted, and the objective is written as the same
+    /// `qip_slo_*{objective}` gauges the other processes publish.
     pub fn archive_lag(&self, lag: u64) {
-        let labels = Labels::new();
         self.metrics
-            .gauge(names::EVENT_FABRIC_ARCHIVE_LAG, labels, lag as f64);
+            .gauge(names::EVENT_FABRIC_ARCHIVE_LAG, Labels::new(), lag as f64);
+        // A segment count to the ceiling's `f64`: exact for any count a disk
+        // can hold.
+        let within = self
+            .backlog
+            .backlog_ceiling
+            .is_some_and(|ceiling| lag as f64 <= ceiling);
+        let outcome = if within { "within" } else { "over" };
+        self.metrics.count(
+            names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+            labels([("outcome", outcome)]),
+        );
+        let snapshot = self.metrics.snapshot();
+        let good = snapshot.counter(
+            names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+            &labels([("outcome", "within")]),
+        );
+        let total = snapshot.counter_total(names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS);
+        critical_paths::record(&self.metrics, &[self.backlog.evaluate(good, total)]);
     }
 
     /// Consumer group lag for a group, stream and partition.
@@ -579,5 +616,62 @@ mod tests {
             }
             other => panic!("expected Gauge for serving, got {other:?}"),
         }
+    }
+    /// R12-OBS-9157: the `fabric-archive-backlog` objective is evaluated
+    /// where the lag is measured. Two readings within the ceiling of two and
+    /// one of five is two good observations in three, below the 0.99 target,
+    /// so the objective reads measured and missed: three observations and a
+    /// budget consumed past one. Before any reading it is absent, not met.
+    ///
+    /// Mutation: in `archive_lag`, drop the count under
+    /// `EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS` — the evaluation reads zero
+    /// observations and the measured assertion fires.
+    #[test]
+    fn a_backlog_past_its_ceiling_marks_the_archive_backlog_objective_missed() {
+        let metrics = Arc::new(Metrics::new("qip-fabricd"));
+        let recorder = FabricdTelemetry::new(metrics.clone());
+        let objective = labels([("objective", "fabric-archive-backlog")]);
+        assert_eq!(
+            metrics
+                .snapshot()
+                .gauge(names::SLO_OBSERVATIONS, &objective),
+            None,
+            "premise: no reading, no evaluation"
+        );
+
+        recorder.archive_lag(0);
+        recorder.archive_lag(2);
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+            Some(2.0)
+        );
+        assert_eq!(
+            snapshot.gauge(names::SLO_BUDGET_CONSUMED, &objective),
+            Some(0.0),
+            "two readings at or under the ceiling consumed budget"
+        );
+
+        recorder.archive_lag(5);
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+            Some(3.0),
+            "the lagging reading was not evaluated"
+        );
+        let consumed = snapshot
+            .gauge(names::SLO_BUDGET_CONSUMED, &objective)
+            .expect("a measured objective carries its budget");
+        assert!(
+            consumed > 1.0,
+            "one reading in three over the ceiling should miss a 0.99 target: {consumed}"
+        );
+        assert_eq!(
+            snapshot.counter(
+                names::EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS,
+                &labels([("outcome", "over")])
+            ),
+            1
+        );
     }
 }

@@ -70,6 +70,15 @@ pub fn refuses_for_lag(policy: &StreamPolicy) -> bool {
     effective_overload(policy) == OverloadPolicy::RefuseProducer
 }
 
+/// Whether a consumer group trailing past the lag limit makes the broker
+/// drop the partition's oldest batches instead, keeping the newest. Only for
+/// `sample_or_shed`, which only telemetry can have: under pressure the
+/// freshest telemetry is the useful telemetry, so the backlog is bounded by
+/// spending its oldest end rather than by refusing the newest or growing.
+pub fn drops_oldest_for_lag(policy: &StreamPolicy) -> bool {
+    effective_overload(policy) == OverloadPolicy::SampleOrShed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

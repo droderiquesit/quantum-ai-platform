@@ -344,3 +344,67 @@ fn a_released_tick_reaches_the_lake_with_its_raw_payload_and_hash() -> Result<()
     );
     Ok(())
 }
+
+fn coinbase_print(trade_id: u64, time: &str) -> SourceEmulator {
+    let body = format!(
+        "{{\"ask\":\"64231.55\",\"bid\":\"64230.11\",\"volume\":\"9184.4\",\"trade_id\":{trade_id},\
+         \"price\":\"64230.99\",\"size\":\"0.0018\",\"time\":\"{time}\"}}"
+    );
+    SourceEmulator::new(vec![RecordedExchange::always(
+        "/products/BTC-USD/ticker",
+        RecordedAnswer::json(200, &body),
+    )])
+}
+
+/// R12-EVID-2036: the shipped Coinbase connector declared no feed sequence,
+/// so the event-ordering check could never fire for it. Coinbase numbers a
+/// product's trades in the order they printed; a print numbered after
+/// another and dated before it now names that print as its cause and fails
+/// the check. Mutation: leaving `feed_sequence` at its default `None` reads
+/// the second print `Consistent` with no cause.
+#[test]
+fn a_coinbase_print_numbered_after_another_but_dated_before_it_violates_event_ordering()
+-> Result<()> {
+    use qip_evidence::TemporalConsistency;
+    use qip_market_ingestion::connector::SourceConnector;
+    use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+
+    let mut connector = CoinbaseTickerConnector::new(
+        CoinbaseTickerConnector::shipped_manifest()?,
+        "BTC-USD",
+        qip_core::ids::ObjectId::from_string("OBJ0000000000000000BTCUSD"),
+        CoinbaseTickerConnector::VENUE,
+    )?;
+    let mut runtime = runtime(connector.manifest().clone(), None)?;
+
+    let first = runtime.poll(
+        &mut connector,
+        &mut coinbase_print(100, "2026-08-24T14:59:41Z"),
+        now(),
+    )?;
+    let later = at("2026-08-24T15:00:30Z");
+    let second = runtime.poll(
+        &mut connector,
+        &mut coinbase_print(101, "2026-08-24T14:59:30Z"),
+        later,
+    )?;
+
+    // Premise: each poll released its print with checked evidence, and the
+    // first had nothing before it.
+    assert_eq!((first.evidence.len(), second.evidence.len()), (1, 1));
+    let earlier = &first.evidence[0];
+    assert!(earlier.record.caused_by.is_empty());
+
+    let late = &second.evidence[0];
+    assert_eq!(late.record.caused_by, vec![earlier.record.id.clone()]);
+    assert!(
+        matches!(
+            &late.verdict.temporal,
+            TemporalConsistency::ViolatesEventOrdering { cause_id, .. }
+                if *cause_id == earlier.record.id
+        ),
+        "{:?}",
+        late.verdict.temporal
+    );
+    Ok(())
+}

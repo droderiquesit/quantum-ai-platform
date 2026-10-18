@@ -216,12 +216,15 @@
   {
     "id": "R12-FABRIC-7011",
     "status": "PARTIAL",
-    "current": "event-fabric-broker module defines one instance template + DNS SRV; it is not instantiated from main.tf; fabricd is single-node.",
+    "current": "The root's event_fabric_broker object instantiates modules/event-fabric-broker (fabric.tf) with one to three addresses (two or three only beside ADR 0111's Spanner managed log). Each broker is a google_compute_instance_from_template in the zone its address is named into (zone for the first, additional_zones in order for the rest), on a reserved internal address; the module refuses two brokers in one zone and a zone outside the region at plan, and machine_type defaults to and is validated as a C4/C4D shape. event_fabric_broker is null in every environment, because no broker boot image has been baked.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:21 broker instance template; no module block in infrastructure/terraform/main.tf instantiates it",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:1-33 single-node broker composition root (one broker, one disk)"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:181 instance zone = local.broker_zone[each.value]; one-per-zone and in-region preconditions",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:197 broker_zones; machine_type default c4-standard-4 validated ^c4d?-",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:312 three_brokers_are_placed_in_three_zones, two_brokers_in_one_zone_are_refused, a_broker_zone_outside_the_region_is_refused, a_c3_broker_shape_is_refused",
+      "infrastructure/terraform/tests/fabric.tftest.hcl:183 three_brokers_behind_the_spanner_lease_are_provisioned (three zones), additional_brokers_without_a_zone_each_are_refused",
+      "infrastructure/terraform/fabric.tf broker_zones from zone + additional_zones; placement precondition on their lengths"
     ],
-    "gap": "Module not instantiated; no three-zone placement; no controller nodes.",
+    "gap": "No committed environment instantiates the module, so no plan of a real environment renders the three-zone placement; controller nodes are not separate machines: ADR 0111's Spanner lease is the controller, so 'broker/controller nodes' resolves to the lease-contending broker instances.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -231,10 +234,10 @@
       "R12-FABRIC-7037"
     ],
     "blocked_by": "",
-    "verification": "terraform plan rendering three-zone broker nodes",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cd infrastructure/terraform && terraform test -filter=tests/fabric.tftest.hcl; cargo test -p qip-acceptance --test event_fabric_scaling",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed."
   },
   {
     "id": "R12-FABRIC-7012",
@@ -284,22 +287,26 @@
   {
     "id": "R12-SEC-7014",
     "status": "PARTIAL",
-    "current": "KMS keys for secrets, models and registry; Secret Manager mounts as files; no HSM protection level or segregated custody signer.",
+    "current": "Cloud KMS holds every CMEK key and both signing systems. ADR 0110's four ASYMMETRIC_SIGN keys (policy, halt, envelope, model-pack) are HSM-only on their own ring (artefact_signing.protection_level refuses anything but HSM) with an authoritative signer binding naming only the API's runtime identity or the model-pack publisher; the Binary Authorization attestor signs deployments under its own key, granted only to CI; CMEK keys grant encrypt/decrypt only to Google service agents. Secret Manager mounts as files. Gated: artefact_signing = null in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:34 google_kms_crypto_key secrets; modules/ai/main.tf:29 models key; modules/registry/main.tf:112"
+      "infrastructure/terraform/artefact-signing.tf:245 google_kms_crypto_key.artefact (HSM, ASYMMETRIC_SIGN)",
+      "infrastructure/terraform/artefact-signing.tf:311 google_kms_crypto_key_iam_binding.artefact_signer",
+      "infrastructure/terraform/tests/artefact-signing.tftest.hcl:97 four_hsm_p256_signing_keys_with_disjoint_signers_are_planned",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13672 no_principal_holds_a_grant_on_keys_of_two_classes",
+      "infrastructure/terraform/modules/secrets/main.tf:34 google_kms_crypto_key secrets"
     ],
-    "gap": "No HSM-level keys or separate custody/signing system.",
+    "gap": "artefact_signing is null in every committed environment, so no committed plan renders the HSM signing keys (an owner switch, and HSM keys are billed); the deployment-signing attestor key and every CMEK key still take kms_protection_level (SOFTWARE by default), which is R12-SEC-10053's owner decision D12 and needs variables.tf.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan; inspection of protection_level",
+    "verification": "cargo test -p qip-acceptance --test infrastructure no_principal_holds_a_grant_on_keys_of_two_classes; cd infrastructure/terraform && terraform test -filter=tests/artefact-signing.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): the closure's keys already existed in artefact-signing.tf (not security.tf); this lane added the acceptance test that keeps signing keys unreadable by workloads that do not sign. Mutations, each restored byte-for-byte: adding the CI identity to the artefact signer binding failed it ('grants something other than sign to its one signer'); granting a workload identity on the evidence CMEK key failed it ('not a Google service agent'). Kept PARTIAL: the check is a plan and nothing committed plans the keys."
   },
   {
     "id": "R12-SEC-7015",
@@ -743,14 +750,14 @@
   {
     "id": "R12-FABRIC-7034",
     "status": "PARTIAL",
-    "current": "Broker::retain_hot deletes archived, indexed segments past a hot window; fabricd archiver calls it; tested.",
+    "current": "Broker::retain_hot derives each stream's hot window from its StreamPolicy retention class (event_fabric::broker::hot_window): a class retained nowhere beyond its ring (§22.1 Retention::Never, the Transient class) keeps only the batch the next produce chains to, every other class keeps the operator's window, and an archive-required class is still held behind its archived-and-indexed boundary. qip-fabricd's archiver calls retain_hot only when QIP_EVENT_FABRIC_HOT_BATCHES is set, and no committed deployment sets it, so by default no stream is trimmed.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:264-400 StreamPolicySpec/StreamPolicy: qos, partition key, ordering, retention, RF, mirroring, overload, ack, byte/message quotas, lag limit, entitlement",
-      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:549",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs::Broker::retain_hot",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs::a_configured_hot_window_removes_segments_past_it_and_archived_history_is_still_served"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs hot_window and Broker::retain_hot",
+      "backend/crates/services/qip-streaming/tests/event_fabric_retention.rs a_stream_with_a_short_retention_class_is_trimmed_while_a_long_one_is_kept",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs retain (hot_batches None by default)",
+      "backend/crates/apps/qip-fabricd/src/config.rs HOT_BATCHES"
     ],
-    "gap": "Window is a global batch count, not each stream's retention policy/age; no test of per-stream retention expiry.",
+    "gap": "Retention runs only when a deployment sets QIP_EVENT_FABRIC_HOT_BATCHES, which none does; and the time-bounded classes (EventAnchored Rolling(90d), FallbackSeries For(..)) are trimmed by batch count, not by age, because segments carry no time bound retain_hot reads.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -758,10 +765,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "broker retention test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_retention --test event_fabric_hydrate",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Mutation: hot_window returning the operator window for the Transient class keeps offset 12 of the transient stream and the test fails. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 157 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-7035",
@@ -2119,13 +2126,13 @@
   {
     "id": "R12-RES-7095",
     "status": "PARTIAL",
-    "current": "Severed mesh link in the degraded test still trades locally; no pre-positioned directional band fallback found.",
+    "current": "Local trading continues with the peer mesh down: through the node's decision loop with every peer refusing, passes run and place orders and the journal ships (decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal; since 2026-10-18 the rig's grant is bounded, so those passes place orders rather than refusing at envelope_unbounded). A multi-cell cycle needs the counterparty's reservation before FIRE (qip-peer-link saga), so with no reachable peer none can fire; the regional band half is cross_region.rs's.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
       "backend/crates/edge/qip-edge/tests/mesh.rs",
       "backend/crates/edge/qip-edge/tests/cross_region.rs"
     ],
-    "gap": "Directional-band reduction for distributed cycles.",
+    "gap": "No test originates a cycle and then loses the peer mid-epoch to show the cycle refused at its TTL while the cell's single-venue strategy keeps trading; qip-peer-link's ReflexPort has no stop, so a test cannot take a peer down after the cycle starts without a lifecycle hook. Pre-positioned directional bands are not distinguished from the region's ordinary capital share.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2136,7 +2143,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: not closed; the node-level half (local trading continues) is proven, the cycle-refusal half needs a peer-loss harness in qip-peer-link."
   },
   {
     "id": "R12-RES-7096",
@@ -2757,7 +2764,7 @@
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
       "backend/crates/tests/qip-acceptance/tests/slo.rs; backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs"
     ],
-    "gap": "Not evaluated from a deployed process.",
+    "gap": "market-data-freshness (critical_paths.rs) reads EDGE_CAPABILITY_FRESHNESS under SourceRule::NotCountable, so it evaluates unmeasured in every process. No series records the age of the book a pass decides on: the cell keeps feed_heard per venue (silence detection) but exposes no book age, and the node's simulated feed publishes at the pass instant, so the age after publication is zero by construction while the silence before it is the pass interval (1 s), which sits on the objective's 1000 ms threshold. A countable rule needs a defined measurement first: the age of the newest venue data the pass's decisions used, recorded per pass beside EDGE_DECISION_LATENCY_MS.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2768,7 +2775,7 @@
     "verification": "cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading critical_paths.rs, qip-edge-node pass.rs/feed.rs and Cell::feed_heartbeat; no code changed. The decision-latency half of the same evaluator now runs on the node (R12-OBS-7124), so a book-age histogram recorded in pass.rs and bound with SourceRule::LatencyUnder would be evaluated by the same scrape-time evaluation without further wiring."
   },
   {
     "id": "R12-OBS-7124",
@@ -3073,13 +3080,13 @@
   {
     "id": "R12-REFLEX-7137",
     "status": "PARTIAL",
-    "current": "Edge node runs passes on the simulated feed with risk gate and paper boundary and its spool reaches ledgerd; src/replay.rs is not called from main.rs (only tests).",
+    "current": "The edge node runs passes on the simulated feed with deterministic pre-trade risk and the paper boundary, journals hash-chained, and its spool reaches ledgerd (vertical_slice_cell_ledger.rs). Replay is the missing leg: backend/crates/apps/qip-edge-node/src/replay.rs is a three-line module doc (ADR 0100 §8, SLICE-39) with no code, so there is no node replay for main.rs to call.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move",
-      "backend/crates/apps/qip-edge-node/src/replay.rs (no binary caller)",
+      "backend/crates/apps/qip-edge-node/src/replay.rs:1-3 (module doc only)",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs"
     ],
-    "gap": "Replay reachable from a binary or operator command; deployed node.",
+    "gap": "Implement the node replay (re-drive run_pass from recorded PassInputs and control frames over ManualClock, see R12-TICK-10184), then give main.rs an entry point that runs it; a deployed node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3090,7 +3097,7 @@
     "verification": "cargo test -p qip-edge-node",
     "work_item": "",
     "size": "M",
-    "notes": "nothing deployed: execution_nodes = {} in every environment Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Replay clause has no binary entry point; not promoted."
+    "notes": "Corrected 2026-10-18 by lane L09: the gap said replay had no binary caller, which understated it; there is no replay implementation to call. The triage closure (a QIP_REPLAY_TAPE entry in main.rs driving replay.rs) presupposed one. nothing deployed: execution_nodes = {} in every environment."
   },
   {
     "id": "R12-TICK-7138",
@@ -3431,13 +3438,15 @@
   {
     "id": "R12-COVERAGE-7153",
     "status": "PARTIAL",
-    "current": "CausalGraph, SelfModel, counterfactual trials, episode memory exist.",
+    "current": "CausalGraph, SelfModel, counterfactual trials, episode memory exist. Since 2026-10-18 the research memory holds all three kinds apart: episodic (bounded, append-only), semantic (lessons promoted on support) and procedural (named, versioned step sequences, recorded only when they cite at least MINIMUM_PROCEDURE_SUPPORT distinct held episodes resolved correct, read through procedure_as_of so a backtest cannot see a procedure learned later).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/causal.rs",
       "backend/crates/services/qip-learning-engine/src/self_model.rs",
-      "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs"
+      "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs",
+      "backend/crates/libs/qip-agents/src/memory.rs:371 ResearchMemory::record_procedure",
+      "backend/crates/libs/qip-agents/tests/memory.rs:119 a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
     ],
-    "gap": "Semantic/procedural memory distinction.",
+    "gap": "The procedural store exists and nothing on a running path distils a procedure into it: no caller of ResearchMemory::record_procedure outside tests, so the Platform's desk memory holds none. No acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3448,18 +3457,19 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - recording on one correct episode admitted the two-episode procedure; counting a resolved wrong episode as support admitted it."
   },
   {
     "id": "R12-COVERAGE-7154",
-    "status": "PARTIAL",
-    "current": "Agents and tool registry exist; lane test puts them in slow lane.",
+    "status": "COMPLETE",
+    "current": "Generalist planners run in the slow lane and use tools under policy. qip-agency's goal, plan and generate modules are the planner, AmbientAgency::open runs unconditionally in qip-deepbrain, and lane_placement.rs::qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter holds the placement: qip-agency is registered at Lane 3, exactly qip-cli and qip-deepbrain link it (both Lane 3 binaries), the closures of the edge node, the fast brain and the API do not contain it, and the only production implementors of the Adapter trait are the outbox drafting adapter and the CLI's Unwired adapter that refuses every step. execute refuses to send unguarded, and the guard owns the one contracts ToolRegistry that tools.rs re-exports.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents",
-      "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:218"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter",
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open",
+      "backend/crates/services/qip-agency/src/guard.rs registry: ToolRegistry",
+      "backend/crates/services/qip-agency/src/tools.rs"
     ],
-    "gap": "Generalist planners.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3467,10 +3477,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test lane_placement -- qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08); the register text 'generalist planners ... missing' was older than the code. Mutations, each restored byte for byte: qip-agency added to qip-edge's manifest failed the linking-crates assertion; the text impl Adapter for written into qip-api's lib.rs failed the implementor assertion. The fast brain and the API are registered at Lane 3 beside the deep brain, so lane placement alone does not keep a planner off the fast brain; the closure assertions do. The adapter claim reads source text (an impl of the trait outside two files), not a type-level fence."
   },
   {
     "id": "R12-COVERAGE-7155",
@@ -4286,13 +4296,15 @@
   {
     "id": "R12-COVERAGE-7193",
     "status": "PARTIAL",
-    "current": "Non-blocking handoff tested; cached signed policy; writer unwired.",
+    "current": "The writer is wired: main.rs opens SpoolWriter (backend/crates/apps/qip-edge-node/src/main.rs:925) beside FabricMirror, PressureGauge and JournalRelay (:994), and the decision loop journals through HandoffSender::offer, a try_send on a bounded sync_channel. The node continues from cached signed policy when cut off (degraded.rs) and with the centre, a peer and the journal store stalled at once (decision_loop.rs). Since 2026-10-18 an acceptance suite pins the composite's shape across the crate boundary: the decision thread's only handoff offers without waiting and neither the loop nor the pass names the spool or its writer.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship returns without waiting when the writer is stalled",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
-      "backend/crates/apps/qip-edge-node/src/main.rs has no reference to event_fabric::{writer,mirror,pressure} (only lib.rs:30 declares the module)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:925 SpoolWriter::open; :994 JournalRelay::spawn",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs HandoffSender::offer try_send",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs::the_reflex_decision_thread_reaches_the_fabric_only_through_a_handoff_it_never_waits_on"
     ],
-    "gap": "Wire writer into binary.",
+    "gap": "The checklist row closes only when every constituent obligation is COMPLETE; R12-RES-7113 (no fabric quorum; release path untested) and R12-FABRIC-10076 (QUIC) remain PARTIAL. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4300,10 +4312,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_core_path_exclusions; cargo test -p qip-edge-node --test event_fabric_outbox --test decision_loop",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: 'writer unwired' was stale. Acceptance mutations, each restored byte for byte: HandoffSender::offer calling the blocking send failed 'HandoffSender::offer waits on the writer'; a const naming SegmentLog in scheduler.rs failed 'scheduler.rs names SegmentLog'."
   },
   {
     "id": "R12-COVERAGE-7194",

@@ -182,3 +182,34 @@ run "backward_compatibility_outputs_point_to_service_network" {
   # reason and could not evaluate: in
   # `terraform_plan::each_network_id_output_names_the_network_it_is_called_after`.
 }
+
+# R12-SEC-10023: one network firewall policy, its catch-all ingress denies,
+# and an association binding it to each of the five networks.
+run "every_network_is_associated_with_the_baseline_firewall_policy" {
+  command = plan
+
+  variables {
+    console_egress_cidr = null
+  }
+
+  assert {
+    condition     = toset(keys(google_compute_network_firewall_policy_association.baseline)) == toset(["reflex", "fabric", "service", "data", "engineering"])
+    error_message = "The baseline firewall policy must be associated with all five networks (R12-SEC-10023)."
+  }
+
+  assert {
+    condition = alltrue([
+      for rule in [google_compute_network_firewall_policy_rule.baseline_deny_ingress_ipv4, google_compute_network_firewall_policy_rule.baseline_deny_ingress_ipv6] :
+      rule.action == "deny" && rule.direction == "INGRESS" && alltrue([for m in rule.match : alltrue([for l in m.layer4_configs : l.ip_protocol == "all"])])
+    ])
+    error_message = "The baseline policy's rules must deny all ingress protocols."
+  }
+
+  assert {
+    condition = (
+      contains(flatten([for m in google_compute_network_firewall_policy_rule.baseline_deny_ingress_ipv4.match : m.src_ip_ranges]), "0.0.0.0/0") &&
+      contains(flatten([for m in google_compute_network_firewall_policy_rule.baseline_deny_ingress_ipv6.match : m.src_ip_ranges]), "::/0")
+    )
+    error_message = "The baseline policy must deny ingress from every IPv4 and IPv6 source."
+  }
+}

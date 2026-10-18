@@ -3968,3 +3968,84 @@ fn the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd
         "a crate links qip-ledgerd: {dependents:?}"
     );
 }
+
+#[test]
+fn nothing_that_holds_evidence_belief_or_authenticity_can_reach_a_quantum_solver() {
+    // R12-EVID-2040. A quantum result is an advisory candidate; it must not
+    // become evidence authenticity or a belief on its own. The structural
+    // reason is that the crates which hold evidence, the world model and the
+    // reasoning engine do not link the solvers at all, transitively, so there
+    // is no path along which a result type could be handed to them. The
+    // direct-name scan in `quantum_evidence.rs` is the other half.
+    let graph = dependency_graph();
+    for holder in ["qip-evidence", "qip-world-model", "qip-reasoning-engine"] {
+        assert!(
+            graph.contains_key(holder),
+            "{holder} is not a crate in this workspace; this test constrains nothing"
+        );
+        let reachable = reachable_from(&graph, holder);
+        assert!(
+            reachable.contains("qip-contracts"),
+            "{holder} reaches nothing it is known to depend on, so the absence proves nothing"
+        );
+        for solver in ["qip-quantum", "qip-optimization-engine"] {
+            assert!(
+                !reachable.contains(solver),
+                "{holder} can reach {solver}: {reachable:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act() {
+    // R12-AMBIENT-1055. An ambient output is an `Advisory<T>` whose payload is
+    // private; the one door is `promote`, and the one consumer of the promoted
+    // value is `qip-agency`'s `AmbientIntake::submit`. So a crate that cannot
+    // link `qip-agency` cannot act on an ambient output at all, which is a
+    // property of the compiled graph and not of what its source text happens
+    // to spell. `ambient_attention.rs` held this as a scan for the strings
+    // `qip_contracts::ambient` and `Advisory<`; that scan stays for the type
+    // names (qip-contracts is linked by everyone, so a graph cannot see who
+    // names a module in it), and this is the half the graph can hold.
+    let graph = dependency_graph();
+    assert!(
+        graph.contains_key("qip-agency"),
+        "qip-agency is not a crate in this workspace; this test constrains nothing"
+    );
+    let mut order_path: BTreeSet<String> = [
+        "qip-execution-engine",
+        "qip-brokers",
+        "qip-risk-engine",
+        "qip-portfolio-engine",
+        "qip-capital",
+        "qip-kernel",
+        "qip-edge-node",
+    ]
+    .iter()
+    .map(|name| name.to_string())
+    .collect();
+    order_path.extend(crates_under("backend/crates/edge"));
+    assert!(
+        order_path.len() >= 12,
+        "the order path resolved to {order_path:?}, too few to mean the whole path"
+    );
+    for member in &order_path {
+        assert!(
+            graph.contains_key(member),
+            "{member} is named as order path but is not a crate in this workspace"
+        );
+        let reachable = reachable_from(&graph, member);
+        assert!(
+            !reachable.contains("qip-agency"),
+            "{member} can reach qip-agency, the only consumer of a promoted ambient output: \
+             {reachable:?}"
+        );
+    }
+    // The absence means something only if the consumer is reachable from
+    // where it is meant to be: the deep brain hosts ambient cognition.
+    assert!(
+        reachable_from(&graph, "qip-deepbrain").contains("qip-agency"),
+        "the deep brain no longer links qip-agency, so the ambient road has moved"
+    );
+}
