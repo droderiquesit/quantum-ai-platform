@@ -47,7 +47,11 @@ fn policy_document() -> Value {
                 "channels": ["paper-venue"],
                 "max_actions_per_window": 1,
                 "budget_units": 1000,
-                "revocation_path": "operator removes it from this file"
+                "revocation_path": "operator removes it from this file",
+                "provenance": "in-tree test fixture, no third-party dependency",
+                "sandbox_tests": ["quoter-sandbox-smoke"],
+                "cost_latency": {"cost_units": 1, "latency_ms": 100},
+                "allowed_callers": ["desk-agent"]
             }]
         },
         "evidence": [{
