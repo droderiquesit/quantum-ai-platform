@@ -43,6 +43,7 @@ use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
 use qip_training::serve::InTreeProvider;
 use serde::de::DeserializeOwned;
+use std::collections::BTreeSet;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -447,6 +448,81 @@ fn teacher(name: &str) -> Result<TrainedTeacher> {
     )
     .with_holdout(0.25);
     LocalTrainer::new().fit(&spec, &data, start())
+}
+
+/// R12-CONTRACT-6112: once a forecaster has been scored, every question it
+/// answers afterwards journals one §24.9 `ModelVote` for it — model and
+/// version, the probability it stated, the regime, its score history and
+/// what the vote cost — and a forecaster with no history yet casts none.
+/// `ModelVoteFields` appeared nowhere outside `qip-contracts` until
+/// 2026-10-18: the contract existed and nothing in any binary built one.
+///
+/// Mutation: stop recording resolved scores in `TournamentStage::learn` —
+/// no entrant ever has standing, the third cycle journals no vote, and the
+/// assertion naming the forecasters fails.
+#[test]
+fn a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found("premise: a question opened"))?;
+    let forecasters: BTreeSet<String> = question.forecasts().keys().cloned().collect();
+    let resolves_at = question.spec().resolves_at;
+    let first = records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?;
+    assert!(
+        first.iter().all(|review| review.votes.is_empty()),
+        "premise: nobody has standing before anything resolved"
+    );
+    assert!(
+        first.iter().flat_map(|r| r.voteless.iter()).count() >= forecasters.len(),
+        "premise: every unscored entrant is named voteless"
+    );
+
+    // Resolve, then let a later cycle open a fresh question.
+    platform.observe(vec![bar("AAA", resolves_at, 150.0, 165.0)]);
+    let resolved_at = resolves_at.saturating_add(Duration::from_days(2));
+    platform.run_cycle(resolved_at);
+    let later = resolved_at.saturating_add(Duration::from_days(1));
+    platform.observe(vec![bar("AAA", later, 165.0, 160.0)]);
+    platform.run_cycle(later.saturating_add(Duration::from_hours(1)));
+
+    let votes: Vec<qip_contracts::control::ModelVote> =
+        records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?
+            .into_iter()
+            .flat_map(|review| review.votes)
+            .collect();
+    let voters: BTreeSet<String> = votes.iter().map(|vote| vote.model.clone()).collect();
+    assert!(
+        forecasters.iter().any(|f| voters.contains(f)),
+        "no forecaster scored in cycle two voted afterwards: scored {forecasters:?}, voted {voters:?}"
+    );
+    for vote in &votes {
+        assert!(
+            forecasters.contains(&vote.model),
+            "{} voted without ever having been scored",
+            vote.model
+        );
+        assert!(!vote.score_history.is_empty());
+        assert!(
+            vote.score_history
+                .iter()
+                .all(|point| point.at <= vote.cast_at)
+        );
+        let round_trip: qip_contracts::control::ModelVote = serde_json::from_str(
+            &serde_json::to_string(vote).map_err(|e| Error::invalid(e.to_string()))?,
+        )
+        .map_err(|e| Error::invalid(e.to_string()))?;
+        assert_eq!(
+            &round_trip, vote,
+            "the journaled vote does not decode as the contract"
+        );
+    }
+    Ok(())
 }
 
 /// R12-TICK-2091: a distillate whose card was trained on licensed data is

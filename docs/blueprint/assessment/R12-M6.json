@@ -2490,14 +2490,16 @@
   },
   {
     "id": "R12-CONTRACT-6112",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/control.rs:107 ModelVote = Validated<ModelVoteFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "TournamentStage (qip-kernel model_tournament.rs), run by REASON and LEARN in every cycle, keeps each forecaster's Brier score at every resolution (bounded at SCORE_HISTORY = 32) and, for every entrant whose forecast it admits and who has that history, builds one Validated qip_contracts::control::ModelVote (model, version from the analyst run's manifest digest or the kernel version for a detector, the stated probability, regime, score history, compute cost from the run's metered spend) and journals it on TournamentReview.votes; an entrant without history, or whose cost is not an amount, is named in TournamentReview.voteless instead.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/control.rs:107 type",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:506 a_model_vote_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:515 a_model_vote_refuses_each_broken_invariant"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::model_vote",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage::record_score",
+      "backend/crates/libs/qip-contracts/src/control.rs:107",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::tests::a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused"
     ],
-    "gap": "No production seam constructs or consumes ModelVote (grep of ModelVoteFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2505,10 +2507,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after && cargo +1.94.1 test -p qip-kernel --lib a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it. Closed 2026-10-18 by lane L06. Mutations, restored byte for byte: removing the record_score call in learn left every entrant without standing and the third cycle journaled no vote (the test names the seven forecasters scored and an empty voter set); defaulting an unrepresentable cost to zero in model_vote failed the unit test at a vote with no cost was cast. Consumer side: votes are journaled, read by nothing that decides yet; R12-MODEL-9031 covers the consensus."
   },
   {
     "id": "R12-CONTRACT-6113",
