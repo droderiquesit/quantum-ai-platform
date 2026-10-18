@@ -1423,6 +1423,50 @@ mod tests {
     }
 
     #[test]
+    fn a_desk_whose_chain_holds_a_gap_signs_nothing_even_with_room_in_the_feed() {
+        // The half of `ledger_blocked` the full-feed test cannot reach: a
+        // record the queue skipped for want of room stays a gap after the
+        // feed drains whenever the event log cannot re-derive it (the records
+        // admitted here are not `FillBooked` events), and signing on through
+        // that releases exposure while the chain holds a record the ledger
+        // was never sent. Mutation: drop `|| self.desk_ledger.has_gap()` from
+        // `ledger_blocked` in `stage_act_orders` and this fails.
+        let at = Timestamp::from_secs(1_760_000_000).saturating_add(Duration::from_mins(5));
+        let mut platform = platform_with(Lie::Honest);
+        for n in 0..=DESK_OUTBOX_CAPACITY {
+            let fill = booked(&format!("gap{n}"), "f", dec!("1"), dec!("100"));
+            platform
+                .desk_ledger_mut()
+                .admit(&fill, "central-desk", "c")
+                .unwrap();
+        }
+        // Make room without healing anything.
+        platform
+            .acknowledge_desk_outcomes(DESK_OUTBOX_CAPACITY as u64 / 2)
+            .expect("acknowledged");
+        assert!(
+            !platform.desk_ledger_mut().is_full(),
+            "premise: the feed has room, so only the gap can block"
+        );
+        assert!(
+            platform.desk_ledger_mut().has_gap(),
+            "premise: the skipped record left a gap"
+        );
+        let report = platform.run_cycle(at);
+        assert!(
+            report
+                .stage(crate::cycle::Stage::Act)
+                .expect("ACT ran")
+                .problems
+                .iter()
+                .any(|problem| problem
+                    .starts_with("no proposal was signed off: the desk's ledger feed")),
+            "a desk with a gap in its chain still authorised new exposure: {:?}",
+            report.stage(crate::cycle::Stage::Act).map(|s| &s.problems)
+        );
+    }
+
+    #[test]
     fn a_fill_that_names_another_order_is_declined_as_a_mismatch() {
         let mut platform = platform_with(Lie::OtherOrder);
         let cash = platform.cash();
