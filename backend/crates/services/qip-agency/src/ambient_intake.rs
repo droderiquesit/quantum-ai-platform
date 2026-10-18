@@ -371,6 +371,15 @@ impl AmbientIntake {
                 "pricing".to_string(),
             ]),
             stop_conditions: Some(vec!["the outbox cannot be written".to_string()]),
+            // The door's only effect is a draft in the internal outbox, which
+            // sends nothing, so a stop leaves nothing half-applied outside it.
+            // What a stop unwinds is the retry queue: every held draft is
+            // dropped on the record (`AmbientIntake::revoke`).
+            rollback_conditions: Some(vec![
+                "on a stop, drop every draft held for a retry on the record; written drafts stay \
+                 in the internal outbox, which sends nothing"
+                    .to_string(),
+            ]),
         }
         .build()?;
         Ok(Self {

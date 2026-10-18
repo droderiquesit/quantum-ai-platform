@@ -57,7 +57,10 @@
 //! created.
 
 use qip_agents::finding::FindingStatus;
-use qip_contracts::control::{ModelVote, ModelVoteFields, ScorePoint};
+use qip_contracts::control::{
+    ConsensusWeight, ForecastConsensus, ForecastConsensusFields, ModelVote, ModelVoteFields,
+    ScorePoint,
+};
 use qip_contracts::validated::Contract;
 use qip_core::Decimal;
 use qip_core::error::Result;
@@ -169,6 +172,10 @@ pub struct TournamentReview {
     /// reason — no score history yet, or a vote the contract refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voteless: Vec<String>,
+    /// The consensus each question opened this cycle formed, with the share
+    /// every forecaster carried in it (R12-MODEL-9031).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consensus: Vec<ForecastConsensus>,
 }
 
 /// What every tournament record's idempotency key starts with.
@@ -281,6 +288,51 @@ pub struct TournamentStage {
 /// history rides on every vote journaled and a working set that grows with
 /// the life of the process is the retention this platform refuses.
 pub const SCORE_HISTORY: usize = 32;
+
+/// The consensus a question formed: the aggregate the tournament pooled, and
+/// each forecaster's share of it as the tournament weighed it, normalised to
+/// sum to one. The shares are the reputation the tournament earned for each
+/// forecaster — market share, calibration, information, cost, latency and
+/// regime survival — or equal, and said to be, where nobody has earned any.
+fn consensus(
+    proposition: &str,
+    regime: &str,
+    aggregate_up: f64,
+    weights: &BTreeMap<String, f64>,
+    earned: bool,
+    now: Timestamp,
+) -> Result<ForecastConsensus> {
+    let total: f64 = weights.values().sum();
+    if !(total.is_finite() && total > 0.0) {
+        return Err(qip_core::error::Error::invalid(format!(
+            "the weights on {proposition} sum to {total}; no consensus is formed from no weight"
+        )));
+    }
+    let weights = weights
+        .iter()
+        .map(|(model, weight)| {
+            Decimal::from_f64(weight / total)
+                .map(|weight| ConsensusWeight {
+                    model: model.clone(),
+                    weight,
+                })
+                .ok_or_else(|| {
+                    qip_core::error::Error::invalid(format!(
+                        "{model}'s weight of {weight} is not a share"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ForecastConsensus::new(ForecastConsensusFields {
+        schema_version: ForecastConsensusFields::SCHEMA_VERSION,
+        proposition: proposition.to_string(),
+        regime: regime.to_string(),
+        probability_bp: up_bp(aggregate_up.clamp(0.0, 1.0)),
+        weights,
+        reputation_weighted: earned,
+        formed_at: now,
+    })
+}
 
 /// One entrant's contract vote, or the reason it has none. The version is
 /// the manifest digest an analyst ran under, or the kernel's own version for
@@ -603,6 +655,28 @@ impl TournamentStage {
             .ok()
             .flatten()
             .and_then(|p| p.get(UP).copied());
+        if let Some(up) = aggregate_up {
+            let formed = self
+                .tournament
+                .aggregate_weights(&question, &observation.regime)
+                .and_then(|(weights, earned)| {
+                    consensus(
+                        &format!("{target} = {UP}"),
+                        &observation.regime,
+                        up,
+                        &weights,
+                        earned,
+                        now,
+                    )
+                });
+            match formed {
+                Ok(consensus) => self.review.consensus.push(consensus),
+                Err(error) => self
+                    .review
+                    .refused
+                    .push(format!("{question}/consensus: {}", error.message())),
+            }
+        }
 
         // The society, for important predictions only.
         let important = observation.approved || confidence >= IMPORTANCE_CONFIDENCE;

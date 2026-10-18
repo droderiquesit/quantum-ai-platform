@@ -299,6 +299,7 @@ fn goal(envelope: i64) -> GoalSpecDraft {
         prohibited_side_effects: Some(vec![]),
         prohibited_methods: Some(vec![]),
         stop_conditions: Some(vec!["spread widens".into()]),
+        rollback_conditions: Some(vec!["restore the prior quote width".into()]),
     }
 }
 

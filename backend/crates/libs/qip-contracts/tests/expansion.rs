@@ -17,7 +17,8 @@ fn goal() -> Value {
         "success_metric": "max drawdown", "acceptable_uncertainty": "0.2", "budget": "1000",
         "risk_envelope": "50", "jurisdictions": ["US"], "acting_identity": "desk-1",
         "prohibited_side_effects": ["public statement"], "prohibited_methods": ["live orders"],
-        "stop_conditions": ["drawdown above 6 percent"]
+        "stop_conditions": ["drawdown above 6 percent"],
+        "rollback_conditions": ["close the hedge opened for this goal"]
     })
 }
 
@@ -433,4 +434,46 @@ fn a_gap_carries_a_risk_value_distinct_from_its_economic_value_and_refuses_a_neg
         GapSignal::decode(&serde_json::to_vec(&v).expect("e")).is_ok(),
         "a stated zero exposure is admitted"
     );
+}
+
+/// CONTRACT-7080: a goal declares what a stop unwinds, not only when to stop.
+/// A goal that halts mid-intervention with no rollback declared leaves its
+/// half-applied lever in place, and nobody wrote down that it should not be
+/// there. A missing, empty or blank declaration is refused, naming the field.
+///
+/// Mutation: build `rollback_conditions` with `unwrap_or_default()` instead of
+/// `declared_list`. The missing and empty documents are then accepted.
+#[test]
+fn a_goal_without_rollback_conditions_is_refused_and_a_declared_one_survives_decoding() {
+    let g = GoalSpec::decode(&serde_json::to_vec(&goal()).expect("e")).expect("premise: decodes");
+    assert_eq!(
+        g.rollback_conditions,
+        vec!["close the hedge opened for this goal".to_string()]
+    );
+    let mut missing = goal();
+    missing
+        .as_object_mut()
+        .expect("object")
+        .remove("rollback_conditions");
+    for (case, doc) in [
+        ("missing", missing),
+        ("empty", {
+            let mut v = goal();
+            v["rollback_conditions"] = json!([]);
+            v
+        }),
+        ("blank", {
+            let mut v = goal();
+            v["rollback_conditions"] = json!(["  "]);
+            v
+        }),
+    ] {
+        let err = GoalSpec::decode(&serde_json::to_vec(&doc).expect("e")).expect_err(&format!(
+            "a goal with {case} rollback conditions was accepted"
+        ));
+        assert!(
+            err.to_string().contains("`rollback_conditions`"),
+            "{case}: refusal did not name the field: {err}"
+        );
+    }
 }

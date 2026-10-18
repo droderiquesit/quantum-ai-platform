@@ -1775,13 +1775,15 @@
   {
     "id": "R12-CONTRACT-7080",
     "status": "PARTIAL",
-    "current": "GoalSpec carries all twelve declarations; a goal missing any is refused naming the field; reached from qip-cli agency shadow.",
+    "current": "GoalSpec carries thirteen declarations, now including rollback_conditions (required, non-empty, no blank entry). A goal missing any declaration is refused, naming the field. qip-cli agency shadow decodes goals through it. The ambient intake's goal, built by AmbientIntake::open on the deep brain's default path, declares what a stop unwinds. Authority class is deliberately not on the goal: it lives on qip-agency's ActionPolicy, and a goal document carrying authority_class is refused as unknown.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:80-91",
-      "backend/crates/services/qip-agency/tests/agency.rs:50,107",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 qip_agency::engine::run in shadow (qip-cli main.rs:71) — only composition root reaching qip-agency"
+      "backend/crates/libs/qip-contracts/src/expansion.rs:187 GoalSpec.rollback_conditions, built by declared_list in GoalSpecDraft::build",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:378 the ambient goal's rollback declaration",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs:447 a_goal_without_rollback_conditions_is_refused_and_a_declared_one_survives_decoding",
+      "backend/crates/services/qip-agency/tests/agency.rs:51 a_goal_missing_any_one_of_its_thirteen_declarations_is_refused_naming_that_field",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs a_goal_carries_no_authority_and_a_document_asking_for_one_at_any_level_is_refused"
     ],
-    "gap": "GoalSpec no longer carries authority class (lives on ActionPolicy) and has stop_conditions but no rollback declaration.",
+    "gap": "Rollback is closed. The authority-class half is a deliberate departure, not an omission: authority lives on ActionPolicy (starts at shadow, no live rung) and a goal asking for any authority is refused (expansion.rs GoalSpec doc). No ADR records that departure, so the clause as written stays unmet. The row closes when an ADR or a requirement amendment records that a goal carries no authority class. Nothing yet executes a rollback declaration; it is carried and validated.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1789,10 +1791,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cd backend && cargo test -p qip-contracts --test expansion && cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Contract omits authority class (moved to ActionPolicy) and has no distinct rollback field."
+    "notes": "Narrowed 2026-10-18 (lane L12). Mutation: building rollback_conditions with unwrap_or_default() instead of declared_list failed the new contracts test and two existing per-field refusal tests; restored, 16 passed. The agency per-field test was renamed from twelve to thirteen declarations, and R12-M3's evidence line naming it was updated."
   },
   {
     "id": "R12-CONTRACT-7081",

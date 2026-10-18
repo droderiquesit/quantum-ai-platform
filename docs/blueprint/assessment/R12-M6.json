@@ -1272,13 +1272,15 @@
   },
   {
     "id": "R12-EXPAND-6058",
-    "status": "PARTIAL",
-    "current": "BrainSpec contract with competency domains, tools, evaluations, abstention, authority envelope, calibration and parent version; no registry store.",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain brains.rs holds the Brain Registry the node starts on: BrainRegistry::register validates every BrainSpec (competency domains, tools, source permissions, memory scope, model stack, evaluations, abstention rules, authority envelope, calibration, version and parent lineage) and refuses an entry missing a declared field or an id registered twice. brains::standard registers one entry per agent on the organisation the platform convened (Platform::organisation().roster(), read rather than listed), the four NOW specialists and the two ambient brains; main.rs builds it after the platform is assembled and before anything is served, so a convened agent without a valid entry stops the process, and prints the count on the banner. Models remain recorded in qip-ai's ModelRegistry (ModelCard), the registry the learning desk registers every fit in.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:444",
-      "backend/crates/libs/qip-contracts/tests/brain_registry.rs:4"
+      "backend/crates/apps/qip-deepbrain/src/brains.rs BrainRegistry::register, standard, organisation_spec",
+      "backend/crates/apps/qip-deepbrain/src/main.rs qip_deepbrain::brains::standard(platform.organisation().roster())",
+      "backend/crates/libs/qip-contracts/src/expansion.rs BrainSpec::validate",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs"
     ],
-    "gap": "Registry store and integration.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1286,10 +1288,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L04. Mutations fired: the roster loop in standard skipped (`.take(0)`) fails every_agent_the_platform_convenes_and_both_ambient_brains_have_a_validated_entry; `spec.validate()?` removed from register fails an_entry_missing_a_declared_field_or_registered_twice_is_refused; restored byte-identical each time. calibration is 0.0 for every entry because nothing scores a brain's output through this registry yet; the floor of the field, not a measurement."
   },
   {
     "id": "R12-EXPAND-6059",
