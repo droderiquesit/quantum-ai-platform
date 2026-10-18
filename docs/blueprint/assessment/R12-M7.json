@@ -3517,13 +3517,17 @@
   },
   {
     "id": "R12-COVERAGE-7159",
-    "status": "PARTIAL",
-    "current": "Arbitrage, reservations, decomposition exist.",
+    "status": "COMPLETE",
+    "current": "Arbitrage, reservations, decomposition exist; search.rs::MAX_CYCLE_EDGES = 20 bounds the leg count; and a cycle that breaks between legs is unwound before the cell halts: Cell::break_cycle calls Cell::unwind_cycle, which reads the fills the order-entry channel has delivered, nets the cycle's filled legs per venue and instrument with qip_arbitrage::legs::unwind_plan, sends one opposite order per open book through Cell::send at the touch, and journals each as Decision::Hedged; an offset it cannot price or send is journaled as a break.",
     "evidence": [
+      "backend/crates/edge/qip-arbitrage/src/legs.rs:190 unwind_plan, with unit tests filled_legs_net_per_book_and_each_open_book_gets_one_opposite_order and fills_that_net_to_flat_need_no_order",
+      "backend/crates/edge/qip-edge/src/cell.rs:9056 break_cycle unwinds when any leg went out; :9094 unwind_cycle",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs:1374 a_three_leg_cycle_whose_third_leg_is_refused_sends_one_offsetting_order_per_filled_leg_then_halts",
+      "backend/crates/edge/qip-edge/tests/decomposition.rs a_cycle_whose_first_leg_fills_under_the_minimum_viable_fraction_sends_no_further_leg and a_desk_that_will_only_carry_a_whole_cycle_stops_on_any_short_leg_at_all now assert the one offset closing the short first leg",
       "backend/crates/edge/qip-arbitrage",
       "backend/crates/edge/qip-edge/src/reservation.rs"
     ],
-    "gap": "20-leg graph and hedge/unwind end to end.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3531,10 +3535,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-edge --test arbitrage --test decomposition; cargo test -p qip-arbitrage --lib unwind",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. Runs in Cell::work's cycle path on every cell holding a desk, so qip-edge-node's simulated passes carry it. Offsets pass every gate Cell::send applies (live-venue refusal, mode gate, fence, risk gate); a leg still resting is left to the halt's mass cancel rather than offset. Mutations: skipping the unwind_cycle call fails the arbitrage test (2 orders placed, not 4) and both decomposition tests; inverting unwind_plan's net filter fails the arbitrage test and both unit tests."
   },
   {
     "id": "R12-COVERAGE-7160",
