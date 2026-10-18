@@ -132,6 +132,7 @@ use qip_kernel::central::models::{ModelRegistration, register_fit, require_calib
 use qip_lifecycle::{Evaluator, EvaluatorPolicy};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
+use qip_training::ConformalInterval;
 use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
@@ -269,6 +270,10 @@ fn choose_class(board: &Scoreboard, regime: &str) -> (ModelFamily, ClassReason) 
         (BASELINE_CLASS, ClassReason::PrecedentBelowBaseline)
     }
 }
+
+/// The miscoverage of the prediction interval a registered card records: 0.1
+/// asks for an interval that covers nine in ten realised returns.
+const CONFORMAL_ALPHA: f64 = 0.1;
 
 /// The dataset name a round on `subject` fits under.
 fn dataset_name(subject: &ObjectId) -> String {
@@ -1669,6 +1674,33 @@ impl LearningDesk {
             }
         };
 
+        // How wide the prediction's error band is, calibrated on the holdout
+        // tail the fit never saw (R12-MODEL-4006). A holdout too small for the
+        // requested coverage leaves a stated limitation instead of a number
+        // that would be a guess.
+        if let Some(card) = self.registry.get_mut(&registration.reference) {
+            match ConformalInterval::calibrate(&teacher, &holdout, CONFORMAL_ALPHA) {
+                Ok(interval) => {
+                    card.parameters.insert(
+                        "conformal_alpha".to_string(),
+                        format!("{}", interval.alpha()),
+                    );
+                    card.parameters.insert(
+                        "conformal_half_width".to_string(),
+                        format!("{}", interval.half_width()),
+                    );
+                    card.parameters.insert(
+                        "conformal_calibration_rows".to_string(),
+                        interval.calibration_rows().to_string(),
+                    );
+                }
+                Err(error) => card.limitations.push(format!(
+                    "no calibrated prediction interval: {}",
+                    error.message()
+                )),
+            }
+        }
+
         // Distil the teacher into the linear form the execution path is
         // actually allowed to run, probed on the same holdout tail the
         // fit's own diagnostics were scored against. Reusing the training
@@ -3027,6 +3059,54 @@ mod tests {
             matches!(outcome, PromotionOutcome::Promoted { .. }),
             "the attributed fit was not promoted: {}",
             outcome.describe()
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-4006. The card a round registers records a conformal
+    /// prediction interval calibrated on the holdout tail: the miscoverage,
+    /// a positive finite half-width, and the number of rows behind it.
+    ///
+    /// Mutation: delete the `ConformalInterval::calibrate` block after the
+    /// registration — the card records no half-width and the first assertion
+    /// fails.
+    #[test]
+    fn a_registered_card_records_a_calibrated_prediction_interval() -> Result<()> {
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        let half_width: f64 = card
+            .parameters
+            .get("conformal_half_width")
+            .ok_or_else(|| Error::not_found("a conformal half-width on the card"))?
+            .parse()
+            .map_err(|_| Error::invalid("the half-width is not a number".to_string()))?;
+        assert!(half_width.is_finite() && half_width > 0.0, "{half_width}");
+        assert_eq!(
+            card.parameters.get("conformal_alpha").map(String::as_str),
+            Some("0.1")
+        );
+        let rows: usize = card
+            .parameters
+            .get("conformal_calibration_rows")
+            .and_then(|rows| rows.parse().ok())
+            .ok_or_else(|| Error::not_found("a calibration row count"))?;
+        assert!(
+            rows >= 9,
+            "a 90% interval needs at least nine rows, got {rows}"
+        );
+        assert!(
+            card.limitations
+                .iter()
+                .all(|l| !l.contains("prediction interval"))
         );
         Ok(())
     }
