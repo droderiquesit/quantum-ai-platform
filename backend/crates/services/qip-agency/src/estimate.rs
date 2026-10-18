@@ -33,6 +33,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EstimatorKind {
+    /// Two groups the caller formed ([`operator_formed_comparison`]). The
+    /// name is kept for the wire; the label it earns is
+    /// [`Identification::NotIdentified`].
     RandomisedExperiment,
     /// A hold-out whose assignment this module drew ([`Experiment`]).
     HoldOutExperiment,
@@ -122,18 +125,48 @@ fn sample(what: &str, values: &[f64], at_least: usize) -> Result<(f64, f64), Err
     Ok((mean, variance))
 }
 
-/// A randomised (or staged, randomly assigned) experiment: the difference in
-/// means between treated and control, with its standard error.
-pub fn randomised_experiment(treated: &[f64], control: &[f64]) -> Result<Estimate, Error> {
+/// The difference in means between treated and control, with its standard
+/// error, labelled with what the caller's method earns. Private on purpose:
+/// the label is the caller's claim, so it is written at each call site where
+/// it is earned ([`Experiment::analyse`], from an assignment drawn here) and
+/// where it is not ([`operator_formed_comparison`]), never defaulted.
+fn difference_in_means(
+    treated: &[f64],
+    control: &[f64],
+    kind: EstimatorKind,
+    identification: Identification,
+) -> Result<Estimate, Error> {
     let (mt, vt) = sample("the treated group", treated, 2)?;
     let (mc, vc) = sample("the control group", control, 2)?;
     Ok(Estimate {
-        kind: EstimatorKind::RandomisedExperiment,
-        identification: Identification::Experiment,
+        kind,
+        identification,
         effect: mt - mc,
         standard_error: Some((vt / treated.len() as f64 + vc / control.len() as f64).sqrt()),
         observations: treated.len() + control.len(),
     })
+}
+
+/// R12-COVERAGE-7188: two groups the caller formed, compared by difference
+/// in means. The estimate is labelled [`Identification::NotIdentified`].
+///
+/// The failure prevented is an experiment that earns its label from its
+/// author. This function used to label the comparison
+/// `Identification::Experiment` on the strength of the caller saying the
+/// groups were randomised; an operator whose hold-out had been refused (a
+/// held-out cell dropped) could resubmit the same numbers as two groups and
+/// widen autonomy on a selection effect. Nothing here can see how the groups
+/// were formed, so the label is the one [`correlation`] gets, and
+/// `ActionPolicy::widen` refuses it. Evidence that may widen comes from
+/// [`Experiment`] or [`staged_experiment`], where the assignment is a pure
+/// function of a committed seed.
+pub fn operator_formed_comparison(treated: &[f64], control: &[f64]) -> Result<Estimate, Error> {
+    difference_in_means(
+        treated,
+        control,
+        EstimatorKind::RandomisedExperiment,
+        Identification::NotIdentified,
+    )
 }
 
 /// R12-COVERAGE-7188: a randomised hold-out across units (cells, venues or
@@ -141,9 +174,10 @@ pub fn randomised_experiment(treated: &[f64], control: &[f64]) -> Result<Estimat
 /// chosen by whoever supplies the outcomes.
 ///
 /// The failure prevented is an experiment that earns its label from its
-/// author. [`randomised_experiment`] takes two groups and trusts that they
-/// were randomised; an operator who put the units that did well in the
-/// treated group gets `Identification::Experiment` for a selection effect.
+/// author. [`operator_formed_comparison`] takes two groups it cannot check,
+/// and so earns no label; an operator who put the units that did well in the
+/// treated group would otherwise get `Identification::Experiment` for a
+/// selection effect.
 /// Here the split is a pure function of the seed and the unit names: units
 /// are ranked by the SHA-256 of `seed`, a newline and the unit, and the
 /// first `held_out` are the control. Anyone holding the seed and the unit
@@ -245,9 +279,12 @@ impl Experiment {
         };
         let treated = group(&self.treated)?;
         let control = group(&self.control)?;
-        let mut estimate = randomised_experiment(&treated, &control)?;
-        estimate.kind = EstimatorKind::HoldOutExperiment;
-        Ok(estimate)
+        difference_in_means(
+            &treated,
+            &control,
+            EstimatorKind::HoldOutExperiment,
+            Identification::Experiment,
+        )
     }
 
     /// [`Self::analyse`] at each horizon (seconds after the intervention),
@@ -859,6 +896,9 @@ pub enum EstimateInput {
         outcome: Vec<f64>,
         prior_sd: f64,
     },
+    /// Two groups the operator formed. Runs, and earns
+    /// [`Identification::NotIdentified`], so it widens nothing; use
+    /// `HoldOutExperiment` for evidence that may.
     RandomisedExperiment {
         treated: Vec<f64>,
         control: Vec<f64>,
@@ -922,7 +962,7 @@ impl EstimateInput {
                 prior_sd,
             } => bayesian_causal(treatment, covariates, outcome, *prior_sd),
             Self::RandomisedExperiment { treated, control } => {
-                randomised_experiment(treated, control)
+                operator_formed_comparison(treated, control)
             }
             Self::DifferenceInDifferences {
                 treated_before,

@@ -408,6 +408,7 @@ dependencies = [
  "qip-desk-ship",
  "qip-events",
  "qip-evolution",
+ "qip-execution-engine",
  "qip-expansion",
  "qip-financial",
  "qip-investment-agents",

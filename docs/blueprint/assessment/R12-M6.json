@@ -1066,16 +1066,19 @@
   },
   {
     "id": "R12-EXPAND-6048",
-    "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for fills eleven inputs and passes the detector's economic_value through. Since 2026-10-18 the deployed sweep prices every repeated-veto gap: ResearchLoop::sweep_over hands each DeclinedScore's (gate, regret, would_have_earned) to veto_observations, which crosses the counterfactual through as_f64_for_statistics (refusing a figure with no decimal form) and calls repeated_vetoes_priced, so a veto gap's economic value is the summed positive earnings its gate's regretted declines forwent.",
+    "status": "COMPLETE",
+    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for_deadline fills eleven inputs and passes the detector's economic_value and the caller's measured urgency through (criteria_for states the zero for a caller with no deadline). The deployed sweep prices every repeated-veto gap (ResearchLoop::sweep_over hands each DeclinedScore's (gate, regret, would_have_earned) to veto_observations, which crosses the counterfactual through as_f64_for_statistics and calls repeated_vetoes_priced) and, since 2026-10-18, every residual gap: sweep_over prices unexplained_residuals_priced with fill_notionals(platform), the quantity times price of each venue's Action::Filled outcomes, so a residual gap's economic value is mean |error_bps| x notional / 10_000 in Decimal (the f64 mean crosses into Decimal once, stated at the crossing). ResearchLoop::admit measures urgency from the signal's deadline (urgency_bp) before offering the gap and passes it to ExpansionDesk::offer_by_deadline, so Criteria.urgency is the gap's own measurement and no longer a stated Some(0.0).",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/research.rs:1170 the sweep calls veto_observations",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:2605 veto_observations",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:2886 a_repeated_veto_gap_carries_the_earnings_its_gate_forwent (mutation: call the unpriced repeated_vetoes; the gap prices at zero and the test fails)",
-      "backend/crates/services/qip-expansion/src/detectors.rs:223 repeated_vetoes_priced",
-      "backend/crates/services/qip-expansion/src/desk.rs:142 urgency: Some(0.0) stated, never measured"
+      "backend/crates/apps/qip-deepbrain/src/research.rs::sweep_over (unexplained_residuals_priced over fill_notionals), ::admit (offer_by_deadline), ::fill_notionals, ::veto_observations",
+      "backend/crates/services/qip-expansion/src/detectors.rs::unexplained_residuals_priced, repeated_vetoes_priced",
+      "backend/crates/services/qip-expansion/src/desk.rs::criteria_for_deadline, ExpansionDesk::offer_by_deadline",
+      "backend/crates/services/qip-expansion/tests/expansion.rs::a_residual_gap_over_larger_fills_outranks_an_equal_error_over_smaller_fills (mutation: zero the economic value, the 50 assertion fails)",
+      "backend/crates/services/qip-expansion/tests/expansion.rs::a_gap_with_a_nearer_deadline_outranks_an_otherwise_equal_gap (mutation: urgency back to Some(0.0), the 0.5 assertion fails)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_residual_gap_is_priced_from_the_notional_the_platform_filled (mutation: the unpriced detector, the gap states no value)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_gap_admitted_by_the_research_loop_is_queued_at_the_urgency_its_deadline_gives_it (mutation: pass 0.0 to offer_by_deadline, queued at urgency 0)",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::a_repeated_veto_gap_carries_the_earnings_its_gate_forwent"
     ],
-    "gap": "Veto pricing is on the default path. Still open: residual gaps carry no notional, so slippage cost is unmeasurable from FillObservation; and the desk's criteria_for states urgency Some(0.0) — the research loop now measures urgency from a gap's deadline for its information requests (R12-AMBIENT-3106) but the desk's curriculum criteria do not receive it, a change in qip-expansion desk.rs.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1083,10 +1086,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_repeated_veto_gap_carries_the_earnings_its_gate_forwent && cargo +1.94.1 test -p qip-expansion --test expansion a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
+    "verification": "cd backend && cargo test -p qip-expansion --test expansion a_residual_gap_over_larger_fills a_gap_with_a_nearer_deadline && cargo test -p qip-deepbrain --test research -- a_residual_gap_is_priced a_gap_admitted_by_the_research_loop",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site landed (veto_observations), mutation-verified; status PARTIAL on the two remaining inputs."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site landed (veto_observations), mutation-verified; status PARTIAL on the two remaining inputs. Closed 2026-10-18 (lane RT-C) after re-grading against the requirement text. Limits stated: a venue's notional is the sum over every Filled outcome the platform holds there while the mean miss is read over the fills the twin scored (a FillObservation carries a venue, not an order id), so the figure is the miss applied to everything traded at the venue; a venue with no Filled outcome states zero. Urgency reaches the desk's queue ranking as a boost (1 + urgency) and the information request as before. Priced figures can exceed the router's 100-unit scale; admit now reads such a figure as the scale's end instead of failing the sweep (see R12-AMBIENT-3071)."
   },
   {
     "id": "R12-EXPAND-6049",

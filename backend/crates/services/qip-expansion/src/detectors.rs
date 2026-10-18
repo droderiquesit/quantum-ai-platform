@@ -426,6 +426,68 @@ pub fn unexplained_residuals(
         .collect())
 }
 
+/// [`unexplained_residuals`] with each gap's economic value measured
+/// (R12-EXPAND-6048): the mean absolute miss in basis points applied to the
+/// notional traded at the subject, `mean_abs_bps x notional / 10_000`.
+///
+/// The failure prevented is two venues missing the twin by the same margin
+/// ranking level when one miss was paid on ten times the size of the other:
+/// every residual gap stated an economic value of zero, so slippage cost was
+/// unmeasurable from the fill record. `notional_by_subject` is quantity times
+/// price summed over the subject's fills, in the book's currency. A subject
+/// with no entry has no sized fills and states zero, the honest figure for a
+/// miss nobody sized; a negative notional is refused.
+///
+/// The mean is a statistic (`f64`); it crosses into `Decimal` once, below, and
+/// a mean with no decimal form is refused rather than read as zero. The
+/// product and the division by 10_000 are `Decimal` arithmetic, refused on
+/// overflow. Nothing here books or moves money.
+pub fn unexplained_residuals_priced(
+    residuals: &[Residual],
+    notional_by_subject: &BTreeMap<String, Decimal>,
+    threshold_bps: f64,
+) -> Result<Vec<Observation>> {
+    if let Some((subject, notional)) = notional_by_subject.iter().find(|(_, n)| n.is_negative()) {
+        return Err(Error::invalid(format!(
+            "the notional traded at `{subject}` is negative ({notional}); a notional is quantity \
+             times price"
+        )));
+    }
+    let mut out = unexplained_residuals(residuals, threshold_bps)?;
+    let mut sums: BTreeMap<&str, (f64, usize)> = BTreeMap::new();
+    for r in residuals {
+        let slot = sums.entry(r.subject.as_str()).or_default();
+        slot.0 += r.error_bps.abs();
+        slot.1 += 1;
+    }
+    for observation in &mut out {
+        let subject = observation
+            .evidence
+            .iter()
+            .find_map(|e| e.strip_prefix("fill_scores:"));
+        let Some((subject, (sum, n))) = subject.and_then(|s| sums.get(s).map(|v| (s, v))) else {
+            continue;
+        };
+        let Some(notional) = notional_by_subject.get(subject) else {
+            continue;
+        };
+        // Statistic to money: the one crossing from f64 to Decimal.
+        let mean = Decimal::from_f64(sum / *n as f64).ok_or_else(|| {
+            Error::numeric("the mean fill miss has no decimal form; drop the fill that broke it")
+        })?;
+        observation.economic_value = mean
+            .checked_mul(*notional)
+            .and_then(|v| v.checked_div(Decimal::from_int(10_000)))
+            .ok_or_else(|| {
+                Error::numeric(format!(
+                    "the priced residual at `{subject}` overflows a decimal; the fills read are \
+                     not plausible"
+                ))
+            })?;
+    }
+    Ok(out)
+}
+
 /// One directional reading about a subject, from one source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reading {

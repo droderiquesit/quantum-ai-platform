@@ -518,7 +518,7 @@ use qip_agency::engine::{
 };
 use qip_agency::estimate::{
     Estimate, EstimatorKind, Experiment, bayesian_causal, correlation, matched_control,
-    stage_assignment, staged_experiment,
+    operator_formed_comparison, stage_assignment, staged_experiment,
 };
 use qip_agency::generate::ScenarioSource;
 use qip_agency::generate::StructuralDecl;
@@ -1723,6 +1723,49 @@ fn attributing(estimate: &Estimate) -> EffectAttribution {
     }
     a.effect.mean = estimate.effect();
     a
+}
+
+/// R12-COVERAGE-7188: two groups an operator formed earn no experiment
+/// label, even when they are the very groups a hold-out drew and carry the
+/// very outcomes it analysed. The failure prevented is the selection-effect
+/// bypass: a hold-out refused for a dropped cell, resubmitted as two groups
+/// the caller says were randomised, used to widen on `Experiment`.
+///
+/// Mutation: label `operator_formed_comparison` `Identification::Experiment`
+/// — the label assertion fails, `widen` accepts, and `supports` admits an
+/// attribution claiming `Experiment`.
+#[test]
+fn an_operator_formed_group_comparison_earns_no_experiment_label_and_widens_nothing() {
+    let experiment = Experiment::design("seed-2026-10-18", &cells(), 2500).unwrap();
+    let outcomes = spreads(&experiment);
+    let drawn = experiment.analyse(&outcomes).unwrap();
+    let group =
+        |cells: &BTreeSet<String>| -> Vec<f64> { cells.iter().map(|c| outcomes[c]).collect() };
+    let formed =
+        operator_formed_comparison(&group(experiment.treated()), &group(experiment.control()))
+            .unwrap();
+
+    // Premise: the same data through the drawn assignment earns the label,
+    // widens, and the two estimates agree on the effect — so what differs is
+    // the label, not the arithmetic.
+    assert_eq!(*drawn.identification(), Identification::Experiment);
+    assert!((formed.effect() - drawn.effect()).abs() < 1e-9);
+    let mut admitted = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
+    admitted.widen(&attributing(&drawn), &operator()).unwrap();
+
+    assert_eq!(*formed.identification(), Identification::NotIdentified);
+    // Claiming the label the drawn assignment earned is refused by the
+    // estimator, and an honest attribution of the formed groups is refused
+    // by the policy.
+    let claimed = attributing(&drawn);
+    let err = formed.supports(&claimed).unwrap_err();
+    assert!(err.to_string().contains("earned by the method"), "{err}");
+    let mut policy = ActionPolicy::new(Method::Market, d(1), d(5), BTreeSet::new()).unwrap();
+    let honest = attributing(&formed);
+    formed.supports(&honest).unwrap();
+    let err = policy.widen(&honest, &operator()).unwrap_err();
+    assert!(err.to_string().contains("not identified"), "{err}");
+    assert_eq!(policy.authority(), Authority::Shadow);
 }
 
 #[test]

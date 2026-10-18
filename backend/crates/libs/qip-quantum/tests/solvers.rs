@@ -16,14 +16,17 @@ use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::time::Duration;
 use qip_numerics::anneal::{AnnealSettings, Qubo, solve_exact};
 use qip_quantum::benchmark::{ClassicalValidator, SolverBenchmark};
-use qip_quantum::provider::{QuantumProvider, SimulatedProvider};
-use qip_quantum::qaoa::QaoaSettings;
+use qip_quantum::provider::{ProviderCapabilities, QuantumProvider, SimulatedProvider};
+use qip_quantum::qaoa::{QaoaResult, QaoaSettings};
 use qip_quantum::solver::{
-    ClassicalSolver, IbmQuantumConfig, IbmQuantumSolver, ProviderSolver, QuantumInspiredSolver,
-    QuboSolver, QueuePolicy, SearchTrace, SolverCandidate, SolverCostModel, SolverEffort,
-    SolverKind, is_local_optimum,
+    ClassicalSolver, GatewayEntrant, IbmQuantumConfig, IbmQuantumSolver, ProviderSolver,
+    QuantumInspiredSolver, QuboSolver, QueuePolicy, SearchTrace, SolverCandidate, SolverCostModel,
+    SolverEffort, SolverKind, is_local_optimum,
 };
+use qip_quantum::{Delivery, GatewayLimits, QuantumGateway};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 /// A dense random spin glass: the standard hard instance for single-flip local
 /// search, because its landscape is rugged rather than merely large.
@@ -636,5 +639,163 @@ fn the_whole_benchmark_is_reproducible_under_a_fixed_seed() -> Result<()> {
     let first = build().run(&qubo)?;
     let second = build().run(&qubo)?;
     assert_eq!(first, second, "the benchmark is not reproducible");
+    Ok(())
+}
+
+// --- a provider that is not a simulator ---------------------------------------
+
+/// An in-tree stand-in for a hosted device: it reports `simulated: false`,
+/// answers with every variable on, and states an energy `claim_offset` away
+/// from what that assignment is worth. No transport, no credential, no vendor.
+#[derive(Debug)]
+struct StandInDevice {
+    claim_offset: f64,
+    calls: AtomicUsize,
+}
+
+impl QuantumProvider for StandInDevice {
+    fn name(&self) -> &str {
+        "stand-in-device"
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            max_qubits: 133,
+            simulated: false,
+            noisy: true,
+            typical_queue: Duration::from_mins(30),
+            cost_per_job_micros: 1_500_000,
+        }
+    }
+
+    fn solve_qubo(&self, qubo: &Qubo, _settings: &QaoaSettings) -> Result<QaoaResult> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let assignment = vec![1; qubo.n];
+        Ok(QaoaResult {
+            energy: qubo.evaluate(&assignment) + self.claim_offset,
+            assignment,
+            expectation: 0.0,
+            success_probability: 0.5,
+            layers: 1,
+            angles: vec![0.1, 0.1],
+            evaluations: 7,
+        })
+    }
+}
+
+fn entered_through_the_gateway(device: &Arc<StandInDevice>, qubo: &Qubo) -> Result<GatewayEntrant> {
+    let gateway = QuantumGateway::new(device.clone(), GatewayLimits::default())?;
+    let ticket = gateway.submit(
+        "optimisation",
+        Delivery::Polled,
+        qubo.clone(),
+        QaoaSettings::default(),
+    )?;
+    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    while !gateway.is_ready(ticket)? {
+        assert!(Instant::now() < deadline, "the stand-in never answered");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    GatewayEntrant::collect(&gateway, ticket)?
+        .ok_or_else(|| qip_core::error::Error::invalid("a ready job did not collect"))
+}
+
+/// R12-QUANT-4029: a provider that is not a simulator is refused a
+/// synchronous solve by name, and its answer enters the benchmark only as a
+/// result the gateway collected, classically re-scored beside a baseline.
+///
+/// Mutations: remove the `capabilities().simulated` refusal in
+/// `ProviderSolver::solve` — the synchronous solve succeeds and the first
+/// block fails; in `GatewayEntrant::solve` claim `qubo.evaluate(assignment)`
+/// instead of the provider's energy (the claim then agrees with the re-score
+/// by construction, so nothing is ever compared) — the lying device is
+/// admitted and the last block fails.
+#[test]
+fn a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway()
+-> Result<()> {
+    let qubo = spin_glass(6, 11);
+
+    // Premise: the simulator still solves synchronously through the same
+    // type, so the refusal below is the provider's kind and not the type's.
+    let simulated = ProviderSolver::new(
+        Arc::new(SimulatedProvider::new(5)),
+        QaoaSettings {
+            layers: 1,
+            optimiser_iterations: 20,
+            shots: 0,
+        },
+    );
+    assert!(simulated.solve(&qubo, &SolverEffort::default()).is_ok());
+
+    let honest = Arc::new(StandInDevice {
+        claim_offset: 0.0,
+        calls: AtomicUsize::new(0),
+    });
+    let refusal = ProviderSolver::new(honest.clone(), QaoaSettings::default())
+        .solve(&qubo, &SolverEffort::default())
+        .expect_err("a non-simulated provider was solved synchronously");
+    assert_eq!(refusal.code(), "denied", "{}", refusal.message());
+    assert!(
+        refusal.message().contains("QuantumGateway::submit"),
+        "{}",
+        refusal.message()
+    );
+    assert_eq!(
+        honest.calls.load(Ordering::SeqCst),
+        0,
+        "the provider was reached by the refused solve"
+    );
+
+    // Through the gateway the same device's answer enters, and the baseline is
+    // computed beside it.
+    let entrant = entered_through_the_gateway(&honest, &qubo)?;
+    assert_eq!(honest.calls.load(Ordering::SeqCst), 1);
+    let report = SolverBenchmark::new(ClassicalSolver::exhaustive(20))
+        .with_solver(Arc::new(entrant))
+        .with_repeats(1)
+        .run(&qubo)?;
+    assert!(report.classical_baseline.usable_solution().is_some());
+    let record = report
+        .record_for("stand-in-device")
+        .expect("the collected result entered the benchmark");
+    assert_eq!(record.kind, SolverKind::Quantum);
+    let validated = record
+        .usable_solution()
+        .expect("an honest claim re-scores to what it claimed");
+    assert_eq!(validated.assignment(), vec![1; qubo.n].as_slice());
+
+    // A device whose claim is wrong is refused at the re-score, and the
+    // baseline still stands.
+    let liar = Arc::new(StandInDevice {
+        claim_offset: -50.0,
+        calls: AtomicUsize::new(0),
+    });
+    let entrant = entered_through_the_gateway(&liar, &qubo)?;
+    let report = SolverBenchmark::new(ClassicalSolver::exhaustive(20))
+        .with_solver(Arc::new(entrant))
+        .with_repeats(1)
+        .run(&qubo)?;
+    assert!(report.classical_baseline.usable_solution().is_some());
+    let record = report
+        .record_for("stand-in-device")
+        .expect("the collected result entered the benchmark");
+    assert!(
+        record.usable_solution().is_none(),
+        "a claim {} off was admitted without a re-score",
+        liar.claim_offset
+    );
+    assert!(
+        record
+            .refusal
+            .as_deref()
+            .is_some_and(|why| why.contains("claimed")),
+        "{:?}",
+        record.refusal
+    );
+    assert_ne!(report.chosen, "stand-in-device");
     Ok(())
 }

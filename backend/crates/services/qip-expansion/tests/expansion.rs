@@ -835,3 +835,127 @@ fn a_gap_with_measured_regret_outranks_an_equal_gap_with_none() {
         priority(free)
     );
 }
+
+/// R12-EXPAND-6048: a residual gap is priced by what was traded, not only by
+/// how far the twin missed. Two venues miss by the same margin; the one whose
+/// fills were ten times the size forwent ten times the money, and ranks first.
+///
+/// Mutation: set `economic_value` to zero in `unexplained_residuals_priced`
+/// — both gaps state zero and the figures and the ranking assertions fail.
+#[test]
+fn a_residual_gap_over_larger_fills_outranks_an_equal_error_over_smaller_fills() {
+    use qip_expansion::curriculum::TaskKind;
+    use qip_expansion::desk::{Measured, criteria_for};
+    use qip_expansion::detectors::{Residual, unexplained_residuals_priced};
+
+    let fill = |venue: &str, bps: f64| Residual {
+        subject: venue.to_string(),
+        error_bps: bps,
+    };
+    // Equal misses (mean 50 bps, signs mixed to prove the magnitude is what
+    // is averaged) over 10_000 against 100_000 traded.
+    let raised = unexplained_residuals_priced(
+        &[
+            fill("venue-small", 40.0),
+            fill("venue-small", -60.0),
+            fill("venue-large", 40.0),
+            fill("venue-large", -60.0),
+        ],
+        &std::collections::BTreeMap::from([
+            ("venue-small".to_string(), dec(10_000)),
+            ("venue-large".to_string(), dec(100_000)),
+        ]),
+        25.0,
+    )
+    .unwrap();
+    let [large, small] = raised.as_slice() else {
+        panic!("expected one gap per venue, found {raised:?}");
+    };
+    assert!(
+        large
+            .evidence
+            .iter()
+            .any(|e| e == "fill_scores:venue-large")
+    );
+    assert!(
+        small
+            .evidence
+            .iter()
+            .any(|e| e == "fill_scores:venue-small")
+    );
+    assert!(
+        (large.severity - small.severity).abs() < f64::EPSILON,
+        "premise: equal error, equal severity"
+    );
+    // 50 bps of 10_000 is 50; of 100_000 is 500.
+    assert_eq!(small.economic_value, dec(50));
+    assert_eq!(large.economic_value, dec(500));
+
+    let measured = Measured {
+        repeats: 0,
+        class_open: 0,
+    };
+    let priority = |o: &qip_expansion::gap::Observation| {
+        criteria_for(&raise(o.clone()).unwrap(), TaskKind::Experiment, measured)
+            .score()
+            .unwrap()
+            .priority()
+    };
+    assert!(
+        priority(large) > priority(small),
+        "{} vs {}",
+        priority(large),
+        priority(small)
+    );
+}
+
+/// R12-EXPAND-6048: two gaps equal in every input but their deadline rank the
+/// nearer one first. The desk used to state urgency zero for both.
+///
+/// Mutation: hard-code `urgency: Some(0.0)` in `criteria_for_deadline` — the
+/// two scores carry the same urgency and the same priority.
+#[test]
+fn a_gap_with_a_nearer_deadline_outranks_an_otherwise_equal_gap() {
+    use qip_expansion::curriculum::TaskKind;
+    use qip_expansion::desk::{Measured, criteria_for_deadline};
+
+    let o = raise(qip_expansion::gap::Observation {
+        trigger: qip_expansion::gap::GapTrigger::UnexplainedPnl,
+        wanting: vec![qip_expansion::gap::Wanting::Model],
+        observation: "fills miss the twin".to_string(),
+        affected_domains: vec!["execution".to_string()],
+        evidence: vec!["fill_scores:venue-a".to_string()],
+        severity: 0.5,
+        economic_value: dec(100),
+        risk_value: Decimal::ZERO,
+    })
+    .unwrap();
+    let measured = Measured {
+        repeats: 0,
+        class_open: 0,
+    };
+    let score = |urgency: f64| {
+        criteria_for_deadline(&o, TaskKind::Experiment, measured, urgency)
+            .score()
+            .unwrap()
+    };
+    let (far, near) = (score(0.5), score(0.9));
+    assert!((far.urgency - 0.5).abs() < f64::EPSILON, "{}", far.urgency);
+    assert!(
+        (near.urgency - 0.9).abs() < f64::EPSILON,
+        "{}",
+        near.urgency
+    );
+    assert!(
+        near.priority() > far.priority(),
+        "{} vs {}",
+        near.priority(),
+        far.priority()
+    );
+    // A figure outside the fraction is refused, not clamped.
+    assert!(
+        criteria_for_deadline(&o, TaskKind::Experiment, measured, 1.5)
+            .score()
+            .is_err()
+    );
+}

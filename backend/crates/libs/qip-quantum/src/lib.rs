@@ -61,9 +61,9 @@ pub use provider::{
 pub use qaoa::{QaoaResult, QaoaSettings};
 pub use registry::{SolverObservation, SolverRegistry, SolverRegistryBuilder, SolverStanding};
 pub use solver::{
-    ClassicalSearch, ClassicalSolver, IbmQuantumConfig, IbmQuantumSolver, ProviderSolver,
-    QuantumInspiredSolver, QuboSolver, QueuePolicy, SearchTrace, SolverCandidate, SolverCostModel,
-    SolverEffort, SolverKind,
+    ClassicalSearch, ClassicalSolver, GatewayEntrant, IbmQuantumConfig, IbmQuantumSolver,
+    ProviderSolver, QuantumInspiredSolver, QuboSolver, QueuePolicy, SearchTrace, SolverCandidate,
+    SolverCostModel, SolverEffort, SolverKind,
 };
 pub use statevector::{Complex, MAX_QUBITS, StateVector};
 pub use tiered_registry::{LocalRegistry, TieredRegistryBuilder, TieredSolverRegistry};

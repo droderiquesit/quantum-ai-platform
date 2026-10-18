@@ -635,17 +635,17 @@
   {
     "id": "R12-QUANT-4029",
     "status": "PARTIAL",
-    "current": "The router's quantum arm submits through QuantumGateway, refuses Inline, polls later and keeps the classical answer; a held provider does not stall cycles. qip-deepbrain attaches the simulated provider when QIP_QUANTUM_PROVIDER=simulated (dev/test).",
+    "current": "The router's quantum arm submits through QuantumGateway, refuses Inline, polls later and keeps the classical answer; a held provider does not stall cycles. Since 2026-10-18 no QuboSolver reaches a non-simulated provider synchronously: IbmQuantumSolver::solve refuses unconditionally, ProviderSolver::solve returns Error::denied naming QuantumGateway::submit when provider.capabilities().simulated is false (the provider is never called), and a hosted result enters a benchmark as a GatewayEntrant built from a QuantumGateway-collected QaoaResult, classically re-scored by the benchmark's validator beside the always-computed baseline (ADR 0006). qip-deepbrain attaches the simulated provider when QIP_QUANTUM_PROVIDER=simulated (dev/test).",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/gateway.rs:237 provider runs on a worker thread",
-      "backend/crates/libs/qip-quantum/tests/gateway.rs:80 an_inline_quantum_job_is_refused_and_the_provider_is_never_called; :150 submitting returns before the provider answers",
-      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1243 async arm tests",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4609",
+      "backend/crates/libs/qip-quantum/src/gateway.rs provider runs on a worker thread; submit refuses Delivery::Inline",
+      "backend/crates/libs/qip-quantum/src/solver.rs::ProviderSolver::solve (denied for simulated=false), GatewayEntrant::collect",
+      "backend/crates/libs/qip-quantum/tests/solvers.rs::a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway (mutations: remove the refusal; claim the recomputed objective instead of the provider's energy - each fails it)",
+      "backend/crates/libs/qip-quantum/tests/hosted.rs::a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline (moved onto GatewayEntrant; also asserts the hosted adapter is refused a synchronous solve)",
+      "backend/crates/libs/qip-quantum/tests/gateway.rs:80 an_inline_quantum_job_is_refused_and_the_provider_is_never_called",
       "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings",
-      "backend/crates/runtime/qip-kernel/src/compute_routing.rs::ComputeSettings"
+      "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings"
     ],
-    "gap": "IbmQuantumSolver's QuboSolver::solve already refuses unconditionally (solver.rs:911, Error::unavailable; transport_present is hard-coded false), so the open seam is ProviderSolver::solve (solver.rs:1010), which calls QuantumProvider::solve_qubo inline for any provider, a hosted QPU included. It cannot simply be refused: qip-quantum/tests/hosted.rs::a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline benchmarks a connected HostedProvider through it and proves the device answer is re-scored against the classical baseline. Closing needs a benchmark entrant built from a QuantumGateway-collected QaoaResult (submit, poll, then enter the result), the hosted test moved onto it, and ProviderSolver refusing a provider whose capabilities().simulated is false with Error::denied naming QuantumGateway::submit.",
+    "gap": "The synchronous seam is closed and tested (2026-10-18, lane RT-C), but GatewayEntrant has no production caller: SolverBenchmark is driven by tests with a hosted provider and by no binary, quantum_enabled defaults false and no app config sets it, and no app wires a HostedProvider. The refusal in ProviderSolver therefore guards a path no deployed process takes yet, the shape the gateway module doc calls a refusal that guards nothing. Closing needs a composition root that enables the quantum arm with a gateway-fronted provider, which is an owner decision on quantum_enabled and a provider, not a library change.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -653,10 +653,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "test: router with a slow/hosted provider returns the classical decision without blocking",
+    "verification": "cd backend && cargo test -p qip-quantum --test solvers a_hosted_provider_is_refused_a_synchronous_solve_and_enters_the_benchmark_only_through_the_gateway && cargo test -p qip-quantum --test hosted a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
     "work_item": "",
     "size": "M",
-    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S)."
+    "notes": "Harm is latent: quantum_enabled is false by default and no app enables it. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. INCORRECT->PARTIAL: router no longer blocks; not reached from any binary. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L24 2026-10-18: triage closure (make both QuboSolver impls refuse) read against the code and not applied; ProviderSolver is the hosted benchmark's seam and the gap now names the larger change (an M row, not S). Lane RT-C 2026-10-18: seam closed in code and mutation-verified; kept PARTIAL because the closed seam has no deployed caller (quantum_enabled false everywhere). The hosted.rs test used a loopback test service, never a vendor; the new test uses an in-tree stand-in device with no transport or credential."
   },
   {
     "id": "R12-QUANT-4030",
