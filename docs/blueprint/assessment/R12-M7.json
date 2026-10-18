@@ -2123,13 +2123,13 @@
   {
     "id": "R12-RES-7095",
     "status": "PARTIAL",
-    "current": "Severed mesh link in the degraded test still trades locally; no pre-positioned directional band fallback found.",
+    "current": "Local trading continues with the peer mesh down: through the node's decision loop with every peer refusing, passes run and place orders and the journal ships (decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal; since 2026-10-18 the rig's grant is bounded, so those passes place orders rather than refusing at envelope_unbounded). A multi-cell cycle needs the counterparty's reservation before FIRE (qip-peer-link saga), so with no reachable peer none can fire; the regional band half is cross_region.rs's.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
       "backend/crates/edge/qip-edge/tests/mesh.rs",
       "backend/crates/edge/qip-edge/tests/cross_region.rs"
     ],
-    "gap": "Directional-band reduction for distributed cycles.",
+    "gap": "No test originates a cycle and then loses the peer mid-epoch to show the cycle refused at its TTL while the cell's single-venue strategy keeps trading; qip-peer-link's ReflexPort has no stop, so a test cannot take a peer down after the cycle starts without a lifecycle hook. Pre-positioned directional bands are not distinguished from the region's ordinary capital share.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2140,7 +2140,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: not closed; the node-level half (local trading continues) is proven, the cycle-refusal half needs a peer-loss harness in qip-peer-link."
   },
   {
     "id": "R12-RES-7096",
