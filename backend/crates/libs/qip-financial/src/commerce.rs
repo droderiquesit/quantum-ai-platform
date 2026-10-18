@@ -883,6 +883,77 @@ impl Settlement {
     }
 }
 
+/// One sale as the marketplace itself records it (R12-LEDGER-5026).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatementLine {
+    pub unit: String,
+    /// What the marketplace says it paid out, after every adjustment.
+    pub net: Decimal,
+    pub returned: bool,
+}
+
+/// The marketplace's own record of the plane's sales, keyed by sale.
+///
+/// The counterpart the ledger is reconciled against. Kept by
+/// [`SimulatedMarketplace`] from its own arithmetic rather than copied from
+/// the plane's settlements, because a statement derived from the ledger can
+/// never disagree with it and a reconciliation against one proves nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MarketplaceStatement {
+    pub lines: BTreeMap<String, StatementLine>,
+}
+
+/// The simulated marketplace's side of each sale: it books the sale, pays out
+/// gross less its fees, and claws back a refunded return.
+#[derive(Clone, Debug, Default)]
+pub struct SimulatedMarketplace {
+    statement: MarketplaceStatement,
+}
+
+impl SimulatedMarketplace {
+    pub fn statement(&self) -> &MarketplaceStatement {
+        &self.statement
+    }
+
+    fn booked(
+        &mut self,
+        sale: &str,
+        unit: &str,
+        gross: Decimal,
+        fees: &MarketplaceFees,
+    ) -> Result<()> {
+        let payout = gross
+            - (mul("the marketplace's commission", gross, fees.ad_valorem)?
+                + fees.per_unit
+                + fees.per_consignment);
+        self.statement.lines.insert(
+            sale.to_string(),
+            StatementLine {
+                unit: unit.to_string(),
+                net: payout,
+                returned: false,
+            },
+        );
+        Ok(())
+    }
+
+    fn refunded(&mut self, sale: &str, gross: Decimal, fees: &MarketplaceFees) -> Result<()> {
+        let commission_back = mul("the commission refunded", gross, fees.ad_valorem)?;
+        if let Some(line) = self.statement.lines.get_mut(sale) {
+            line.net = line.net - gross + commission_back;
+            line.returned = true;
+        }
+        Ok(())
+    }
+}
+
+/// A difference between the ledger and the marketplace's record of a sale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciliationBreak {
+    pub sale: String,
+    pub finding: String,
+}
+
 /// The ledger and a simulated marketplace, kept consistent: a sale is not
 /// settled until its record exists, and a return changes both sides.
 #[derive(Clone, Debug)]
@@ -891,6 +962,9 @@ pub struct CommercePlane {
     fees: MarketplaceFees,
     sales: BTreeMap<String, Sale>,
     settlements: BTreeMap<String, Settlement>,
+    marketplace: SimulatedMarketplace,
+    breaks: Vec<ReconciliationBreak>,
+    reconciliations: u32,
 }
 
 impl CommercePlane {
@@ -900,7 +974,114 @@ impl CommercePlane {
             fees,
             sales: BTreeMap::new(),
             settlements: BTreeMap::new(),
+            marketplace: SimulatedMarketplace::default(),
+            breaks: Vec::new(),
+            reconciliations: 0,
         }
+    }
+
+    /// The marketplace's own record, as the simulated marketplace keeps it.
+    pub fn marketplace_statement(&self) -> &MarketplaceStatement {
+        self.marketplace.statement()
+    }
+
+    /// Every break recorded so far, oldest first.
+    pub fn breaks(&self) -> &[ReconciliationBreak] {
+        &self.breaks
+    }
+
+    /// How many reconciliation passes have run, so a caller can prove the
+    /// comparison happened rather than infer it from an absence of breaks.
+    pub fn reconciliations(&self) -> u32 {
+        self.reconciliations
+    }
+
+    /// Compare every settled sale, and every line the marketplace reports,
+    /// against the ledger; record each difference as a break and return the
+    /// ones this pass found (R12-LEDGER-5026).
+    ///
+    /// Compared: that the marketplace knows the sale, names the same unit,
+    /// paid out what the settlement says after its adjustments, and agrees
+    /// on whether the unit came back; and that it reports no sale the ledger
+    /// never made. A break is recorded rather than corrected: which side is
+    /// wrong is a finding for whoever investigates it, and a reconciliation
+    /// that silently overwrote one record with the other would erase the
+    /// evidence of the difference.
+    pub fn reconcile(&mut self, statement: &MarketplaceStatement) -> Vec<ReconciliationBreak> {
+        let returned: BTreeSet<&str> = self
+            .ledger
+            .returns()
+            .iter()
+            .map(|r| r.sale.as_str())
+            .collect();
+        let mut found = Vec::new();
+        let mut finding = |sale: &str, text: String| {
+            found.push(ReconciliationBreak {
+                sale: sale.to_string(),
+                finding: text,
+            });
+        };
+        for (sale, settlement) in &self.settlements {
+            let Some(line) = statement.lines.get(sale) else {
+                finding(
+                    sale,
+                    "settled in the ledger, absent from the marketplace's record".into(),
+                );
+                continue;
+            };
+            let unit = self
+                .sales
+                .get(sale)
+                .map(|s| s.unit.as_str())
+                .unwrap_or_default();
+            if line.unit != unit {
+                finding(
+                    sale,
+                    format!(
+                        "the ledger sold unit {unit}, the marketplace reports unit {}",
+                        line.unit
+                    ),
+                );
+            }
+            let ours = settlement.net_after_adjustments();
+            if line.net != ours {
+                finding(
+                    sale,
+                    format!(
+                        "the ledger settled {ours}, the marketplace reports paying {}",
+                        line.net
+                    ),
+                );
+            }
+            let came_back = returned.contains(sale.as_str());
+            if line.returned != came_back {
+                finding(
+                    sale,
+                    format!(
+                        "the ledger records the unit {} and the marketplace {}",
+                        if came_back { "returned" } else { "kept" },
+                        if line.returned { "returned" } else { "kept" }
+                    ),
+                );
+            }
+        }
+        for sale in statement.lines.keys() {
+            if !self.settlements.contains_key(sale) {
+                finding(
+                    sale,
+                    "the marketplace reports a sale the ledger never settled".into(),
+                );
+            }
+        }
+        self.breaks.extend(found.iter().cloned());
+        self.reconciliations = self.reconciliations.saturating_add(1);
+        found
+    }
+
+    /// Reconcile against the simulated marketplace's own record.
+    pub fn reconcile_with_marketplace(&mut self) -> Vec<ReconciliationBreak> {
+        let statement = self.marketplace.statement().clone();
+        self.reconcile(&statement)
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -987,6 +1168,8 @@ impl CommercePlane {
             net: s.gross - fee,
             adjustments: Vec::new(),
         };
+        let (unit, gross) = (s.unit.clone(), s.gross);
+        self.marketplace.booked(sale, &unit, gross, &self.fees)?;
         Ok(self
             .settlements
             .entry(sale.to_string())
@@ -1022,6 +1205,7 @@ impl CommercePlane {
             location: location.to_string(),
             owner: owner.to_string(),
         })?;
+        self.marketplace.refunded(sale, sold.gross, &self.fees)?;
         if let Some(s) = self.settlements.get_mut(sale) {
             s.adjustments
                 .push(("buyer return: refund of the gross".to_string(), -sold.gross));

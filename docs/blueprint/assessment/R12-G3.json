@@ -1635,12 +1635,14 @@
   {
     "id": "R12-FABRIC-10076",
     "status": "PARTIAL",
-    "current": "Writer is wired in main (stale gap text), non-blocking ship tested, mTLS selectable via link_source; transport is HTTP over TLS not QUIC and control acknowledgments are not journaled.",
+    "current": "The node journals ticks, decisions, outcomes and control acknowledgments to the regional Fabric off the decision thread: the cell records PolicyApplied, HaltChanged, CapitalRenewed and RegionShareApplied journal entries, the JournalRelay carries them to the SpoolWriter, and the spool ships them on REFLEX_JOURNAL_RECORDED (P2MarketJournal). The fabric link is mutual TLS from workload certificate files or the CA-issued identity (backend/crates/apps/qip-edge-node/src/main.rs:1052-1076); plaintext only where link_source returns None, which is the local deployment that asked for it. ship returns without waiting on a stalled writer.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:1050-1090 LinkSecurity",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1052 link_source / LinkSecurity::MutualTls",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
     ],
-    "gap": "Control acknowledgments as fabric records; plaintext still allowed locally; QUIC.",
+    "gap": "QUIC only: the transport is HTTP/1.1 over mTLS, and ADR 0112 §4 admits QUIC only for a hop with a committed measurement, of which none exists. Not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1650,10 +1652,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; a main-level wiring test",
+    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; cargo test -p qip-edge-node --test decision_loop acknowledged_on_the_fabric_spool",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement lists control acks, which are missing."
+    "notes": "Re-graded 2026-10-18 by lane L09: 'control acknowledgments are not journaled' was stale (policy acks reach the spool since e3d7bebb). Added the halt half; mutation: removing the HaltChanged record from Cell::apply_polled_halt made the new test abort on its watchdog; restored byte for byte. Kept PARTIAL because the statement names QUIC and the accepted ADR declines it for now; closing it is an ADR or measurement decision, not code."
   },
   {
     "id": "R12-FABRIC-10077",
@@ -2797,13 +2799,14 @@
   {
     "id": "R12-RES-10126",
     "status": "PARTIAL",
-    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry; the Fabric-keeps-journaling half is unwired; no cross-region cover.",
+    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry (degraded.rs). Since 2026-10-18 the Fabric half is proven through the node's decision loop: with a centre that accepts and never answers, the cell keeps placing orders, applies no new policy, and its OrderSent journal entries reach the fabric spool the drain ships from; the drain to the regional broker is a separate thread and endpoint (fabric_envelope.rs).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_envelope_expires",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_the_sink_sends_is_read_back_from_the_broker_as_the_same_envelopes"
     ],
-    "gap": "Fabric journaling during outage; deployment.",
+    "gap": "Other regions covering eligible functions is deployment work (cross-region cover needs deployed cells); no execution node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2813,10 +2816,10 @@
       "R12-RES-10124"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage; cargo test -p qip-edge-node --test decision_loop a_cell_whose_centre_has_gone_silent",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the 'Fabric journaling during outage' half is now tested. Mutation: skipping Cell::flush in DecisionLoop::turn until the mesh worker has a health reading (which a silent centre never gives) made the test abort on its watchdog; restored byte for byte. Kept PARTIAL for cross-region cover."
   },
   {
     "id": "R12-RES-10127",

@@ -260,23 +260,26 @@
   {
     "id": "R12-DATA-7013",
     "status": "PARTIAL",
-    "current": "Training bucket in modules/ai and data module buckets exist; qip-storage has a GCS-backed BlobStore.",
+    "current": "modules/data declares google_storage_bucket.simulation (CMEK, unlocked 30-day retention policy; outputs/ deleted at 90 days, campaigns/ to COLDLINE at 90 and never deleted, manifests/ to NEARLINE at 365 and never deleted) beside the archive and model-artifact buckets; modules/ai holds the training bucket; qip-storage has a GCS-backed BlobStore. All gated on enable_cloud_storage, false everywhere; no deployed process writes a simulation output or campaign dataset to GCS.",
     "evidence": [
-      "infrastructure/terraform/modules/ai/main.tf:52 training bucket, :95 vertex metadata store, :113 vertex endpoint",
+      "infrastructure/terraform/modules/data/main.tf:297 google_storage_bucket.simulation",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl:220 the_simulation_bucket_bounds_outputs_and_keeps_campaigns_and_manifests",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:283 the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores",
+      "infrastructure/terraform/modules/ai/main.tf:52 training bucket",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs"
     ],
-    "gap": "No bucket set per artifact class (simulation outputs, campaign datasets) and no writer from a deployed process.",
+    "gap": "enable_cloud_storage is false in every committed environment (owner switch), so no committed plan renders the bucket; the model-artifact bucket still carries no retention policy; and no deployed process writes a simulation output, campaign dataset or manifest to GCS (the integration half of the verification).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan; integration test writing a manifest to GCS",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): simulation bucket added and BUCKET_CLASSES states its class. Mutations, each restored byte-for-byte: outputs/ kept 900 days failed 'Simulation outputs must be deleted at 90 days'; the campaigns/ rule turned to Delete failed 'No lifecycle rule may delete a campaign dataset'; manifests/ renamed failed the acceptance test 'names no lifecycle class for manifests/'. The acceptance test's training branch was conditional on a bucket that lives in modules/ai, so before this it asserted nothing about modules/data."
   },
   {
     "id": "R12-SEC-7014",
