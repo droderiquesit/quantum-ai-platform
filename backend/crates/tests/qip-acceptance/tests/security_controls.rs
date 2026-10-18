@@ -449,26 +449,29 @@ fn every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_
 
         for (name, body) in resources(text, "google_compute_address") {
             let reference = format!("google_compute_address.{name}");
-            // An INTERNAL reservation holds an address inside a subnet and
-            // reaches nothing outside it (FABRIC-8099's broker addresses).
-            // It is held to the opposite rule: it may never be handed to a
-            // gateway or an access config, where it would be read as the
-            // egress address this check exists to pin to a NAT.
-            if compact(&body).contains("address_type=\"INTERNAL\"") {
+            // An INTERNAL reservation is an address on a subnet, not a way out:
+            // Google refuses one as a NAT IP or an access_config's nat_ip, so it
+            // can carry no internet egress. It is held to that shape instead of
+            // skipped: it names its subnetwork, and nothing in the module hands
+            // it to a gateway or an external interface. Without this arm the
+            // fabric broker's stable internal address (FABRIC-8099) read as
+            // egress with no gateway in front, and the guard refused the one
+            // kind of reservation that cannot be egress.
+            let shape = compact(&body);
+            if shape.contains("address_type=\"INTERNAL\"") {
                 assert!(
-                    compact(&body).contains("subnetwork="),
+                    shape.contains("subnetwork="),
                     "{path}: the internal address `{name}` names no subnetwork, so nothing \
-                     says which network it is internal to"
+                     pins it inside the VPC"
                 );
-                let exposed = text.lines().any(|line| {
-                    let line = line.trim_start();
-                    (line.starts_with("nat_ip") || line.starts_with("access_config"))
-                        && line.contains(&reference)
-                });
                 assert!(
-                    !exposed,
-                    "{path}: the internal address `{name}` is placed on a NAT or an access \
-                     config, where it would carry internet traffic"
+                    !text.lines().any(|line| {
+                        let line = line.trim_start();
+                        (line.starts_with("nat_ips") || line.starts_with("nat_ip"))
+                            && line.contains(&reference)
+                    }),
+                    "{path}: the internal address `{name}` is handed to a gateway or an \
+                     external interface as if it could carry egress"
                 );
                 continue;
             }
