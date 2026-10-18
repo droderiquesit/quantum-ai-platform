@@ -1737,11 +1737,15 @@ variable "event_fabric_broker" {
   EOT
 
   type = object({
-    zone                 = string
-    boot_image           = string
-    internal_address     = string
-    dns_domain           = string
-    machine_type         = optional(string, "c3-standard-4")
+    zone             = string
+    boot_image       = string
+    internal_address = string
+    dns_domain       = string
+    machine_type     = optional(string, "c4-standard-4")
+    # FABRIC-008/084: the zone of each address in additional_addresses, in
+    # order; the first broker takes `zone`. The module refuses two brokers in
+    # one zone, so three addresses need three distinct zones.
+    additional_zones     = optional(list(string), [])
     journal_disk_size_gb = optional(number, 100)
     # The journal disk's provisioned performance (FABRIC-8097). The
     # defaults are Hyperdisk Balanced's floor, which the module also
