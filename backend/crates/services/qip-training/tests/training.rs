@@ -22,7 +22,8 @@ use qip_training::cadence::{TrainingCadence, UpdatePayload, UpdateScope};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
 use qip_training::job::{
-    JobState, LocalTrainingProvider, TrainingProvider, TrainingSpec, run_to_completion,
+    Capacity, JobPriority, JobScheduling, JobState, LocalTrainingProvider, QueueQuotas,
+    TrainingProvider, TrainingSpec, run_to_completion,
 };
 use qip_training::local::{
     Calibration, LocalTrainer, ModelFamily, SkillPolicy, TeacherForm, TrainedTeacher,
@@ -1626,5 +1627,63 @@ fn a_distillation_only_exists_with_its_fidelity_already_measured() -> Result<()>
         assert!(report.decision_agreement >= 0.0 && report.decision_agreement <= 1.0);
         assert!(report.student_cost > 0);
     }
+    Ok(())
+}
+
+/// R12-FINOPS-9188: every job spec carries its queue, capacity and priority;
+/// a critical retraining on Spot capacity is refused by the spec itself (so
+/// by the in-tree trainer as well as by any provider), and a provider holding
+/// queue quotas refuses the submit that would exceed one.
+///
+/// Mutation: drop the Spot-and-critical arm of `JobScheduling::validate` — the
+/// trainer fits the critical Spot job and the first refusal assertion fails.
+/// Mutation: count only `Running` jobs against the quota in
+/// `LocalTrainingProvider::submit` — the second queued job is admitted.
+#[test]
+fn a_job_spec_carries_its_queue_and_capacity_and_a_critical_spot_job_or_a_full_queue_is_refused()
+-> Result<()> {
+    let data = noise_dataset("fixture", 40, 2, 11)?;
+    let default = spec("fixture-model", ModelFamily::Linear { ridge: 1e-6 });
+    // Premise: the default placement is stated, not absent, and fits.
+    assert_eq!(default.scheduling.queue, "research");
+    assert_eq!(default.scheduling.capacity, Capacity::OnDemand);
+    assert!(
+        LocalTrainer::new()
+            .fit(&default, &data, fitted_at())
+            .is_ok()
+    );
+
+    let interruptible = default.clone().with_scheduling(JobScheduling {
+        queue: "research".to_string(),
+        capacity: Capacity::Spot,
+        priority: JobPriority::Standard,
+    });
+    assert!(
+        LocalTrainer::new()
+            .fit(&interruptible, &data, fitted_at())
+            .is_ok(),
+        "a standard job may run on Spot"
+    );
+    let critical_spot = default.clone().with_scheduling(JobScheduling {
+        priority: JobPriority::Critical,
+        ..interruptible.scheduling.clone()
+    });
+    let refused = LocalTrainer::new()
+        .fit(&critical_spot, &data, fitted_at())
+        .expect_err("a critical retraining was fitted on Spot capacity");
+    assert_eq!(refused.code(), "invalid", "{}", refused.message());
+
+    let mut provider =
+        LocalTrainingProvider::new(7).with_quotas(QueueQuotas::new().with("research", 1));
+    let first = provider.submit(default.clone(), &data, fitted_at())?;
+    assert_eq!(
+        first.state,
+        JobState::Queued,
+        "premise: one job fits a quota of one"
+    );
+    let full = provider
+        .submit(default.clone(), &data, fitted_at())
+        .expect_err("a second unfinished job was admitted to a queue of one");
+    assert_eq!(full.code(), "denied", "{}", full.message());
     Ok(())
 }

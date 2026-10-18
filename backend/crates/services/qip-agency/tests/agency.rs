@@ -2499,3 +2499,116 @@ fn a_shadowed_pass_learns_its_simulated_effect_and_nothing_is_recommended_on_it(
         "{err}"
     );
 }
+
+/// R12-AGENCY-1060: market conduct judged on the step, not only the words.
+/// A pass that would release the same quote four times is withheld at the
+/// act stage with no adapter call, though each copy reads innocently alone
+/// and no phrase rule fires; the same plan releasing it three times — the
+/// most one pass may — executes, so the gate is a rate and not a refusal of
+/// repetition as such.
+/// Mutation: in `guard::ActionGuard::preflight`, drop the
+/// `self.gate.step_failure(&faces)` push — the four-step pass executes and
+/// the first assertion fails.
+#[test]
+fn a_pass_releasing_one_message_above_the_repetition_rate_is_withheld_before_any_adapter_call() {
+    let policy = narrow();
+    let repeated = |times: usize| {
+        let mut r = request();
+        r.tool_edges[0].edge.cost = Some(d(1));
+        r.proposals[0].root = PlanNode::Sequence((0..times).map(|_| step("quoter", 1)).collect());
+        r
+    };
+    let mut adapter = Counting::default();
+    let report = run(
+        repeated(qip_agency::conduct_brain::MAX_RELEASES_PER_MESSAGE),
+        Some(&policy),
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Executed(_)),
+        "premise: at the rate the pass executes, {:?}",
+        report.outcome
+    );
+    assert_eq!(adapter.calls.len(), 3, "premise");
+
+    for authority in [Some(&policy), None] {
+        let mut adapter = Counting::default();
+        let report = run(
+            repeated(qip_agency::conduct_brain::MAX_RELEASES_PER_MESSAGE + 1),
+            authority,
+            &mut adapter,
+        )
+        .unwrap();
+        let Outcome::Stopped(reason) = &report.outcome else {
+            panic!("expected withheld, got {:?}", report.outcome)
+        };
+        assert!(reason.contains("step_conduct"), "{reason}");
+        assert!(reason.contains("4 times"), "{reason}");
+        assert!(adapter.calls.is_empty(), "an adapter was called");
+        assert_eq!(report.failed, Some(Stage::Act));
+    }
+}
+
+/// R12-CONTRACT-7082: a shadow pass the guard clears yields one §27
+/// `ActionIntent` per step — who acts for whom, through which channel,
+/// the payload and its digest, provenance, disclosure, every policy that
+/// admitted it, an idempotency key and the audit lineage — and the record
+/// round-trips through its strict decoder, while the same record with its
+/// payload edited after review is refused. A withheld pass yields none.
+/// Mutation: in `guard::intent`, digest a constant instead of `payload` —
+/// `ActionIntent::new` refuses, the pass is withheld and the first
+/// assertion fails.
+#[test]
+fn a_shadow_pass_yields_a_decodable_action_intent_and_an_edited_payload_is_refused() {
+    use qip_contracts::action_intent::{ActionIntent, Verdict};
+    let mut adapter = Counting::default();
+    let report = run(request(), None, &mut adapter).unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Shadowed(_)),
+        "premise: {:?}",
+        report.outcome
+    );
+    assert!(adapter.calls.is_empty(), "premise: shadow called nothing");
+    assert_eq!(report.intents.len(), 1, "one intent per cleared step");
+    let intent = &report.intents[0];
+    let chain = report.approvals.as_ref().unwrap();
+    assert_eq!(intent.identity.actor, "desk-agent");
+    assert_eq!(intent.identity.on_behalf_of, chain.goal.approver);
+    assert_eq!(intent.channel, "paper-venue");
+    assert!(intent.provenance.contains(&chain.plan.id));
+    assert_eq!(
+        intent.audit_lineage,
+        vec![chain.goal.id.clone(), chain.plan.id.clone()]
+    );
+    assert!(
+        intent
+            .policy_decisions
+            .iter()
+            .all(|d| d.verdict == Verdict::Allowed)
+    );
+
+    let bytes = intent.encode().unwrap();
+    assert_eq!(&ActionIntent::decode(&bytes).unwrap(), intent);
+    let mut edited: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let payload = edited["payload"]
+        .as_str()
+        .unwrap()
+        .replace("20 lots", "2000 lots");
+    assert_ne!(
+        payload, intent.payload,
+        "premise: the edit changed the payload"
+    );
+    edited["payload"] = serde_json::Value::String(payload);
+    let refusal = ActionIntent::decode(&serde_json::to_vec(&edited).unwrap()).unwrap_err();
+    assert!(refusal.to_string().contains("payload_digest"), "{refusal}");
+
+    let mut withheld = request();
+    withheld.guards.as_mut().unwrap().grounds = vec![Ground::ExpectedProfit];
+    let report = run(withheld, None, &mut adapter).unwrap();
+    assert!(matches!(report.outcome, Outcome::Stopped(_)), "premise");
+    assert!(
+        report.intents.is_empty(),
+        "a refused pass carries no intent"
+    );
+}
