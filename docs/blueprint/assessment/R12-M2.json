@@ -519,13 +519,14 @@
   {
     "id": "R12-DATA-2023",
     "status": "PARTIAL",
-    "current": "LeadLedger measures per-source lead time and Platform observes every sensed record into it and reports a ranking; the finder's routing freshness score is age-versus-own-cadence, and the lead ranking does not feed routing.",
+    "current": "DataFinder::observe_leads takes the lead ledger ranking and the freshness term of SourceScores blends the age of the probe sample with a measured lead (share of comparisons led times mean lead over the source update interval, a minute for an irregular publisher); a source never compared keeps age alone. Platform::assess_sources hands the finder source_leads.ranking() before every assessment.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/freshness.rs:279 LeadLedger",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9149 source_leads.observe",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16798 ranking"
+      "backend/crates/services/qip-data-finder/src/finder.rs observe_leads, lead_timeliness and the freshness blend in the scoring step",
+      "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources calls observe_leads",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs a_leading_source_outscores_a_lagging_one_on_timeliness",
+      "backend/crates/runtime/qip-kernel/tests/platform_services.rs a_candidate_whose_releases_arrive_after_another_wires_scores_lower_on_timeliness"
     ],
-    "gap": "Use the measured lead in SourceScores so routing ranks on it.",
+    "gap": "assess_sources runs in the deep brain only on the DiscoveryDesk cadence, QIP_DEEPBRAIN_DISCOVER_EVERY, which is null (desk off) in every committed environment: infrastructure/terraform/catalogue.tf passes var.deepbrain_discover_every and no environments/*/terraform.tfvars sets it. Enabling discovery sends probes through the egress proxy to candidate hosts, an owner decision on the data-licensing and egress posture; protected path, so no patch is offered.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -533,10 +534,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test source_alpha",
+    "verification": "cargo test -p qip-data-finder --test source_alpha; cargo test -p qip-kernel --test platform_services a_candidate_whose_releases_arrive_after_another_wires_scores_lower_on_timeliness",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L22: wired and tested; kept PARTIAL because the only caller is the discovery cadence, which no committed environment enables. Mutations that fired: ignore the lead in the blend; score led_share as 1.0; delete the observe_leads call in assess_sources."
   },
   {
     "id": "R12-DATA-2024",

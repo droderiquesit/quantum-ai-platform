@@ -117,5 +117,5 @@ whether each was refused (R12-SEC-10157). Its records live in
 It is a scripted agent, not a model: it shows the committed judges refuse
 these inputs, and nothing about whether a model would try them. A secret read
 and a connection outside the egress allow-list need the sandbox's runner and
-firewall and are **not run** here. The test file is not yet in CI's `scripts`
-job (a protected-path change; patch in `docs/blueprint/lanes/`).
+firewall and are **not run** here. Its tests live in `harness.test.mjs`, so CI's
+`scripts` job runs them.

@@ -441,3 +441,92 @@ fn order_fill_integrity_is_a_declared_objective_the_kernel_feeds() {
         "nothing in the kernel feeds the order/fill integrity objective"
     );
 }
+
+/// R12-OBS-9161: the service objectives are declared against the golden
+/// signals the deep brain records, and each reads measured the moment its
+/// series moves. Before them the golden names were recorded and charted and
+/// no objective was declared on any of them, so a service could be slow,
+/// failing and saturated with every objective unmeasured and met.
+///
+/// Mutation: change the error-rate rule to `CounterExcluding` on the
+/// requests series (so errors are never subtracted) - the error-rate
+/// assertion reads 1.0 and fails. Mutation: delete the
+/// `SERVICE_SATURATION_CHECKS` count in `GoldenSignals::saturation` - the
+/// saturation objective stays unmeasured and the observation assertion fails.
+#[test]
+fn the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move() {
+    use qip_observability::Metrics;
+    use qip_observability::critical_paths::{
+        NOT_APPLICABLE_SERVICE_OBJECTIVES, SERVICE_ERROR_OBJECTIVE, SERVICE_LATENCY_OBJECTIVE,
+        SERVICE_SATURATION_OBJECTIVE, evaluate_where, service_objectives,
+    };
+    use qip_observability::golden::{GoldenSignals, Outcome};
+    use std::sync::Arc;
+
+    let declared = service_objectives();
+    for name in [
+        SERVICE_LATENCY_OBJECTIVE,
+        SERVICE_ERROR_OBJECTIVE,
+        SERVICE_SATURATION_OBJECTIVE,
+    ] {
+        assert!(
+            declared
+                .iter()
+                .any(|path| path.slo.name == name && path.slo.service == "deepbrain"),
+            "{name} is not a declared deep-brain objective"
+        );
+    }
+    assert!(
+        NOT_APPLICABLE_SERVICE_OBJECTIVES
+            .iter()
+            .any(|(name, why)| *name == "pod-disruption" && why.contains("Cloud Run")),
+        "pod disruption is not marked not applicable to Cloud Run by name"
+    );
+
+    let metrics = Arc::new(Metrics::new("deepbrain"));
+    let read = || {
+        evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service == "deepbrain" && declared.iter().any(|d| d.slo.name == path.slo.name)
+        })
+    };
+    let status = |name: &str| {
+        read()
+            .into_iter()
+            .find(|s| s.slo.name == name)
+            .unwrap_or_else(|| panic!("{name} was not evaluated"))
+    };
+    for name in [
+        SERVICE_LATENCY_OBJECTIVE,
+        SERVICE_ERROR_OBJECTIVE,
+        SERVICE_SATURATION_OBJECTIVE,
+    ] {
+        assert_eq!(
+            status(name).observations,
+            0,
+            "premise: {name} is unmeasured"
+        );
+    }
+
+    let golden = GoldenSignals::new(Arc::clone(&metrics));
+    golden.finished(10.0, Outcome::Served);
+    golden.finished(20.0, Outcome::Served);
+    golden.finished(30.0, Outcome::Served);
+    golden.finished(5_000.0, Outcome::Failed);
+    golden
+        .saturation(0.5, 1.0)
+        .unwrap_or_else(|e| panic!("{e}"));
+    golden
+        .saturation(1.5, 1.0)
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    let latency = status(SERVICE_LATENCY_OBJECTIVE);
+    assert_eq!(latency.observations, 4);
+    assert!((latency.achieved - 0.75).abs() < 1e-12, "{latency:?}");
+    let errors = status(SERVICE_ERROR_OBJECTIVE);
+    assert_eq!(errors.observations, 4);
+    assert!((errors.achieved - 0.75).abs() < 1e-12, "{errors:?}");
+    assert!(!errors.is_met);
+    let saturation = status(SERVICE_SATURATION_OBJECTIVE);
+    assert_eq!(saturation.observations, 2);
+    assert!((saturation.achieved - 0.5).abs() < 1e-12, "{saturation:?}");
+}
