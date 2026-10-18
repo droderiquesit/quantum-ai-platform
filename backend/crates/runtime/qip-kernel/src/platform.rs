@@ -187,6 +187,7 @@ use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
 use qip_simulation_engine::agents::CounterpartyAgent;
+use qip_simulation_engine::conditions::{ConditionSchedule, ConditionWindow, MarketCondition};
 use qip_simulation_engine::costs::CostModel;
 use qip_simulation_engine::execution::SimOrder;
 use qip_simulation_engine::market::{
@@ -516,6 +517,13 @@ pub struct Platform {
     /// them — rather than against a market rebuilt from the float series,
     /// which has no timestamps and would be a fabricated tape.
     bar_history: BTreeMap<String, Vec<Bar>>,
+    /// The publication delay each source has shown (R12-TICK-2087): how long
+    /// after a trade or tick was true at the venue it became knowable here,
+    /// by the source's own name, bounded to [`PUBLICATION_DELAY_SOURCES`].
+    /// Read by [`Self::calibrated_feed_delay`], which the SIMULATE stage
+    /// runs its probe behind, so the simulator sees the feed as late as the
+    /// real one has been rather than as current.
+    publication_delays: BTreeMap<String, PublicationDelay>,
     /// Orders a control refused and the twin has not yet priced, oldest
     /// first, bounded by [`DECLINED_HISTORY`].
     declined: Vec<DeclinedPath>,
@@ -2464,6 +2472,42 @@ impl ChainAbsorption {
         )
     }
 }
+
+/// The publication delay one source has shown (R12-TICK-2087).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PublicationDelay {
+    observations: u64,
+    total_nanos: i64,
+    max: Duration,
+}
+
+impl PublicationDelay {
+    /// How many records the estimate rests on.
+    pub const fn observations(&self) -> u64 {
+        self.observations
+    }
+
+    /// The mean delay between a record being true at the venue and being
+    /// knowable here. Zero only when nothing was observed.
+    pub fn mean(&self) -> Duration {
+        if self.observations == 0 {
+            return Duration::ZERO;
+        }
+        // Integer division on nanoseconds: the mean is a statistic, not money.
+        Duration::from_nanos(self.total_nanos / self.observations.cast_signed())
+    }
+
+    /// The longest delay seen.
+    pub const fn max(&self) -> Duration {
+        self.max
+    }
+}
+
+/// How many sources the publication-delay table calibrates. A feed naming a
+/// new venue on every record would otherwise grow it without bound; a source
+/// past the cap is left uncalibrated, which reads as "unknown" rather than
+/// as "current".
+const PUBLICATION_DELAY_SOURCES: usize = 64;
 
 /// What assessing a batch of candidate sources produced.
 #[derive(Clone, Debug, PartialEq)]
@@ -5143,6 +5187,7 @@ impl Platform {
             research: qip_learning_engine::research::ResearchLedger::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
+            publication_delays: BTreeMap::new(),
             declined: Vec::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
@@ -10259,6 +10304,7 @@ impl Platform {
                     // Use capture_time for known_at to preserve bitemporal distinction:
                     // instant_true (when it happened) vs knowable_at (when we found out).
                     let known_at = trade.capture_time;
+                    self.observe_publication_delay(&trade.venue, trade.at, known_at);
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -10275,6 +10321,7 @@ impl Platform {
                     // Use capture_time for known_at to preserve bitemporal distinction:
                     // instant_true (when it happened) vs knowable_at (when we found out).
                     let known_at = tick.capture_time;
+                    self.observe_publication_delay(&tick.venue, tick.at, known_at);
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -12471,7 +12518,14 @@ impl Platform {
         self.telemetry
             .metrics
             .increment(names::OPPORTUNITIES_DETECTED, labels([]), count as u64);
-        self.queue.extend(found);
+        // The executable scope, before the queue (R12-GOV-6117): an
+        // opportunity on an instrument the universe does not hold is
+        // journaled as shadowed and never queued, so nothing downstream can
+        // make an intent of it. See `crate::executable_scope`.
+        let routing = self.route_detected(found, now);
+        let shadowed = routing.shadowed;
+        let scope_problems = routing.problems;
+        self.queue.extend(routing.executable);
         // The queue is worked newest-highest-value first, and anything that
         // expired while waiting is dropped rather than silently worked late.
         let (live, lapsed): (Vec<Opportunity>, Vec<Opportunity>) = std::mem::take(&mut self.queue)
@@ -12484,10 +12538,14 @@ impl Platform {
             Stage::Discover,
             count,
             format!(
-                "{count} opportunity(ies) found, {} queued, {suppressed} suppressed this run",
+                "{count} opportunity(ies) found, {} queued, {shadowed} shadowed as outside the \
+                 executable scope, {suppressed} suppressed this run",
                 self.queue.len()
             ),
         );
+        for problem in scope_problems {
+            outcome = outcome.with_problem(problem);
+        }
         // Named individually, not counted. The refusal names every leaking
         // input because a feed fixed for one event and left broken for three
         // reads clean afterwards, and the event id is the only part of this an
@@ -14921,6 +14979,12 @@ struct CapacityProbeResult {
     subject: String,
     quantity: Decimal,
     adversity_bps: f64,
+    /// The calibrated feed delay the probe ran behind (R12-TICK-2087).
+    feed_delay: Duration,
+    /// The conditions the simulator reports it applied to the probe's
+    /// arrival, by name — read off the run rather than off the schedule, so
+    /// the detail states what the fill saw and not what was requested.
+    conditions: Vec<String>,
 }
 
 /// Submits exactly one order, at the first step, and nothing after.
@@ -14980,8 +15044,13 @@ impl Platform {
         // cycle, not a failed one.
         if let Some(probe) = self.capacity_probe(now) {
             detail.push_str(&format!(
-                "; capacity probe: {} of {} against agent flow cost {:.1}bps",
-                probe.quantity, probe.subject, probe.adversity_bps
+                "; capacity probe: {} of {} against agent flow cost {:.1}bps behind a {:.0}s \
+                 calibrated feed delay under [{}]",
+                probe.quantity,
+                probe.subject,
+                probe.adversity_bps,
+                probe.feed_delay.as_secs_f64(),
+                probe.conditions.join(", ")
             ));
             self.telemetry.metrics.gauge(
                 names::SIMULATION_CAPACITY_ADVERSITY_BPS,
@@ -15119,7 +15188,11 @@ impl Platform {
         spec.step_drift = drift;
         let quantity = spec.level_size;
         let market = SyntheticMarket::single(now, Duration::from_mins(1), 3, "XSIM", spec);
-        let run = MarketSimulator::synthetic(market, self.config.seed)
+        // The probe runs behind the feed delay the real sources have shown,
+        // because a capacity figure read off a feed assumed current is a
+        // figure for a venue this platform does not actually see.
+        let feed_delay = self.calibrated_feed_delay();
+        let mut run = MarketSimulator::synthetic(market, self.config.seed)
             .ok()?
             .with_agents(vec![
                 CounterpartyAgent::passive("ambient-passive", quantity, 0.3).ok()?,
@@ -15133,6 +15206,13 @@ impl Platform {
                 .ok()?,
             ])
             .ok()?;
+        if feed_delay > Duration::ZERO {
+            run = run
+                .with_conditions(ConditionSchedule::new().with(ConditionWindow::always(
+                    MarketCondition::DelayedFeed { delay: feed_delay },
+                )))
+                .ok()?;
+        }
         let mut strategy = CapacityProbeStrategy {
             object_id: subject.clone(),
             venue: "XSIM".to_string(),
@@ -15140,11 +15220,13 @@ impl Platform {
             submitted: false,
         };
         let outcome = run.run(&mut strategy).ok()?;
-        let adversity_bps = outcome.reports.first()?.adversity_bps();
+        let report = outcome.reports.first()?;
         Some(CapacityProbeResult {
             subject: subject.clone(),
             quantity,
-            adversity_bps,
+            adversity_bps: report.adversity_bps(),
+            feed_delay,
+            conditions: report.conditions.clone(),
         })
     }
 
@@ -19669,6 +19751,54 @@ impl Platform {
         if self.unledgered_fills.len() < DECLINED_HISTORY {
             self.unledgered_fills.push(line);
         }
+    }
+
+    /// Fold one record's publication delay into its source's estimate
+    /// (R12-TICK-2087). A record that arrived before it happened is refused
+    /// at ingestion (`check_capture_order`), so a negative delay here is a
+    /// caller bug and is not folded in rather than clamped to zero.
+    fn observe_publication_delay(
+        &mut self,
+        source: &str,
+        event_time: Timestamp,
+        received_at: Timestamp,
+    ) {
+        let delay = received_at.since(event_time);
+        if delay < Duration::ZERO {
+            return;
+        }
+        if !self.publication_delays.contains_key(source)
+            && self.publication_delays.len() >= PUBLICATION_DELAY_SOURCES
+        {
+            return;
+        }
+        let entry = self
+            .publication_delays
+            .entry(source.to_string())
+            .or_default();
+        entry.observations = entry.observations.saturating_add(1);
+        entry.total_nanos = entry.total_nanos.saturating_add(delay.as_nanos());
+        if delay > entry.max {
+            entry.max = delay;
+        }
+    }
+
+    /// The publication delay each source has shown, by source name.
+    pub fn publication_delays(&self) -> &BTreeMap<String, PublicationDelay> {
+        &self.publication_delays
+    }
+
+    /// The feed delay a simulation runs behind: the slowest source's mean.
+    /// The slowest rather than the average because a decision is only as
+    /// current as the latest-arriving feed it read, and zero when nothing has
+    /// been observed — an uncalibrated delay is reported as none rather than
+    /// invented.
+    pub fn calibrated_feed_delay(&self) -> Duration {
+        self.publication_delays
+            .values()
+            .map(PublicationDelay::mean)
+            .max()
+            .unwrap_or(Duration::ZERO)
     }
 
     /// The engine that prices the alternatives to a decision.

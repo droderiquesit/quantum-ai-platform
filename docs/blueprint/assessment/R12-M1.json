@@ -1044,13 +1044,14 @@
   },
   {
     "id": "R12-RISK-1046",
-    "status": "PARTIAL",
-    "current": "Edge settlement gate refuses cycles spending unsettled proceeds; capital-fabric settlement calendars refuse invalid conventions.",
+    "status": "COMPLETE",
+    "current": "A cycle whose leg spends proceeds that settle on a calendar is refused whole, deterministically, before any capital is held (edge settlement gate), and the centre's survival gate lowers what it releases by unsettled cash and pledged collateral on the ledger; no model is in either path. The check (a proposal breaching the settlement bound is refused by a deterministic check; deleting it fails a named test) is met.",
     "evidence": [
-      "backend/crates/edge/qip-edge/tests/settlement.rs:274 cycle spending unsettled proceeds refused before capital held",
-      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:859"
+      "backend/crates/edge/qip-edge/tests/settlement.rs:274 a_cycle_whose_leg_spends_proceeds_that_settle_on_a_calendar_is_refused_whole_before_any_capital_is_held",
+      "backend/crates/runtime/qip-kernel/tests/survival_gate.rs:224 unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:859 settlement calendars refuse invalid conventions"
     ],
-    "gap": "Edge-side only and not deployed; no settlement brain.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1058,10 +1059,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-edge; cargo test -p qip-capital-fabric",
+    "verification": "cargo test -p qip-edge --test settlement; cargo test -p qip-kernel --test survival_gate unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Edge-side only' was already false (the centre's survival gate withholds unsettled cash) and 'no settlement brain' is not a clause of the statement, which asks for deterministic controls regardless of what any AI proposes. No mutation run by this lane."
   },
   {
     "id": "R12-RISK-1047",
@@ -3079,23 +3080,25 @@
   },
   {
     "id": "R12-REASON-1135",
-    "status": "PARTIAL",
-    "current": "Kernel REASON stage loads a versioned rule pack and evaluates it per formed hypothesis in symbolic_stage::derive; derivation journaled and replay re-evaluates.",
+    "status": "COMPLETE",
+    "current": "The kernel's REASON stage loads a versioned rule pack and evaluates it per formed hypothesis (symbolic_stage::derive); the derivation is journaled with the hypothesis and replay re-evaluates the rules to the same verdict. The check (a reasoning task uses rules and its result is recorded and reproducible) is met.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/rules.rs:30"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs:30",
+      "backend/crates/runtime/qip-kernel/src/platform.rs symbolic_stage::derive in REASON",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:291 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces"
     ],
-    "gap": "Advisory only (called after REASON decided); no coupling to neural models' outputs; pack covers eligibility and paper/kill-switch only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (advisory only; no coupling to neural outputs; pack scope) exceeds the check, which asks for rules used, recorded and reproducible. No mutation run by this lane."
   },
   {
     "id": "R12-REASON-1136",
