@@ -359,6 +359,10 @@ impl ItchDecoder {
             b'H' => {
                 let symbol = reader.ascii(11, 8)?;
                 let state = reader.u8_at(19)?;
+                // The reason code is what separates a breaker from an ordinary
+                // halt: `LUDP`/`LUDS` are limit-up/limit-down pauses and
+                // `MWC0`-`MWC3` are market-wide decline levels.
+                let reason = reader.ascii(21, 4)?;
                 let Some(partition) = self.instruments.resolve(&symbol) else {
                     self.skip(
                         SkipReason::UnmappedInstrument { symbol },
@@ -373,6 +377,9 @@ impl ItchDecoder {
                     // but nothing trades. `Auction` is the state that describes
                     // that; `Halted` would wrongly stop the router quoting.
                     b'Q' => VenueStatus::Auction,
+                    b'H' | b'P' if reason.starts_with("LUD") || reason.starts_with("MWC") => {
+                        VenueStatus::CircuitBreaker
+                    }
                     b'H' | b'P' => VenueStatus::Halted,
                     other => {
                         self.skip(
