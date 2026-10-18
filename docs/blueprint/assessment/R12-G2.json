@@ -1676,13 +1676,15 @@
   },
   {
     "id": "R12-CICD-9073",
-    "status": "PARTIAL",
-    "current": "Kargo promotion tasks commit digests; Argo CD reconciles; prod is promoted by nobody. Images are pushed per environment registry rather than one promoted artifact (see R12-CICD-9112).",
+    "status": "COMPLETE",
+    "current": "deploy.yml builds every image once into the build environment's registry (BUILD_ENVIRONMENT: dev) and a dispatch for any other environment refuses to build when the build registry holds no digest for the commit; variables.tf's registry_promotion_readers reaches modules/registry/promotion.tf, which grants roles/artifactregistry.reader and nothing else. gitops.rs::later_environments_read_the_build_registry_and_build_nothing pins all of that over the workflow and Terraform text; every_link_promotes_the_digest_built_once_in_the_one_registry already pins the Kargo chain to the same registry.",
     "evidence": [
-      "infrastructure/gitops/kargo/base/promotiontask.yaml",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1959,2033"
+      ".github/workflows/deploy.yml BUILD_ENVIRONMENT and the step 'a promotion attests the image built once and never builds one'",
+      "infrastructure/terraform/modules/registry/promotion.tf",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs later_environments_read_the_build_registry_and_build_nothing",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_link_promotes_the_digest_built_once_in_the_one_registry"
     ],
-    "gap": "Single artifact promoted across environments.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1690,10 +1692,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection / cargo test -p qip-acceptance",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- later_environments_read_the_build_registry_and_build_nothing every_link_promotes_the_digest_built_once_in_the_one_registry",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08): the gap text predated the 2026-10-11 single-registry change (ADR 0115). Mutation: feeding the check deploy.yml with the refusal condition flipped to '== env.BUILD_ENVIRONMENT' failed it naming the condition."
   },
   {
     "id": "R12-OBS-9074",
@@ -2518,14 +2520,13 @@
   },
   {
     "id": "R12-CICD-9111",
-    "status": "PARTIAL",
-    "current": "Kargo promotion tasks commit digests; Argo CD Applications per environment (only dev auto-syncs); no Config Sync. The Kargo warehouse has no subscriptions in base (filled per overlay).",
+    "status": "COMPLETE",
+    "current": "The explicit decision exists: ADR 0114 has Config Connector reconcile the baseline on a controllers-only control plane. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names pins the admitted controller set and refuses Config Sync's kinds and API group under bootstrap/.",
     "evidence": [
-      "infrastructure/gitops/kargo/base/promotiontask.yaml",
-      "infrastructure/gitops/kargo/base/warehouse.yaml (subscriptions: [])",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1513,1571,1823"
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names"
     ],
-    "gap": "Config Sync or explicit decision against it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2533,10 +2534,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a RootSync document under bootstrap/config-connector/base failed the test."
   },
   {
     "id": "R12-CICD-9112",

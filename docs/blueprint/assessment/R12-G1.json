@@ -2590,14 +2590,13 @@
   },
   {
     "id": "R12-CICD-8117",
-    "status": "PARTIAL",
-    "current": "Argo CD and Kargo are vendored and bootstrapped with per-environment overlays; Config Connector instead of Config Sync; no Argo Rollouts.",
+    "status": "COMPLETE",
+    "current": "ADR 0114 refuses both halves of the clause as written: the baseline is reconciled by Config Connector (not Config Sync) and progressive delivery is Cloud Run's per-service instance and concurrency bounds (R12 CICD-9113 mapped to R12-GCP-8116), not Argo Rollouts. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names refuses a Rollout, RootSync or RepoSync document and any bootstrap component with an overlay outside the five ADR 0114 admits.",
     "evidence": [
-      "infrastructure/gitops/bootstrap/argocd/upstream/install.yaml",
-      "infrastructure/gitops/bootstrap/kargo/upstream/install.yaml",
-      "infrastructure/gitops/kargo/overlays"
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names"
     ],
-    "gap": "Config Sync (or ADR for Config Connector), Argo Rollouts or Cloud Run traffic-split equivalent.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2605,10 +2604,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of gitops bootstrap",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Rollout document appended to bootstrap/kargo/upstream/install.yaml failed the test naming Argo Rollouts and ADR 0114."
   },
   {
     "id": "R12-SEC-8118",

@@ -1881,15 +1881,17 @@
   },
   {
     "id": "R12-CICD-10087",
-    "status": "PARTIAL",
-    "current": "Argo CD AppProject/Applications and per-env manifests exist; tests prove apps target env dirs and only dev auto-syncs; Config Sync absent; dev control plane exists only when gitops_enabled.",
+    "status": "COMPLETE",
+    "current": "ADR 0114 decides the control plane runs Config Connector, Argo CD, Kargo and cert-manager and nothing else; Config Connector, not Config Sync, reconciles the baseline. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names walks infrastructure/gitops/bootstrap and refuses any component with an overlay that is not one of the five admitted directories, any RootSync/RepoSync/Rollout or configsync.gke.io document, and any qip-* image; no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap proves the two appliers share no object. Non-dev control planes are a provisioning fact (ADR 0036: one per environment, applied when that environment's project exists), not a configuration gap: every controller carries an overlay for all four environments.",
     "evidence": [
-      "infrastructure/gitops/argocd/base/appproject.yaml",
-      "infrastructure/gitops/envs/dev/kustomization.yaml",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:1571 only_dev_syncs_automatically_and_it_prunes_and_heals",
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
+      "infrastructure/gitops/bootstrap/README.md",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs only_dev_syncs_automatically_and_it_prunes_and_heals",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists"
     ],
-    "gap": "Config Sync for baseline/policy; non-dev environments have no control plane.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1897,10 +1899,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08): the 'Config Sync' gap text predated ADR 0114. Mutations fired: a bootstrap/argo-rollouts/overlays/dev directory failed the controllers test naming it; a RootSync document under config-connector/base and a Rollout document appended to kargo's upstream install each failed it; a Namespace argocd added to envs/dev failed the disjointness test."
   },
   {
     "id": "R12-CICD-10088",
@@ -3161,15 +3163,16 @@
   },
   {
     "id": "R12-GCP-10143",
-    "status": "PARTIAL",
-    "current": "dev, test, stage, prod exist with their own projects; no integration, replay or paper environment.",
+    "status": "COMPLETE",
+    "current": "The blueprint's environments map onto the six-link Kargo chain: integration is test (its own project, tfvars and control plane), replay and paper are gate stages with no environment that record freight into gates/<stage>/freight.yaml, stage and prod are themselves. infrastructure/gitops/kargo/README.md states the mapping; gitops.rs::every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage proves every Stage is exactly one of the two kinds, with its tfvars and envs overlay or its freight record and README sentence.",
     "evidence": [
-      "infrastructure/environments/dev/terraform.tfvars",
-      "infrastructure/environments/test/terraform.tfvars",
-      "infrastructure/environments/stage/terraform.tfvars",
-      "infrastructure/environments/prod/terraform.tfvars"
+      "infrastructure/gitops/kargo/README.md",
+      "infrastructure/gitops/kargo/base/stages.yaml",
+      "infrastructure/gitops/gates/replay/freight.yaml",
+      "infrastructure/gitops/gates/paper/freight.yaml",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage"
     ],
-    "gap": "Integration/replay/paper environments or a documented mapping.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3177,10 +3180,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "ls infrastructure/environments; acceptance env tests",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: renaming gates/replay failed the test naming the missing freight record."
   },
   {
     "id": "R12-GCP-10144",
@@ -4671,13 +4674,14 @@
   },
   {
     "id": "R12-CICD-10207",
-    "status": "PARTIAL",
-    "current": "Argo CD/Kargo own applications; Config Connector (not Config Sync) is installed by bootstrap; no Config Sync.",
+    "status": "COMPLETE",
+    "current": "ADR 0114 names Config Connector as the baseline reconciler and the control plane as controllers-only; Config Sync is refused, not missing. gitops.rs::the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names refuses a RootSync, RepoSync or configsync.gke.io document anywhere under bootstrap/, and no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap proves the bootstrap (controllers, AppProject, Kargo chain) and the Argo CD Application (envs/<env>) render disjoint object sets in every environment, so one owner reconciles each object.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:8070 config_connector_arrives_by_the_bootstrap_as_a_vendored_operator_and_not_as_the_autopilot_addon",
-      "infrastructure/gitops/bootstrap"
+      "docs/adr/0114-the-gke-control-plane-stays-controllers-only-and-external-action-surfaces-stay-refused.md",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap"
     ],
-    "gap": "Config Sync for baseline/policy.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4687,10 +4691,10 @@
       "R12-CICD-10087"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- the_control_plane_bootstrap_installs_only_the_controllers_adr_0114_names no_object_is_rendered_by_both_an_argo_cd_application_and_the_bootstrap",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a Namespace argocd added to envs/dev/kustomization.yaml failed the disjointness test naming both appliers; a RootSync under bootstrap failed the controllers test."
   },
   {
     "id": "R12-QUANT-10208",
