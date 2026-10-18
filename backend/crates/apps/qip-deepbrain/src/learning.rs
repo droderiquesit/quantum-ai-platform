@@ -1530,11 +1530,7 @@ impl LearningDesk {
                 .skilled)
         };
         let baseline_skilled = judged(&baseline)?;
-        let challenger_skilled = challenger
-            .as_ref()
-            .ok()
-            .map(|teacher| judged(teacher))
-            .transpose()?;
+        let challenger_skilled = challenger.as_ref().ok().map(judged).transpose()?;
         self.classes.observe(Outcome::binary(
             BASELINE_CLASS.as_str(),
             regime,
