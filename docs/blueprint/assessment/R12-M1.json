@@ -1250,16 +1250,14 @@
   },
   {
     "id": "R12-AMBIENT-1055",
-    "status": "PARTIAL",
-    "current": "Ambient producers now run by default in deepbrain (research sweep signals); their only path onward is AmbientIntake::submit(Promoted) built by promote(), then the guard, then an outbox draft. Advisory payload is private; order-path crates name no ambient type.",
+    "status": "COMPLETE",
+    "current": "An ambient output reaches nothing that acts except through promote(), and the fence is structural: the payload of Advisory is private, promote() is the one door, and the one consumer of the promoted value is qip-agency's AmbientIntake::submit. architecture.rs::no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act requires every order-path crate (execution engine, brokers, risk engine, portfolio engine, capital, kernel, the edge crates and the edge node) to be unable to reach qip-agency through the compiled dependency graph, and requires the deep brain to reach it so the absence means something. The source-text scan in ambient_attention.rs stays for the type names, which a graph over a shared crate cannot see.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:476 Advisory",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:526 promote",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:6 AMBIENT-016 fence",
-      "backend/crates/services/qip-agency/src/ambient_intake.rs::AmbientIntake::submit",
-      "backend/crates/libs/qip-contracts/src/ambient.rs::promote"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_act",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote",
+      "backend/crates/libs/qip-contracts/src/ambient.rs promote"
     ],
-    "gap": "Acceptance fence is partly a source-text scan; deterministic-controls clause is vacuous (no order path from drafts).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1269,10 +1267,10 @@
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture --test ambient_attention",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). The graph test sits in architecture.rs beside the helpers it uses rather than in ambient_attention.rs. Mutation: qip-agency added to qip-edge's manifest failed the test naming qip-edge and the reachable set; manifest and lockfile restored byte for byte. The text scan was kept, not replaced: qip-contracts is linked by every crate, so a crate naming the ambient module is invisible to the graph, and what makes naming it harmless is that the payload is private and only an intake in qip-agency consumes a promoted value."
   },
   {
     "id": "R12-AGENCY-1056",
