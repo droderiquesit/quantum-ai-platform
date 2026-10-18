@@ -3313,23 +3313,26 @@
   },
   {
     "id": "R12-OBS-9147",
-    "status": "PARTIAL",
-    "current": "qip_event_fabric_group_lag recorded by fabricd.",
+    "status": "COMPLETE",
+    "current": "qip-fabricd records qip_event_fabric_group_lag{group,stream,partition} in DataPlane::record wherever the service reports a group's lag: a successful groups/commit or groups/lag on a declared stream (the service sets lag only on success, so a refused commit writes nothing). A test commits through the served broker and reads the series from /metrics: two behind after committing offset 0 of three batches, zero after committing the last.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs:78"
+      "backend/crates/apps/qip-fabricd/src/lib.rs:205 DataPlane::record group-lag recording site",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs FabricdTelemetry::group_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCommit observation (seen.lag)",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1847 a_group_commit_through_the_served_broker_moves_the_partition_lag_series"
     ],
-    "gap": "Ingestion proof.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-fabricd --test broker a_group_commit_through_the_served_broker_moves_the_partition_lag_series",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L17 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: deleting the group_lag call in DataPlane::record leaves no qip_event_fabric_group_lag line after the commit and the test fails naming it. The group label is the consumer's group id, admitted only after the stream grant check; ingestion into Cloud Monitoring belongs to the rows that own workload_metrics_exist."
   },
   {
     "id": "R12-OBS-9148",

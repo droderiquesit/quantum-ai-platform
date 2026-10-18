@@ -189,6 +189,21 @@ struct DataPlane {
 impl DataPlane {
     fn record(&self, handled: &Handled, elapsed_ms: f64) {
         let seen = &handled.observation;
+        // A group's lag is known where its checkpoint moves (a commit) or is
+        // read (a lag query), and the service sets it only on success, so a
+        // refused commit writes nothing. Only a declared stream is labelled:
+        // a stream name the catalogue does not hold never mints a series.
+        if matches!(seen.route, Some(Route::GroupCommit | Route::GroupLag))
+            && let (Some(group), Some(stream), Some(partition), Some(lag), Some(_)) = (
+                &seen.group,
+                &seen.stream,
+                seen.partition,
+                seen.lag,
+                seen.class,
+            )
+        {
+            self.telemetry.group_lag(group, stream, partition, lag);
+        }
         if seen.route != Some(Route::Produce) {
             return;
         }
