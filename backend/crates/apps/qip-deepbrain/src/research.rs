@@ -68,7 +68,7 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters, contradictions,
     coverage, incompetent_specialists, low_confidence, model_drift, model_error_rate,
-    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals,
+    refusal_clusters, repeated_vetoes_priced, split_by_wanting, unexplained_residuals_priced,
 };
 use qip_expansion::executor::{
     AcquisitionOutcome, AcquisitionRecord, CampaignPolicy, CampaignResult, FillResidual, acquire,
@@ -571,6 +571,26 @@ fn basis_points(fraction: f64) -> Result<u32> {
     }
     // Statistic to integer: rounding a fraction to the nearest basis point.
     Ok((fraction * 10_000.0).round() as u32)
+}
+
+/// A gap's economic value on the basis-point scale a request is ranked on
+/// (a hundredth of a unit per basis point, so the scale ends at 100 units).
+///
+/// A priced gap states a currency figure that the scale cannot bound: the
+/// summed earnings a gate forwent, or a venue's notional-weighted miss, is
+/// routinely thousands of units. Reading that as an error failed the whole
+/// sweep, and with it every other gap the sweep had raised, on exactly the
+/// gaps that matter most. A figure past the end of the scale is read as the
+/// scale's end, the same full scale [`ResearchLoop::emit`] gives the signal
+/// for it; a negative or non-finite figure is still refused. This is not a
+/// clamp of a malformed input: the value is real, it is merely larger than
+/// the ranking range can distinguish.
+fn economic_scale_bp(value: f64) -> Result<u32> {
+    let scaled = value / 100.0;
+    if scaled.is_finite() && scaled > 1.0 {
+        return Ok(qip_contracts::ambient::MAX_SEVERITY_BP);
+    }
+    basis_points(scaled)
 }
 
 /// What one sweep did, for the cycle line.
@@ -1385,7 +1405,11 @@ impl ResearchLoop {
                 })
             })
             .collect();
-        observations.extend(unexplained_residuals(&residuals, RESIDUAL_BPS)?);
+        observations.extend(unexplained_residuals_priced(
+            &residuals,
+            &fill_notionals(platform)?,
+            RESIDUAL_BPS,
+        )?);
         observations.extend(model_drift(&std::mem::take(&mut self.drifted_models)));
         if let Some((model, tally)) = &self.replies
             && let Some(counts) = tally.take_at_least(MODEL_REPLIES_MIN)
@@ -2004,9 +2028,18 @@ impl ResearchLoop {
         let severity = basis_points(gap.signal.severity)?;
         let economic = gap.signal.economic_value;
         let entities = gap.signal.affected_domains.clone();
-        let admission = self
-            .desk
-            .offer(gap, licensed_sources, eligible_jurisdictions);
+        // Urgency is the gap's own deadline (R12-AMBIENT-3106): the signal's
+        // expiry, read against its window, so a gap the router deferred for
+        // a sweep ranks ahead of the same gap raised this instant. The same
+        // figure ranks the desk's queue (R12-EXPAND-6048) and the request
+        // below; the desk reads it as a fraction of the scale.
+        let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
+        let admission = self.desk.offer_by_deadline(
+            gap,
+            f64::from(urgency) / f64::from(qip_contracts::ambient::MAX_SEVERITY_BP),
+            licensed_sources,
+            eligible_jurisdictions,
+        );
         let outcome = admission.as_str();
         *round.admissions.entry(outcome).or_default() += 1;
         metrics.count(
@@ -2032,7 +2065,7 @@ impl ResearchLoop {
         // discriminate. Economic significance is the gap's economic value in
         // basis points — the anomaly mapper states it on [0, 100], so ×100
         // is its basis-point form, and a detector's stated zero stays zero.
-        let economic_bp = basis_points(economic.to_f64() / 100.0)?;
+        let economic_bp = economic_scale_bp(economic.to_f64())?;
         // Options in cost order: re-reading the next sweep is possible only
         // for a gap the price sweep raised; the acquisition the class asks
         // for is always an option, at its declared cost in thousands of
@@ -2042,10 +2075,6 @@ impl ResearchLoop {
                 .unwrap_or(u32::MAX)
                 .saturating_mul(1_000)
                 .min(qip_contracts::ambient::MAX_SEVERITY_BP);
-        // Urgency is the gap's own deadline (R12-AMBIENT-3106): the signal's
-        // expiry, read against its window, so a gap the router deferred for
-        // a sweep ranks ahead of the same gap raised this instant.
-        let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
         let chosen = cheapest_viable(
             economic_bp,
             severity,
@@ -3011,6 +3040,42 @@ fn fill_residuals(fills: &[FillObservation]) -> Vec<FillResidual> {
             })
         })
         .collect()
+}
+
+/// The notional each venue's paper fills traded, from the outcome record:
+/// every `Action::Filled`'s quantity times its price, summed by venue
+/// (R12-EXPAND-6048). It is what prices a residual gap: the mean miss in basis
+/// points means little until it is applied to the size it was paid on. Money,
+/// so `Decimal`, and an overflow is refused rather than saturated.
+///
+/// Keyed by venue because a [`FillObservation`] names its venue and not its
+/// order. The mean miss is read over the fills the twin scored and the
+/// notional over every fill the venue holds, so the figure is the miss applied
+/// to everything traded there, which is what a venue's slippage costs.
+pub fn fill_notionals(platform: &Platform) -> Result<BTreeMap<String, Decimal>> {
+    let mut by_venue: BTreeMap<String, Decimal> = BTreeMap::new();
+    for entry in platform.outcomes().entries() {
+        if let qip_twin::capture::Action::Filled {
+            venue,
+            quantity,
+            price,
+            ..
+        } = &entry.decision.action
+        {
+            let notional = quantity.checked_mul(*price).ok_or_else(|| {
+                Error::numeric(format!(
+                    "a fill at `{venue}` has a notional that overflows a decimal"
+                ))
+            })?;
+            let slot = by_venue.entry(venue.to_string()).or_insert(Decimal::ZERO);
+            *slot = slot.checked_add(notional.abs()).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the notional traded at `{venue}` overflows a decimal"
+                ))
+            })?;
+        }
+    }
+    Ok(by_venue)
 }
 
 /// Every paper fill's slippage against its arrival, from the outcome record.

@@ -111,8 +111,26 @@ pub struct Measured {
     pub class_open: usize,
 }
 
-/// The eleven inputs, each from a named measurement or a stated zero.
+/// The eleven inputs, each from a named measurement or a stated zero, for a
+/// gap whose caller holds no deadline: urgency is the stated zero. A caller
+/// that does hold one uses [`criteria_for_deadline`].
 pub fn criteria_for(raised: &RaisedGap, kind: TaskKind, measured: Measured) -> Criteria {
+    criteria_for_deadline(raised, kind, measured, 0.0)
+}
+
+/// [`criteria_for`] with the urgency the caller measured from the gap's own
+/// deadline (R12-EXPAND-6048): a fraction in `[0, 1]`, the share of the
+/// signal's window already consumed, so that two gaps equal in every other
+/// input rank the nearer deadline first. The desk used to state urgency zero
+/// for every gap because nothing handed it the deadline the research loop
+/// already held; a value outside the fraction is refused by
+/// [`Criteria::score`], not clamped here.
+pub fn criteria_for_deadline(
+    raised: &RaisedGap,
+    kind: TaskKind,
+    measured: Measured,
+    urgency: f64,
+) -> Criteria {
     let severity = raised.signal.severity;
     let failure = is_failure(raised.trigger);
     let repeated = measured.repeats as f64 / (measured.repeats as f64 + 1.0);
@@ -137,8 +155,8 @@ pub fn criteria_for(raised: &RaisedGap, kind: TaskKind, measured: Measured) -> C
         // First sighting is fully novel; each repeat halves, thirds, ...
         novelty: Some(1.0 / (measured.repeats as f64 + 1.0)),
         failure_frequency: Some(if failure { repeated } else { 0.0 }),
-        // Nothing measures a deadline on a gap yet; stated, not guessed.
-        urgency: Some(0.0),
+        // The caller's measurement from the gap's deadline, or its stated zero.
+        urgency: Some(urgency),
     }
 }
 
@@ -275,10 +293,24 @@ impl ExpansionDesk {
         self.sweep
     }
 
-    /// Offer one raised gap. Every refusal is returned, never swallowed.
+    /// Offer one raised gap whose caller holds no deadline (urgency stated
+    /// zero). Every refusal is returned, never swallowed.
     pub fn offer(
         &mut self,
         raised: RaisedGap,
+        licensed_sources: &BTreeSet<String>,
+        eligible_jurisdictions: &BTreeSet<String>,
+    ) -> Admission {
+        self.offer_by_deadline(raised, 0.0, licensed_sources, eligible_jurisdictions)
+    }
+
+    /// Offer one raised gap with the urgency its deadline gives it
+    /// ([`criteria_for_deadline`]). Every refusal is returned, never
+    /// swallowed.
+    pub fn offer_by_deadline(
+        &mut self,
+        raised: RaisedGap,
+        urgency: f64,
         licensed_sources: &BTreeSet<String>,
         eligible_jurisdictions: &BTreeSet<String>,
     ) -> Admission {
@@ -301,13 +333,14 @@ impl ExpansionDesk {
         let action = AcquisitionAction::for_class(class);
         let tools = action.tools();
         let cost = declared_cost(kind);
-        let criteria = criteria_for(
+        let criteria = criteria_for_deadline(
             &raised,
             kind,
             Measured {
                 repeats,
                 class_open,
             },
+            urgency,
         );
         let derivation = Derivation::of(&question, &raised);
         let plan = ResearchPlan::synthesise_with(&question, class, |t| self.tools.get(t).is_some());
