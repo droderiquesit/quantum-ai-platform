@@ -248,6 +248,23 @@ impl TickDeskConfig {
     }
 }
 
+/// The skill gate a fill model passes before a card is issued for it
+/// (R12-TICK-2092): a model whose holdout Brier does not beat the base
+/// rate's is refused, naming both figures, so no card — and so no
+/// opportunity map, which a card authorises — is issued for a model that
+/// knows nothing the base rate did not.
+pub fn skill_gate(model: &FillModel) -> Result<()> {
+    if model.beats_baseline() {
+        return Ok(());
+    }
+    Err(Error::denied(format!(
+        "the fill model's holdout Brier {:.4} does not beat its base-rate baseline {:.4} on {} \
+         holdout example(s); no model card is issued for a model with no skill, and no map is \
+         authorised from it",
+        model.holdout_brier, model.baseline_brier, model.holdout_examples
+    )))
+}
+
 /// What one round did. Every field is a count or a record a person can
 /// check; nothing here is a claim the desk makes about itself.
 #[derive(Clone, Debug, Default)]
@@ -577,7 +594,14 @@ impl TickDesk {
                 Some(so_far) => so_far.intersection(&regions).cloned().collect(),
             });
         }
+        // A model whose holdout skill does not beat the base rate is refused
+        // a card (R12-TICK-2092): the card is what authorises the map a
+        // region is shipped, so issuing one for a model with no skill would
+        // ship a map distilled from a model that knows nothing the base
+        // rate did not. Until 2026-10-18 the desk printed `beats_baseline`
+        // on the round line and issued the card regardless.
         let card = round.fill_model.as_ref().map(|model| {
+            skill_gate(model)?;
             ModelCard::new(
                 ModelId::from_string(format!("tick-fill-{}", round.manifest)),
                 "tick-fill-probability",

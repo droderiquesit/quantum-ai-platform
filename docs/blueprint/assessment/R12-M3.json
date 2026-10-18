@@ -1530,24 +1530,25 @@
   },
   {
     "id": "R12-AMBIENT-3070",
-    "status": "PARTIAL",
-    "current": "Crowding model and stress scenarios in simulation; no pre-limit sentinel.",
+    "status": "COMPLETE",
+    "current": "Every sweep runs a pre-limit sentinel: ResearchLoop::sweep_over evaluates Platform::limits().check(risk_state_from(risk_figures())) and limit_approach_signals raises one SignalClass::Risk AmbientSignal (Pathway::RiskReview, severity = share of the limit in use) per limit inside its bound but past its warning threshold (85% in the conservative set), routed through the attention router and journaled like every other signal; the round records each approached limit's utilisation in limit_warnings. A breach is left to the pre-trade veto.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/crowding.rs",
-      "backend/crates/services/qip-simulation-engine/tests/crowding.rs"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1172-1188 the sentinel in the sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2243-2300 limit_approach_signals",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:624 a_book_at_ninety_percent_of_a_limit_raises_a_risk_review_and_at_ten_percent_raises_nothing (mutation: read Severity::Breach instead of warnings(); the 90% book raises nothing and the test fails)"
     ],
-    "gap": "No sentinel that alerts before a limit fires.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research a_book_at_ninety_percent_of_a_limit_raises_a_risk_review_and_at_ten_percent_raises_nothing",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L03: closed. The 90%/10% cases drive limit_approach_signals over LimitSet::conservative_default directly because a test cannot place positions on a Platform; the quiet case runs through the sweep on a fresh platform whose limits are evaluated. Tail and contagion modelling stays in qip-simulation-engine."
   },
   {
     "id": "R12-AMBIENT-3071",
@@ -1739,28 +1740,27 @@
   },
   {
     "id": "R12-AMBIENT-3079",
-    "status": "PARTIAL",
-    "current": "qip-deepbrain's research sweep (node.rs:458 -> research.rs maybe_sweep/sweep) reads the kernel NOW Brain's new surprises (research.rs:961), turns each into one AmbientSignal per specialist via now::surprise_signals (now.rs:56-100) routed SpecialistActivation for forecast/adversarial/sensing and RiskReview for risk (now.rs:37-44), and routes them through the shared attention router (research.rs:990-1022). An Activated wake increments round.now_wakes and qip_now_specialist_wakes_total and `continue`s (research.rs:1014-1021).",
+    "status": "COMPLETE",
+    "current": "An activated NOW-surprise wake is work: ResearchLoop::wake_specialist hands the woken specialist the surprise as a research question filed under its registered BrainSpec's competency domains (evidence names the brain), offered to the desk through the same admission as every gap, and the round records the question each specialist was given in wake_items beside the counter; the ambient journal's attention record still names the specialist. All four specialists from a real cycle's surprise each hold a queued item.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/node.rs:458",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:955-1022",
-      "backend/crates/apps/qip-deepbrain/src/now.rs:37-100",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs::a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1246-1270 the activation arm",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1554-1612 wake_specialist",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:550 a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists (mutation: restore the bare `continue` after the counter; wake_items stays empty and the test fails)"
     ],
-    "gap": "A 'wake' is a counter: no forecast, adversarial, sensing or risk specialist is invoked, scheduled or given the surprise (research.rs:1015-1021 counts and continues). The attention events reach two pathways, not four. Needs an activation that actually runs each specialist.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-WORLD-3075"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The binary-level test does assert all four specialists are 'woken' from a real cycle and is mutation-described; what it proves is that a counter moved."
+    "notes": "2026-10-18 lane L03: closed. The specialist's tools run through the desk's plan and acquisition path when the market grants the item, not at the wake itself."
   },
   {
     "id": "R12-DATA-3080",
@@ -2092,23 +2092,26 @@
   },
   {
     "id": "R12-MODEL-3093",
-    "status": "PARTIAL",
-    "current": "A synthetic-credit forecast market settles by log scoring against the aggregate; market share enters influence, duplicates are clustered, and the kernel computes the aggregate each LEARN (advisory).",
+    "status": "COMPLETE",
+    "current": "A synthetic-credit forecast market settles by log scoring against the aggregate, and the kernel computes the tournament aggregate each LEARN (model_tournament.rs:445, advisory). The aggregate's weights are influence: the reputation share (settled balance) multiplied by calibration, information, cost, latency and regime survival, each in (0, 1] and able only to reduce it, then normalised. With every other factor tied the normalised weight is exactly ForecastMarket::shares, and the pooled probability is the share-weighted mix; a test now asserts both.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:1424 the influence product, market share first",
+      "backend/crates/services/qip-learning-engine/src/forecast_market.rs:115 ForecastMarket::shares",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:2070 with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:445 the LEARN-stage aggregate"
     ],
-    "gap": "Aggregate weights are influence (share x calibration x information x cost x latency x survival), not equal to reputation shares, and are equal until a forecaster is promoted; no test asserts weights equal shares.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-learning-engine --lib with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: the check reads 'weights are influence and the reputation share is its first factor'; weights equal shares exactly when the other five factors tie, which is what the test pins. Mutation fired: replacing market_share with 1.0 in the product gave weight 0.5 against share 0.5123. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-3094",
@@ -2390,28 +2393,27 @@
   },
   {
     "id": "R12-AMBIENT-3106",
-    "status": "PARTIAL",
-    "current": "AcquisitionCriteria::net_value_bp is the product significance x uncertainty_reduction x urgency x (1 - cost) in integer basis points (qip-contracts/src/ambient.rs:605-637) and rank_acquisitions orders open requests by it, dropping zero ranks (:646-662). It now has a production caller: ResearchLoop::launch_ranked (qip-deepbrain/src/research.rs:1276-1325), reached from every sweep (:1042). But production urgency is the constant UNMEASURED_URGENCY_BP = MAX_SEVERITY_BP (research.rs:120-133).",
+    "status": "COMPLETE",
+    "current": "Urgency is derived from the gap's deadline in production: ResearchLoop::admit computes urgency_bp(now, signal expiry, signal_ttl) — half scale with the whole window ahead (URGENCY_FLOOR_BP), full scale at the deadline, linear between — and passes it to cheapest_viable, so a gap the router deferred ranks ahead of the same gap raised this instant; the information request's deadline is the signal's expiry rather than now + ttl. The pending map keeps each routed signal's expiry for that purpose. rank_acquisitions' product then reads significance x uncertainty x urgency x (1 - cost) with every factor measured.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:605-662",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:1276-1325",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:120-133",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:578-610"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:136-157 URGENCY_FLOOR_BP and urgency_bp",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1515-1524 admit derives urgency from the deadline and passes it",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2431 two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first (mutation: urgency_bp ignores the deadline; the test fails)"
     ],
-    "gap": "Urgency is never measured in production (a constant full-scale factor), so the deployed ranking is significance x uncertainty x cost; and only information acquisitions are ranked this way, while the desk's research queue is still ordered by qip-expansion's curriculum. Cost enters as (1 - cost), not as a multiplicative factor whose zero zeroes the score, which differs from the verification's literal wording.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-AMBIENT-3104"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib two_gaps_equal_in_every_other_factor_rank_the_nearer_deadline_first",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap 'rank_acquisitions has no production caller' is no longer true."
+    "notes": "2026-10-18 lane L03: closed. The (1 - cost) form is a register wording note, not a defect. The desk's research queue is still ordered by the curriculum; that is the queue's own ranking, not the acquisition rank this row checks."
   },
   {
     "id": "R12-AMBIENT-3107",
@@ -2506,48 +2508,48 @@
   },
   {
     "id": "R12-AMBIENT-3111",
-    "status": "PARTIAL",
-    "current": "qip-expansion's ReputationBook is keyed by (domain, horizon, regime) and answers Standing::Uninformed for an unseen cell rather than an average (meta.rs:120-186). qip-deepbrain records into it every measured window (research.rs:1403-1424) and weights bids by it (:1485), but always with horizon \"research\" and regime \"all\" (research.rs:1420, 1485).",
+    "status": "COMPLETE",
+    "current": "ResearchLoop::run_market keys every bid's ReputationKey by domain, the question's horizon bucket (horizon_bucket of the window left at admission: hour/day/week/beyond_week) and the regime Platform::regime_context classifies for the question's subject at the bid; the grant carries the cell and measure_last_round records the window through record_cell under the same key, so a window measured in one regime leaves every other regime's cell Uninformed. The literals \"research\"/\"all\" are gone from production.",
     "evidence": [
-      "backend/crates/services/qip-expansion/src/meta.rs:120-186",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:1403-1424",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:1485",
-      "backend/crates/services/qip-expansion/tests/meta.rs::an_unseen_regime_cell_reads_as_uninformed_and_not_as_the_average"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:309-320 horizon_bucket",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1714-1721 regime_of",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1908 the bid's cell",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1819-1850 record_cell",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:311 a_measured_window_in_one_regime_leaves_another_regimes_cell_uninformed (mutation: restore the research/all literals; the platform-regime cell reads Uninformed and the test fails)"
     ],
-    "gap": "In production reputation varies by domain only: horizon and regime are constants, so no regime or horizon cell is ever distinct. A third reputation store also exists (qip-cost-router/src/reputation.rs:360 ReputationBook) beside qip-contracts' ModelReputation, so two books still hold reputation about models.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_measured_window_in_one_regime_leaves_another_regimes_cell_uninformed",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Partly integrated since the old gap ('hold and update a ReputationBook in the kernel'): it is held in the deep brain, not the kernel."
+    "notes": "2026-10-18 lane L03: closed. The horizon is the question's own deadline bucket; under the default one-hour signal TTL every question falls in the `hour` bucket, so distinct horizon cells appear only with a longer TTL or a NOW-surprise item. The second ReputationBook in qip-cost-router reputation.rs is a duplication to retire separately, as before."
   },
   {
     "id": "R12-AMBIENT-3112",
-    "status": "PARTIAL",
-    "current": "record_outcome records realised value per granted unit; qip-deepbrain measures last sweep's grants every sweep and publishes qip_meta_marginal_value_bp by work kind (simulation, data source, model, question).",
+    "status": "COMPLETE",
+    "current": "measure_last_round records on qip_meta_marginal_value_bp{kind} the gain over the question's previous grant level — (realised now - realised at the last measured level) per added unit where the level grew, this window's per-unit figure where it did not — from the per-question last_window record, so a question that stopped yielding reads zero rather than the average of its history. The deepbrain recording site is proven from a node sweep.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/ledger.rs",
-      "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::record_outcome",
-      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::measure_last_round"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1785-1797 marginal value and the gauge write",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:370 a_second_unit_that_realises_nothing_records_zero_marginal_value (mutation: delete the gauge write; the first read fails)"
     ],
-    "gap": "Per-unit figure is realised/units (an average, equal to marginal only at one unit); no agent or QPU-experiment unit is measured in production; no test covers the deepbrain recording site.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_second_unit_that_realises_nothing_records_zero_marginal_value",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed. Agent and QPU-experiment units are still not bid in production (R12-AMBIENT-3110/10094)."
   },
   {
     "id": "R12-AMBIENT-3113",

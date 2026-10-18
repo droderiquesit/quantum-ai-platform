@@ -2058,6 +2058,73 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-3093: with every factor but the market share tied, the
+    /// aggregate weighs each forecaster by exactly its reputation share — its
+    /// settled synthetic-credit balance over the total among those weighed.
+    /// The weight is influence and the share is its first factor; this pins
+    /// that the other five reduce nothing when they agree. Mutation:
+    /// normalising by forecaster count instead of the product (or dropping
+    /// `market_share` from the product) fails both the weight and the pooled
+    /// probability.
+    #[test]
+    fn with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares() -> Result<()>
+    {
+        let mut t = Tournament::new();
+        for name in ["sharp", "blunt"] {
+            t.admit(spec(name), at(0))?;
+        }
+        activate_all(&mut t);
+        // Scored history moves the market, nothing else: the settlement is
+        // the market's own, so neither forecaster carries a score that would
+        // separate calibration, information, cost or latency.
+        t.market.settle(
+            &[("sharp".to_string(), 0.8), ("blunt".to_string(), 0.3)],
+            0.55,
+        )?;
+        t.open(question("q", "quiet", 0), at(0))?;
+        t.submit("q", forecast("sharp", "q", 7_000, 0), at(0))?;
+        t.submit("q", forecast("blunt", "q", 4_000, 0), at(0))?;
+
+        let shares = t.market.shares(["sharp", "blunt"]);
+        // Premise: settlement separated the shares, and the other factors tie.
+        assert!(shares["sharp"] > shares["blunt"], "shares {shares:?}");
+        let influence = t.influence("quiet");
+        for w in influence.values() {
+            assert_eq!(
+                (w.calibration, w.information, w.cost, w.latency),
+                (1.0, 1.0, 1.0, 1.0),
+                "{w:?}"
+            );
+        }
+        assert!(
+            (influence["sharp"].regime_survival - influence["blunt"].regime_survival).abs() < 1e-12
+        );
+
+        let open = t
+            .question("q")
+            .cloned()
+            .ok_or_else(|| Error::not_found("q"))?;
+        let weights = t.question_weights(&open, "quiet", None);
+        for name in ["sharp", "blunt"] {
+            assert!(
+                (weights[name] - shares[name]).abs() < 1e-12,
+                "{name}: weight {} share {}",
+                weights[name],
+                shares[name]
+            );
+        }
+        let pooled = t
+            .aggregate("q", "quiet")?
+            .ok_or_else(|| Error::invalid("no aggregate"))?;
+        let expected = shares["sharp"] * 0.7 + shares["blunt"] * 0.4;
+        assert!(
+            (pooled["up"] - expected).abs() < 1e-12,
+            "pooled {} expected {expected}",
+            pooled["up"]
+        );
+        Ok(())
+    }
+
     /// R12-MODEL-3090's cost and latency factors. Mutation: dropping either
     /// factor from the product leaves the weights equal.
     #[test]

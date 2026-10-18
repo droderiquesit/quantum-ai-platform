@@ -9,14 +9,24 @@
 //!   promoted after it has been supported by a minimum number of independent
 //!   episodes, because a rule learned from one observation is a coincidence.
 //!
+//! Episodic memory is bounded. [`ResearchMemory::with_capacity`] fixes how
+//! many episodes are held, and recording past it gives up the oldest one,
+//! counted in [`ResearchMemory::evicted`]. An unbounded store here grew with
+//! every agent run for the life of the process; the event log is the record,
+//! and this is a working set over it.
+//!
 //! Everything is bitemporal. A lesson recorded on Tuesday cannot inform a
 //! backtest of Monday, and [`ResearchMemory::lessons_as_of`] is the only way to
 //! read lessons, so that guarantee is structural rather than a convention.
 
+use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, LessonId};
 use qip_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+
+/// Episodes [`ResearchMemory::new`] holds before giving up the oldest.
+pub const DEFAULT_EPISODE_CAPACITY: usize = 4_096;
 
 /// What a run concluded, kept verbatim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -120,11 +130,28 @@ impl Default for PromotionPolicy {
 }
 
 /// Episodic and semantic memory for the research organisation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ResearchMemory {
-    episodes: Vec<Episode>,
+    episodes: VecDeque<Episode>,
+    /// How many episodes have been given up: the position of `episodes[0]`
+    /// in the sequence of everything ever recorded. `by_agent` holds those
+    /// absolute positions, so evicting the front never renumbers the index.
+    evicted: usize,
+    capacity: usize,
     lessons: Vec<Lesson>,
-    by_agent: BTreeMap<String, Vec<usize>>,
+    by_agent: BTreeMap<String, VecDeque<usize>>,
+}
+
+impl Default for ResearchMemory {
+    fn default() -> Self {
+        Self {
+            episodes: VecDeque::new(),
+            evicted: 0,
+            capacity: DEFAULT_EPISODE_CAPACITY,
+            lessons: Vec::new(),
+            by_agent: BTreeMap::new(),
+        }
+    }
 }
 
 impl ResearchMemory {
@@ -132,12 +159,62 @@ impl ResearchMemory {
         Self::default()
     }
 
+    /// A memory holding at most `capacity` episodes.
+    ///
+    /// Zero is refused rather than read as "unbounded" or clamped to one: a
+    /// memory that can hold nothing records nothing, and a caller who meant
+    /// the default should say [`ResearchMemory::new`].
+    pub fn with_capacity(capacity: usize) -> Result<Self> {
+        if capacity == 0 {
+            return Err(Error::invalid(
+                "a research memory of capacity zero holds no episode; give a capacity of at \
+                 least one, or use ResearchMemory::new for the default",
+            ));
+        }
+        Ok(Self {
+            capacity,
+            ..Self::default()
+        })
+    }
+
+    /// Record an episode, giving up the oldest held one if the memory is full.
     pub fn record_episode(&mut self, episode: Episode) {
+        if self.episodes.len() >= self.capacity
+            && let Some(oldest) = self.episodes.pop_front()
+        {
+            if let Some(indices) = self.by_agent.get_mut(&oldest.agent_id) {
+                // Positions per agent ascend, so the oldest episode is the
+                // front of its own agent's list.
+                indices.pop_front();
+                if indices.is_empty() {
+                    self.by_agent.remove(&oldest.agent_id);
+                }
+            }
+            self.evicted += 1;
+        }
+        let position = self.evicted + self.episodes.len();
         self.by_agent
             .entry(episode.agent_id.clone())
             .or_default()
-            .push(self.episodes.len());
-        self.episodes.push(episode);
+            .push_back(position);
+        self.episodes.push_back(episode);
+    }
+
+    /// The most episodes this memory holds.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Agents with at least one held episode, in order. An agent whose every
+    /// episode has been given up is not listed, so the per-agent index is
+    /// bounded by the episodes and not by every agent that ever ran.
+    pub fn agents(&self) -> impl Iterator<Item = &str> {
+        self.by_agent.keys().map(String::as_str)
+    }
+
+    /// How many episodes have been given up to the bound since construction.
+    pub fn evicted(&self) -> usize {
+        self.evicted
     }
 
     /// Attach an outcome to a recorded episode.
@@ -153,7 +230,8 @@ impl ResearchMemory {
         self.lessons.push(lesson);
     }
 
-    pub fn episodes(&self) -> &[Episode] {
+    /// Held episodes, oldest first.
+    pub fn episodes(&self) -> &VecDeque<Episode> {
         &self.episodes
     }
 
@@ -172,7 +250,7 @@ impl ResearchMemory {
             .map(|indices| {
                 indices
                     .iter()
-                    .filter_map(|i| self.episodes.get(*i))
+                    .filter_map(|i| self.episodes.get(i.checked_sub(self.evicted)?))
                     .filter(|e| e.occurred_at <= as_of)
                     .collect()
             })
