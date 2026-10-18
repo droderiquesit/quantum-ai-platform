@@ -4055,13 +4055,15 @@
   {
     "id": "R12-MESH-9181",
     "status": "PARTIAL",
-    "current": "qip-mesh PeerLimits bound frame size and fan-out (refused, not truncated; tested); the edge-node's mesh link uses qip-transport rather than qip-mesh; no compression.",
+    "current": "qip-mesh PeerLimits and qip-peer-link's node_limits bound peer frame size (MAX_FRAME 64 KiB) and fan-out (MAX_EDGE_PEERS), refused not truncated. Since 2026-10-18 the deployed centre link states its own bound: every half of MeshLink is built with centre_limits() (backend/crates/apps/qip-edge-node/src/mesh.rs), pinning max_body to MAX_CENTRE_RESPONSE_BYTES (4 MiB), so an answer declaring more is refused before it is read or allocated; a poll carries at most max_poll_batch = 512 frames (backend/crates/libs/qip-transport/src/mesh.rs), and the centre link addresses exactly one peer by construction (MeshSettings.peer). No raw tick stream crosses the mesh: the uplink carries CellStateDelta.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:421-431,607",
-      "backend/crates/services/qip-mesh/tests/peer_rules.rs:130",
-      "backend/crates/apps/qip-edge-node/src/mesh.rs"
+      "backend/crates/apps/qip-edge-node/src/mesh.rs MAX_CENTRE_RESPONSE_BYTES, centre_limits",
+      "backend/crates/libs/qip-transport/src/mesh.rs max_poll_batch: 512",
+      "backend/crates/edge/qip-peer-link/src/wire.rs:845 limits_with",
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs::a_centre_answer_larger_than_the_bound_is_refused_before_it_is_read_and_the_cell_keeps_running"
     ],
-    "gap": "Apply bounds on the deployed link; compression.",
+    "gap": "Compression: frames travel as JSON with the compact touch encoding; a compressing codec would be a new persisted-codec dependency and needs its own ADR (ADR 0109). Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4069,10 +4071,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_rules",
+    "verification": "cargo test -p qip-mesh --test peer_rules; cargo test -p qip-edge-node --test mesh a_centre_answer_larger_than_the_bound",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: bounds now explicit and tested on the deployed link. Mutation: doubling max_body in centre_limits made the client wait for the declared body and fail with 'the peer closed the connection while sending the body', so the test reported 'the over-size answer was not refused for its size'; restored byte for byte. Kept PARTIAL on compression."
   },
   {
     "id": "R12-FABRIC-9182",

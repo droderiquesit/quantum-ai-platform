@@ -120,7 +120,26 @@ impl MeshSettings {
         MeshConfig::new(format!("{name}:{}", self.cell), &self.peer)
             .with_seed(self.seed)
             .with_retry(RetryPolicy::default())
-            .with_limits(ClientLimits::default())
+            .with_limits(centre_limits())
+    }
+}
+
+/// The largest answer the centre may give one poll or publish, in bytes
+/// (MESH-9181). A response declaring more is refused before any of it is
+/// read or allocated, never truncated to fit: a truncated batch of signed
+/// frames is a batch whose tail nobody signed. Four mebibytes is the
+/// transport's own default, now stated where the centre link is built so a
+/// change to that default cannot silently widen it; a poll holds at most
+/// `max_poll_batch` frames (512), so the bound allows about eight kibibytes
+/// a frame.
+pub const MAX_CENTRE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// The client limits every half of the centre link uses: the transport's
+/// defaults with the response bound pinned.
+fn centre_limits() -> ClientLimits {
+    ClientLimits {
+        max_body: MAX_CENTRE_RESPONSE_BYTES,
+        ..ClientLimits::default()
     }
 }
 
