@@ -23,8 +23,8 @@ use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
-    Cell, CellConfig, GATE_CROSS_SOURCE, GATE_SILENT_FEED, GATE_VENUE_QUARANTINE, Placer,
-    PricingPolicy, WorkReport,
+    Cell, CellConfig, ExecutionReport, FeedLossPlaybook, GATE_CROSS_SOURCE, GATE_SILENT_FEED,
+    GATE_VENUE_QUARANTINE, Placer, PricingPolicy, WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -215,9 +215,14 @@ impl Placer for Gateway {
 /// A cell on both venues with an empty book for each listing and one
 /// always-firing strategy per instrument, fed by [`LineDecoder`].
 fn fed_cell(listings: &[(&str, &str)]) -> Result<Cell> {
-    let config = CellConfig::new(CELL, REGION)
+    fed_cell_under(listings, FeedLossPlaybook::default())
+}
+
+fn fed_cell_under(listings: &[(&str, &str)], playbook: FeedLossPlaybook) -> Result<Cell> {
+    let mut config = CellConfig::new(CELL, REGION)
         .with_venue(venue(XLON))
         .with_venue(venue(XPAR));
+    config.feed_loss_playbook = playbook;
     // The premise every staleness assertion below rests on.
     assert_eq!(config.max_staleness, Duration::from_secs(5));
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -1333,4 +1338,156 @@ fn a_cross_source_tolerance_that_could_never_judge_two_sources_stops_assembly() 
             "a tolerance of {tolerance} was admitted"
         );
     }
+}
+
+/// A gateway that fills in full, at once, every order it accepts at the
+/// venues named in `filling`, and accepts the rest without a report.
+#[derive(Debug, Default)]
+struct FillingAt {
+    filling: Vec<VenueId>,
+    placed: Vec<(String, VenueId, BookSide, Decimal)>,
+    pending: Vec<ExecutionReport>,
+}
+
+impl Placer for FillingAt {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.placed
+            .push((order_id.to_string(), venue.clone(), side, quantity));
+        if self.filling.contains(venue) {
+            self.pending.push(ExecutionReport {
+                order_id: order_id.to_string(),
+                venue: venue.clone(),
+                quantity,
+                price,
+                at,
+            });
+        }
+        Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// A cell holding a position in obj-ACME at XLON, quoted at both venues,
+/// whose XLON feed then goes silent, under `playbook`.
+fn blind_position(playbook: FeedLossPlaybook) -> Result<(Cell, FillingAt, Decimal)> {
+    let mut cell = fed_cell_under(&[(XLON, "obj-ACME")], playbook)?;
+    cell.track(VenueState::aggregated(
+        object("obj-ACME"),
+        venue(XPAR),
+        VenueStatus::Open,
+    ));
+    let mut gateway = FillingAt {
+        filling: vec![venue(XLON)],
+        ..FillingAt::default()
+    };
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99.5\t500\n2\tobj-ACME\tA\t100.5\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-ACME\tB\t99\t500\n2\tobj-ACME\tA\t101\t400",
+        t(10),
+    )?;
+    cell.work(t(10), &mut gateway)?;
+    cell.work(t(11), &mut gateway)?;
+    let held = cell.position(&venue(XLON), &object("obj-ACME"));
+    assert!(
+        held.is_positive(),
+        "the premise failed: no long position at XLON"
+    );
+    cell.feed_heartbeat(&venue(XPAR), t(16));
+    Ok((cell, gateway, held))
+}
+
+fn hedges(cell: &Cell) -> Vec<(String, String, String)> {
+    journaled(cell, |decision, _| match decision {
+        Decision::Hedged {
+            venue,
+            object,
+            quantity,
+            ..
+        } => Some((venue.clone(), object.clone(), quantity.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_position_at_a_venue_whose_feed_goes_silent_is_offset_once_at_a_venue_still_heard_and_journaled()
+-> Result<()> {
+    // The failure this prevents: withdrawing resting orders from a silent
+    // venue stops the exposure growing and does nothing about what already
+    // filled there — a position the cell can no longer watch, priced from
+    // before the silence.
+    let (mut cell, mut gateway, held) = blind_position(FeedLossPlaybook::Hedge)?;
+    assert!(
+        hedges(&cell).is_empty(),
+        "the premise failed: a hedge before the silence"
+    );
+    let placed_at_xlon = gateway
+        .placed
+        .iter()
+        .filter(|(_, at, ..)| at.as_str() == XLON)
+        .count();
+
+    cell.work(t(16), &mut gateway)?;
+    assert_eq!(
+        hedges(&cell),
+        vec![(XPAR.to_string(), "obj-ACME".to_string(), held.to_string())],
+        "the blind position was not offset at the venue still heard"
+    );
+    assert!(
+        gateway
+            .placed
+            .iter()
+            .any(|(_, at, side, quantity)| at.as_str() == XPAR
+                && *side == BookSide::Bid
+                && *quantity == held),
+        "no sale of {held} reached XPAR: {:?}",
+        gateway.placed
+    );
+    assert_eq!(
+        gateway
+            .placed
+            .iter()
+            .filter(|(_, at, ..)| at.as_str() == XLON)
+            .count(),
+        placed_at_xlon,
+        "an order reached the silent venue"
+    );
+
+    // Once per silence, not once per pass.
+    cell.feed_heartbeat(&venue(XPAR), t(17));
+    cell.work(t(17), &mut gateway)?;
+    assert_eq!(hedges(&cell).len(), 1, "the same silence was hedged twice");
+    Ok(())
+}
+
+#[test]
+fn a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_offset() -> Result<()>
+{
+    // The other arm: the playbook is read, not hard-coded.
+    let (mut cell, mut gateway, _) = blind_position(FeedLossPlaybook::Withdraw)?;
+    cell.work(t(16), &mut gateway)?;
+    assert!(hedges(&cell).is_empty(), "{:?}", hedges(&cell));
+    Ok(())
 }

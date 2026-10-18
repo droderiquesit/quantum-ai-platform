@@ -56,6 +56,27 @@ pub fn anomaly_to_observation(anomaly: &Anomaly) -> Observation {
         (anomaly.sample_size as f64 / (anomaly.sample_size as f64 + 200.0)).clamp(0.0, 1.0);
     let economic_value = Decimal::from_f64(magnitude * evidence_weight * 100.0).unwrap_or_default();
 
+    // Risk value is the move itself, not its significance: the observed
+    // deviation as a share of what was expected, capped at the whole of it,
+    // scaled by the confidence that the anomaly is real, on the same
+    // [0, 100] scale. A thin-history ten-sigma print on a quiet series is
+    // economically significant and exposes little; a modest z-score on a
+    // series that halved exposes a great deal, and one figure cannot say
+    // both. With nothing expected the whole deviation is the exposure.
+    // Statistics stay f64 and cross to Decimal once, here.
+    let relative = if anomaly.expected.abs() > f64::EPSILON {
+        ((anomaly.observed - anomaly.expected) / anomaly.expected).abs()
+    } else if anomaly.observed.abs() <= f64::EPSILON {
+        0.0
+    } else {
+        1.0
+    };
+    let risk_value = if relative.is_finite() {
+        Decimal::from_f64(relative.min(1.0) * anomaly.confidence() * 100.0).unwrap_or_default()
+    } else {
+        Decimal::ZERO
+    };
+
     // What the anomaly indicates is missing or wrong.
     let wanting = match anomaly.kind {
         AnomalyKind::StructuralBreak | AnomalyKind::RegimeChange => {
@@ -80,6 +101,7 @@ pub fn anomaly_to_observation(anomaly: &Anomaly) -> Observation {
         evidence: vec![anomaly.detector.clone()],
         severity,
         economic_value,
+        risk_value,
     }
 }
 
@@ -149,5 +171,43 @@ mod tests {
 
         let observation = anomaly_to_observation(&anomaly);
         assert!(observation.wanting.contains(&Wanting::CausalLink));
+    }
+
+    /// CONTRACT-7084: the mapper states exposure apart from significance. A
+    /// series that halved on a modest z-score exposes more than a thin
+    /// ten-sigma print that moved a fraction of a percent, and a gap signal
+    /// carrying one figure ranked them the other way round.
+    #[test]
+    fn a_large_move_on_a_modest_z_score_carries_more_risk_than_a_tiny_move_on_a_huge_one() {
+        let anomaly = |z_score: f64, observed: f64, expected: f64| Anomaly {
+            kind: AnomalyKind::CorrelationBreakdown,
+            subject: "XYZ".to_string(),
+            detector: "correlation_detector".to_string(),
+            z_score,
+            observed,
+            expected,
+            sample_size: 400,
+            detected_at: Default::default(),
+            description: "correlation".to_string(),
+            catalyst: None,
+        };
+        let halved = anomaly_to_observation(&anomaly(4.0, 50.0, 100.0));
+        let sliver = anomaly_to_observation(&anomaly(10.0, 100.5, 100.0));
+        assert!(
+            sliver.economic_value > halved.economic_value,
+            "premise: the ten-sigma print is the more significant one"
+        );
+        assert!(
+            halved.risk_value > sliver.risk_value,
+            "the halved series must carry the larger exposure: {} vs {}",
+            halved.risk_value,
+            sliver.risk_value
+        );
+        assert!(halved.risk_value > Decimal::ZERO);
+        let raised = qip_expansion::gap::raise(halved).expect("raises");
+        assert!(
+            raised.signal.risk_value > Decimal::ZERO,
+            "raise carries the figure through"
+        );
     }
 }

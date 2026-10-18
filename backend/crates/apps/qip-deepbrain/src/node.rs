@@ -638,6 +638,11 @@ pub fn run_with(
                 problems: outcome.report.problems().len(),
                 anomalies: outcome.research.as_ref().map(|r| r.anomalies),
                 drifted: &drifted,
+                package_promoted: outcome
+                    .learning
+                    .as_ref()
+                    .and_then(|round| round.promotion.as_ref())
+                    .is_some_and(|promotion| promotion.published().is_some()),
             };
             match operations.observe(platform, &facts) {
                 Ok(round) => outcome.operations = Some(round),
