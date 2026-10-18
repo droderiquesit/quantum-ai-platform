@@ -2444,14 +2444,15 @@
   },
   {
     "id": "R12-CONTRACT-6109",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/forecast.rs:309 ForecastState = Validated<ForecastStateFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "ForecastState (backend/crates/libs/qip-contracts/src/forecast.rs, Forecast::state) is built by LatticeStage::run for every forecast a pass issues and journaled beside the forecast in LatticeReview::states (kernel/lattice record on the world-model topic), which every cycle-running binary writes each cycle. The journaled state decodes strictly: a record with a state's confidence_bp removed is refused with 'missing field'.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/forecast.rs:309 type",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:335 a_forecast_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:342 a_forecast_state_refuses_each_broken_invariant"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::run (states projection)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeReview::states",
+      "runtime/qip-kernel/tests/now_lattice.rs::every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped_field_is_refused",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:335 a_forecast_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field"
     ],
-    "gap": "No production seam constructs or consumes ForecastState (grep of ForecastStateFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2459,10 +2460,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ForecastState exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations: skipping the push into states -> 'a forecast was issued without its control-plane state'; inserting each state at the front -> target mismatch obj-BBB/close vs obj-AAA/close; both restored and passing (now_lattice: 9 passed). The states field is serde(default) so records journaled earlier still decode. No control loop reads the state yet: the seam constructs and journals it, which is what the clause asks."
   },
   {
     "id": "R12-CONTRACT-6110",

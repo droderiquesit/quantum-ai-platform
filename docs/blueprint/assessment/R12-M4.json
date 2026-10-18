@@ -1828,14 +1828,14 @@
   {
     "id": "R12-CAPITAL-4084",
     "status": "PARTIAL",
-    "current": "Corridor holds six caps with a signed, delayed lifecycle; gate.rs checks a TransferIntent (seven checks) against it; the kernel reads corridor funding standing but no kernel path builds or gates a TransferIntent, and no transfer executes.",
+    "current": "A transfer reaches the fabric only as a FabricCommand::Gate carrying a TransferIntent, and Platform::decide_fabric (runtime/qip-kernel/src/platform.rs:8785) re-derives the corridor ruling the command states, runs the seven deterministic checks and journals the verdict. qip-api's FabricFeed applies an operator-declared command file through it; backend/crates/apps/qip-api/tests/fabric.rs proves from that composition-root seam that a transfer off the signed corridor set is vetoed under CorridorAuthority, that a generated transfer over any cap is vetoed whole and one under all caps is admitted at the amount asked (for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_...), and that a stated ruling the layer did not derive is refused. A veto is itself a record on the chain by design (a refusal is a decision), and no money moves: paper only. The capital engine's pre-positioning plan deliberately never becomes a TransferIntent (pre_positioning.rs module doc, ADR 0021).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:357 Corridor",
       "backend/crates/services/qip-capital-fabric/src/gate.rs:113,697 TransferIntent / checks_passed",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8399 corridor_funding",
       "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs"
     ],
-    "gap": "Route every paper transfer decision through the gate in the kernel; actual movement BLOCKED by ADR 0003/0021.",
+    "gap": "No committed deployment declares a fabric command file (QIP_CAPITAL_FABRIC_PATH is wired through var.capital_fabric_file in catalogue.tf but that variable is null in every environment tfvars; dev carries it commented out at terraform.tfvars:426), so on every running root no TransferIntent is ever built and the gate is exercised only by the serving-desk tests. The grader's closure (build an intent per planned pre-positioning move in pre_position) was not implemented: a GateCommand carries three enforcement-point attestations that a human establishes out of band, and a machine minting them from its own plan would attest to itself. Closing needs an operator declaration mounted in a deployment (infrastructure/environments/** is a protected path) or an ADR changing ADR 0021's permitted half.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1846,7 +1846,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
   },
   {
     "id": "R12-CAPITAL-4085",

@@ -256,3 +256,87 @@ fn after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observe
     assert!(FillCalibration::new(0.0).is_err());
     Ok(())
 }
+
+/// R12-TICK-10121. A scenario world must say what it does to the book, and
+/// the distribution it says it in must be a distribution: pruning removes
+/// branches without redistributing their mass, so weights read straight off
+/// the live probabilities would sum to less than one after the first
+/// observation and understate every tail.
+///
+/// Mutation: drop the `/ mass` renormalisation in `portfolio_outcomes` — the
+/// post-prune weights sum to the surviving mass and the sum assertion fails.
+/// Mutation: ignore the position weight (use the raw impact) — the
+/// hand-computed portfolio move no longer matches.
+#[test]
+fn a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to_one() -> Result<()>
+{
+    let state = TwinState::fit(&series(200), at(199))?;
+    let mut tree = FutureTree::grow(&state, &[driver()], config())?;
+    let positions = BTreeMap::from([
+        ("obj-ACME".to_string(), 0.5),
+        ("obj-BETA".to_string(), -0.25),
+    ]);
+
+    let fresh = tree.portfolio_outcomes(&positions)?;
+    assert_eq!(
+        fresh.len(),
+        tree.live().count(),
+        "premise: one per live branch"
+    );
+    assert!(fresh.len() > 1, "premise: more than the baseline");
+    assert!((fresh.iter().map(|o| o.weight).sum::<f64>() - 1.0).abs() < 1e-9);
+    // The driver shocks ACME only, so a shocked branch moves the book by half
+    // its ACME impact and the baseline by nothing.
+    let shocked = tree
+        .live()
+        .find(|b| b.assumptions["shock_sigma"] > 1.5 && b.assumptions["propagation"] > 0.5)
+        .expect("a +2 sigma propagated branch")
+        .clone();
+    let expected: f64 = 0.5 * shocked.impact_bps["obj-ACME"]
+        - 0.25 * shocked.impact_bps.get("obj-BETA").copied().unwrap_or(0.0);
+    assert!(
+        expected.abs() > 1e-6,
+        "premise: the shocked branch moves the book"
+    );
+    let found = fresh
+        .iter()
+        .find(|o| o.branch_id == shocked.id)
+        .expect("the shocked branch has an outcome");
+    assert!((found.portfolio_bps - expected).abs() < 1e-9);
+
+    // Mass lost to pruning is not redistributed in the branch records, so
+    // simulate it: halve every probability and the weights must still sum to
+    // one. (`observe` happens to renormalise; the distribution must not rely
+    // on that.)
+    for branch in tree.branches.values_mut() {
+        branch.probability *= 0.5;
+    }
+    let halved = tree.portfolio_outcomes(&positions)?;
+    assert!((halved.iter().map(|o| o.weight).sum::<f64>() - 1.0).abs() < 1e-9);
+    for branch in tree.branches.values_mut() {
+        branch.probability *= 2.0;
+    }
+
+    // After reality prunes branches the survivors still carry all the mass.
+    let report = tree.observe(&ObservedMoves {
+        at: at(260),
+        moves_bps: shocked.impact_bps.clone(),
+    })?;
+    assert!(!report.pruned.is_empty(), "premise: branches were pruned");
+    let after = tree.portfolio_outcomes(&positions)?;
+    assert!(after.len() < fresh.len());
+    assert!((after.iter().map(|o| o.weight).sum::<f64>() - 1.0).abs() < 1e-9);
+
+    // Refusals rather than a distribution of zeros.
+    assert!(tree.portfolio_outcomes(&BTreeMap::new()).is_err());
+    assert!(
+        tree.portfolio_outcomes(&BTreeMap::from([("obj-NONE".to_string(), 1.0)]))
+            .is_err(),
+        "a book the twin does not model has no outcome"
+    );
+    assert!(
+        tree.portfolio_outcomes(&BTreeMap::from([("obj-ACME".to_string(), f64::NAN)]))
+            .is_err()
+    );
+    Ok(())
+}
