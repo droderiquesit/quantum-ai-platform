@@ -1132,14 +1132,14 @@
   },
   {
     "id": "R12-SEC-10052",
-    "status": "PARTIAL",
-    "current": "KMS key ring/keys with rotation and destroy protection, tested; attestor signs with KMS. No test proves the running package needs no KMS call.",
+    "status": "COMPLETE",
+    "current": "Neither qip-edge nor qip-edge-node names Cloud KMS in any source file or manifest, so a running cell's pass needs no key service: it verifies packages against the committed trust bundle (public keys only) and signing happens in the centre. security_controls.rs::the_edge_decision_path_names_no_kms_client refuses a KMS mention in either crate.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs the_edge_decision_path_names_no_kms_client",
       "infrastructure/terraform/modules/secrets/main.tf:28 google_kms_key_ring platform",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3499 every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3499 every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed"
     ],
-    "gap": "Runtime-independence-from-KMS test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1147,10 +1147,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure --test security_controls",
+    "verification": "cd backend && cargo test -p qip-acceptance --test security_controls -- the_edge_decision_path_names_no_kms_client",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a comment naming qip_transport::kms::KmsSigner appended to qip-edge/src/cell.rs failed the test naming that file; restored byte for byte. The scan is textual and includes comments by design; a KMS call reached only through a crate the cell depends on would pass, and the dependency tests on the edge graph are what hold that. The edge node is not deployed in any environment."
   },
   {
     "id": "R12-SEC-10053",

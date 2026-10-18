@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 406 | 26.7% |
+| Blueprint completion (COMPLETE) | 408 | 26.9% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1217 | 80.2% |
 | Integrated (reached from a composition root) | 849 | 55.9% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 406 |
-| PARTIAL | 965 |
+| COMPLETE | 408 |
+| PARTIAL | 963 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -51,7 +51,7 @@ register (ADR 0099), and there is no second one.
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 10 | 11 | 3 | 2 | 0 | 21 | 21 | 2 |
-| [SEC](#sec) | 57 | 17 | 36 | 4 | 0 | 0 | 50 | 40 | 0 |
+| [SEC](#sec) | 57 | 19 | 34 | 4 | 0 | 0 | 50 | 40 | 0 |
 | [OBS](#obs) | 50 | 15 | 29 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
 | [GCP](#gcp) | 54 | 5 | 28 | 15 | 6 | 0 | 33 | 24 | 0 |
@@ -1353,7 +1353,7 @@ register (ADR 0099), and there is no second one.
 | R12-SEC-9123 | Privileged Access Manager time-bounded elevation | PAM entitlement resource declared, created only when pam_entitlements is non-empty; no environment sets it. | PARTIAL | Enable in an environment with a plan. |  | P1 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
 | R12-SEC-9124 | External CI uses Workload Identity Federation | See R12-SEC-9096. | COMPLETE | None. |  | P0 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
 | R12-SEC-9125 | Workload Identity for GKE pods; no node-wide credentials | Every declared GKE cluster must set workload_identity_config on the project pool and a dedicated node service account; node pools and google_service_account_key are refused. | COMPLETE | None for the requirement; not deployed. |  | P1 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
-| R12-SEC-9126 | Secret Manager with rotation, versioning, audit | Secrets created by Terraform and granted per workload, mounted as files and read through qip_core::secret _FILE; data-read audit logs enabled for Secret Manager and KMS (tested). No rotation schedule on secrets. | PARTIAL | Rotation. |  | P0 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
+| R12-SEC-9126 | Secret Manager with rotation, versioning, audit | Every google_secret_manager_secret in the tree (one resource, for_each over secret_names, in modules/secrets) carries a rotation block with a rotation_period and a topics block naming the qip-secret-rotation topic; security_controls.rs::every_secret_carries_a_rotation_schedule_and_announces_it refuses one without either. The register text 'No rotation schedule on secrets' was older than the code. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-acceptance --test security_controls -- every_secret_carries_a_rotation_schedule_and_announces_it |  |
 | R12-SEC-9127 | KMS/HSM for CMEK, signing, attestation roots | CMEK keys for data, archive, registry, evidence, secrets, backups; attestor key in KMS; keys rotate and data keys are undeletable (tested). Protection level is a variable; package/policy signing is not KMS. | PARTIAL | KMS package/policy signing. |  | P0 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
 | R12-SEC-9128 | Certificate Authority Service mTLS for Fabric/VM identities | infrastructure/terraform/security.tf:111-216 declares a CAS ENTERPRISE pool with a leaf-only, client- and server-auth, 30-day, P-256/RSA-3072 issuance policy, a self-signed root with max path length 0, and service-account-only requesters. It is gated by var.certificate_authority, which is null in every environment. tests/security.tftest.hcl asserts it is absent when unset (:54-60), checks is_ca=false and the 30-day lifetime when set (:71-110), and refuses a person as requester (:234-245). The consumer side exists in code: mTLS in qip-fabricd, qip-ledgerd and qip-edge-node (qip-transport/src/tls.rs). | PARTIAL | CAS is off in every environment (no tfvars sets certificate_authority), so nothing issues a certificate. No path delivers a CAS leaf to a Fabric/VM workload: the execution-node startup template has no cert fetch and its test runs QIP_TLS_MODE=plaintext. No fabric link is configured for mTLS in any deployment. |  | P1 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
 | R12-SEC-9129 | VPC Service Controls perimeters around ledger/data/AI | Service perimeter declared under vpc_service_controls != null; null everywhere; needs org scope. | PARTIAL | Org-scoped policy and enablement. |  | P1 | cargo test -p qip-acceptance --test security_controls --test infrastructure |  |
@@ -1382,7 +1382,7 @@ register (ADR 0099), and there is no second one.
 | R12-SEC-10049 | CI and workloads authenticate keylessly via WIF | WIF pool/provider in modules/cicd; tests prove the pipeline uses no long-lived key, no SA key in Terraform, org policy disables creation. | COMPLETE |  |  | P0 | cargo test -p qip-acceptance --test infrastructure |  |
 | R12-SEC-10050 | IAM is deny-by-default and least privilege per workload | Per-workload Cloud Run identities and tests forbidding the default compute identity and unused accounts. | PARTIAL | Per-workload identity is enforced; grant minimality ('only the grants it uses') is not tested per workload. |  | P0 | cargo test -p qip-acceptance --test infrastructure |  |
 | R12-SEC-10051 | Secrets come from Secret Manager, never Git or environment | Secrets are Terraform-declared, granted per workload, mounted as files; tests forbid values in Terraform and environment-variable delivery; ./scripts/check-secrets.sh gates commits. | COMPLETE |  |  | P0 | cargo test -p qip-acceptance --test infrastructure; ./scripts/check-secrets.sh |  |
-| R12-SEC-10052 | KMS provides CMEK and signing; runtime survives key outage | KMS key ring/keys with rotation and destroy protection, tested; attestor signs with KMS. No test proves the running package needs no KMS call. | PARTIAL | Runtime-independence-from-KMS test. |  | P0 | cargo test -p qip-acceptance --test infrastructure --test security_controls |  |
+| R12-SEC-10052 | KMS provides CMEK and signing; runtime survives key outage | Neither qip-edge nor qip-edge-node names Cloud KMS in any source file or manifest, so a running cell's pass needs no key service: it verifies packages against the committed trust bundle (public keys only) and signing happens in the centre. security_controls.rs::the_edge_decision_path_names_no_kms_client refuses a KMS mention in either crate. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-acceptance --test security_controls -- the_edge_decision_path_names_no_kms_client |  |
 | R12-SEC-10053 | Cloud HSM for higher-assurance keys where required | A single kms_protection_level variable admits HSM for all keys; default and all tfvars use SOFTWARE. | PARTIAL | Replace kms_protection_level with per-purpose variables: signing keys HSM everywhere, CMEK HSM in stage and prod; a Terraform test refusing SOFTWARE where forbidden and admitting it in dev/test CMEK (ADR 0110 Amendment 1). |  | P1 | terraform test tests/kms-protection.tftest.hcl |  |
 | R12-SEC-10054 | Private CA issues mTLS identity for Fabric and VMs | No privateca resource; the event-fabric protocol uses an in-tree identity table over plaintext TCP. | MISSING | CA pool and an mTLS terminator for Fabric. |  | P0 | terraform plan shows google_privateca_ca_pool |  |
 | R12-SEC-10055 | VPC Service Controls perimeter around data, AI and ledger | No access_context_manager or service perimeter resources. | MISSING | Declare perimeter. |  | P0 | terraform plan shows google_access_context_manager_service_perimeter |  |
