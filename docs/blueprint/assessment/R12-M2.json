@@ -1257,13 +1257,16 @@
   },
   {
     "id": "R12-TICK-2054",
-    "status": "PARTIAL",
-    "current": "MarketEvent recomputes the payload hash at construction and refuses a mismatch — but over the canonical JSON of the decoded payload, not the venue-native bytes. Connector digests hash the native body.",
+    "status": "COMPLETE",
+    "current": "MarketEvent keeps source_hash over the canonical JSON of the decoded payload and now also native_hash: sha256 of the venue wire bytes, set by MarketEvent::with_native_bytes. SimulatedFeed::capture hashes the exact level_line the cell decoded, and the scheduler hands those events to the pass-input recorder on every pass of a node running the simulated feed.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_event.rs:47-50,81 hash_payload of canonical JSON",
-      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:64 FetchDigest over native bytes"
+      "backend/crates/libs/qip-contracts/src/market_event.rs native_hash / with_native_bytes",
+      "backend/crates/apps/qip-edge-node/src/feed.rs SimulatedFeed::capture",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:539 take_captured into PassInputs",
+      "backend/crates/libs/qip-contracts/tests/market_event.rs a_native_hash_names_the_wire_bytes_not_the_canonical_reencoding",
+      "backend/crates/apps/qip-edge-node/tests/book_reconstruction.rs a_captured_tick_names_the_wire_line_it_was_decoded_from_by_its_native_hash"
     ],
-    "gap": "Carry the native-bytes hash (not the canonical re-encoding) on edge market events.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1271,10 +1274,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts market_event",
+    "verification": "cargo test -p qip-contracts --test market_event; cargo test -p qip-edge-node --test book_reconstruction",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: native_hash set to source_hash failed the contracts test; dropping with_native_bytes in feed.rs capture failed the node test. The only edge feed is the simulated one; a venue-wire decoder (ITCH/SBE) would need to call with_native_bytes at its own seam when one is wired."
   },
   {
     "id": "R12-TICK-2055",
