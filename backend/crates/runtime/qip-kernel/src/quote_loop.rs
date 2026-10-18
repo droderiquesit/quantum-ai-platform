@@ -88,9 +88,11 @@ use qip_core::time::Timestamp;
 use qip_execution_engine::order::{OrderType, Side};
 use qip_execution_engine::quoting::{
     QueuePosition, QuoteDecision, QuoteInputs, QuotePair, QuotePolicy, QuoteReference,
+    VenueQuotingModel,
 };
 use qip_market::book::OrderBook;
 use qip_market::snapshot::InstrumentState;
+use qip_twin::calibration::{FillCalibration, VenueCalibration};
 
 use crate::cycle::StageOutcome;
 use crate::platform::Platform;
@@ -167,6 +169,56 @@ pub fn default_policy() -> QuotePolicy {
     }
 }
 
+/// Fills a venue must have been calibrated on before its measured error
+/// moves a quote.
+///
+/// Five. `FillCalibration` weights each fill by a fifth, so one fill leaves
+/// most of a venue's bias at zero and the first few are dominated by whatever
+/// the first one happened to be; a quote widened on one outlier is a width
+/// invented from a single observation, the thing `QUOTE_MIN_BARS` refuses for
+/// the market series.
+pub const QUOTE_MIN_FILL_OBSERVATIONS: u64 = 5;
+
+/// `base` as it applies at a venue whose fills have been measured against the
+/// twin (R12-EXEC-5077).
+///
+/// A venue whose fills the twin priced better than the venue gave
+/// (`bias_bps` negative, the kernel's sign) is a venue where the platform's
+/// own model of crossing was too cheap, so the base half spread is widened by
+/// that much. **It only ever widens, and never past the policy's own ceiling**:
+/// a venue the twin priced worse than reality is not evidence for quoting
+/// tighter into it, because nothing here can establish that the venue will
+/// keep filling better than the model, and the ceiling keeps the policy valid
+/// (`max_half_spread_bps` stays at least the base). A venue with fewer than
+/// [`QUOTE_MIN_FILL_OBSERVATIONS`] fills, or none, is quoted under `base`
+/// exactly.
+pub fn venue_policy(base: &QuotePolicy, calibration: Option<&VenueCalibration>) -> QuotePolicy {
+    let mut policy = base.clone();
+    if let Some(measured) = calibration
+        && measured.observations >= QUOTE_MIN_FILL_OBSERVATIONS
+        && measured.bias_bps.is_finite()
+        && measured.bias_bps < 0.0
+    {
+        policy.base_half_spread_bps =
+            (base.base_half_spread_bps - measured.bias_bps).min(base.max_half_spread_bps);
+    }
+    policy
+}
+
+/// The quoting model for the venues `calibration` has measured, each under
+/// [`venue_policy`] of `base`. A venue it has not measured falls to `base`.
+pub fn quoting_model(
+    base: &QuotePolicy,
+    calibration: &FillCalibration,
+    venues: &[&str],
+) -> VenueQuotingModel {
+    venues
+        .iter()
+        .fold(VenueQuotingModel::default(), |model, venue| {
+            model.with_policy(*venue, venue_policy(base, calibration.venue(venue)))
+        })
+}
+
 /// What one pass of the loop found across the platform's instruments.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct QuoteLoopReview {
@@ -193,6 +245,12 @@ impl QuoteLoopReview {
     /// Price every instrument the platform holds a view on.
     pub fn of(platform: &Platform, now: Timestamp) -> Self {
         let policy = default_policy();
+        // Priced at the venue the desk trades at, under the policy its own
+        // measured fill error implies. The loop quotes the desk's instruments
+        // at one venue, so this is one entry; a second desk venue is a second
+        // name in the slice.
+        let venue = platform.desk_venue();
+        let model = quoting_model(&policy, platform.fill_calibration(), &[venue]);
         let equity = platform.equity();
         let inventories = inventories_of(platform);
         let mut review = Self::default();
@@ -210,7 +268,7 @@ impl QuoteLoopReview {
                     continue;
                 }
             };
-            match qip_execution_engine::quoting::quote(&policy, &inputs) {
+            match model.quote_at_venue(venue, &policy, &inputs) {
                 Ok(QuoteDecision::Quoted(pair)) => review.quoted.push(*pair),
                 Ok(QuoteDecision::Withheld(reason)) => {
                     review
@@ -874,6 +932,99 @@ mod tests {
         assert!(
             measured.size >= unknown.size,
             "a measured position sized below the unknown floor, which is the worst case"
+        );
+    }
+
+    /// R12-EXEC-5077: the desk venue's measured fill error reaches the width
+    /// the pass quotes at. A venue whose twin fills were consistently too
+    /// generous quotes wider than one nobody has measured, by the bias the
+    /// calibration holds, and a venue measured the other way is not quoted
+    /// tighter.
+    ///
+    /// Mutation: have the pass price under `default_policy()` again
+    /// (`model.quote_at_venue(venue, ..)` -> `quote(&policy, ..)`) and the
+    /// widened assertion fails; have `venue_policy` return `base.clone()` and
+    /// both the unit assertions and this one fail.
+    #[test]
+    fn a_venue_the_twin_flattered_is_quoted_wider_and_one_it_undersold_is_not_quoted_tighter() {
+        let mut platform = fixture();
+        assert_eq!(platform.observe(vec![book("100", "100")]), 1);
+        let baseline = reviewed(&platform);
+        let unmeasured = baseline.quoted.first().expect("premise: a pair was priced");
+        assert!(
+            (unmeasured.terms.base_bps - default_policy().base_half_spread_bps).abs() < 1e-12,
+            "premise: an unmeasured venue quotes the default base"
+        );
+
+        let venue = platform.desk_venue().to_string();
+        for _ in 0..QUOTE_MIN_FILL_OBSERVATIONS {
+            platform
+                .fill_calibration_mut()
+                .observe(&venue, -40.0)
+                .expect("a finite error");
+        }
+        let bias = platform
+            .fill_calibration()
+            .venue(&venue)
+            .expect("calibrated")
+            .bias_bps;
+        assert!(bias < -10.0, "premise: the calibration moved, {bias}");
+        let measured = reviewed(&platform);
+        let widened = measured.quoted.first().expect("still priced");
+        assert!(
+            (widened.terms.base_bps - (default_policy().base_half_spread_bps - bias)).abs() < 1e-9,
+            "the base is {} where the bias {bias} implies {}",
+            widened.terms.base_bps,
+            default_policy().base_half_spread_bps - bias
+        );
+        assert!(widened.ask - widened.bid > unmeasured.ask - unmeasured.bid);
+
+        // The other sign: a twin that was too stingy is no licence to tighten.
+        let mut cheaper = fixture();
+        assert_eq!(cheaper.observe(vec![book("100", "100")]), 1);
+        let venue = cheaper.desk_venue().to_string();
+        for _ in 0..QUOTE_MIN_FILL_OBSERVATIONS {
+            cheaper
+                .fill_calibration_mut()
+                .observe(&venue, 40.0)
+                .expect("a finite error");
+        }
+        let tighter = reviewed(&cheaper);
+        let pair = tighter.quoted.first().expect("priced");
+        assert!((pair.terms.base_bps - default_policy().base_half_spread_bps).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_measured_venue_is_widened_only_after_enough_fills_and_never_past_the_ceiling() {
+        let base = default_policy();
+        let calibrated = |bias_bps: f64, observations: u64| VenueCalibration {
+            bias_bps,
+            observations,
+        };
+        assert_eq!(venue_policy(&base, None), base);
+        assert_eq!(
+            venue_policy(
+                &base,
+                Some(&calibrated(-40.0, QUOTE_MIN_FILL_OBSERVATIONS - 1))
+            ),
+            base,
+            "one outlier short of the minimum must not move the width"
+        );
+        let widened = venue_policy(&base, Some(&calibrated(-40.0, QUOTE_MIN_FILL_OBSERVATIONS)));
+        assert!((widened.base_half_spread_bps - 50.0).abs() < 1e-12);
+        let capped = venue_policy(
+            &base,
+            Some(&calibrated(-10_000.0, QUOTE_MIN_FILL_OBSERVATIONS)),
+        );
+        assert_eq!(capped.base_half_spread_bps, base.max_half_spread_bps);
+        assert!(
+            capped.validate().is_ok(),
+            "a widened policy must stay valid"
+        );
+        assert_eq!(
+            venue_policy(&base, Some(&calibrated(f64::NAN, 100))),
+            base,
+            "a non-finite bias is no evidence"
         );
     }
 

@@ -1770,24 +1770,27 @@
   },
   {
     "id": "R12-EXEC-5077",
-    "status": "PARTIAL",
-    "current": "VenueQuotingModel per-venue QuotePolicy (backend/crates/services/qip-execution-engine/src/quoting.rs:633-672); edge VenueModel for feasibility (qip-edge feasibility.rs). Kernel uses default_policy (quote_loop.rs:155).",
+    "status": "COMPLETE",
+    "current": "The kernel's quote loop no longer feeds one default_policy() to every venue. QuoteLoopReview::of builds a VenueQuotingModel through quote_loop::quoting_model for the desk venue (Platform::desk_venue), each venue's policy being venue_policy of the default over that venue's FillCalibration entry, the signed twin-against-fill error LEARN already measures in score_filled. A venue with at least QUOTE_MIN_FILL_OBSERVATIONS fills whose bias is negative (the twin flattered it) has its base half spread widened by that bias, capped at the policy ceiling; an unmeasured venue, a thinly measured one, or one the twin undersold quotes the default exactly. The widening is applied on every ACT stage pass.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/quoting.rs:633",
-      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:155"
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::venue_policy",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::quoting_model",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::QuoteLoopReview::of",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs::tests::a_venue_the_twin_flattered_is_quoted_wider_and_one_it_undersold_is_not_quoted_tighter",
+      "backend/crates/tests/qip-acceptance/tests/quote_loop.rs::two_venues_with_different_measured_fill_error_quote_different_half_spreads_for_the_same_inputs"
     ],
-    "gap": "Measured per-venue microstructure models fed into quoting.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-execution-engine",
+    "verification": "cargo test -p qip-kernel --lib quote_loop && cargo test -p qip-acceptance --test quote_loop",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18. Mutations that fired: pricing under default_policy() again in the pass -> the widened-base assertion fails (base 10 against 36.89 implied); a bias threshold nothing meets -> two kernel tests and the acceptance ordering test fail (harsh 10, mild 10, unmeasured 10). Limits stated: the one measured dimension is the twin's fill error, not queue, latency or toxicity; venue_review tallies are not read; the loop quotes at the desk venue only; and the widening is one-way by design (a quote is never tightened on evidence a venue fills better than modelled). The quote is a priced intent and nothing sends it; the quote-loop boundary scans in the acceptance suite pass."
   },
   {
     "id": "R12-CAPITAL-5078",

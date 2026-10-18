@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 500 | 32.9% |
+| Blueprint completion (COMPLETE) | 501 | 33.0% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1226 | 80.8% |
-| Integrated (reached from a composition root) | 872 | 57.4% |
+| Integrated (reached from a composition root) | 873 | 57.5% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 20 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 500 |
-| PARTIAL | 871 |
+| COMPLETE | 501 |
+| PARTIAL | 870 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -33,7 +33,7 @@ register (ADR 0099), and there is no second one.
 | [FABRIC](#fabric) | 94 | 31 | 52 | 10 | 1 | 0 | 74 | 68 | 0 |
 | [REFLEX](#reflex) | 56 | 26 | 27 | 1 | 0 | 2 | 55 | 48 | 0 |
 | [MESH](#mesh) | 45 | 9 | 36 | 0 | 0 | 0 | 43 | 40 | 0 |
-| [EXEC](#exec) | 18 | 4 | 13 | 0 | 1 | 0 | 14 | 14 | 0 |
+| [EXEC](#exec) | 18 | 5 | 12 | 0 | 1 | 0 | 14 | 14 | 0 |
 | [RISK](#risk) | 49 | 27 | 22 | 0 | 0 | 0 | 48 | 45 | 0 |
 | [CAPITAL](#capital) | 38 | 4 | 30 | 2 | 2 | 0 | 33 | 33 | 1 |
 | [ASSET](#asset) | 15 | 2 | 13 | 0 | 0 | 0 | 14 | 14 | 0 |
@@ -363,7 +363,7 @@ register (ADR 0099), and there is no second one.
 | R12-EXEC-5074 | Portfolio-aware quoting | CorrelatedExposure (hedge-netted, correlation-weighted) is an input to quote sizing: the side that adds to held correlated exposure is cut in proportion to the limit used and the offsetting side keeps full size, asserted and mutation-proven in qip-execution-engine. The kernel's per-instrument quote loop passes `correlated: None` (quote_loop.rs:407, 'No portfolio correlation view is wired into this per-instrument loop yet'), so on the running path no portfolio exposure reaches the sizing. | PARTIAL | The kernel quote loop reads no portfolio exposure (quote_loop.rs:407 passes correlated: None), so hedges and correlated exposure affect quote size only when a caller supplies them; the unit check is met but the statement does not hold on the default path until the loop derives a CorrelatedExposure from the portfolio's positions and hedges. |  | P1 | cargo test -p qip-execution-engine --lib the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not |  |
 | R12-EXEC-5075 | Quote-rate and message-ratio controls | QuoteBudget/RateLimits (backend/crates/edge/qip-edge/src/quoting.rs:99, :641); per-venue limits applied by the node (backend/crates/apps/qip-edge-node/src/main.rs:398, backend/crates/apps/qip-edge-node/src/quote_limits.rs). | COMPLETE | Not deployed. |  | P0 | cargo test -p qip-edge --test quoting |  |
 | R12-EXEC-5076 | Cancel/replace budgets | Cell::spend_requote (backend/crates/edge/qip-edge/src/cell.rs:9667) charges two messages; Requoter wired in node (backend/crates/apps/qip-edge-node/src/main.rs:492). | COMPLETE | Not deployed. |  | P0 | cargo test -p qip-edge --test quoting; cargo test -p qip-edge-node --test pass |  |
-| R12-EXEC-5077 | Venue-specific microstructure models | VenueQuotingModel per-venue QuotePolicy (backend/crates/services/qip-execution-engine/src/quoting.rs:633-672); edge VenueModel for feasibility (qip-edge feasibility.rs). Kernel uses default_policy (quote_loop.rs:155). | PARTIAL | Measured per-venue microstructure models fed into quoting. |  | P2 | cargo test -p qip-execution-engine |  |
+| R12-EXEC-5077 | Venue-specific microstructure models | The kernel's quote loop no longer feeds one default_policy() to every venue. QuoteLoopReview::of builds a VenueQuotingModel through quote_loop::quoting_model for the desk venue (Platform::desk_venue), each venue's policy being venue_policy of the default over that venue's FillCalibration entry, the signed twin-against-fill error LEARN already measures in score_filled. A venue with at least QUOTE_MIN_FILL_OBSERVATIONS fills whose bias is negative (the twin flattered it) has its base half spread widened by that bias, capped at the policy ceiling; an unmeasured venue, a thinly measured one, or one the twin undersold quotes the default exactly. The widening is applied on every ACT stage pass. | COMPLETE |  |  | P2 | cargo test -p qip-kernel --lib quote_loop && cargo test -p qip-acceptance --test quote_loop |  |
 | R12-EXEC-5079 | Market creation is a governed workflow | CreationPermissions/CreationAuthority::ALL and admit (backend/crates/services/qip-execution-engine/src/creation.rs:46, :223); acceptance market_creation.rs:97, :177. No production consumer (the suite's own doc says so). | PARTIAL | A production workflow consuming CreationAdmission. |  | P0 | cargo test -p qip-acceptance --test market_creation |  |
 | R12-EXEC-5080 | Market factory creates, lists, seeds and prices markets | MarketFactory creates, lists and seeds a market on the simulated listing venue, each step needing its own CreationAdmission; seed refuses inventory that cannot cover the ask side and rests the rule's ladder on the venue (market_creation.rs:388-516); the pricing rule is journaled with each record. FactoryStage::install drives it (market_factory_stage.rs:150-210) from Platform::install_breadth (breadth.rs:150-199), called by qip-deepbrain main.rs:321 when a breadth plan is set. Inventory is set once at seed (market_creation.rs:499) and never managed afterwards: no fill on the created book changes it. | PARTIAL | Inventory management after seeding is absent and has no flow to drive it: SimulatedBroker::fill_price only sweeps the listed book read-only (broker.rs:456), so a fill never consumes resting depth, and nothing routes a fill on a created product back to MarketFactory. The factory side (a settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder) is the easy half; the broker consuming the book and the kernel reporting the fill are the missing path. Live creation stays BLOCKED (ADR 0003/0021). | R12-EXEC-5079 | P3 | acceptance test listing + seeding at SimulatedExchange |  |
 | R12-EXEC-5081 | Created markets continuously checked for economic and legal validity | Every SIMULATE reviews live markets, legal before economic, and withdraws and journals invalid ones; the deep brain re-reads permissions from its plan file each cycle, so an operator revocation withdraws the market (binary-path test). | COMPLETE | None for the requirement; not deployed. | R12-EXEC-5080 | P2 | new test |  |

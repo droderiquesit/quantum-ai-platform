@@ -353,3 +353,67 @@ fn the_act_stage_carries_the_quote_loop_so_the_wiring_and_not_only_the_module_is
         "the quote loop ran inside ACT and an order exists"
     );
 }
+
+/// R12-EXEC-5077: the kernel no longer feeds one `default_policy()` to every
+/// venue. Two venues whose fills the twin mispriced by different amounts quote
+/// different half-spreads for identical inputs, and a venue nobody has
+/// measured quotes the default.
+///
+/// Mutation: have `quote_loop::venue_policy` return `base.clone()` — all three
+/// widths coincide and the inequality fails.
+#[test]
+fn two_venues_with_different_measured_fill_error_quote_different_half_spreads_for_the_same_inputs()
+{
+    use qip_execution_engine::quoting::{QueuePosition, QuoteInputs, QuoteReference};
+    use qip_kernel::quote_loop::{QUOTE_MIN_FILL_OBSERVATIONS, default_policy, quoting_model};
+    use qip_twin::calibration::FillCalibration;
+
+    let mut calibration = FillCalibration::default();
+    for _ in 0..QUOTE_MIN_FILL_OBSERVATIONS {
+        calibration.observe("venue-mild", -10.0).unwrap();
+        calibration.observe("venue-harsh", -60.0).unwrap();
+    }
+    let base = default_policy();
+    let model = quoting_model(
+        &base,
+        &calibration,
+        &["venue-mild", "venue-harsh", "venue-unmeasured"],
+    );
+    let inputs = QuoteInputs {
+        object_id: "obj-AAA".to_string(),
+        reference: QuoteReference::ObservedMid { mid: dec!("100") },
+        inventory: Decimal::ZERO,
+        inventory_target: Decimal::ZERO,
+        inventory_limit: dec!("1000"),
+        budget: dec!("50000"),
+        volatility_bps: 0.0,
+        adverse_selection_bps: 0.0,
+        signal_imbalance: 0.0,
+        directional_persistence: 0.0,
+        belief_confidence: 0.9,
+        queue: QueuePosition::Unknown,
+        correlated: None,
+    };
+    let width = |venue: &str| {
+        model
+            .quote_at_venue(venue, &base, &inputs)
+            .unwrap()
+            .pair()
+            .map(|pair| pair.terms.total_bps())
+            .unwrap_or_else(|| panic!("{venue} was withheld, so no width to compare"))
+    };
+    let (mild, harsh, unmeasured) = (
+        width("venue-mild"),
+        width("venue-harsh"),
+        width("venue-unmeasured"),
+    );
+    assert!(
+        (unmeasured - base.base_half_spread_bps).abs() < 1e-12,
+        "premise: with no volatility or adverse selection the default width is the base, \
+         got {unmeasured}"
+    );
+    assert!(
+        harsh > mild && mild > unmeasured,
+        "widths must order by measured error: harsh {harsh}, mild {mild}, unmeasured {unmeasured}"
+    );
+}

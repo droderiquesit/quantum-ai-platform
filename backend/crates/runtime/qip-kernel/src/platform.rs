@@ -21208,6 +21208,21 @@ impl Platform {
         &self.fill_scores
     }
 
+    /// The venue the desk's orders go to: the name its fills are
+    /// calibrated and its quotes priced under.
+    pub fn desk_venue(&self) -> &str {
+        self.broker.name()
+    }
+
+    /// The calibration the fill-scoring pass writes, for a test that sets a
+    /// venue's measured error without staging the scored fills that would
+    /// produce it. The production writer is `score_filled`; this is the same
+    /// `FillCalibration`, not a second copy.
+    #[doc(hidden)]
+    pub fn fill_calibration_mut(&mut self) -> &mut qip_twin::calibration::FillCalibration {
+        &mut self.fill_calibration
+    }
+
     /// The twin's per-venue fill calibration, as the scored fills have moved
     /// it (R12-TICK-2080).
     pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
