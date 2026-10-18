@@ -405,3 +405,58 @@ fn an_estimator_outage_shrinks_the_ensemble_and_the_now_state_still_updates() {
     assert_eq!(review.ensemble.len(), 3);
     assert!(!review.deltas.is_empty());
 }
+
+/// R12-CONTRACT-6109: the lattice pass folds every forecast it issues into
+/// the §24.9 `ForecastState` a control loop reads, and journals the two side
+/// by side. Nothing in the workspace built the contract outside its own
+/// tests, so a drift between `Forecast` and `ForecastState` (a horizon or an
+/// expiry dropped in the projection) would have been invisible. A journaled
+/// state with a field removed must not decode, because the contract refuses a
+/// missing field. Mutations: skip the projection in `LatticeStage::run`
+/// (`states` is empty, so the length premise fails); insert each state at
+/// the front (the per-forecast comparison fails on the target).
+#[test]
+fn every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped_field_is_refused()
+{
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let review: LatticeReview = last(&platform, "lattice:");
+    assert!(
+        !review.issued.is_empty(),
+        "premise: the pass issued forecasts"
+    );
+    assert_eq!(
+        review.states.len(),
+        review.issued.len(),
+        "a forecast was issued without its control-plane state"
+    );
+    let horizons: BTreeSet<_> = review.issued.iter().map(|f| f.horizon).collect();
+    assert!(
+        horizons.len() > 1,
+        "premise: more than one horizon, so a mismatched pair shows"
+    );
+    for (forecast, state) in review.issued.iter().zip(&review.states) {
+        assert_eq!(state.target, forecast.target);
+        assert_eq!(state.horizon, forecast.horizon);
+        assert_eq!(state.expires_at, forecast.expires_at);
+        assert_eq!(state.confidence_bp, forecast.regime_confidence_bp);
+    }
+
+    let journaled = serde_json::to_value(&review).unwrap();
+    let decoded: LatticeReview = serde_json::from_value(journaled.clone()).unwrap();
+    assert_eq!(decoded, review, "premise: a journaled record round-trips");
+
+    let mut broken = journaled;
+    broken["states"][0]
+        .as_object_mut()
+        .expect("premise: a state is an object")
+        .remove("confidence_bp");
+    let refused = serde_json::from_value::<LatticeReview>(broken);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("missing field `confidence_bp`")),
+        "{refused:?}"
+    );
+}
