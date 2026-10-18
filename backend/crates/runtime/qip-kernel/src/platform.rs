@@ -1217,6 +1217,12 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
 
+/// Why no proposal is signed while the desk's feed to the ledger cannot take
+/// another record (R12-RES-7098). One sentence for the cycle report; the
+/// counter carries it as `control="ledger"`, never as this text.
+const LEDGER_UNCOMMITTED_REASON: &str = "the desk's ledger feed is full or has a gap, so new \
+     exposure would not reach the authoritative ledger; cancels and fill booking continue";
+
 /// Minimum scored, declined paths on the same instrument before
 /// [`Platform::counterfactual_sizing_multiplier`] trusts the pattern enough to
 /// narrow anything.
@@ -16377,12 +16383,28 @@ impl Platform {
         // same reason, which makes this the second layer rather than the only
         // one; it is the layer that states the reason once on the cycle
         // report instead of once per order.
-        let signable = action.permits_new_risk() && compliance.is_ok() && unevaluated.is_none();
+        //
+        // And a book whose accounting cannot be committed is not signable
+        // either (R12-RES-7098). The ledger is the authority for what the
+        // desk holds; a desk whose feed to it is full, or whose chain has
+        // advanced over a record it could not queue, is taking risk the
+        // authority has not been told about, and it would keep taking it for
+        // as long as nothing drains the feed. Withheld here, at the one place
+        // new exposure is authorised, so cancels and the book following the
+        // venue (`a_full_feed_does_not_stop_the_book_following_the_venue`)
+        // are untouched: only a *new* signature is refused.
+        let ledger_blocked = self.desk_ledger.is_full() || self.desk_ledger.has_gap();
+        let signable = action.permits_new_risk()
+            && compliance.is_ok()
+            && unevaluated.is_none()
+            && !ledger_blocked;
         if !signable {
             let reason = if !action.permits_new_risk() {
                 format!("the risk monitor is at {}", action.as_str())
             } else if let Some(refusal) = &unevaluated {
                 format!("the liquidity floor was not evaluated: {refusal}")
+            } else if ledger_blocked {
+                LEDGER_UNCOMMITTED_REASON.to_string()
             } else {
                 compliance
                     .err()
@@ -16408,6 +16430,8 @@ impl Platform {
                         "risk-monitor"
                     } else if unevaluated.is_some() {
                         "liquidity-read"
+                    } else if ledger_blocked {
+                        "ledger"
                     } else {
                         "compliance"
                     },

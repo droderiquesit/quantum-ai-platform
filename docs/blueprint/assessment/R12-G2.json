@@ -8,7 +8,7 @@
       "backend/crates/services/qip-world-model/src/federation.rs:288 ResearchTask (no production caller)",
       "backend/crates/libs/qip-storage/src/provider.rs:14-32 StorageTarget names Spanner/Bigtable/BigQuery but no Spanner/Bigtable adapter"
     ],
-    "gap": "Evidence read path from Spanner Graph/BQ; publication of research tasks/results as Fabric topics; ambient agents as a running service.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -18,11 +18,11 @@
       "R12-DATA-9052",
       "R12-DATA-9054"
     ],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test ambient_attention (extend with a fabric publish assertion)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Evidence read path from Spanner Graph/BQ; publication of research tasks/results as Fabric topics; ambient agents as a running service."
   },
   {
     "id": "R12-MODEL-9002",
@@ -283,18 +283,18 @@
       "infrastructure/gitops/envs/dev/fastbrain.yaml",
       "infrastructure/gitops/envs/dev/deepbrain.yaml"
     ],
-    "gap": "Split cognitive services into their own binaries/Run services if independent scaling is wanted (an architecture decision; ADR 0024's catalogue).",
+    "gap": "Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O24 (design-decisions-2026-10-18)",
     "verification": "inspection of infrastructure/gitops/envs/*/ RunService manifests",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: Split cognitive services into their own binaries/Run services if independent scaling is wanted (an architecture decision; ADR 0024's catalogue)."
   },
   {
     "id": "R12-CONTRACT-9013",
@@ -562,7 +562,7 @@
       "backend/crates/services/qip-world-model/src/lattice.rs:538",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_stale_forecast_is_refused_and_its_staleness_multiplier_shrinks_with_age"
     ],
-    "gap": "Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test.",
+    "gap": "Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: a staleness cap from lattice::staleness_multiplier at the sizing seam, with a test that an expired forecast vetoes the thesis.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -573,7 +573,7 @@
     "verification": "cargo test -p qip-edge",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired."
+    "notes": "Round-2 independent audit, 2026-10-11: The expiry half is real; the sizing half is explicitly unwired. ADR lane 2026-10-18: gap re-graded against decision D01; gap before it: Capital sizing does not contract on forecast staleness. staleness_multiplier has no caller outside its own module and test (grep), and lattice.rs:32-35 and lattice_stage.rs:32-36 both say no thesis, size or order reads a lattice forecast. No tactical forecast service exists. The 'sizing shrinks; removing the expiry check fails' half of the check has no test."
   },
   {
     "id": "R12-WORLD-9025",
@@ -585,18 +585,18 @@
       "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::with_the_strategic_service_down_its_questions_wait_and_every_stage_still_runs",
       "backend/crates/apps/qip-deepbrain/src/node.rs::gate_strategic_service"
     ],
-    "gap": "No separate strategic service: forecasts run inside the same run_cycle; a real separate-process outage is neither built nor tested.",
+    "gap": "Owner decision O24 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split cognitive services or the strategic lattice into separately deployed Cloud Run services (ADR 0024 catalogue). Enables: Independent scaling and a strategic service whose outage only backs up research. Costs: More services, images, identities and minimum instances.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O24 (design-decisions-2026-10-18)",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The backlog semantics are right; the service separation is simulated by a flag. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The backlog semantics are right; the service separation is simulated by a flag. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision O24; gap before it: No separate strategic service: forecasts run inside the same run_cycle; a real separate-process outage is neither built nor tested."
   },
   {
     "id": "R12-WORLD-9026",
@@ -654,18 +654,18 @@
       "backend/crates/libs/qip-agents/src/runtime.rs",
       "backend/crates/libs/qip-agents/src/manifest.rs:88 AgentManifest"
     ],
-    "gap": "A runtime field in the manifest and a second adapter.",
+    "gap": "Owner decision O25 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Vertex AI Agent Engine as a second agent runtime. Enables: Managed agent sessions and memory. Costs: A managed paid runtime and a contract change to AgentManifest.",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O25 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O25; gap before it: A runtime field in the manifest and a second adapter."
   },
   {
     "id": "R12-AMBIENT-9029",
@@ -962,18 +962,18 @@
       "services/qip-optimization-engine/tests/learning.rs::a_replayed_router_holds_the_live_routers_learning_and_a_losing_substrate_stays_stopped",
       "services/qip-optimization-engine/tests/learning.rs::every_solve_records_quality_cost_and_latency_per_run_and_the_registry_standing_moves"
     ],
-    "gap": "The learning can only choose among CPU, quantum-inspired and a simulated QPU; GPU, TPU and hardware QPU arms do not exist, so the router cannot learn which of the listed substrates wins. Problem class is the instance size only.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The old gap (learning from SolverBenchmarked history) is closed. Held at PARTIAL on the missing substrates, taking the lower grade."
+    "notes": "Round-2 independent audit, 2026-10-11: The old gap (learning from SolverBenchmarked history) is closed. Held at PARTIAL on the missing substrates, taking the lower grade. ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: The learning can only choose among CPU, quantum-inspired and a simulated QPU; GPU, TPU and hardware QPU arms do not exist, so the router cannot learn which of the listed substrates wins. Problem class is the instance size only."
   },
   {
     "id": "R12-QUANT-9042",
@@ -1141,7 +1141,7 @@
       "backend/crates/libs/qip-risk/src/hedge_search.rs::search",
       "backend/crates/runtime/qip-kernel/src/hedge.rs::plan"
     ],
-    "gap": "Does not use the hybrid solver router; produces an unwind-feasibility flag and liquidity-decay days, not an unwind plan.",
+    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: UnwindPlan in hedge_search.rs (stages sum to the position) and hedge jobs through ComputeRouter, with tests.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -1152,7 +1152,7 @@
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Does not use the hybrid solver router; produces an unwind-feasibility flag and liquidity-decay days, not an unwind plan."
   },
   {
     "id": "R12-RISK-9050",
@@ -1214,18 +1214,18 @@
       "infrastructure/terraform/modules/data/main.tf:380-392",
       "infrastructure/environments/dev/terraform.tfvars:284"
     ],
-    "gap": "Spanner graph adapter with promoted-only writes.",
+    "gap": "Owner decision O02 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit Bigtable, Spanner Graph, BigQuery and Knowledge Catalog as stores (ADR 0113 admitted Spanner for the ledger only). Enables: Graph store of promoted entities, hot feature store, evidence reads through the fabric. Costs: Each is billed infrastructure enabled in the project; REST adapters are in-tree work under ADR 0113 §2.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O02 (design-decisions-2026-10-18)",
     "verification": "n/a",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O02; gap before it: Spanner graph adapter with promoted-only writes."
   },
   {
     "id": "R12-DATA-9053",
@@ -1374,18 +1374,18 @@
       "infrastructure/terraform/modules/identity/variables.tf:29-32 default ENABLED",
       "infrastructure/environments/dev/terraform.tfvars:478"
     ],
-    "gap": "Mandatory MFA plan and passkeys.",
+    "gap": "Owner decision O23 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable passkeys on the Identity Platform tenant: raise the provider pin or set it in the console and record it. Enables: Passkeys for operators. Costs: A provider pin change or a manual tenant change outside Terraform.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O23 (design-decisions-2026-10-18)",
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O23; gap before it: Mandatory MFA plan and passkeys."
   },
   {
     "id": "R12-SEC-9060",
@@ -1489,18 +1489,18 @@
       "backend/crates/tests/qip-acceptance/tests/egress.rs",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:370"
     ],
-    "gap": "Dedicated project if required.",
+    "gap": "Owner decision O17 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Split scouts and engineering into their own projects before the second region (ADR 0113 §4, ADR 0118). Enables: Project-level isolation for scouts and engineering. Costs: More projects, budgets and IAM; ADR 0118 bootstrap re-run.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O17 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-acceptance --test egress --test security_controls",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O17; gap before it: Dedicated project if required."
   },
   {
     "id": "R12-SEC-9065",
@@ -1588,18 +1588,18 @@
       "scripts/agent-guard.test.mjs: 'a sandbox workflow with a secret, a credential, a write or no time limit is refused'",
       "scripts/agent-guard.test.mjs: 'the committed agent sandbox workflow passes the sandbox rule'"
     ],
-    "gap": "The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued.",
+    "gap": "Owner decision O18 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Give agent sessions their own identity (a Workload Identity pool) and scoped per-run credentials. Enables: A principal that distinguishes an agent from a person; sandboxed credentials. Costs: New IAM pool and providers; issuing credentials to agents.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O18 (design-decisions-2026-10-18)",
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based."
+    "notes": "Round-2 independent audit, 2026-10-11: A real gate refuses agent dispatch of deploying workflows, but it is marker-based, not credential-based. ADR lane 2026-10-18: gap re-graded against decision O18; gap before it: The coder agent's own working environment (the session that writes code and pushes) gets no sandboxed credential from this repository. Only CI acceptance runs are sandboxed. Agent identity is recognised by markers (author, co-author trailer, branch prefix, actor glob; scripts/agent-policy.json:4-11), and the policy admits that an agent pushing as its user without markers is invisible to every check. No per-run credential is issued."
   },
   {
     "id": "R12-CICD-9069",
@@ -2317,18 +2317,18 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/property_fuzz.rs"
     ],
-    "gap": "A fuzz job (cargo-fuzz is a tool, not a crate dependency).",
+    "gap": "Owner decision O22 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit libfuzzer-sys and a nightly toolchain for a PR fuzz job. Enables: cargo-fuzz targets in CI. Costs: A crate and a second toolchain; CI minutes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O22 (design-decisions-2026-10-18)",
     "verification": "inspection of ci.yml",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O22; gap before it: A fuzz job (cargo-fuzz is a tool, not a crate dependency)."
   },
   {
     "id": "R12-CICD-9102",
@@ -2634,18 +2634,18 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:8658",
       "backend/crates/runtime/qip-kernel/tests/self_observation.rs:68"
     ],
-    "gap": "Wire into promotion and rollback.",
+    "gap": "Owner decision O21 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Admit automatic rollback on Cloud Run (ADR 0114 refuses Argo Rollouts). Enables: release_decision driving a rollback and an incident. Costs: A controller acting on production traffic without a person.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O21 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-kernel --test self_observation",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O21; gap before it: Wire into promotion and rollback."
   },
   {
     "id": "R12-CICD-9116",
@@ -3490,7 +3490,7 @@
       "backend/crates/libs/qip-core/src/lineage.rs",
       "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation"
     ],
-    "gap": "Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace.",
+    "gap": "Decided by ADR 0129 (accepted 2026-10-18): The broker stamps region, partition and the authenticated principal into the batch header; the writer stamps provenance; the cycle's decision id rides the signed policy payload and the reflex outcome so one join walks API, cycle, cell and ledger. Code left: the same payload fields as OBS-7018, asserting the API-set correlation id is reachable from the cell's ChainOpened.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3501,7 +3501,7 @@
     "verification": "new acceptance test",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): The named verification (id set at the API appears in the cell) is not met and the two id schemes are independent. ADR lane 2026-10-18: gap re-graded against decision D05; gap before it: Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace."
   },
   {
     "id": "R12-OBS-9155",
@@ -4202,7 +4202,7 @@
       "backend/crates/libs/qip-storage/src/compaction.rs",
       "backend/crates/libs/qip-storage/src/segment/archive.rs:138"
     ],
-    "gap": "Async compaction proof.",
+    "gap": "The closure as graded cannot be taken: qip_storage::compaction::Compactor concatenates every object under a prefix into a content-addressed blob (segments/compacted/<sha256>) and returns the originals as deletable without deleting them, and the archive's objects (segments/sha256/<hash>, one per sealed segment) are each named by an archive-manifest row that ArchiveReader::hydrate fetches by that exact key and verifies against the manifest's content hash. Compacting the archive prefix would either leave the originals (storage grows by a merged copy per pass, since the compactor re-reads its own output) or, if they were deleted, break hydration of every archived segment. Closing needs a compactor that rewrites the manifest's blob key and replay-index offsets atomically with the merge (an ADR 0100 archive-format decision) and honours min_object_size, which Compactor never reads; then a housekeeping-tick caller and a broker test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4213,7 +4213,7 @@
     "verification": "cargo test -p qip-storage",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the code (archive.rs blob_key/hydrate, compaction.rs compact/merge_objects); nothing in the code changed."
   },
   {
     "id": "R12-FINOPS-9188",
