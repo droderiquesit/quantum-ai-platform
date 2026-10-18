@@ -2384,7 +2384,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-RES-7108",
@@ -3362,9 +3362,11 @@
     "status": "PARTIAL",
     "current": "qip-data-finder assesses/registers/quarantines sources.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/decision.rs"
+      "backend/crates/services/qip-data-finder/src/decision.rs",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Autonomous discovery and retirement end to end.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Autonomous discovery and retirement end to end.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3375,7 +3377,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-COVERAGE-7152",
@@ -3760,7 +3762,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-COVERAGE-7170",
@@ -3825,7 +3827,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-COVERAGE-7173",
@@ -4036,7 +4038,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: the triage premise is wrong. ResearchConfig::default sets every_cycles = 1 (backend/crates/apps/qip-deepbrain/src/research.rs, impl Default for ResearchConfig) and main.rs constructs the ResearchLoop unconditionally, so the loop runs every cycle in every deep-brain deployment; only an explicit QIP_DEEPBRAIN_RESEARCH_EVERY=0 disables it, and no manifest sets one. No switch is needed; what stays open is this row's own clause and a serving deployment."
   },
   {
     "id": "R12-COVERAGE-7183",

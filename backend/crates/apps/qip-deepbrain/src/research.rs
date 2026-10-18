@@ -346,6 +346,48 @@ pub struct ResearchConfig {
     /// research is off until somebody budgets it, and every grant it does
     /// make charges its classical baseline to the CPU budget (ADR 0006).
     pub qpu_per_sweep: Decimal,
+    /// The most compute units each research agent — the reputation cell
+    /// its bids are weighted by — may be charged in one market round,
+    /// across every resource (R12-AMBIENT-9034). Empty by default: an agent
+    /// the map does not name is bounded by the resource budgets alone.
+    pub agent_budgets: BTreeMap<ReputationKey, Decimal>,
+}
+
+/// The variable naming per-agent compute budgets:
+/// `domain/horizon/regime=units`, comma-separated.
+pub const AGENT_BUDGETS_VARIABLE: &str = "QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS";
+
+/// Parse [`AGENT_BUDGETS_VARIABLE`]. Every entry needs all three key parts
+/// and a non-negative number of units; a malformed entry or a key named
+/// twice is refused rather than skipped, because an agent whose bound was
+/// silently dropped is an agent bounded by nothing.
+pub fn parse_agent_budgets(raw: &str) -> Result<BTreeMap<ReputationKey, Decimal>> {
+    let mut out = BTreeMap::new();
+    for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let refuse = || {
+            Error::invalid(format!(
+                "{AGENT_BUDGETS_VARIABLE} entry {entry:?} is not domain/horizon/regime=units with \
+                 non-negative units"
+            ))
+        };
+        let (key, units) = entry.split_once('=').ok_or_else(refuse)?;
+        // The regime is the last part and may itself hold a `/` — the
+        // platform's regime key is `market/volatility`.
+        let parts: Vec<&str> = key.splitn(3, '/').collect();
+        let [domain, horizon, regime] = parts.as_slice() else {
+            return Err(refuse());
+        };
+        let units = Decimal::parse(units.trim())
+            .filter(|d| !d.is_negative())
+            .ok_or_else(refuse)?;
+        let key = ReputationKey::new(domain, horizon, regime)?;
+        if out.insert(key, units).is_some() {
+            return Err(Error::invalid(format!(
+                "{AGENT_BUDGETS_VARIABLE} names {domain}/{horizon}/{regime} twice; state one budget"
+            )));
+        }
+    }
+    Ok(out)
 }
 
 impl Default for ResearchConfig {
@@ -357,6 +399,7 @@ impl Default for ResearchConfig {
             signal_ttl: Duration::from_hours(1),
             acquisition_budget_bp: ACQUISITION_BUDGET_BP,
             qpu_per_sweep: Decimal::ZERO,
+            agent_budgets: BTreeMap::new(),
         }
     }
 }
@@ -404,6 +447,9 @@ impl ResearchConfig {
                          units; 0 grants no quantum research"
                     ))
                 })?;
+        }
+        if let Some(raw) = lookup(AGENT_BUDGETS_VARIABLE) {
+            config.agent_budgets = parse_agent_budgets(&raw)?;
         }
         Ok(config)
     }
@@ -594,7 +640,16 @@ pub struct ResearchRound {
     /// types, tools and brains it ran against cannot be replayed against the
     /// same ones.
     pub registries: RegistryCounts,
+    /// Every tick campaign concluded this sweep on its re-measured venue
+    /// (R12-EXPAND-6042): the microstructure delta a learner reads, the
+    /// delta's id being the campaign's.
+    pub deltas: Vec<qip_contracts::microstructure_delta::MicrostructureDelta>,
 }
+
+/// Fills a campaign's venue must have scored since the campaign opened
+/// before it is concluded on them. Fewer is a re-measurement too thin to
+/// tell a residual from noise; the campaign stays open until it has them.
+pub const MIN_REMEASURED: usize = 5;
 
 /// What each registry a sweep consulted held when it ran.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -833,6 +888,11 @@ pub struct ResearchLoop {
     ontology: OntologyRegistry,
     /// How many tools the node registered, read once at construction.
     tool_count: usize,
+    /// Fill-prediction campaigns opened and not yet concluded, with the
+    /// instant each opened, bounded by [`RETAINED`] (R12-EXPAND-6042): a
+    /// campaign counted and dropped could never learn what its venue did
+    /// next.
+    open_campaigns: VecDeque<(TickCampaign, Timestamp)>,
 }
 
 impl std::fmt::Debug for ResearchLoop {
@@ -952,6 +1012,7 @@ impl ResearchLoop {
             assumptions: BTreeMap::new(),
             ontology,
             tool_count,
+            open_campaigns: VecDeque::new(),
             config,
         })
     }
@@ -1264,6 +1325,19 @@ impl ResearchLoop {
             }
         }
         self.slippage_read = slippage.len();
+        // Conclude the campaigns earlier sweeps opened whose venue has been
+        // re-measured since, then keep this sweep's for a later one.
+        self.conclude_campaigns(platform, fills, now, &mut round)?;
+        for campaign in &opened_campaigns {
+            if campaign.trigger == TickCampaignTrigger::FillPredictionError
+                && campaign.venue.is_some()
+            {
+                if self.open_campaigns.len() == RETAINED {
+                    self.open_campaigns.pop_front();
+                }
+                self.open_campaigns.push_back((campaign.clone(), now));
+            }
+        }
         // One observation per trigger and venue, not one per campaign: a
         // venue whose twin misses a dozen fills is one question that stays
         // raised, not a dozen duplicates the desk would refuse.
@@ -1976,6 +2050,80 @@ impl ResearchLoop {
         Ok(())
     }
 
+    /// Conclude each retained fill-prediction campaign whose venue has
+    /// scored at least [`MIN_REMEASURED`] fills on its instruments since it
+    /// opened (R12-EXPAND-6042). Per instrument, the modelled figure is the
+    /// twin's calibrated fill bias at the venue — what the model now expects
+    /// its error to be — and the observed figure the mean trade error of
+    /// those fills; the model version names the calibration state it was
+    /// read from. A campaign whose venue has not been re-measured enough
+    /// stays open; a refused conclusion drops the campaign, because a
+    /// refusal of this shape will not change on more fills.
+    fn conclude_campaigns(
+        &mut self,
+        platform: &Platform,
+        fills: &[FillObservation],
+        now: Timestamp,
+        round: &mut ResearchRound,
+    ) -> Result<()> {
+        let mut still_open = VecDeque::new();
+        for (campaign, opened_at) in std::mem::take(&mut self.open_campaigns) {
+            let Some(venue) = campaign.venue.clone() else {
+                continue;
+            };
+            let mut remeasured = Vec::new();
+            for instrument in &campaign.affected_instruments {
+                let errors: Vec<f64> = fills
+                    .iter()
+                    .filter(|f| {
+                        f.venue == venue && &f.object_id == instrument && f.filled_at > opened_at
+                    })
+                    .filter_map(|f| f.trade_error_bps)
+                    .filter(|e| e.is_finite())
+                    .collect();
+                if errors.len() < MIN_REMEASURED {
+                    continue;
+                }
+                let calibration = platform.fill_calibration().venue(&venue);
+                // Statistic to Decimal for the contract: both figures are
+                // basis points of price, not money.
+                let modelled = calibration.map_or(0.0, |c| c.bias_bps);
+                let observed = errors.iter().sum::<f64>() / errors.len() as f64;
+                let (Some(modelled), Some(observed)) =
+                    (Decimal::from_f64(modelled), Decimal::from_f64(observed))
+                else {
+                    continue;
+                };
+                remeasured.push(qip_expansion::campaigns::Remeasured {
+                    instrument: instrument.clone(),
+                    modelled,
+                    observed,
+                    samples: errors.len() as u64,
+                });
+            }
+            if remeasured.is_empty() {
+                still_open.push_back((campaign, opened_at));
+                continue;
+            }
+            let observations = platform
+                .fill_calibration()
+                .venue(&venue)
+                .map_or(0, |c| c.observations);
+            let model_version = format!("twin-fill-calibration/{venue}@{observations}");
+            if let Ok(delta) = TickCampaignDetector::conclude(
+                &campaign,
+                "qip-deepbrain",
+                &model_version,
+                (opened_at, now),
+                remeasured,
+            ) {
+                round.deltas.push(delta);
+            }
+        }
+        self.open_campaigns = still_open;
+        Ok(())
+    }
+
     fn retain_request(&mut self, request: InfoRequest) {
         if self.info_requests.len() == RETAINED {
             self.info_requests.pop_front();
@@ -2305,7 +2453,12 @@ impl ResearchLoop {
             (ComputeResourceType::Tpu, Decimal::ZERO),
             (ComputeResourceType::Qpu, self.config.qpu_per_sweep),
         ]);
-        let allocation = self.meta.allocate(&bids, &budget, now)?;
+        // Each research agent is bounded by its stated budget as well as the
+        // resources (R12-AMBIENT-9034): without it one well-reputed agent
+        // could take every unit of the round.
+        let allocation =
+            self.meta
+                .allocate_within(&bids, &budget, &self.config.agent_budgets, now)?;
         let mut granted: BTreeMap<String, Decimal> = BTreeMap::new();
         for grant in &allocation.grants {
             let question = grant.allocation.work_id().to_string();
