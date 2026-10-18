@@ -180,6 +180,10 @@ fn pass(rate_window: u64) -> PassDecl {
 }
 
 fn guard() -> ActionGuard {
+    guard_allowing(&["desk-agent"])
+}
+
+fn guard_allowing(callers: &[&str]) -> ActionGuard {
     ActionGuard::from_policy(GuardPolicy {
         conduct: ConductPolicy {
             authorized_sources: vec!["venue-feed".into()],
@@ -204,6 +208,13 @@ fn guard() -> ActionGuard {
             max_actions_per_window: 1,
             budget_units: 1_000,
             revocation_path: "operator revokes in the policy file".into(),
+            provenance: "in-tree test tool".into(),
+            sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+            cost_latency: qip_contracts::action::CostLatency {
+                cost_units: 1,
+                latency_ms: 1,
+            },
+            allowed_callers: callers.iter().map(|c| (*c).to_string()).collect(),
         }],
     })
     .unwrap()
@@ -751,4 +762,46 @@ fn a_withheld_plan_is_journaled_with_its_reasons_and_the_alternative_sought() {
     assert_eq!(blocked.3, "no_action");
     assert!(blocked.4.is_empty());
     assert!(!blocked.5.is_empty(), "no alternative says why");
+}
+
+/// Mutation: remove the `permits_caller` loop in `ActionGuard::preflight` —
+/// the pass reaches the adapter although its identity is not an allowed caller.
+#[test]
+fn a_plan_naming_a_tool_its_identity_may_not_call_is_refused_before_the_adapter_is_reached() {
+    let policy = narrow();
+    let registry = register("US");
+    let run = |mut guard: ActionGuard, adapter: &mut Refusing| {
+        run_governed(
+            request(1),
+            Governance {
+                policy: Some(&policy),
+                guard: Some(&mut guard),
+                eligibility: Some((&registry, Timestamp::from_secs(100))),
+            },
+            adapter,
+        )
+        .unwrap()
+    };
+
+    // Premise: with the identity among the callers the pass reaches the venue.
+    let mut allowed = Refusing::default();
+    let report = run(guard_allowing(&["desk-agent"]), &mut allowed);
+    assert_eq!(
+        allowed.attempts, 1,
+        "premise: the pass was attempted: {:?}",
+        report.outcome
+    );
+
+    let mut barred = Refusing::default();
+    let report = run(guard_allowing(&["some-other-agent"]), &mut barred);
+    assert_eq!(
+        barred.attempts, 0,
+        "the adapter was reached by a caller the tool bars"
+    );
+    let blocked = report.blocked.expect("the guard refuses the plan");
+    assert!(
+        blocked.reason.contains("not among the callers allowed"),
+        "{}",
+        blocked.reason
+    );
 }
