@@ -54,9 +54,11 @@
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:299 a_source_whose_robots_txt_turns_against_the_path_is_quarantined_and_never_contacted_again",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:362 a_source_that_starts_turning_the_probe_away_is_quarantined_naming_the_refusal",
       "backend/crates/runtime/qip-kernel/src/platform.rs:16845-16870 quarantines catalogue dataset on Quarantined/Retired",
-      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:253 a_source_policy_quarantines_or_retires_is_no_longer_offered_by_the_mesh_catalogue"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:253 a_source_policy_quarantines_or_retires_is_no_longer_offered_by_the_mesh_catalogue",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Re-checks only run when a discovery pass runs, which is disabled in every environment; connector sources admitted through qip-api feed are not re-probed on a schedule by this path.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Re-checks only run when a discovery pass runs, which is disabled in every environment; connector sources admitted through qip-api feed are not re-probed on a schedule by this path.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -67,7 +69,7 @@
     "verification": "cargo test -p qip-kernel --test source_lifecycle",
     "work_item": "",
     "size": "M",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-DATA-2004",
@@ -580,9 +582,11 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/lifecycle.rs:25-38 LifecycleAction",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:165 three_registered_sources_are_retired_quarantined_and_promoted_by_policy_alone",
-      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Implemented, tested and reachable from qip-deepbrain, but the discovery pass is disabled in every environment and no deployment evidence exists.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Implemented, tested and reachable from qip-deepbrain, but the discovery pass is disabled in every environment and no deployment evidence exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -593,7 +597,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-DATA-2027",
@@ -602,9 +606,11 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/lifecycle.rs:25-38 LifecycleAction",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:271 a_source_that_goes_stale_is_throttled_to_a_slower_class_and_stays_registered",
-      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Implemented, tested and reachable from qip-deepbrain, but the pass is disabled in every environment; 'throttle' changes routing class only — nothing reduces an active connector's poll rate.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Implemented, tested and reachable from qip-deepbrain, but the pass is disabled in every environment; 'throttle' changes routing class only — nothing reduces an active connector's poll rate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -615,7 +621,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-DATA-2028",
@@ -624,9 +630,11 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/lifecycle.rs:25-38 LifecycleAction",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:299 a_source_whose_robots_txt_turns_against_the_path_is_quarantined_and_never_contacted_again",
-      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Implemented, tested and reachable from qip-deepbrain, but the discovery pass is disabled in every environment and no deployment evidence exists.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Implemented, tested and reachable from qip-deepbrain, but the discovery pass is disabled in every environment and no deployment evidence exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -637,7 +645,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-DATA-2029",
@@ -646,9 +654,11 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/src/lifecycle.rs:25-38 LifecycleAction",
       "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:165 three_registered_sources_are_retired_quarantined_and_promoted_by_policy_alone",
-      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs:184 each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12"
     ],
-    "gap": "Implemented, tested and reachable from qip-deepbrain, but the discovery pass is disabled in every environment and no deployment evidence exists.",
+    "gap": "The discovery pass now runs in dev on a committed cadence, but re-assesses nothing. The candidate catalogue is still unmounted: source_candidates_file needs its own Secret Manager container in infrastructure/terraform/main.tf local.secret_names, a seed step in .github/workflows/infra.yml (protected) and a secret-volume item in gitops/envs/dev/deepbrain.yaml, because the RunService CRD mounts only secret volumes; setting the tfvars alone would rename the universe mount directory and deliver no file. Owner decision. Previously: Implemented, tested and reachable from qip-deepbrain, but the discovery pass is disabled in every environment and no deployment evidence exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -659,7 +669,7 @@
     "verification": "cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it. L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call."
   },
   {
     "id": "R12-EVID-2030",

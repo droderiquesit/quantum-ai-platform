@@ -501,13 +501,6 @@ vendored_openobserve_image_digest = "sha256:88fb692ac791d3eaff69653a4a4686f1c7ec
 #   it cannot lift. Setting it is the reviewed step that turns a deployment's
 #   reference ledger from replays-only to a vendor's own bytes.
 #
-# deepbrain_discover_every = "<a whole number of cycles, or explicitly "0">"
-#   would turn on the source-discovery pass on its own cadence
-#   (QIP_DEEPBRAIN_DISCOVER_EVERY). Left null, the desk keeps its own default
-#   of zero — no pass — which matches the fact that `source_candidates_file`
-#   above is also null: a cadence with nothing to assess would run and decide
-#   about nothing, so the pair is turned on together or not at all.
-#
 # region_dark_after = "<a whole number of seconds, e.g. 300>"
 #   would have the API derive a region dark once every cell in it has been
 #   silent that long (QIP_REGION_DARK_AFTER, ADR 0079): nothing new is
@@ -782,3 +775,20 @@ dns_record_ttl_seconds = 300
 # Stage and prod leave both null, which is the binary's own default of off.
 deepbrain_quantum_provider = "simulated"
 deepbrain_quantum_inspired = "on"
+
+# The source-discovery pass (QIP_DEEPBRAIN_DISCOVER_EVERY), every twelve
+# research cycles — hourly at the 300-second `cycle_interval_seconds` above.
+# Set without `source_candidates_file`, and that is not the knob with no
+# effect this file once called it: `DiscoveryDesk::maybe_run` reads
+# `Platform::discovery_targets` before it looks at a single candidate, so
+# each pass turns the forecast-error spikes and knowledge gaps the platform
+# has no source for into named targets on the deep brain's cycle line
+# (R12-DATA-3008). What the pass cannot do without a candidate list is
+# assess, register, score, throttle, quarantine or retire anything, and it
+# makes no outbound call — no probe runs against an empty catalogue, so this
+# costs no egress and needs no credential. The candidate list stays unset
+# for a reason the cadence does not share: a second committed file needs its
+# own Secret Manager container, a seed in `infra.yml` and an item in the
+# manifest's volume, because the RunService CRD mounts nothing else
+# (`main.tf`, `local.secret_names`), and none of that exists yet.
+deepbrain_discover_every = "12"
