@@ -449,6 +449,79 @@ fn teacher(name: &str) -> Result<TrainedTeacher> {
     LocalTrainer::new().fit(&spec, &data, start())
 }
 
+/// R12-TICK-2091: a distillate whose card was trained on licensed data is
+/// named in the `trained_models` slot only for a location its licence
+/// permits. `ModelCard::authorise_location` was called for the opportunity
+/// map alone, so a promoted model trained under a London-only licence was
+/// named to every cell the centre served. The licence now rides on the
+/// journaled promotion, read off the card, and the manifest withholds it
+/// elsewhere — including from a cell whose location was never declared.
+///
+/// Mutation: drop the licence check in `Platform::model_manifest_for` — the
+/// manifest for `us-east4` names the distillate and the refusal assertion
+/// fails.
+#[test]
+fn a_manifest_for_a_region_the_card_does_not_permit_is_refused() -> Result<()> {
+    use std::collections::BTreeSet;
+    let teacher = teacher("bar-linear-licensed")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let student =
+        qip_strategy::model::DistilledModel::linear("bar-linear-licensed", 0.1, vec![0.5, -0.25])?;
+    let mut platform = platform_serving()?;
+    let mut registry = ModelRegistry::new();
+    let registration = register_fit(
+        &mut registry,
+        &teacher,
+        &SkillPolicy::default(),
+        "tournament-tests",
+        start(),
+    )?;
+    assert!(
+        registration.passed,
+        "premise: the fit cleared the skill bar"
+    );
+    let card = registry
+        .get_mut(&registration.reference)
+        .ok_or_else(|| Error::not_found("the card"))?;
+    *card = card.clone().with_data_entitlements(
+        BTreeSet::from(["vendor-ticks-uk".to_string()]),
+        BTreeSet::from(["europe-west2".to_string()]),
+    )?;
+    platform.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
+    let promotion = platform
+        .model_promotions()
+        .values()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found("premise: the promotion was recorded"))?;
+    assert_eq!(
+        promotion.permitted_locations,
+        Some(BTreeSet::from(["europe-west2".to_string()])),
+        "the licence was not carried onto the journaled promotion"
+    );
+
+    let permitted = platform.model_manifest_for(Some("europe-west2"))?;
+    assert!(
+        permitted
+            .manifest()
+            .models
+            .contains_key("bar-linear-licensed"),
+        "premise: the permitted location is told about the distillate: {}",
+        permitted.describe()
+    );
+    let refused = platform
+        .model_manifest_for(Some("us-east4"))
+        .expect_err("a manifest for a location the licence refuses named the distillate");
+    assert!(
+        matches!(refused, Error::Denied(_)),
+        "refused for another reason: {refused:?}"
+    );
+    platform
+        .model_manifest()
+        .expect_err("a cell with no declared location was named a licensed distillate");
+    Ok(())
+}
+
 /// R12-MODEL-7201: a model whose only evaluation has lapsed passes the
 /// registry (which asks for a passing evaluation, not a fresh one) and is
 /// refused by the society's model-risk critic, with the verdict journaled;
