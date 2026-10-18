@@ -1215,14 +1215,14 @@
   },
   {
     "id": "R12-GCP-8055",
-    "status": "PARTIAL",
-    "current": "Execution nodes are refused behind any LB/mesh (tested). Warm services are internal Cloud Run without an internal ALB, mesh or mTLS; the in-tree HTTP client has timeouts and a breaker.",
+    "status": "COMPLETE",
+    "current": "ADR 0112 reads mTLS between warm services as IAM-authenticated invocation. The only warm-to-warm hop is the console dialling the API; the console's service account is the API's named invoker (invokers.yaml, catalogue.tf api.invokers) and the portal mints audience-bound Google ID tokens (google-credentials.ts identityToken). console_route.rs::every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience walks every environment's RunService manifests and requires each caller to be a named invoker of what it dials.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
-      "backend/crates/libs/qip-transport/src/breaker.rs",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569"
+      "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
+      "infrastructure/gitops/envs/dev/invokers.yaml qip-dev-api-invoker-qip-dev-console",
+      "frontend/portal/src/lib/server/google-credentials.ts identityToken"
     ],
-    "gap": "Service-to-service mTLS (blocked: no in-tree TLS, ADR 0009) or internal ALB with IAM-authenticated Cloud Run.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1230,10 +1230,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "mTLS needs a TLS stack (ADR 0009) or a managed proxy decision",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Found while closing it: portal.yaml set QIP_API_BASE_URL but never QIP_API_AUDIENCE, so the committed console minted no identity token and every gateway call would have drawn a 403 that reads as a missing grant; the manifest now sets it to the API URL. Mutations: the QIP_API_AUDIENCE entry removed from portal.yaml, and the console's member renamed in invokers.yaml, each failed the test; both restored byte for byte. Nothing is applied in any environment, so no deployed hop is observed."
   },
   {
     "id": "R12-GCP-8056",
@@ -2640,14 +2640,14 @@
   },
   {
     "id": "R12-GCP-8119",
-    "status": "PARTIAL",
-    "current": "No service mesh is declared. gcp_placement.rs::no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh walks every Terraform resource and refuses a machine behind a proxy or mesh hop (tests/qip-acceptance/tests/gcp_placement.rs:150-160, :277). In-tree fabric clients carry explicit timeouts and a circuit breaker (backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:143,237; producer.rs:53,82). ADR 0112 rejects a mesh and puts warm (Cloud Run) hops on IAM-authenticated invocation, with mTLS only between Compute Engine processes. No Rust code fetches an audience-bound ID token from the metadata server for service-to-service calls: grep for 'audience'/'identity?audience' in libs/qip-transport, libs/qip-storage and apps/*/src finds nothing.",
+    "status": "COMPLETE",
+    "current": "The one Cloud Run hop (console to API) is IAM-authenticated: the portal's identity token audience is QIP_API_AUDIENCE, which the committed portal manifest now sets to the API's own run.app URL, equal to the URL it dials and to the one modules/cloudrun derives from the project number and region. No Rust workload dials another Cloud Run service.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
-      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:237",
-      "docs/adr/0112-mtls-through-rustls-where-the-platform-owns-the-socket-iam-invocation-on-cloud-run-and-quic-only-where-measured.md"
+      "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
+      "infrastructure/gitops/envs/dev/portal.yaml QIP_API_AUDIENCE",
+      "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE"
     ],
-    "gap": "Authenticated transport between warm services: mTLS or, per ADR 0112, IAM-authenticated invocation with an ID token. No warm-to-warm caller presents one today.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2655,10 +2655,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "mTLS needs a TLS stack (ADR 0009)",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The 'never through mesh sidecars' half holds structurally, since no mesh exists anywhere. ADR 0112 reinterprets the mTLS clause for Cloud Run as IAM invocation, and that is not implemented in any client."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only)."
   },
   {
     "id": "R12-DATA-8120",

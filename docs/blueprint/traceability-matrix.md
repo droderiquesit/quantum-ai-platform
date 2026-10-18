@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 420 | 27.7% |
+| Blueprint completion (COMPLETE) | 422 | 27.8% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1217 | 80.2% |
 | Integrated (reached from a composition root) | 853 | 56.2% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 420 |
-| PARTIAL | 951 |
+| COMPLETE | 422 |
+| PARTIAL | 949 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -54,7 +54,7 @@ register (ADR 0099), and there is no second one.
 | [SEC](#sec) | 57 | 19 | 34 | 4 | 0 | 0 | 50 | 40 | 0 |
 | [OBS](#obs) | 50 | 17 | 27 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
-| [GCP](#gcp) | 54 | 6 | 27 | 15 | 6 | 0 | 33 | 24 | 0 |
+| [GCP](#gcp) | 54 | 8 | 25 | 15 | 6 | 0 | 33 | 24 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
 | [RES](#res) | 61 | 14 | 40 | 7 | 0 | 0 | 47 | 40 | 0 |
 | [FINOPS](#finops) | 15 | 3 | 8 | 4 | 0 | 0 | 11 | 8 | 0 |
@@ -1534,7 +1534,7 @@ register (ADR 0099), and there is no second one.
 | R12-GCP-8051 | Engineering project | Artifact Registry, Binary Authorization attestor and the GitOps Autopilot cluster exist, but in the single environment project, not a separate engineering project. | PARTIAL | Separate engineering project; Cloud Build private pool. |  | P2 | terraform plan |  |
 | R12-GCP-8052 | Non-prod mirrors production boundaries | dev/stage/test/prod share one root module with per-environment tfvars, so module shape is identical; the boundaries themselves (projects/folders) do not exist. | PARTIAL | Folder/project model replicated per environment. |  | P2 | terraform plan |  |
 | R12-GCP-8053 | No single giant Shared VPC; separated VPCs joined by NCC | Acceptance test refuses any Shared VPC declaration; reflex/fabric/service (plus data/engineering) VPCs are separate. No NCC resources exist, so the networks are not joined at all. | PARTIAL | NCC hub/spokes with route filters. | R12-GCP-8056 | P1 | cargo test -p qip-acceptance --test gcp_placement |  |
-| R12-GCP-8055 | Regional warm services via internal LB/mesh with mTLS, never in Reflex path | Execution nodes are refused behind any LB/mesh (tested). Warm services are internal Cloud Run without an internal ALB, mesh or mTLS; the in-tree HTTP client has timeouts and a breaker. | PARTIAL | Service-to-service mTLS (blocked: no in-tree TLS, ADR 0009) or internal ALB with IAM-authenticated Cloud Run. |  | P1 | cargo test -p qip-acceptance --test gcp_placement |  |
+| R12-GCP-8055 | Regional warm services via internal LB/mesh with mTLS, never in Reflex path | ADR 0112 reads mTLS between warm services as IAM-authenticated invocation. The only warm-to-warm hop is the console dialling the API; the console's service account is the API's named invoker (invokers.yaml, catalogue.tf api.invokers) and the portal mints audience-bound Google ID tokens (google-credentials.ts identityToken). console_route.rs::every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience walks every environment's RunService manifests and requires each caller to be a named invoker of what it dials. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience |  |
 | R12-GCP-8056 | VPC-to-VPC via NCC spokes with route filters | No google_network_connectivity_* resource in the tree. | MISSING | NCC hub/spoke module. |  | P1 | terraform plan |  |
 | R12-GCP-8057 | Dedicated NCC latency mesh hub for Reflex/Fabric | No NCC resources. | MISSING | Latency hub module. | R12-GCP-8056 | P2 | terraform plan |  |
 | R12-GCP-8058 | Service/data NCC star hub with central inspection | No NCC resources. | MISSING | Star hub module. | R12-GCP-8056 | P2 | terraform plan |  |
@@ -1547,7 +1547,7 @@ register (ADR 0099), and there is no second one.
 | R12-GCP-8114 | Cloud Run only for burst stateless endpoints, never venue execution | Venue credential is readable only by the execution node and only where the ceiling allows; Cloud Run services are internal and hold no venue path; order placement exists only in the edge cell. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-acceptance --test workload_identity |  |
 | R12-GCP-8115 | GKE Standard regional clusters spanning zones | Only the GitOps Autopilot cluster exists (regional location, Autopilot not Standard). | BLOCKED | GKE Standard regional clusters are the requirement; refused. Cloud Run is regional for warm services. |  | P2 | inspection of catalogue.tf and the binary's composition |  |
 | R12-GCP-8116 | Separated node pools; research cannot starve control | No service-plane cluster; Cloud Run services have per-service limits. | MISSING | Built as the Cloud Run equivalent (ADR 0114 Amendment 1): every catalogue service declares maximum instances and concurrency, research runs in separately budgeted Cloud Run Jobs, and a test refuses a service without a maximum. Node-pool taints are refused. |  | P2 | inspection of catalogue.tf and the binary's composition |  |
-| R12-GCP-8119 | Service mesh only for warm services; never Fabric/Reflex | No service mesh is declared. gcp_placement.rs::no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh walks every Terraform resource and refuses a machine behind a proxy or mesh hop (tests/qip-acceptance/tests/gcp_placement.rs:150-160, :277). In-tree fabric clients carry explicit timeouts and a circuit breaker (backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:143,237; producer.rs:53,82). ADR 0112 rejects a mesh and puts warm (Cloud Run) hops on IAM-authenticated invocation, with mTLS only between Compute Engine processes. No Rust code fetches an audience-bound ID token from the metadata server for service-to-service calls: grep for 'audience'/'identity?audience' in libs/qip-transport, libs/qip-storage and apps/*/src finds nothing. | PARTIAL | Authenticated transport between warm services: mTLS or, per ADR 0112, IAM-authenticated invocation with an ID token. No warm-to-warm caller presents one today. |  | P1 | cargo test -p qip-acceptance --test gcp_placement |  |
+| R12-GCP-8119 | Service mesh only for warm services; never Fabric/Reflex | The one Cloud Run hop (console to API) is IAM-authenticated: the portal's identity token audience is QIP_API_AUDIENCE, which the committed portal manifest now sets to the API's own run.app URL, equal to the URL it dials and to the one modules/cloudrun derives from the project number and region. No Rust workload dials another Cloud Run service. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience |  |
 | R12-GCP-9015 | Persistent cognitive services on regional GKE; burst on Vertex/accelerators | Cognitive binaries are Cloud Run services (Config Connector RunService manifests). The only GKE cluster is the ADR 0036 GitOps control-plane cluster in dev, which runs controllers, not cognition. | BLOCKED | Persistent cognitive services on GKE are refused; they run on Cloud Run. The burst half is ADR 0122's research lane on Vertex AI custom jobs. |  | P3 | terraform plan |  |
 | R12-GCP-9086 | Terraform/GitOps is the only normal path to persistent cloud state | infra.yml applies only saved plans (tested); Cloud Run services reconcile from Git via Argo CD; SCC custom detectors watch drift but SCC is disabled in dev. | PARTIAL | Drift detection enabled. |  | P0 | cargo test -p qip-acceptance --test cicd_governance |  |
 | R12-GCP-9120 | Terraform: gated apply, plan artifact, change windows for core resources | infra.yml saves and applies a plan artifact (tested); no change-window enforcement. | PARTIAL | Change windows. |  | P1 | cargo test -p qip-acceptance --test cicd_governance |  |
