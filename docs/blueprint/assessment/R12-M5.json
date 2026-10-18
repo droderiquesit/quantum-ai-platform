@@ -1263,15 +1263,14 @@
   {
     "id": "R12-MESH-5055",
     "status": "PARTIAL",
-    "current": "The net edge deducts a path-wide funding line (size × funding_rate_annual_f64 × holding period; EdgeAssumptions default 0.05, netedge.rs:105-136, :191-252). It also deducts a per-edge 'measured borrow' Funding line summed from EdgeCosts.borrow_rate_annual over the holding period (netedge.rs:56-58, :344-373). The edge node copies per-conversion borrow from the signed whitelist's WhitelistedCosts (apps/qip-edge-node/src/arbitrage.rs:212-237; libs/qip-contracts/src/policy.rs:603-632). No producer anywhere constructs WhitelistedCosts (grep finds only the struct), so every production conversion is priced at zero borrow. The cell's own funding/borrow state (edge/qip-edge/src/cell.rs:1596-1607, funding.rs) is not fed to the desk.",
+    "current": "A stated borrow_rate_annual now travels from ArbitragePolicy (WhitelistedMarket.costs) onto both conversions of the book and the cell charges it over the holding period (qip-edge-node arbitrage.rs, qip-arbitrage netedge); the centre no longer ships a zero borrow where an operator states one. The carry assumption is still the path-wide constant.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/netedge.rs:344",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:242",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:218",
-      "backend/crates/libs/qip-contracts/src/policy.rs:621",
-      "edge/qip-arbitrage/tests/edge_costs.rs::a_measured_borrow_rate_is_charged_over_the_holding_period"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs WhitelistedMarket.costs, ArbitragePolicy::validate_costs, whitelist_for",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:241 the cell prices the stated costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs net falls by each stated figure"
     ],
-    "gap": "Feed measured funding/borrow per edge: a centre producer of WhitelistedCosts, or wiring the cell's funding state into EdgeCosts. Replace the constant path-wide 5% assumption with a measured carry.",
+    "gap": "The borrow rate is stated, not measured: the centre holds no funding state, qip-edge's funding.rs is not fed into EdgeCosts at the desk refresh, and the path-wide 5% carry is still a constant assumption. No committed deployment states a borrow rate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1279,21 +1278,22 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --lib central::whitelist && cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The test asserts the borrow line equals the hand-computed figure and that net falls. It does not assert net falls by exactly that figure, which the verification asks for. The deduction arithmetic is real; its input is never measured."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: whitelist_for shipping costs: None -> the carried-costs assertion fails."
   },
   {
     "id": "R12-MESH-5056",
     "status": "PARTIAL",
-    "current": "EdgeCosts (tax_duty_fraction, logistics_fraction, ...) on every conversion, charged as named net-edge deductions with tests; node installer maps payload WhitelistedCosts. The centre's whitelist builder ships costs: None, and an unset ArbitragePolicy emits an empty whitelist.",
+    "current": "The centre can now ship per-conversion duty, logistics, settlement-risk and fill figures: WhitelistedMarket.costs is validated against the cell's own ranges and carried by whitelist_for on both conversions of the book; the cell prices them and the net edge falls by exactly each figure (qip-arbitrage edge_costs.rs).",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:374",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs::EdgeCosts",
-      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs::whitelist_for"
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs WhitelistedMarket.costs, ArbitragePolicy::validate_costs, whitelist_for",
+      "backend/crates/runtime/qip-kernel/src/central/whitelist.rs a_markets_stated_costs_ship_on_both_of_its_conversions_and_an_impossible_one_is_refused",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:241 the cell prices the stated costs",
+      "backend/crates/edge/qip-arbitrage/tests/edge_costs.rs net falls by each stated figure"
     ],
-    "gap": "No producer states tax/duty or logistics costs in production; arbitrage desk off unless operator policy set.",
+    "gap": "No committed deployment states any costs: CentralConfig::arbitrage is unset or states none in every committed environment, so each production edge still ships costs: None. The figures are an operator's statement, not a measurement, and tax/duty needs a jurisdictional source this repository does not hold.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1301,10 +1301,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-arbitrage",
+    "verification": "cargo test -p qip-kernel --lib central::whitelist && cargo test -p qip-arbitrage --test edge_costs",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: whitelist_for shipping costs: None -> the carried-costs assertion fails."
   },
   {
     "id": "R12-MESH-5057",
@@ -2267,7 +2267,7 @@
       "qip-kernel/src/asset_class_registry.rs::tests::an_fx_forward_is_spot_carried_along_both_curves",
       "qip-kernel/src/asset_class_registry.rs::tests::withdrawing_a_class_makes_its_instruments_refused_by_the_same_admission"
     ],
-    "gap": "An FX forward instrument priced by covered_interest_forward on the production valuation path and traded on paper; funding and currency conversion reached from the cycle (multi-currency FxRates, bank conversions); a test trading an FX forward.",
+    "gap": "Not reached in this session. covered_interest_forward is read nowhere in production per the grader (asset_class_registry.rs defines it), the kernel builds FxRates with USD only, and qip_capital::bank::convert has no kernel or app caller; pricing a tenor-bearing ForeignExchange instrument also needs a tenor and the two currencies' rates from somewhere the universe record has not been shown to carry.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2278,7 +2278,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here."
+    "notes": "Round-2 independent audit, 2026-10-11: The registry docs claim forwards/swaps/funding/conversion are covered by TermStructure registration; only spot FX and cash are proven to trade. The class-level mutation (withdraw a record) is proven for DigitalAsset only in the unit test; the kernel test's stated mutation (delete the FX record) is plausible since assembly refuses, not run here. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-COVERAGE-5099",
@@ -2329,7 +2329,7 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:584"
     ],
-    "gap": "Shipping/storage economics linked to commodity valuation.",
+    "gap": "Not reached in this session. The Commodity record is a TermStructure label (asset_class_registry.rs) and qip_financial::physical models landed cost for commerce legs (customs, spoilage, marketplace fees); whether any of those fields is storage-and-freight carry on a futures curve is a modelling decision to make before the wiring.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2340,7 +2340,7 @@
     "verification": "cargo test -p qip-kernel --test asset_classes",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-COVERAGE-5102",

@@ -1560,6 +1560,7 @@ fn arbitrage_policy(venues: &[&str]) -> ArbitragePolicy {
                 market: format!("AAA-USD@{venue}"),
                 base: "AAA".to_string(),
                 quote: "USD".to_string(),
+                costs: None,
             })
             .collect(),
         start_sizes: BTreeMap::from([("AAA".to_string(), dec!("100"))]),
@@ -2207,6 +2208,7 @@ fn a_market_at_an_undescribed_venue_is_refused_when_the_plane_assembles() -> Res
         market: "AAA-USD@XPAR".to_string(),
         base: "AAA".to_string(),
         quote: "USD".to_string(),
+        costs: None,
     });
     let Err(error) = plane_with_arbitrage(policy) else {
         panic!("a market at an undescribed venue should not assemble");

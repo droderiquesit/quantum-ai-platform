@@ -2004,11 +2004,16 @@
   {
     "id": "R12-TICK-2085",
     "status": "PARTIAL",
-    "current": "FusedState::posteriors is the stated read surface for foundry and brains; produced by the tick desk.",
+    "current": "FusedState::posteriors is read: TickDesk keeps the last round's posteriors, node.rs hands them to EvolutionEngine::set_priors before each turn, and the engine sizes the subject's foundry round with StrategyFoundry::search_with_prior (count x (0.5 + posterior), refusing a non-probability). The neutral prior reproduces the plain search.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::FusedState"
+      "backend/crates/runtime/qip-kernel/src/central/foundry.rs search_with_prior, NEUTRAL_PRIOR",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs TickDesk::posteriors",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs set_priors and its use in maybe_turn",
+      "backend/crates/apps/qip-deepbrain/src/node.rs the set_priors hand-off",
+      "backend/crates/runtime/qip-kernel/tests/foundry.rs a_fused_posterior_changes_how_many_candidates_a_round_proposes_and_so_which_are_registered",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs a_fused_posterior_handed_to_the_engine_sizes_the_round_it_runs"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No foundry, Asset, Capital or Risk brain reads FusedState.",
+    "gap": "The tick desk is still off by default (QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it), so no deployed binary produces a posterior and every deployed round searches at the neutral size. The node.rs hand-off (TickDesk::posteriors -> set_priors) has no test of its own: deleting it fails nothing. Fusion posteriors are keyed by the watch graph's instrument names, which match the evolution subject only where the graph names instruments as the exchange does. No Asset, Capital or Risk brain type exists to read it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2018,10 +2023,10 @@
       "R12-TICK-2081"
     ],
     "blocked_by": "",
-    "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
+    "verification": "cargo test -p qip-kernel --test foundry && cargo test -p qip-deepbrain --lib evolution::tests::a_fused",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutations fired: search_with_prior ignoring its prior fails the kernel test (the moving and quiet subjects propose the same ten); the engine passing the neutral prior fails the deepbrain test on the high-prior comparison."
   },
   {
     "id": "R12-TICK-2086",

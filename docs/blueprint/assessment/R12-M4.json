@@ -251,7 +251,7 @@
       "backend/crates/edge/qip-strategy/src/compile.rs strategy IR compiler",
       "backend/crates/services/qip-training/src/distill.rs:311 distil"
     ],
-    "gap": "Symbolic-predicate and representation compilation missing.",
+    "gap": "No predicate-to-strategy-IR compiler exists: the symbolic stage's validated rule packs (qip-reasoning-engine) are advisory data, and qip-strategy/compile.rs compiles the generator's candidates only. The compiler needs a defined mapping from Cond/Op/Value facts to the IR's Type and feature catalogue (which instruments' features a rule fact names) and a bounds contract, which is a design decision rather than a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -262,7 +262,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-MODEL-4013",
@@ -2074,7 +2074,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:15898 shared_cause::observe",
       "backend/crates/libs/qip-risk/tests/shared_cause.rs"
     ],
-    "gap": "Learned/AI risk discovery.",
+    "gap": "Not reached in this session. The closure asks for one test asserting CentralPlane.crowded and shared_cause findings in a single cycle's report; tests/central.rs has crowded tests (lines 642, 6565) and none over shared_cause, so the combined fixture still has to be built.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2085,7 +2085,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4095",
@@ -2476,7 +2476,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_split_panel_shrinks_the_size_of_the_thesis_it_split_on",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving dissent through the cycle into the sizing budget and the next grant, mutation-verified; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: split-panel dissent driven through REASON into SurvivalGovernor::size and Platform::issue_capital is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2487,7 +2487,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4113",
@@ -2548,7 +2548,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_regime_never_graded_in_shrinks_the_size",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving a regime mismatch into the sizing budget and the next grant; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: the regime-mismatch narrowing of size and the next grant is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2559,7 +2559,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4116",

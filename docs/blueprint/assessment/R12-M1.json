@@ -4429,7 +4429,7 @@
       "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:112",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs"
     ],
-    "gap": "Belief/risk packs; deployment.",
+    "gap": "PolicyPayload slots are assembled in qip-api's mesh.rs, not in central/plane.rs, and risk_envelope is still Slot::unproduced there. Filling it needs a LimitSet -> qip_contracts::risk_envelope::RiskEnvelope mapping and a qip_edge::Cell apply seam that may only narrow the cell's limits; the edge side is the risk-and-execution domain, which asks for compliance_proof and security evidence and an explicit statement of the paper boundary, none of which this lane produced.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4440,7 +4440,7 @@
     "verification": "cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-REFLEX-1196",

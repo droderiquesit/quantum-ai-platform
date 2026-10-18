@@ -3126,6 +3126,7 @@ mod tests {
             market: format!("AAA-USD@{venue}"),
             base: "AAA".to_string(),
             quote: "USD".to_string(),
+            costs: None,
         };
         let config = CentralConfig {
             arbitrage: Some(ArbitragePolicy {
@@ -3277,6 +3278,7 @@ mod tests {
             market: format!("AAA-USD@{venue}"),
             base: "AAA".to_string(),
             quote: "USD".to_string(),
+            costs: None,
         };
         let config = CentralConfig {
             arbitrage: Some(ArbitragePolicy {

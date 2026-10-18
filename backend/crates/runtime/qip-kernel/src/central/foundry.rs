@@ -79,6 +79,10 @@ use qip_market::bar::Bar;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::StrategyCompiler;
 
+/// The prior under which [`StrategyFoundry::search_with_prior`] proposes
+/// exactly the count it was asked for.
+pub const NEUTRAL_PRIOR: f64 = 0.5;
+
 /// What one round of the search produced, for an operator and for a test.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoundryRound {
@@ -230,6 +234,34 @@ impl StrategyFoundry {
     /// looked at. Counting after a selection would let the selection decide
     /// what to count, which is the failure the ledger exists to prevent.
     pub fn search(&mut self, count: usize) -> Result<FoundryRound> {
+        self.search_with_prior(count, NEUTRAL_PRIOR)
+    }
+
+    /// One round whose size follows what the fusion engine believes about the
+    /// subject (R12-TICK-2085): `prior` is the strongest posterior in
+    /// `FusedState::posteriors`, and the round proposes
+    /// `count * (0.5 + prior)` candidates, so a subject the fused events say
+    /// is moving gets up to half as many again and one they say is quiet gets
+    /// half. [`NEUTRAL_PRIOR`] reproduces [`Self::search`] exactly.
+    ///
+    /// Refused outside `[0, 1]` or non-finite, not clamped: a posterior that
+    /// is not a probability is a fusion bug, and sizing a search from it would
+    /// hide the bug behind a plausible number. The scaled size is still counted
+    /// into the trial ledger like any other round, so a prior can buy more
+    /// draws and never cheaper ones.
+    pub fn search_with_prior(&mut self, count: usize, prior: f64) -> Result<FoundryRound> {
+        if !(prior.is_finite() && (0.0..=1.0).contains(&prior)) {
+            return Err(Error::invalid(format!(
+                "a search prior of {prior} is not a probability in [0, 1]; pass the fused \
+                 posterior unmodified or use `search` for the neutral size"
+            )));
+        }
+        let count = if count == 0 {
+            0
+        } else {
+            // Statistic to count: the crossing point is this line.
+            ((count as f64) * (0.5 + prior)).round().max(1.0) as usize
+        };
         if count == 0 {
             return Err(Error::invalid(
                 "a search of no candidates is not a smaller search; it produces nothing and \
