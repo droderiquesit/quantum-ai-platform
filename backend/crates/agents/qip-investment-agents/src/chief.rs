@@ -99,6 +99,16 @@ impl OrganisationReport {
         self.findings.len() as f64 / asked as f64
     }
 
+    /// The scopes the informative findings evidence, by the fact labels each
+    /// scope names (see [`crate::coverage`]).
+    ///
+    /// Distinct from [`Self::coverage`], which is a ratio of findings to runs
+    /// and cannot say *what* went unexamined: an organisation missing its
+    /// microstructure analyst has the same ratio and no queue figure.
+    pub fn covered_scopes(&self) -> std::collections::BTreeSet<crate::coverage::Scope> {
+        crate::coverage::covered_by(&self.findings)
+    }
+
     /// Runs where an agent attempted something it was not granted.
     pub fn permission_violations(&self) -> Vec<&AgentRunRecord> {
         self.runs
@@ -218,6 +228,21 @@ impl Organisation {
         now: Timestamp,
     ) -> Result<Self> {
         roster.validate(now)?;
+        // An agent the roster does not hold runs under a manifest nobody's
+        // governance review read: `Roster::validate` checks the manifests it
+        // was given, and an agent outside it would escape every rule there —
+        // independence, the veto, the market reach. The poisoning detector
+        // was exactly that case in reverse for a while, a manifest written
+        // and never rostered, and the next one should fail at assembly.
+        for agent in &agents {
+            let id = &agent.manifest().id;
+            if roster.get(id).is_none() {
+                return Err(qip_core::error::Error::invalid(format!(
+                    "agent {id} is not on the roster, so its manifest was never reviewed; add \
+                     it to manifests::roster or do not construct it"
+                )));
+            }
+        }
         Ok(Self {
             roster,
             agents,
@@ -227,7 +252,8 @@ impl Organisation {
         })
     }
 
-    /// The standard eighteen-agent organisation.
+    /// The standard organisation: every agent [`standard_agents`] builds,
+    /// under [`manifests::roster`].
     pub fn standard(
         desk: Arc<Desk>,
         reviewed_at: Timestamp,
@@ -237,93 +263,16 @@ impl Organisation {
         licensed_datasets: Vec<String>,
         quantum_backend_available: bool,
     ) -> Result<Self> {
-        use crate::{
-            analysts, construction, control, execution, fast, learning, reasoning, review,
-        };
-
         let mut host = AgentHost::new(seed);
         if let Some(model) = language_model {
             host = host.with_language_model(model);
         }
-
-        let agents: Vec<Arc<dyn Agent>> = vec![
-            Arc::new(ChiefInvestmentIntelligence::new(
-                manifests::chief(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(analysts::MacroAnalyst::new(
-                manifests::macro_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(analysts::EquityAnalyst::new(
-                manifests::equity_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(analysts::CreditAnalyst::new(
-                manifests::credit_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(fast::MicrostructureAnalyst::new(
-                manifests::microstructure_analyst(reviewed_at),
-                desk.clone(),
-                qip_core::Decimal::from_int(1_000),
-            )),
-            Arc::new(analysts::DerivativesAnalyst::new(
-                manifests::derivatives_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(analysts::CommoditiesAnalyst::new(
-                manifests::commodities_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(analysts::FxRatesAnalyst::new(
-                manifests::fx_rates_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(analysts::AlternativeDataAnalyst::new(
-                manifests::alternative_data_analyst(reviewed_at),
-                desk.clone(),
-                licensed_datasets,
-            )),
-            Arc::new(reasoning::CausalAnalyst::new(
-                manifests::causal_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(review::AdversarialReviewer::new(
-                manifests::adversarial_reviewer(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(crate::simulation::SimulationAnalyst::new(
-                manifests::simulation_analyst(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(construction::PortfolioConstruction::new(
-                manifests::portfolio_construction(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(construction::QuantumOptimization::new(
-                manifests::quantum_optimization(reviewed_at),
-                desk.clone(),
-                quantum_backend_available,
-            )),
-            Arc::new(control::RiskControl::new(
-                manifests::risk_control(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(execution::ExecutionTrader::new(
-                manifests::execution_trader(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(learning::LearningAttribution::new(
-                manifests::learning_attribution(reviewed_at),
-                desk.clone(),
-            )),
-            Arc::new(control::ComplianceControl::new(
-                manifests::compliance_control(reviewed_at),
-                desk,
-            )),
-        ];
-
+        let agents = standard_agents(
+            desk,
+            reviewed_at,
+            licensed_datasets,
+            quantum_backend_available,
+        );
         Self::new(manifests::roster(reviewed_at), agents, host, now)
     }
 
@@ -409,4 +358,106 @@ impl Organisation {
             missing_inputs,
         }
     }
+}
+
+/// Every agent of the standard organisation, each under its manifest, sharing
+/// one desk.
+///
+/// Split from [`Organisation::standard`] so the organisation tests can build
+/// the same list with one agent removed and show what the organisation then
+/// stops covering — the integration clause every specialist row in the
+/// blueprint names — without a production method that drops an agent.
+pub fn standard_agents(
+    desk: Arc<Desk>,
+    reviewed_at: Timestamp,
+    licensed_datasets: Vec<String>,
+    quantum_backend_available: bool,
+) -> Vec<Arc<dyn Agent>> {
+    use crate::{
+        analysts, construction, control, execution, fast, learning, poisoning, reasoning, review,
+    };
+
+    vec![
+        Arc::new(ChiefInvestmentIntelligence::new(
+            manifests::chief(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(analysts::MacroAnalyst::new(
+            manifests::macro_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(analysts::EquityAnalyst::new(
+            manifests::equity_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(analysts::CreditAnalyst::new(
+            manifests::credit_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(fast::MicrostructureAnalyst::new(
+            manifests::microstructure_analyst(reviewed_at),
+            desk.clone(),
+            qip_core::Decimal::from_int(1_000),
+        )),
+        Arc::new(analysts::DerivativesAnalyst::new(
+            manifests::derivatives_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(analysts::CommoditiesAnalyst::new(
+            manifests::commodities_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(analysts::FxRatesAnalyst::new(
+            manifests::fx_rates_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(analysts::AlternativeDataAnalyst::new(
+            manifests::alternative_data_analyst(reviewed_at),
+            desk.clone(),
+            licensed_datasets,
+        )),
+        Arc::new(reasoning::CausalAnalyst::new(
+            manifests::causal_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(review::AdversarialReviewer::new(
+            manifests::adversarial_reviewer(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(crate::simulation::SimulationAnalyst::new(
+            manifests::simulation_analyst(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(construction::PortfolioConstruction::new(
+            manifests::portfolio_construction(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(construction::QuantumOptimization::new(
+            manifests::quantum_optimization(reviewed_at),
+            desk.clone(),
+            quantum_backend_available,
+        )),
+        Arc::new(control::RiskControl::new(
+            manifests::risk_control(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(execution::ExecutionTrader::new(
+            manifests::execution_trader(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(learning::LearningAttribution::new(
+            manifests::learning_attribution(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(control::ComplianceControl::new(
+            manifests::compliance_control(reviewed_at),
+            desk.clone(),
+        )),
+        // Appended rather than placed beside the reviewer, so the run ids
+        // the agents above were already given keep their sequence.
+        Arc::new(poisoning::PoisoningDetector::new(
+            manifests::poisoning_detector(reviewed_at),
+            desk,
+        )),
+    ]
 }

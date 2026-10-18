@@ -962,14 +962,16 @@
   },
   {
     "id": "R12-QUANT-4045",
-    "status": "PARTIAL",
-    "current": "Selection uses objective improvement above the margin with feasibility; failure or loss leaves the classical answer. Cost and latency are not part of the comparison in ComputeRouter (time_budget is declared but not compared per run); qip-contracts RoutingDecision has a cost threshold but is not used by the kernel.",
+    "status": "COMPLETE",
+    "current": "A quantum answer is re-scored on the cycle's real objective and adopted only above the margin; it is admitted only within cost (per-job cap, value-versus-cost, cumulative budget, all at dispatch, so an over-budget job never produces an answer) and latency (an answer past quantum_patience_cycles is abandoned and discarded unread; a substrate whose mean latency passes its ceiling stops being tried). A failed, losing, late or over-budget path leaves the classical result in force.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:329-385 selection",
-      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:683 a_failed_quantum_attempt_leaves_the_classical_answer_standing",
-      "backend/crates/libs/qip-contracts/src/quantum.rs:208-310 RoutingDecision with cost (acceptance tests only)"
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1794 a_quantum_answer_that_wins_on_objective_but_exceeds_the_latency_budget_is_not_used",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs:452 a_job_whose_expected_gain_is_not_worth_its_price_is_declined_and_the_comparison_is_journaled",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs a_failed_quantum_attempt_leaves_the_classical_answer_standing",
+      "backend/crates/libs/qip-quantum/src/gateway.rs QuantumGateway::poll abandonment"
     ],
-    "gap": "Include measured cost and latency in the router's admission of a quantum answer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -977,10 +979,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test optimization a_quantum_answer_that_wins_on_objective_but_exceeds_the_latency_budget",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L19. Mutation: making QuantumGateway::poll never abandon (polls >= u32::MAX) leaves the late job pending past its patience and the test fires; the cost half is mutation-verified by the 9046 and 4051 tests. qip-contracts RoutingDecision is still not the kernel's type (see R12-QUANT-4063)."
   },
   {
     "id": "R12-QUANT-4046",
@@ -1008,40 +1010,44 @@
   },
   {
     "id": "R12-QUANT-4047",
-    "status": "PARTIAL",
-    "current": "RoutingLearning records per-substrate wins, verification, latency, cost, repeatability and calibration Brier, resumed from the journal at start-up; dispatch stops below a measured win-rate floor. Reachable in qip-deepbrain dev/test.",
+    "status": "COMPLETE",
+    "current": "RoutingLearning records per-substrate wins, verification, latency, cost and calibration (now with the direction of a miscalibration), resumed from the journal at start-up. ComputeRouter::estimate stops a substrate below the win-rate floor and, once quality_minimum_trials trials exist, below a repeatability floor, above a mean-latency ceiling (a share of patience, so it can fire), or when the router's own estimates score a Brier above the ceiling while running above what the substrate delivered.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:309 tally per problem size; :420 record(won)",
-      "backend/crates/services/qip-optimization-engine/src/compute.rs:293 InformationValue win_probability",
-      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
-      "backend/crates/services/qip-optimization-engine/src/learning.rs::RoutingLearning",
-      "backend/crates/runtime/qip-kernel/src/compute_routing.rs::resume"
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1656 measured_shortfall",
+      "backend/crates/services/qip-optimization-engine/src/learning.rs::SubstrateRecord::overconfidence",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs:543 a_substrate_that_wins_but_answers_rarely_late_or_against_its_estimate_stops_being_tried",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs a_replayed_router_holds_the_live_routers_learning_and_a_losing_substrate_stays_stopped",
+      "backend/crates/runtime/qip-kernel/src/compute_routing.rs:185 resume",
+      "backend/crates/apps/qip-deepbrain/src/main.rs::with_compute_settings"
     ],
-    "gap": "Only win rate and a fixed per-job cost cap gate dispatch; latency, repeatability and calibration are recorded on InformationValue but never change routing.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-QUANT-4053"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test learning",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L19. Mutations, one per gate in measured_shortfall (repeatability < 0.0, latency > f64::MAX, overconfidence > 1.0): each makes its case submit and the test fires. Integrated: qip-deepbrain attaches the arm from the dev/test catalogue (with_compute_settings); nothing is deployed."
   },
   {
     "id": "R12-QUANT-4048",
-    "status": "PARTIAL",
-    "current": "TaskClass has the eight variants and compile() refuses a task with no class; the class is declared by the caller (router hardcodes CombinatorialOptimisation), not inferred by the compiler.",
+    "status": "COMPLETE",
+    "current": "TaskClass has the eight variants; TaskStructure declares the shape of a task's answer and TaskStructure::classify infers the class from it, refusing a structure that fits no class (unclassified) or several (contradictory). TaskSpec::compile classifies from the structure and refuses a declared class the structure contradicts. The router no longer asserts a class: every DECIDE compile declares its answer as a choice minimising an objective and the compiler infers combinatorial optimisation.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/compute.rs:41 TaskClass (8 variants); :202 class required",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:994 class: Some(TaskClass::CombinatorialOptimisation)",
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:162 TaskStructure",
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:189 classify",
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:278 compile classifies and checks a declared class",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1779 router declares structure, not class",
+      "backend/crates/services/qip-optimization-engine/tests/compute.rs:128 the_compiler_infers_each_class_from_the_answers_structure_and_refuses_a_contradiction",
       "backend/crates/services/qip-optimization-engine/tests/compute.rs:27 a_task_missing_any_declared_property_is_refused_by_name_rather_than_defaulted"
     ],
-    "gap": "Compiler-side classification; any task class other than portfolio reaching it in production.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1049,10 +1055,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test compute",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
+    "notes": "Closed 2026-10-18 by lane L19. Mutations: mapping graph_structured to CombinatorialOptimisation, widening [class] to [class, ..], and dropping the declared-versus-inferred check each make the test fire. Runs on every ComputeRouter::solve, classical deployments included; only the portfolio-allocation workload reaches the compiler in production."
   },
   {
     "id": "R12-QUANT-4049",
@@ -1102,26 +1108,27 @@
   },
   {
     "id": "R12-QUANT-4051",
-    "status": "PARTIAL",
-    "current": "Each dispatch records an InformationValue (win probability, expected gain, cost) and declines below the win-rate floor, over the cost cap, or against an exact baseline; reachable in qip-deepbrain with dev/test settings.",
+    "status": "COMPLETE",
+    "current": "Each dispatch estimate records win probability, expected gain, the value of that gain (expected_value_micros = expected_gain x RoutingPolicy::value_per_unit_gain_micros), the cost and the spend already billed, and ComputeRouter::estimate declines the dispatch when the expected value is below the cost, journaling the comparison on InformationValue. Both candidate substrates (the asynchronous QPU arm, whose job runs on the gateway worker beside the cycle, and the synchronous quantum-inspired rung) are dispatched only through this estimate. Value 0 by default: only a free job is worth sending until an operator prices an improvement.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/compute.rs:293 InformationValue.cleared",
-      "backend/crates/services/qip-optimization-engine/src/router.rs:742 estimate recorded",
-      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)",
-      "backend/crates/services/qip-optimization-engine/src/router.rs::ComputeRouter::estimate"
+      "backend/crates/services/qip-optimization-engine/src/compute.rs:326 InformationValue.expected_value_micros",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:422 value_per_unit_gain_micros",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1616 value below cost declines",
+      "backend/crates/services/qip-optimization-engine/tests/learning.rs:452 a_job_whose_expected_gain_is_not_worth_its_price_is_declined_and_the_comparison_is_journaled",
+      "backend/crates/runtime/qip-kernel/src/compute_routing.rs:185 resume"
     ],
-    "gap": "Cost is a fixed cap, not weighed against expected gain, so value does not 'justify the cost'; no parallel multi-substrate dispatch.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test learning a_job_whose_expected_gain_is_not_worth_its_price",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L19. Mutation: deleting the expected_value_micros < cost_micros arm sends the job and the declined assertion fires. Runs wherever the quantum arm is attached (qip-deepbrain dev/test catalogue); nothing is deployed."
   },
   {
     "id": "R12-QUANT-4052",
@@ -1229,12 +1236,15 @@
   {
     "id": "R12-QUANT-4057",
     "status": "PARTIAL",
-    "current": "For the one integrated workload (portfolio allocation) the router refuses a quantum answer that violates any constraint and the objective carries an optional turnover penalty; collateral/funding/placement search has no quantum path.",
+    "current": "For portfolio allocation, every quantum candidate is re-scored on the real problem, whose objective carries the transaction cost (turnover_penalty over current holdings; qip-portfolio-engine construction sets it from the mandate's turnover_cost_bps, 15 by default), and refused if infeasible or not better than the classical baseline after that cost. PortfolioProblem::validate now refuses a negative or non-finite penalty, a holdings vector of the wrong length, and holdings declared with a zero penalty. Collateral, funding and capital-placement search have no quantum path.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:329-340 infeasible quantum refused",
-      "backend/crates/services/qip-optimization-engine/src/problem.rs:203 with_turnover_penalty"
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1317 infeasible quantum refused",
+      "backend/crates/services/qip-optimization-engine/src/problem.rs:261 turnover penalty validated",
+      "backend/crates/services/qip-optimization-engine/src/problem.rs:285 holdings without a cost refused",
+      "backend/crates/services/qip-portfolio-engine/src/construction.rs:371 production sets the penalty",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1908 a_quantum_allocation_that_wins_only_by_ignoring_transaction_cost_is_refused"
     ],
-    "gap": "Transaction-cost model in the check; collateral/funding/placement families.",
+    "gap": "Collateral, funding and capital-placement search: no quantum path exists for those families, so their check against capital invariants and transaction cost is unbuilt. The portfolio half is closed and mutation-verified.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1244,10 +1254,10 @@
       "R12-QUANT-4034"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test optimization a_quantum_allocation_that_wins_only_by_ignoring_transaction_cost",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L19. Mutations: dropping the turnover term from objective_at adopts the candidate against the costed problem; deleting the zero-penalty refusal admits uncosted holdings; both fire."
   },
   {
     "id": "R12-QUANT-4058",
@@ -1353,7 +1363,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:192-235 JobClass",
       "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway"
     ],
-    "gap": "Kernel/router use their own types, not the qip-contracts quantum contract; contract shape not exercised in production.",
+    "gap": "ComputeRouter takes PortfolioProblem and returns its own RoutingDecision; nothing in production builds a qip_contracts::quantum::DecisionRequest or SolverResult. The kernel seam meant to journal contract decisions, Platform::route_quantum_decisions in qip-kernel platform.rs, is a stub returning Vec::new(). Closing needs a router-side conversion (the QUBO the arm submits as a DecisionRequest, each run as a SolverResult) and that stub replaced by a call journaling it; the stub is lane L01's file.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1366,7 +1376,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change."
   },
   {
     "id": "R12-QUANT-4064",
