@@ -6871,6 +6871,235 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
     Ok(())
 }
 
+/// ADR 0123, R12-LEDGER-5016: issuing a grant funds its book at the
+/// authoritative ledger. The funding is the one `CapitalGrantFunded`
+/// operation queued beside the desk's treasury funding; it carries the
+/// grant's whole gross limit (the envelope reserves nothing, so the
+/// deployable capital is the grant), the region the cell last reported, the
+/// allocation's venue and the envelope's own window; its postings debit the
+/// grant's book and credit the central treasury; and its id is the desk
+/// chain, the kind and the grant's own identity. A restart over the same log
+/// — which holds no envelope — re-queues the funding byte for byte, so the
+/// resend carries the digest the first send did and the ledger answers a
+/// duplicate rather than a conflict.
+///
+/// Mutation: in `Platform::fund_capital_grant`, journal the record but do
+/// not push the operation — the first `pending_desk_operations` count stays
+/// at one and the "the grant funded no book" assertion fails. Mutation: in
+/// `requeue_capital_grant_fundings`, extend with nothing — the restart holds
+/// no funding and the re-queue assertion fails.
+#[test]
+fn issuing_a_grant_queues_its_funding_for_the_ledger_and_a_restart_requeues_the_same_record()
+-> Result<()> {
+    use qip_contracts::ledger::{Account, Direction};
+    use qip_contracts::ledger_operation::OperationKind;
+
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-grant-funding-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let id = strategy();
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+    let region = "europe-west2";
+
+    let funding = {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform =
+            Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+        register(platform.central_mut(), &id, CELL)?;
+        walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+        // The cell has spoken once, so the centre holds a region for it.
+        platform.ingest_cell_report(
+            CellReport::new(CELL, first_at).with_region(region),
+            first_at,
+        )?;
+        assert_eq!(
+            platform.pending_desk_operations().len(),
+            1,
+            "premise: only the desk's treasury funding is queued before a grant"
+        );
+        platform.issue_capital(
+            &id,
+            &operator("alice.chen", first_at),
+            first_at,
+            "the pilot gate passed and the allocator sized it inside the budget",
+            first_at,
+        )?;
+        assert_eq!(
+            platform.pending_desk_operations().len(),
+            1,
+            "one signature funded a book"
+        );
+        let issued = platform.issue_capital(
+            &id,
+            &operator("bram.oduya", second_at),
+            second_at,
+            "reviewed the allocation and the pilot evidence independently",
+            second_at,
+        )?;
+        assert_eq!(issued.outcome, "issued", "{issued:?}");
+        let envelope = platform
+            .central()
+            .envelope(CELL, &id)
+            .cloned()
+            .ok_or_else(|| qip_core::Error::not_found("the envelope the pair issued"))?;
+
+        let operations = platform.pending_desk_operations();
+        assert_eq!(
+            operations.len(),
+            2,
+            "the grant funded no book: {operations:?}"
+        );
+        let funding = operations[1].clone();
+        let chain = platform.config().desk_chain.clone();
+        assert_eq!(
+            funding.operation_id,
+            format!(
+                "{chain}:capital-grant-funded:{}@{CELL}@{}",
+                id.as_str(),
+                second_at.as_secs()
+            )
+        );
+        assert_eq!(funding.origin, chain, "the shipper refuses another origin");
+        assert_eq!(
+            funding.sequence, 1,
+            "the treasury funding holds sequence zero on the same origin"
+        );
+        assert_eq!(funding.recorded_at, second_at);
+        let OperationKind::CapitalGrantFunded {
+            treasury,
+            cell,
+            unit,
+            grant,
+        } = &funding.kind
+        else {
+            panic!("the grant's funding is not a CapitalGrantFunded: {funding:?}");
+        };
+        assert_eq!(treasury, qip_kernel::platform::CENTRAL_TREASURY);
+        assert_eq!(cell, CELL);
+        assert_eq!(unit, qip_kernel::desk_ledger::DESK_QUOTE_UNIT);
+        assert_eq!(grant.strategy, id);
+        assert_eq!(grant.region, region);
+        assert_eq!(grant.venue, venue());
+        assert_eq!(grant.amount, envelope.gross_limit());
+        assert_eq!(grant.liquidity_reserve, Decimal::ZERO);
+        assert_eq!(
+            grant.deployable(),
+            envelope.gross_limit(),
+            "the envelope reserves nothing, so the whole grant is deployable"
+        );
+        assert_eq!(grant.risk_budget, envelope.loss_limit());
+        assert_eq!(grant.granted_at, second_at);
+        assert_eq!(grant.expires_at, envelope.expires_at());
+        assert!(grant.is_live(funding.recorded_at));
+
+        let event = funding.to_event()?;
+        let postings = event.postings();
+        assert_eq!(postings.len(), 2, "{postings:?}");
+        let debit = &postings[0];
+        let credit = &postings[1];
+        assert_eq!(debit.direction, Direction::Debit);
+        assert_eq!(
+            debit.account,
+            Account::Trading {
+                cell: CELL.to_string(),
+                strategy: id.as_str().to_string(),
+            }
+        );
+        assert_eq!(debit.amount, envelope.gross_limit());
+        assert_eq!(credit.direction, Direction::Credit);
+        assert_eq!(
+            credit.account,
+            Account::Treasury {
+                treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string(),
+            }
+        );
+        assert_eq!(credit.amount, envelope.gross_limit());
+        assert_eq!(event.source().order_id, funding.operation_id);
+        funding
+    };
+
+    // The restart: a fresh process over the same log, an hour on, nothing
+    // registered and no envelope in the plane — and the funding queued
+    // again, byte for byte, because the record and not the grant is replayed.
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) =
+        Context::deterministic(start().saturating_add(Duration::from_hours(1)), config.seed);
+    let restarted = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    assert!(
+        restarted.central().envelope(CELL, &id).is_none(),
+        "premise: the plane's envelopes do not survive a restart"
+    );
+    let requeued: Vec<_> = restarted
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| matches!(operation.kind, OperationKind::CapitalGrantFunded { .. }))
+        .collect();
+    assert_eq!(
+        requeued.len(),
+        1,
+        "the restart did not re-queue the grant's funding: {:?}",
+        restarted.pending_desk_operations()
+    );
+    assert_eq!(
+        *requeued[0], funding,
+        "the restart rebuilt the funding instead of replaying it"
+    );
+    assert_eq!(requeued[0].digest()?, funding.digest()?);
+    Ok(())
+}
+
+/// A grant sized at a cell the centre has never heard from is still funded
+/// — the ledger's postings read the cell and the strategy — and its record
+/// says the region is unknown rather than guessing one from the cell's name.
+///
+/// Mutation: in `Platform::fund_capital_grant`, fall back to the cell's name
+/// as the region — the region assertion fails.
+#[test]
+fn a_grant_to_a_cell_the_centre_has_never_heard_from_is_funded_under_an_unknown_region()
+-> Result<()> {
+    use qip_contracts::ledger_operation::OperationKind;
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    assert!(
+        platform.central().last_heard().get(CELL).is_none(),
+        "premise: the centre has never heard from {CELL}"
+    );
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+    platform.issue_capital(
+        &id,
+        &operator("alice.chen", first_at),
+        first_at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        first_at,
+    )?;
+    platform.issue_capital(
+        &id,
+        &operator("bram.oduya", second_at),
+        second_at,
+        "reviewed the allocation and the pilot evidence independently",
+        second_at,
+    )?;
+    let funding = platform
+        .pending_desk_operations()
+        .iter()
+        .find(|operation| matches!(operation.kind, OperationKind::CapitalGrantFunded { .. }))
+        .cloned()
+        .ok_or_else(|| qip_core::Error::not_found("the grant's funding"))?;
+    let OperationKind::CapitalGrantFunded { grant, .. } = &funding.kind else {
+        unreachable!("filtered on the kind");
+    };
+    assert_eq!(grant.region, "unknown");
+    assert_ne!(grant.region, CELL);
+    Ok(())
+}
+
 #[test]
 fn one_operator_signing_a_capital_grant_twice_is_refused_and_nothing_is_issued() -> Result<()> {
     let id = strategy();

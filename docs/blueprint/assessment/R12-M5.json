@@ -111,7 +111,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for reservations or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "No production producer for this kind. Two other kinds now reach qip-ledgerd from production (treasury funding at every desk start, capital-grant funding at issue; ADR 0123 decisions 5 and 6), so the path exists; what is missing is an observer of a reservation. The one place inventory is reserved is the commerce research plane's event-sourced ledger (qip_financial::commerce::LedgerEvent::Reserved, qip-kernel/src/commerce_research.rs), which runs only when the deep brain is handed a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN) and no committed environment sets one, so a producer there would run on no default or committed path.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -122,7 +122,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to add inventory operations only where a production path observes the fact: PARTIAL->PARTIAL, no producer added; the gap names the observing path and why it does not qualify."
   },
   {
     "id": "R12-LEDGER-5006",
@@ -243,12 +243,12 @@
   {
     "id": "R12-LEDGER-5011",
     "status": "PARTIAL",
-    "current": "Settlement enum has exactly one variant, Simulated (backend/crates/libs/qip-contracts/src/ledger.rs:42-44), by design (paper boundary); test settlement_has_no_variant_but_simulated. No pending/settled lifecycle exists.",
+    "current": "Settlement enum has exactly one variant, Simulated (backend/crates/libs/qip-contracts/src/ledger.rs:42-44), by design (paper boundary); test settlement_has_no_variant_but_simulated. No pending/settled lifecycle exists. Two production facts about settlement exist and neither is a settlement the ledger could record: the simulated broker books cash at the fill and reports no settlement, and the desk's settlement register (Platform::register_settlement, T+1 from the SettlementBook declared at assembly) holds a calendar projection of when sale proceeds become usable, read by survival sizing and never confirmed by anything.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
     ],
-    "gap": "A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant.",
+    "gap": "A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -259,7 +259,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does."
   },
   {
     "id": "R12-LEDGER-5012",
@@ -319,7 +319,7 @@
       "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
     ],
-    "gap": "Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions.",
+    "gap": "Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions. A settlement record has nothing to carry: no production path observes a settlement (the simulated venue settles at the fill; the desk's T+1 register is a projection), so the walk still stops at order/signal. Treasury and capital-grant fundings now reach the ledger as operations whose source cites the operation id and the desk chain, so a funding balance walks back to the grant's own identity (strategy@cell@granted-at) and the journalled CapitalGrantFunded record; that is a lineage for a funding, not the intent -> order -> fill -> settlement chain this row names.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -330,7 +330,7 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL; no settlement record was added because nothing reports one."
   },
   {
     "id": "R12-LEDGER-5015",
@@ -357,26 +357,31 @@
   },
   {
     "id": "R12-LEDGER-5016",
-    "status": "PARTIAL",
-    "current": "Account::Treasury and treasury funding/capital-grant operations post into the global journal and the trial balance closes; tested in qip-contracts and through ledgerd.",
+    "status": "COMPLETE",
+    "current": "Account::Treasury is the credit side of two production operations that reach qip-ledgerd over ledger.operation_recorded: every desk's treasury funding, queued at assembly (Platform::queue_treasury_funding), and every capital grant's funding, queued when two operators issue the grant (Platform::issue_capital -> fund_capital_grant, OperationKind::CapitalGrantFunded). Both post Dr the book's trading account, Cr treasury:central; the trial balance closes in the acceptance test against a real ledgerd, and the treasury balance is the sum of both fundings. A restart replays each funding record as written and the ledger answers a duplicate.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:67 Account enum",
-      "backend/crates/services/qip-capital/src/treasury.rs:52 CapitalBook (not ledger)",
-      "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
-      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
+      "backend/crates/libs/qip-contracts/src/ledger.rs Account::Treasury",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs OperationKind::TreasuryAllocation and CapitalGrantFunded",
+      "backend/crates/libs/qip-contracts/tests/ledger_operation.rs (one of every kind posts to its own subledger and no other)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::queue_treasury_funding",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fund_capital_grant",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::issuing_a_grant_queues_its_funding_for_the_ledger_and_a_restart_requeues_the_same_record",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::apply_operation",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::the_desks_treasury_funding_reaches_the_ledger_once_across_restarts",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for treasury or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ledgerd plus a subledger test",
+    "verification": "cargo test -p qip-kernel --test central -- grant_; cargo test -p qip-acceptance --test vertical_slice_ship -- funding; cargo test -p qip-contracts --test ledger_operation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->COMPLETE. The gap text ('no production producer') predated ADR 0123's desk funding (27aa66df) and is closed a second way by the grant funding. Mutations: fund_capital_grant journals but does not queue (central and vertical_slice_ship fail on the queued count); the restart rebuilds the funding one second later (ledgerd refuses the resend as a conflict and the acceptance test fails on the refusal note); the region falls back to the cell name (central fails). Not deployed: no broker and no desk token exist in any environment, so deployable stays false. A grant's funding is never recalled at expiry (ADR 0123 'What it costs'); that is a limit of the operation set, not of this subledger."
   },
   {
     "id": "R12-LEDGER-5017",
@@ -410,7 +415,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for physical inventory/commerce or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "No production producer for this kind. Two other kinds now reach qip-ledgerd from production (treasury funding at every desk start, capital-grant funding at issue; ADR 0123 decisions 5 and 6), so the path exists; what is missing is an observer of a physical movement that runs by default. Receipts into a warehouse and sales to the paper buyer are observed by the commerce research plane (qip-kernel/src/commerce_research.rs, LedgerEvent::Received and CommercePlane::sell) only when the deep brain is handed a breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN), which no committed environment sets; the journaled CommerceSimulated record also carries no warehouse on its purchases and no unit id on its sales, so a movement could not be replayed from the log as written without journaling the operation itself.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -421,7 +426,7 @@
     "verification": "cargo test -p qip-ledgerd plus a subledger test",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to add inventory operations only where a production path observes the fact: PARTIAL->PARTIAL, no producer added; the gap names the observing path and why it does not qualify."
   },
   {
     "id": "R12-LEDGER-5019",

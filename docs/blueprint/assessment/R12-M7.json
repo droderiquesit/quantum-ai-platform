@@ -1453,16 +1453,19 @@
   {
     "id": "R12-CONTRACT-7066",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/capital.rs:316 CapitalGrant = Validated<CapitalGrantFields>, deny_unknown_fields decode and invariant checks",
+    "current": "backend/crates/libs/qip-contracts/src/capital.rs:316 CapitalGrant = Validated<CapitalGrantFields>, deny_unknown_fields decode and invariant checks. Since 2026-10-18 one production seam constructs it: Platform::fund_capital_grant (backend/crates/runtime/qip-kernel/src/platform.rs, via capital_grant_of) states a CapitalGrant from every CapitalEnvelope the plane issues through Platform::issue_capital and ships it to qip-ledgerd inside OperationKind::CapitalGrantFunded, which decodes it through the same refusals; its documentation names the fields the envelope states and the three (liquidity reserve, drawdown stop, ADV share) written from what the envelope says rather than observed.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/capital.rs:316 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:732 a_capital_grant_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:764 a_capital_grant_refuses_each_broken_invariant"
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:764 a_capital_grant_refuses_each_broken_invariant",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::capital_grant_of",
+      "backend/crates/runtime/qip-kernel/tests/central.rs::issuing_a_grant_queues_its_funding_for_the_ledger_and_a_restart_requeues_the_same_record",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts"
     ],
-    "gap": "No production seam constructs or consumes CapitalGrant (grep of CapitalGrantFields outside qip-contracts finds nothing). Fields owner, mandate, collateral, max_leverage, max_drawdown_bp and liquidity_reserve now exist (capital.rs:290-312).",
+    "gap": "The cell still enforces CapitalEnvelope, not CapitalGrant: the grant is a statement of the envelope for the ledger, consumed by qip-ledgerd and by nothing between brains, and three of its fields (liquidity reserve, drawdown stop, ADV share) are written from what the envelope says rather than from a bound the issuer set.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1470,7 +1473,7 @@
     "verification": "cargo test -p qip-edge --test envelope_expiry",
     "work_item": "",
     "size": "M",
-    "notes": "Here CapitalGrant is an enum of decisions, not the §27 record. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding CapitalGrant exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Here CapitalGrant is an enum of decisions, not the §27 record. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding CapitalGrant exists and is tested; nothing in production constructs or decodes it. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; 'nothing in production constructs or decodes it' is no longer true and the gap names the clause still unmet (consumed by the ledger only, not between brains)."
   },
   {
     "id": "R12-CONTRACT-7067",

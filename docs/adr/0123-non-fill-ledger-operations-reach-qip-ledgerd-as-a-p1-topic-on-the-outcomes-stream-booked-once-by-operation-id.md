@@ -62,6 +62,20 @@ exactly once") is held PARTIAL on that clause alone, and the subledger rows
    initial equity under the same id is refused by the ledger as a conflict,
    which is the correct answer to a desk that says its starting capital was
    two different things.
+6. **The second producer is the capital grant (2026-10-18).** When two
+   operators issue a grant through `Platform::issue_capital`, the kernel
+   funds the grant's book — Dr `trading:<cell>/<strategy>`, Cr the central
+   treasury, for the grant's deployable capital — as `CapitalGrantFunded`
+   operation `<chain>:capital-grant-funded:<strategy>@<cell>@<granted-at>`,
+   on the same desk operation path and the same shipper. The operation
+   itself is journalled (`CapitalGrantFunded`, origin
+   `kernel/capital-grant-funding`) and replayed as written on every start,
+   because the plane's envelopes do not survive a restart and a funding
+   rebuilt at the restart's clock would be a second digest under the same
+   id. The §24.9/§27 `CapitalGrant` the operation carries is stated from the
+   issued `CapitalEnvelope`: `Platform::fund_capital_grant`'s documentation
+   names which fields the envelope states and how the three it does not
+   (reserve, drawdown stop, ADV share) are written rather than guessed.
 
 ## Consequences
 
@@ -78,15 +92,28 @@ exactly once") is held PARTIAL on that clause alone, and the subledger rows
 
 - One more topic on the outcomes stream shares its P1 budget with the
   fills; a burst of operations can delay fills behind it on the same
-  partition. Today the only producer sends one record per desk start.
+  partition. Today the desk sends one record per start and one per
+  capital grant issued.
 - The schema lock samples one variant of `OperationKind`
-  (`TreasuryAllocation`). Every other kind's shape travels unlocked until
-  its producer adds a fixture.
+  (`TreasuryAllocation`), and CONTRACT-047 allows exactly one row per topic
+  and version, so a second variant cannot be locked beside it: the
+  `CapitalGrantFunded` shape the grant producer sends (decision 6) travels
+  unlocked, proven instead by `qip-contracts`' one-of-every-kind test and
+  by the acceptance test that books it at a real `qip-ledgerd`. Locking
+  every variant needs a lock keyed on more than the topic, which this
+  record does not decide.
+- A grant is funded when it is issued and never recalled: the operation
+  has no unwind, and nothing observes a grant's expiry as a fact to
+  record. A renewal of the same book is a second instant and so a second
+  funding, and the ledger's view of that book is every grant it was ever
+  issued, not the one in force. Correct for a book funded once; stated
+  here because it is not correct for one renewed hourly.
 - A refused operation is noted and passed, not halted on: a conflicting
   funding leaves the book unfunded at the ledger and is visible only as an
   `operation_refused` note, not as a stopped consumer.
-- Each desk start re-sends its funding; the ledger answers a duplicate,
-  which is one wasted record per start.
+- Each desk start re-sends its funding and every grant funding its log
+  holds; the ledger answers each with a duplicate, which is one wasted
+  record per start plus one per grant ever issued on that log.
 
 ## What would make this wrong
 
