@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 447 | 29.4% |
+| Blueprint completion (COMPLETE) | 448 | 29.5% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1224 | 80.6% |
 | Integrated (reached from a composition root) | 855 | 56.3% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 447 |
-| PARTIAL | 924 |
+| COMPLETE | 448 |
+| PARTIAL | 923 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -45,7 +45,7 @@ register (ADR 0099), and there is no second one.
 | [REASON](#reason) | 41 | 13 | 26 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 20 | 26 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 34 | 28 | 0 | 7 | 0 | 63 | 61 | 0 |
-| [MODEL](#model) | 81 | 21 | 56 | 3 | 1 | 0 | 76 | 71 | 0 |
+| [MODEL](#model) | 81 | 22 | 55 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 24 | 28 | 26 | 0 | 0 | 52 | 51 | 0 |
 | [EXPAND](#expand) | 68 | 25 | 41 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
@@ -1060,7 +1060,7 @@ register (ADR 0099), and there is no second one.
 | R12-MODEL-3093 | Forecast Market assigns synthetic reputation capital | A synthetic-credit forecast market settles by log scoring against the aggregate, and the kernel computes the tournament aggregate each LEARN (model_tournament.rs:445, advisory). The aggregate's weights are influence: the reputation share (settled balance) multiplied by calibration, information, cost, latency and regime survival, each in (0, 1] and able only to reduce it, then normalised. With every other factor tied the normalised weight is exactly ForecastMarket::shares, and the pooled probability is the share-weighted mix; a test now asserts both. | COMPLETE |  |  | P3 | cargo test -p qip-learning-engine --lib with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares |  |
 | R12-MODEL-3094 | Ephemeral specialists spawned and retired | Tournament admits Temporary forecasters with expiry and kernel calls retire_expired each cycle (unit-tested); nothing in production spawns a temporary specialist. | PARTIAL | Production spawning of ephemeral specialists. |  | P3 | new test to be written (see gap); cargo test -p <owning crate> |  |
 | R12-MODEL-3095 | Meta-models predict forecaster failure and reweight | FailurePredictor predicts per-regime failure from scored history shrunk toward the overall rate, and its survival factor scales influence per regime, so a regime predicted to break a forecaster reweights the aggregate; mutation recorded. | COMPLETE | None for the requirement; not deployed. |  | P3 | new test to be written (see gap); cargo test -p <owning crate> |  |
-| R12-MODEL-4001 | Hot lane stays Rust-first and bounded | lane_placement acceptance suite computes qip-edge-node's normal-dependency closure and requires it to equal the register's lane-0 set and to exclude qip-simulation-engine/qip-training/qip-twin/qip-world-model; qip-edge depends only on in-tree edge/lib crates. Inline models are DistilledModel with a validated cost bound. | PARTIAL | Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0. None for the constraint as written; nothing is deployed (execution_nodes = {}), so it is proven structurally only. |  | P1 | cargo test -p qip-acceptance --test lane_placement |  |
+| R12-MODEL-4001 | Hot lane stays Rust-first and bounded | Lane 0 has a bounded worst-case cost in a pass, not only in DistilledModel::cost: the compiler refuses a plan over CompilerLimits::default().max_nodes (512), and performance.rs::an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget deploys the largest chain-tree DistilledModel plan it admits, with a live feature input and the model promoted through the cell's policy, into a Cell and times whole Cell::work passes against the same 5000 us ceiling the baseline pass uses (about 490 us per pass in the debug profile on the measuring machine). It also pins the node budget to the 512 the time was measured at. lane_placement.rs still holds the lane-0 closure structurally. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test performance -- an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget |  |
 | R12-MODEL-4002 | Generalist models confined to the slow lane | An acceptance suite proves every LanguageModel adapter under providers/ is constructed only in qip-deepbrain/src, that fastbrain/edge sources never name it, and that edge manifests do not link qip-reasoning-engine or qip-kernel. | PARTIAL | qip-fastbrain still links qip-reasoning-engine through qip-kernel; the fast brain is fenced by a source scan, not by linkage. |  | P0 | new acceptance test: hosted language adapter constructed only under apps/qip-deepbrain |  |
 | R12-MODEL-4003 | Specialist predictive models in slow/warm lanes | qip-ai ModelClass enumerates exactly the nine specialist classes plus Generic and two reasoner classes, and refuses specialists from hot lanes; but the only models the deep brain trains are next-bar return regressors (ridge, boosted stumps), and ModelRegistry::allowed_in_hot_lane has no production caller. | PARTIAL | No specialist model for any of the nine targets is trained, registered or consumed; lane admission is not called by any deploy path. |  | P2 | per-class training + consumer integration tests |  |
 | R12-MODEL-4004 | Reflex models: tiny bounded hot-lane inference | DistilledModel (linear/tree) is bounded and validated; strategy IR carries Op::Model inline; Cell::check_models_promoted admits a model only if the signed manifest names its digest. No purpose-specific reflex model exists. | PARTIAL | No model trained for order-book state, fill probability, adverse selection, short-horizon signal or opportunity scoring; no plan in the deployed path carries one. | R12-MODEL-4024 | P1 | cargo test -p qip-edge with a purpose model deployed through the manifest |  |
