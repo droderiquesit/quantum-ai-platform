@@ -9,12 +9,14 @@
 use qip_agency::affordance::{Method, ToolEdgeDraft};
 use qip_agency::attribution::{Effect, EffectAttribution, HorizonObservation, Identification};
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
+use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
 use qip_agency::comparison::ComparisonDraft;
 use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
 use qip_agency::engine::{
     Adapter, EdgeDecl, Governance, LeverEvidence, Outcome, ProposalDraft, Request, VariableDecl,
     run_governed,
 };
+use qip_agency::generate::StructuralDecl;
 use qip_agency::goal::{GoalClass, GoalSpecDraft};
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardPolicy, PassDecl};
 use qip_agency::journal::{self, AgencyRecord, PassEntry, Provenance};
@@ -112,7 +114,32 @@ fn request(rate_window: u64) -> Request {
         }],
         guards: None,
         pass: Some(pass(rate_window)),
-        structural: None,
+        // A pass acts only over a plan simulated against counterfactual
+        // branches (R12-MODEL-4014).
+        structural: Some(StructuralDecl {
+            models: vec![StructuralModelDecl {
+                name: "desk".into(),
+                links: vec![StructuralLink {
+                    cause: "quote_size".into(),
+                    effect: "spread".into(),
+                    coefficient: -0.6,
+                }],
+                variables: Vec::new(),
+                intercepts: BTreeMap::from([("spread".to_string(), 6.0)]),
+                noise_variance: BTreeMap::new(),
+            }],
+            fitted: Vec::new(),
+            scenarios: vec![Scenario {
+                name: "calm".into(),
+                exogenous: BTreeMap::new(),
+            }],
+            objective: Objective {
+                variable: "spread".into(),
+                direction: Direction::Decrease,
+            },
+            actuation: BTreeMap::from([("quoter".to_string(), 10.0)]),
+            generate: None,
+        }),
         touches: vec![Subject::new(SubjectKind::Venue, "venue-a")],
     }
 }

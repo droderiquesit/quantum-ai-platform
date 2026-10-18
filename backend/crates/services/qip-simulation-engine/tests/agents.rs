@@ -895,3 +895,97 @@ fn a_maker_the_platform_bought_from_backs_its_ask_off_from_the_next_step() -> Re
     );
     Ok(())
 }
+
+fn cancelled_layers(flow: &[FlowRecord], agent: &str) -> Vec<(Timestamp, Side, Decimal)> {
+    flow.iter()
+        .filter(|record| record.agent == agent)
+        .filter_map(|record| match record.action {
+            FlowAction::Cancelled { side, price, .. } => Some((record.at, side, price)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// R12-TICK-2079: a spoofing agent and a layering agent show size behind the
+/// calm touch and cancel it in the same step, deterministically from the
+/// seed; the layers never trade and never reach the book an order fills
+/// against, and the run record names them as not calibrated.
+///
+/// Mutation: in `CounterpartyAgent::show_and_cancel`, place layer `k` at
+/// `step_bps` rather than `step_bps × k` — the layerer's ladder collapses onto
+/// one price and the distinct-prices assertion fails. Mutation: draw the side
+/// coin from a fresh `Xoshiro256::seeded(0)` instead of the agent's stream —
+/// every layer lands on one side and the two-sides assertion fails.
+#[test]
+fn a_spoofing_agent_generates_the_same_cancelled_layers_from_the_same_seed() -> Result<()> {
+    let agents = || -> Result<Vec<CounterpartyAgent>> {
+        Ok(vec![
+            CounterpartyAgent::spoofer("spoof", dec!("500"), 5.0, 0.5)?,
+            CounterpartyAgent::layerer("ladder", dec!("200"), 3, 4.0, 0.5)?,
+        ])
+    };
+    let closes = trending_closes();
+    let first = replay(&closes, 0x5900F)?.with_agents(agents()?)?;
+    let again = replay(&closes, 0x5900F)?.with_agents(agents()?)?;
+    let other = replay(&closes, 0x5900E)?.with_agents(agents()?)?;
+
+    let spoof = cancelled_layers(first.counterparty_flow(), "spoof");
+    let ladder = cancelled_layers(first.counterparty_flow(), "ladder");
+    // Premise: both agents showed layers, on both sides over the run.
+    assert!(
+        spoof.len() > 5,
+        "the spoofer showed {} layer(s)",
+        spoof.len()
+    );
+    assert!(
+        ladder.len() > 5,
+        "the layerer showed {} layer(s)",
+        ladder.len()
+    );
+    for layers in [&spoof, &ladder] {
+        assert!(layers.iter().any(|(_, side, _)| *side == Side::Buy));
+        assert!(layers.iter().any(|(_, side, _)| *side == Side::Sell));
+    }
+    // Nothing they did is a trade.
+    assert!(
+        first
+            .counterparty_flow()
+            .iter()
+            .filter(|r| r.agent == "spoof" || r.agent == "ladder")
+            .all(|r| r.signed_quantity().is_none())
+    );
+    // A layering step stacks three distinct prices on one side.
+    let by_step: std::collections::BTreeMap<Timestamp, Vec<(Side, Decimal)>> =
+        ladder
+            .iter()
+            .fold(Default::default(), |mut acc, (at, side, price)| {
+                acc.entry(*at).or_default().push((*side, *price));
+                acc
+            });
+    for layers in by_step.values() {
+        assert_eq!(layers.len(), 3);
+        assert!(layers.iter().all(|(side, _)| *side == layers[0].0));
+        let prices: std::collections::BTreeSet<_> = layers.iter().map(|(_, p)| *p).collect();
+        assert_eq!(prices.len(), 3, "the ladder collapsed: {layers:?}");
+    }
+
+    // Same seed, same layers; another seed, other layers.
+    assert_eq!(first.counterparty_flow(), again.counterparty_flow());
+    assert_ne!(first.counterparty_flow(), other.counterparty_flow());
+
+    let records: Vec<AgentRecord> = first.run(&mut Watcher)?.agents.clone();
+    for kind in [AgentKind::Spoofer, AgentKind::Layerer] {
+        let record = records
+            .iter()
+            .find(|r| r.kind == kind)
+            .expect("the run record names the agent");
+        assert!(
+            record.rule.contains(NOT_CALIBRATED_STATEMENT),
+            "{}",
+            record.rule
+        );
+    }
+    assert!(CounterpartyAgent::layerer("one", dec!("1"), 1, 4.0, 0.5).is_err());
+    assert!(CounterpartyAgent::spoofer("at-touch", dec!("1"), 0.0, 0.5).is_err());
+    Ok(())
+}

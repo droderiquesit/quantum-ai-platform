@@ -148,6 +148,21 @@ fn request(window: u64) -> Value {
 fn acting(window: u64) -> Value {
     let mut document = request(window);
     document["act_as"] = json!("market");
+    // A pass acts only over a plan simulated against counterfactual
+    // branches (R12-MODEL-4014): the desk's structural model, two scenarios.
+    document["structural"] = json!({
+        "models": [{
+            "name": "desk",
+            "links": [{"cause": "quote_size", "effect": "spread", "coefficient": -0.6}],
+            "intercepts": {"spread": 6.0}
+        }],
+        "scenarios": [
+            {"name": "calm", "exogenous": {}},
+            {"name": "stressed", "exogenous": {"spread": 3.0}}
+        ],
+        "objective": {"variable": "spread", "direction": "decrease"},
+        "actuation": {"quoter": 10.0}
+    });
     document["widening"] = json!({
         "class": "market",
         "approver": {"name": "risk-officer", "authorities": ["agency:widen-autonomy"]},

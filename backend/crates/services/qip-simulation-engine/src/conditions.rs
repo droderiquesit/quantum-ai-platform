@@ -231,7 +231,64 @@ impl MessageBudget {
     }
 }
 
+/// Measured durations, sorted, after refusing a set that cannot calibrate
+/// anything: empty, or holding a negative duration, which no clock produces
+/// for an elapsed time and which would calibrate a market faster than the
+/// instant.
+fn measured(samples: &[Duration], what: &str) -> Result<Vec<Duration>> {
+    if samples.is_empty() {
+        return Err(Error::invalid(format!(
+            "no measured {what} samples; a condition calibrated from nothing is a guess with a \
+             measurement's name"
+        )));
+    }
+    if samples.iter().any(|s| s.as_nanos() < 0) {
+        return Err(Error::invalid(format!(
+            "a measured {what} is negative; an elapsed time cannot be"
+        )));
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    Ok(sorted)
+}
+
+/// The sample at quantile `q` of an ascending, non-empty set, by the
+/// nearest-rank rule on the lower side.
+fn quantile(sorted: &[Duration], q: f64) -> Duration {
+    let index = ((sorted.len() - 1) as f64 * q).floor() as usize;
+    sorted[index.min(sorted.len() - 1)]
+}
+
 impl MarketCondition {
+    /// Order latency calibrated from measured decision-to-arrival samples.
+    ///
+    /// The draw is uniform on `[base, base + jitter]`, so the band is centred
+    /// on the measured median: half-width the nearer of the median's distances
+    /// to the 10th and 90th percentiles. A band from the 10th to the 90th
+    /// percentile would move the simulated median off the measured one
+    /// whenever the samples are skewed, which latency samples always are.
+    pub fn latency_from_measured(samples: &[Duration]) -> Result<Self> {
+        let sorted = measured(samples, "latency")?;
+        let median = quantile(&sorted, 0.5);
+        let below = median - quantile(&sorted, 0.1);
+        let above = quantile(&sorted, 0.9) - median;
+        let half = if below < above { below } else { above };
+        Ok(Self::Latency {
+            base: median - half,
+            jitter: half + half,
+        })
+    }
+
+    /// A feed delay calibrated from measured publication-to-receipt samples:
+    /// their median, so one slow outlier does not set the delay every
+    /// observation is held behind.
+    pub fn delayed_feed_from_measured(samples: &[Duration]) -> Result<Self> {
+        let sorted = measured(samples, "feed delay")?;
+        Ok(Self::DelayedFeed {
+            delay: quantile(&sorted, 0.5),
+        })
+    }
+
     /// A short stable name, used in reports and in the schedule digest.
     pub const fn as_str(&self) -> &'static str {
         match self {

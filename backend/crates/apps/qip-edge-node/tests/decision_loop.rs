@@ -1453,3 +1453,286 @@ fn a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() 
     }
     Ok(())
 }
+
+#[test]
+fn a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool()
+-> Result<()> {
+    // RES-10126: with the regional warm services lost the cell keeps
+    // executing locally and the Fabric keeps journaling. The centre here
+    // accepts and never answers, so no new policy or capital reaches the
+    // cell, and the orders its passes place still reach the spool the drain
+    // ships from — the outbox does not wait on the centre and is not routed
+    // through it.
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    let (centre, centre_accepted) = silent_peer();
+    let rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64)?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: format!("http://{centre}"),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    let mut decisions = rig.decisions.with_mesh(worker);
+    let spool = rig.spool;
+    let sent_on_spool = || -> Result<usize> {
+        Ok(writer::records(&spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .filter(|record| {
+                writer::journal_entry(&record.event)
+                    .is_ok_and(|entry| matches!(entry.decision, Recorded::OrderSent { .. }))
+            })
+            .count())
+    };
+    let waited = std::time::Instant::now();
+    while centre_accepted.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the mesh worker never reached the silent centre"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(sent_on_spool()?, 0, "premise: nothing journaled yet");
+    let policy_before = decisions.cell().policy_sequence();
+
+    let _watchdog = Watchdog::arm("orders reaching the spool beside a silent centre");
+    let mut second = 10;
+    while sent_on_spool()? == 0 {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "no order reached the fabric spool while the centre was silent: {:?}",
+            decisions.stats()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        decisions.stats().orders > 0,
+        "premise: the cell placed orders"
+    );
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        policy_before,
+        "a silent centre delivered new authority"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_policy_the_centre_publishes_while_the_fabric_is_fenced_is_held_and_not_applied() -> Result<()>
+{
+    // RES-7113: on fabric loss new control changes stop. A fenced producer
+    // reads exhausted, so the spool cannot journal the PolicyApplied entry
+    // an application would write, and a control change the event log cannot
+    // replay is one the desk could never attribute afterwards. The centre's
+    // policy reaches the loop through the real worker and is held; the cell
+    // keeps the sequence it already had and keeps deciding under it.
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64)?;
+    let inbox = MeshInbox::new("london-1-inbox", 64, 256)?;
+    let centre = CentreServer::spawn(MeshEndpoint::new(inbox.clone()))?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: centre.url(),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    rig.drain_publisher
+        .as_mut()
+        .expect("the rig hands back the drain's publisher")
+        .mark_fenced();
+    let mut decisions = rig.decisions.with_mesh(worker);
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "premise: the rig applied sequence 1 and nothing newer"
+    );
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(10));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(10),
+    );
+    let frame = policy_frame(payload.signed(ENVELOPE_KEY)?, t(10))?;
+    let admission = inbox.accept(&MeshMessage {
+        key: frame.event_id.as_str().to_string(),
+        attempt: 1,
+        frame,
+    });
+    assert!(
+        matches!(admission, Admission::Accepted(_)),
+        "premise: the centre's inbox took the policy: {admission:?}"
+    );
+
+    let _watchdog = Watchdog::arm("the held policy reaching the loop");
+    let waited = std::time::Instant::now();
+    let mut second = 10;
+    // Premise: the worker has polled the centre that holds the policy.
+    while centre.served() == 0 {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE / 2,
+            "the worker's polls never reached the fenced loop"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Long enough that an unheld policy would have applied: the outage test
+    // above applies one within a handful of turns.
+    for _ in 0..40 {
+        decisions.turn(t(second))?;
+        second += 1;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "the cell applied a policy the fenced fabric could not journal"
+    );
+    assert!(
+        decisions.held_control() > 0,
+        "the loop let go of what it held"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock() -> Result<()>
+{
+    // TICK-1122, TICK-2051, TICK-2052, TICK-2089: capture-time clock
+    // discipline on a production path. Every tick the node's passes apply
+    // reaches the tick lake through the drain's LakeSink, which runs it
+    // through qip_sequencing's CaptureStream: the line carries the
+    // normalized instant and its uncertainty as fields of their own, and
+    // every correction the discipline applied to reach them. The proof is
+    // an independent discipline over the same ticks in the same order: it
+    // must reproduce every line's clock block exactly, and once it holds its
+    // minimum samples the lines must carry its offset estimate.
+    use qip_contracts::market_event::MarketEvent;
+    use qip_sequencing::{CaptureStream, DisciplineSettings};
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 1_024)?;
+    let lake: Arc<MemoryBlobStore> = Arc::new(MemoryBlobStore::new());
+    let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
+    )?)];
+    let mut drain = Drain::open(
+        Arc::clone(&rig.spool),
+        sinks,
+        rig.drain_publisher
+            .take()
+            .expect("the publisher is handed once"),
+        Arc::clone(&rig.telemetry),
+        DrainConfig::new(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(1),
+            64,
+        )?,
+    )?;
+
+    // Forty turns, each with a moved touch so every pass publishes.
+    let mut captured = 0usize;
+    for second in 10..50 {
+        let simulated = rig
+            .decisions
+            .gateway_mut()
+            .simulated_mut()
+            .expect("the rig's gateway is simulated");
+        let bid = dec!("99") - Decimal::from(second % 3);
+        simulated.seed_touch(&object(), Side::Buy, bid, dec!("500"), t(second))?;
+        captured += rig.decisions.turn(t(second))?.captured;
+    }
+    let settings = DisciplineSettings::default();
+    assert!(
+        captured > settings.min_samples,
+        "premise: the passes applied enough ticks to warm the discipline ({captured})"
+    );
+
+    let waited = std::time::Instant::now();
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    while lines.len() < captured {
+        drain.step()?;
+        lines.clear();
+        for key in lake.list("lake/class=market/")? {
+            let body = lake.get(&key)?.expect("a listed segment is readable");
+            for line in String::from_utf8(body).expect("canonical JSON").lines() {
+                lines.push(serde_json::from_str(line)?);
+            }
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "only {} of {captured} ticks reached the lake",
+            lines.len()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // One stream (one venue feed partition), so its sequence is the order
+    // the drain disciplined it in.
+    lines.sort_by_key(|line| line["sequence"].as_u64());
+
+    let mut independent = CaptureStream::new(settings)?;
+    let mut estimated = 0usize;
+    for line in &lines {
+        let event: MarketEvent = serde_json::from_value(line["event"].clone())?;
+        let expected = independent.capture(&event, None)?;
+        let clock = &line["clock"];
+        assert_eq!(
+            clock["normalized_time_ns"].as_i64(),
+            Some(expected.normalized_time.as_nanos()),
+            "a lake line's normalized instant is not the discipline's: {line}"
+        );
+        assert_eq!(
+            clock["uncertainty_ns"].as_i64(),
+            Some(expected.uncertainty.as_nanos()),
+            "a lake line's uncertainty is not the discipline's: {line}"
+        );
+        assert_eq!(
+            clock["corrections"],
+            serde_json::to_value(&expected.corrections)?,
+            "a lake line's correction lineage is not the discipline's: {line}"
+        );
+        if expected
+            .corrections
+            .iter()
+            .any(|correction| correction.kind == "offset_estimate")
+        {
+            estimated += 1;
+        }
+    }
+    assert!(
+        estimated > 0,
+        "no lake line carries the discipline's offset estimate after {} ticks",
+        lines.len()
+    );
+    Ok(())
+}

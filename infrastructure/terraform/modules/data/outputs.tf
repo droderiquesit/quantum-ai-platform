@@ -19,6 +19,16 @@ output "artifact_bucket" {
   value       = var.enable_cloud_storage ? google_storage_bucket.artifacts[0].name : null
 }
 
+output "segment_bucket" {
+  description = "Regional segment store, or null when Cloud Storage is not enabled. It expires objects at 30 days: never hand it to fabricd as QIP_EVENT_FABRIC_ARCHIVE_BUCKET until a transfer into archive_bucket exists, or the archive ages out."
+  value       = var.enable_cloud_storage ? google_storage_bucket.segments[0].name : null
+}
+
+output "simulation_bucket" {
+  description = "Simulation outputs, campaign datasets and manifests bucket, or null when Cloud Storage is not enabled."
+  value       = var.enable_cloud_storage ? google_storage_bucket.simulation[0].name : null
+}
+
 output "alloydb_instance_uri" {
   description = "Primary AlloyDB instance, or null when AlloyDB is not enabled."
   value       = var.enable_alloydb ? google_alloydb_instance.primary[0].name : null

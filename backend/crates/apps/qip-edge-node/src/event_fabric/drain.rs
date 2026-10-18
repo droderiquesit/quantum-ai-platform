@@ -49,6 +49,7 @@
 use crate::event_fabric::pressure::DrainPublisher;
 use crate::event_fabric::telemetry::OutboxTelemetry;
 use crate::event_fabric::writer::{market_event, stream_of};
+use qip_contracts::captured_event::CapturedMarketEvent;
 use qip_contracts::market_event::MarketEvent;
 use qip_core::error::{Error, Result};
 use qip_events::event_fabric::bindings;
@@ -56,6 +57,7 @@ use qip_events::event_fabric::bindings::MARKET_EVENT_APPLIED;
 use qip_events::event_fabric::codec::Batch;
 use qip_events::event_fabric::envelope::{FabricContext, FabricEnvelope};
 use qip_events::event_fabric::policy::QosClass;
+use qip_sequencing::{CaptureStream, DisciplineSettings};
 use qip_storage::BlobStore;
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
 use qip_storage::lake_codec::SegmentCodec;
@@ -556,6 +558,12 @@ pub struct LakeSink {
     retention: BTreeMap<String, RetentionRight>,
     codec: SegmentCodec,
     withheld: u64,
+    /// The clock discipline every applied tick passes through, per venue
+    /// feed and partition, before its line is written (TICK-1122). Run here,
+    /// on the drain thread, because the discipline is a function of the
+    /// events' own venue and capture instants in spool order: the decision
+    /// thread gains nothing from it and would pay for it on every pass.
+    capture: CaptureStream,
 }
 
 impl LakeSink {
@@ -591,7 +599,14 @@ impl LakeSink {
             retention,
             codec,
             withheld: 0,
+            capture: CaptureStream::new(DisciplineSettings::default())?,
         })
+    }
+
+    /// The discipline the sink holds for `stream` (`venue/feed/partition`),
+    /// so a health surface or a test can read the bound it publishes.
+    pub fn discipline(&self, stream: &str) -> Option<&qip_sequencing::clock::ClockDiscipline> {
+        self.capture.discipline(stream)
     }
 
     /// Ticks the retention policy kept out of the lake so far.
@@ -619,6 +634,15 @@ impl Sink for LakeSink {
                 continue;
             }
             let tick: MarketEvent = market_event(&event)?;
+            // Every tick feeds the discipline, kept or withheld: what the
+            // retention right governs is what is stored, not whether the
+            // venue's clock is measured.
+            //
+            // A tick the discipline refuses is still written, carrying the
+            // refusal in place of the disciplined fields: returning the
+            // error would retry the batch forever, fill the spool and halt
+            // the cell over a timestamp annotation.
+            let captured = self.capture.capture(&tick, None);
             let permitted = self
                 .retention
                 .get(tick.entitlement().dataset())
@@ -627,7 +651,7 @@ impl Sink for LakeSink {
                 self.withheld = self.withheld.saturating_add(1);
                 continue;
             }
-            let line = tick_line(&tick)?;
+            let line = tick_line(&tick, &captured)?;
             let key = (
                 tick.origin().venue.as_str().to_string(),
                 tick.event_time().to_date_string(),
@@ -673,11 +697,29 @@ impl Sink for LakeSink {
 /// instant and the feed's own sequence named beside the event, so a reader
 /// of the lake does not have to know the event's serde shape to find the
 /// three facts it is partitioned and ordered by.
-fn tick_line(tick: &MarketEvent) -> Result<String> {
+///
+/// Beside them, what the clock discipline made of the tick (TICK-2051,
+/// TICK-2089): the normalized instant and its uncertainty as two fields of
+/// their own, every correction applied to reach it, and the arrival order
+/// against the stream's previous tick. A lake that kept only the raw
+/// instants would leave every reader to re-derive the discipline, and two
+/// readers that did it differently would disagree about the order of the
+/// same two ticks.
+fn tick_line(tick: &MarketEvent, captured: &Result<CapturedMarketEvent>) -> Result<String> {
     let origin = tick.origin();
+    let clock = match captured {
+        Ok(captured) => serde_json::json!({
+            "normalized_time_ns": captured.normalized_time.as_nanos(),
+            "uncertainty_ns": captured.uncertainty.as_nanos(),
+            "corrections": serde_json::to_value(&captured.corrections)?,
+            "arrival_order": captured.arrival_order,
+        }),
+        Err(error) => serde_json::json!({ "refused": error.message() }),
+    };
     let value = serde_json::json!({
         "exchange_time_ns": tick.event_time().as_nanos(),
         "capture_time_ns": tick.receive_time().as_nanos(),
+        "clock": clock,
         "feed": origin.feed,
         "partition": origin.partition,
         "sequence": origin.sequence,

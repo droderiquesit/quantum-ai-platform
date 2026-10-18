@@ -61,10 +61,39 @@ struct Fabric {
     service: Arc<Service>,
     address: String,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Set while a reply is still to be lost; see [`LostFirstProduceReply`].
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The data plane with the reply to the first produce lost after the
+/// broker appended it: the 503 a load balancer returns when the broker
+/// committed and the connection behind it died. The producer cannot tell
+/// that from a send that never landed, so it retries the same batch.
+struct LostFirstProduceReply {
+    inner: DataPlane,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Handler for LostFirstProduceReply {
+    fn handle(&self, request: &Request) -> Response {
+        let answered = self.inner.handle(request);
+        if request.path == "/v1/event-fabric/produce"
+            && answered.status == 200
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
+            return Response::json(503, r#"{"error":"upstream connection reset"}"#);
+        }
+        answered
+    }
 }
 
 impl Fabric {
     fn start() -> Self {
+        Self::start_with(false)
+    }
+
+    /// [`Self::start`], losing the first produce reply when `lose` is set.
+    fn start_with(lose: bool) -> Self {
         let root = std::env::temp_dir().join(format!(
             "qip-edge-envelope-{}-{}",
             std::process::id(),
@@ -87,12 +116,16 @@ impl Fabric {
             SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
         });
         let service = Arc::new(Service::new(broker, identities, &catalogue, 1, segments).unwrap());
-        let server = Server::bind(
-            "127.0.0.1:0",
-            Arc::new(DataPlane(service.clone())),
-            ServerLimits::default(),
-        )
-        .unwrap();
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(lose));
+        let handler: Arc<dyn Handler> = if lose {
+            Arc::new(LostFirstProduceReply {
+                inner: DataPlane(service.clone()),
+                armed: Arc::clone(&armed),
+            })
+        } else {
+            Arc::new(DataPlane(service.clone()))
+        };
+        let server = Server::bind("127.0.0.1:0", handler, ServerLimits::default()).unwrap();
         let address = server.local_address().unwrap();
         let stop = server.shutdown_handle();
         std::thread::spawn(move || {
@@ -104,6 +137,7 @@ impl Fabric {
             service,
             address,
             stop,
+            armed,
         }
     }
 
@@ -339,4 +373,56 @@ fn a_redelivered_read_of_the_same_offset_yields_the_same_envelope_identities() {
         .collect();
     assert_eq!(first.len(), 1, "premise: one envelope was read");
     assert_eq!(first, second);
+}
+
+/// FABRIC-8076: the producer never duplicates on retry. The broker appends
+/// the first batch and the reply is lost, so the sink's producer retries the
+/// same batch under the same producer sequence; the broker recognises it and
+/// the stream holds the batch once. A second batch then continues the dense
+/// sequence.
+///
+/// Mutation: in the broker's produce path, accept a sequence it has already
+/// committed as new, and the stream holds the first batch twice.
+#[test]
+fn a_batch_whose_acknowledgement_was_lost_is_retried_and_held_once() {
+    let fabric = Fabric::start_with(true);
+    let mut sink = fabric.sink();
+    assert!(
+        fabric.journal().is_empty(),
+        "premise: the stream starts empty"
+    );
+
+    let first = sink.deliver(
+        0,
+        QosClass::P2MarketJournal,
+        &spooled(vec![record("evt-1", 1, false), record("evt-2", 1, false)]),
+    );
+    // Premise: a reply really was lost after the broker appended.
+    assert!(
+        !fabric.armed.load(Ordering::SeqCst),
+        "premise: the first produce reply was never lost"
+    );
+    // Whether the retry reports success or the broker's duplicate answer,
+    // what matters is what the stream holds.
+    let _ = first;
+    sink.deliver(
+        1,
+        QosClass::P2MarketJournal,
+        &spooled(vec![record("evt-3", 1, false)]),
+    )
+    .unwrap();
+
+    let held = fabric.journal();
+    let mut envelopes = Vec::new();
+    for batch in &held {
+        envelopes.extend(FabricEnvelope::open_all(batch, &reader(), &bindings::ALL).unwrap());
+    }
+    let ids: Vec<&str> = envelopes.iter().map(|e| e.event_id().as_str()).collect();
+    assert_eq!(
+        ids,
+        ["evt-1", "evt-2", "evt-3"],
+        "a lost acknowledgement duplicated or dropped a record"
+    );
+    let sequences: Vec<u64> = envelopes.iter().map(|e| e.producer_sequence()).collect();
+    assert_eq!(sequences, [0, 1, 2], "the producer's sequence is dense");
 }

@@ -1175,7 +1175,7 @@
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:505 no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder",
       "infrastructure/terraform/modules/network/main.tf:33-41,73,134"
     ],
-    "gap": "NCC hub/spokes with route filters.",
+    "gap": "Not built. modules/network declares three VPCs (and the console egress subnet), none with an endpoint a hub could carry, and an NCC hub with spokes and route export filters changes how the networks reach one another: it is a topology decision for an ADR, with route filters that must be reasoned per pair, not a resource to add beside the deny-ingress rules. No peering joins two networks today, which is the half an acceptance scan could pin now.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1188,7 +1188,7 @@
     "verification": "cargo test -p qip-acceptance --test gcp_placement",
     "work_item": "",
     "size": "M",
-    "notes": "network/main.tf comments say the data/engineering VPCs 'join others only through NCC spokes'; no google_network_connectivity_* resource exists in the tree."
+    "notes": "Gap corrected 2026-10-18 after reading the network module; status unchanged."
   },
   {
     "id": "R12-API-8054",
@@ -1215,14 +1215,14 @@
   },
   {
     "id": "R12-GCP-8055",
-    "status": "PARTIAL",
-    "current": "Execution nodes are refused behind any LB/mesh (tested). Warm services are internal Cloud Run without an internal ALB, mesh or mTLS; the in-tree HTTP client has timeouts and a breaker.",
+    "status": "COMPLETE",
+    "current": "ADR 0112 reads mTLS between warm services as IAM-authenticated invocation. The only warm-to-warm hop is the console dialling the API; the console's service account is the API's named invoker (invokers.yaml, catalogue.tf api.invokers) and the portal mints audience-bound Google ID tokens (google-credentials.ts identityToken). console_route.rs::every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience walks every environment's RunService manifests and requires each caller to be a named invoker of what it dials.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
-      "backend/crates/libs/qip-transport/src/breaker.rs",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569"
+      "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
+      "infrastructure/gitops/envs/dev/invokers.yaml qip-dev-api-invoker-qip-dev-console",
+      "frontend/portal/src/lib/server/google-credentials.ts identityToken"
     ],
-    "gap": "Service-to-service mTLS (blocked: no in-tree TLS, ADR 0009) or internal ALB with IAM-authenticated Cloud Run.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1230,10 +1230,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "mTLS needs a TLS stack (ADR 0009) or a managed proxy decision",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Found while closing it: portal.yaml set QIP_API_BASE_URL but never QIP_API_AUDIENCE, so the committed console minted no identity token and every gateway call would have drawn a 403 that reads as a missing grant; the manifest now sets it to the API URL. Mutations: the QIP_API_AUDIENCE entry removed from portal.yaml, and the console's member renamed in invokers.yaml, each failed the test; both restored byte for byte. Nothing is applied in any environment, so no deployed hop is observed."
   },
   {
     "id": "R12-GCP-8056",
@@ -1345,14 +1345,16 @@
   },
   {
     "id": "R12-GCP-8061",
-    "status": "PARTIAL",
-    "current": "Every Cloud NAT translates named subnets to reserved addresses with logging (tested); Envoy egress proxy sidecar for api/deepbrain; execution node has its own NAT and venue firewall. No Secure Web Proxy; no separate crawler identity.",
+    "status": "COMPLETE",
+    "current": "Internet egress is controlled and attributable. Every Cloud NAT translates named subnets to reserved addresses with logging (gcp_placement.rs). The one workload that can reach a vendor, the deep brain (source discovery and catalogued connectors), carries the qip-egress proxy sidecar in every environment's manifest, whose allow-list the egress suite pins host by host, and runs under a service account no other workload shares; the fast brain carries no proxy. egress.rs::the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares holds the sidecar and the identity.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs the_egress_proxy_is_attached_to_the_workloads_that_need_it_and_to_nothing_else",
       "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:163 every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it",
       "infrastructure/egress/envoy.yaml",
-      "backend/crates/tests/qip-acceptance/tests/egress.rs"
+      "infrastructure/terraform/modules/cloudrun/main.tf google_service_account.workload"
     ],
-    "gap": "Dedicated crawler/agent egress identity and domain policy evidence.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1360,10 +1362,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement --test egress",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gcp_placement --test egress",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Reading of the clause: no separate crawler workload exists, so the deep brain is the crawler and agent egress identity; it is dedicated in that no other workload shares its account, not in that it does only crawling. No Secure Web Proxy is deployed: the requirement admits Cloud NAT, and the Envoy sidecar is the domain control. Mutations: the deep brain's account renamed to the API's in envs/dev/deepbrain.yaml failed the identity assertion; the sidecar container renamed away failed the sidecar assertion; file restored byte for byte. Nothing is applied, so no egress observation exists."
   },
   {
     "id": "R12-SEC-8062",
@@ -1679,14 +1681,15 @@
   {
     "id": "R12-FABRIC-8076",
     "status": "PARTIAL",
-    "current": "qip-transport Producer has idempotent producer id/epoch/sequence, retry/breaker policy and an explicit AckProfile; production caller is qip-edge-node FabricSink when a fabric URL is configured. The strongest profile is Archived (single broker + archive), so no quorum acknowledgement exists to report.",
+    "current": "qip-transport Producer has idempotent producer id/epoch/sequence, retry/breaker policy and an explicit AckProfile; its production caller is qip-edge-node FabricSink when a fabric URL is configured. The sink is driven against a served broker: batches read back as the same envelopes with a dense sequence (fabric_envelope.rs), and since 2026-10-18 a batch whose acknowledgement was lost after the broker appended it is retried under the same sequence, verified as a duplicate by the broker's producer table (qip-streaming event_fabric/producer.rs), and held once. The strongest ack profile is Archived (single broker + archive), so no quorum acknowledgement exists to report; qip-fabricd's managed producer refuses a majority acknowledgement from a local broker.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/outbox.rs:144 FabricSettings::sink builds two Producers with class.ack_floor()",
-      "backend/crates/apps/qip-edge-node/src/main.rs:812 sink pushed only when fabric configured",
-      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:397 Archived ack waits for archived_through",
-      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs:434 a_consumer_killed_after_committing_n_resumes_at_n_plus_one"
+      "backend/crates/apps/qip-edge-node/src/outbox.rs FabricSettings::sink",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_the_sink_sends_is_read_back_from_the_broker_as_the_same_envelopes",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_whose_acknowledgement_was_lost_is_retried_and_held_once",
+      "backend/crates/services/qip-streaming/src/event_fabric/producer.rs Admission::Duplicate",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_managed_majority_producer_refuses_an_acknowledgement_from_a_local_broker"
     ],
-    "gap": "No quorum ack exists (see FABRIC-8086); no test drives FabricSink against a broker.",
+    "gap": "No quorum acknowledgement exists to report (no replicated managed log is deployed; see FABRIC-8086); 'reports quorum only when durable' holds only in the sense that quorum is never reported.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1694,10 +1697,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-transport --test event_fabric_client",
+    "verification": "cargo test -p qip-transport --test event_fabric_client; cargo test -p qip-edge-node --test fabric_envelope",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Gained a production caller; \"quorum only when durable\" cannot hold without replication."
+    "notes": "Re-graded 2026-10-18 by lane L09: 'no test drives FabricSink against a broker' was stale. Added the retry test (a 503 returned after the broker appended the first batch). Mutation: admitting a base sequence below the expected one as a fresh append in ProducerTable made the stream hold evt-1, evt-2 twice and the test fail with 'a lost acknowledgement duplicated or dropped a record'; restored byte for byte."
   },
   {
     "id": "R12-FABRIC-8077",
@@ -2113,13 +2116,15 @@
   },
   {
     "id": "R12-FABRIC-8095",
-    "status": "PARTIAL",
-    "current": "P4 ack None; over-quota P4 produce is shed (refused) visibly; health served directly.",
+    "status": "COMPLETE",
+    "current": "Under pressure telemetry is shed at both ends. A P4 producer over its quota is answered Shed (existing), and since this lane a sample_or_shed stream whose consumer group trails the high watermark by more than the lag limit drops its oldest sealed segments past the limit and admits the newest batch, where a P0/P1 stream refuses the producer and P2/P3 keep their declared backlog. Broker::produce runs the check on every produce, so qip-fabricd applies it to the committed catalogue's telemetry.local stream (p4_telemetry, sample_or_shed). Health remains on the direct path.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs drops_oldest_for_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::drop_oldest_past_lag (from refuse_when_a_group_lags)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_pressure.rs a_lagging_p4_stream_drops_its_oldest_batches_and_admits_the_newest",
+      "infrastructure/event-fabric/streams.local.json telemetry.local sample_or_shed"
     ],
-    "gap": "Shed refuses the new batch; no drop-oldest behaviour under pressure, untested.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2127,10 +2132,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new pressure test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_pressure",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Pressure is consumer lag, not producer quota: dropping stored batches does not relieve a producer's rate, so an over-quota P4 batch is still shed (the newest) and a lagging P4 backlog loses its oldest. Granularity is a segment. Mutation: drops_oldest_for_lag returning false keeps offset 0 on the lagging telemetry stream. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 158 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-8096",
@@ -2168,7 +2173,7 @@
       "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
       "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked; no measurement yet ties the default 3000 IOPS / 140 MiB/s to the catalogue's peak_bytes_per_second. The root object now carries journal_provisioned_iops and journal_provisioned_throughput_mibps and fabric.tf passes them (2bf53e03).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2179,7 +2184,7 @@
     "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider. Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Re-graded after 2bf53e03 wired the two figures from the root: still PARTIAL, because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2207,11 +2212,14 @@
   {
     "id": "R12-FABRIC-8099",
     "status": "PARTIAL",
-    "current": "Template has no access_config and internal-only tag; addresses are an input variable, not reserved resources; no NCC.",
+    "current": "Each broker address is a reserved INTERNAL google_compute_address (purpose GCE_ENDPOINT) in the control-fabric subnet, and the machine takes its network_ip from that reservation; the template and machines declare no access_config, the template is tagged internal-only, and the folder's org policy denies every VM external address. No NCC hub or export exists. The module is instantiated only when event_fabric_broker is set, which no environment does.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:48-56,66"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:150 google_compute_address.event_fabric_broker (INTERNAL, subnet, one per broker)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:265 each_broker_address_is_a_reserved_internal_address_the_machine_takes",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:952 fabric_089_brokers_are_pinned_to_internal_addresses_and_no_layer_declares_a_public_one",
+      "infrastructure/foundation/main.tf google_org_policy_policy.vm_external_ip deny_all"
     ],
-    "gap": "Reserved internal addresses; NCC export.",
+    "gap": "Cross-region mirror prefixes exported only through the latency NCC hub: no NCC hub, spoke or export filter exists in the tree, and mirroring is refused for every stream class (fabric_083), so there is nothing yet to export. Not deployed: event_fabric_broker is null in every environment.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2221,10 +2229,10 @@
       "R12-GCP-8057"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cargo test -p qip-acceptance --test event_fabric_scaling fabric_089",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L22, 2026-10-18: reserved internal addresses added (the 'addresses are reserved internal' half of the plan clause). Mutation: address_type EXTERNAL - the tftest run and fabric_089's reservation check both fail; restored. Kept PARTIAL for the NCC export and for deployment."
   },
   {
     "id": "R12-SEC-8100",
@@ -2471,13 +2479,15 @@
   },
   {
     "id": "R12-REASON-8111",
-    "status": "PARTIAL",
-    "current": "qip-reasoning-engine/qip-quantum exist in-process; edge crates are structurally barred from reaching solvers.",
+    "status": "COMPLETE",
+    "current": "The deep brain's GitOps manifest declares 4 vCPU, 8Gi, CPU always allocated (cpuIdle false) and a floor of one instance in dev, test, stage and prod; the catalogue entry that renders it agrees. The register text 'no cpu variable in modules/cloudrun' was stale: the Cloud Run module no longer takes one, the manifest carries the limits.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver",
-      "backend/crates/services/qip-reasoning-engine/src"
+      "backend/crates/services/qip-reasoning-engine/src",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml resources.limits",
+      "backend/crates/tests/qip-acceptance/tests/compute_allocation.rs"
     ],
-    "gap": "Custom Rust solvers on the deep brain's Cloud Run capacity satisfy the requirement's 'custom Rust' arm (ADR 0114 Amendment 1); no-hot-path is structural. Needs the deep brain's CPU allocation for solver work declared and an inspection test. Z3/OR-Tools are not admitted.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2485,10 +2495,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "cd backend && cargo test -p qip-acceptance --test compute_allocation",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The no-hot-path half is met structurally."
+    "notes": "2026-10-18. Mutations on the committed stage manifest, each restored: cpu 4 to 1 and cpuIdle false to true failed the test naming the environment. The no-hot-path half is the structural one in architecture.rs. Z3 and OR-Tools stay not admitted."
   },
   {
     "id": "R12-DATA-8112",
@@ -2641,14 +2651,14 @@
   },
   {
     "id": "R12-GCP-8119",
-    "status": "PARTIAL",
-    "current": "No service mesh is declared. gcp_placement.rs::no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh walks every Terraform resource and refuses a machine behind a proxy or mesh hop (tests/qip-acceptance/tests/gcp_placement.rs:150-160, :277). In-tree fabric clients carry explicit timeouts and a circuit breaker (backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:143,237; producer.rs:53,82). ADR 0112 rejects a mesh and puts warm (Cloud Run) hops on IAM-authenticated invocation, with mTLS only between Compute Engine processes. No Rust code fetches an audience-bound ID token from the metadata server for service-to-service calls: grep for 'audience'/'identity?audience' in libs/qip-transport, libs/qip-storage and apps/*/src finds nothing.",
+    "status": "COMPLETE",
+    "current": "The one Cloud Run hop (console to API) is IAM-authenticated: the portal's identity token audience is QIP_API_AUDIENCE, which the committed portal manifest now sets to the API's own run.app URL, equal to the URL it dials and to the one modules/cloudrun derives from the project number and region. No Rust workload dials another Cloud Run service.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
-      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:237",
-      "docs/adr/0112-mtls-through-rustls-where-the-platform-owns-the-socket-iam-invocation-on-cloud-run-and-quic-only-where-measured.md"
+      "backend/crates/tests/qip-acceptance/tests/console_route.rs every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
+      "infrastructure/gitops/envs/dev/portal.yaml QIP_API_AUDIENCE",
+      "frontend/portal/src/lib/server/upstream.ts AUDIENCE_VARIABLE"
     ],
-    "gap": "Authenticated transport between warm services: mTLS or, per ADR 0112, IAM-authenticated invocation with an ID token. No warm-to-warm caller presents one today.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2656,10 +2666,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "mTLS needs a TLS stack (ADR 0009)",
-    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test console_route -- every_cloud_run_service_that_dials_another_is_a_named_invoker_and_mints_a_token_for_that_audience",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: The 'never through mesh sidecars' half holds structurally, since no mesh exists anywhere. ADR 0112 reinterprets the mTLS clause for Cloud Run as IAM invocation, and that is not implemented in any client."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register text claimed the audience was minted against the named-invoker binding; the manifest set no audience until this change, see R12-GCP-8055. The audience equals the derived URL asserted per environment against its tfvars project_number and region. Same mutations as R12-GCP-8055. The test covers environments that carry a portal manifest (dev only)."
   },
   {
     "id": "R12-DATA-8120",
@@ -2757,13 +2767,17 @@
   {
     "id": "R12-DATA-8124",
     "status": "PARTIAL",
-    "current": "infrastructure/terraform/fabric.tf:23 fabricd resources gated on var.event_fabric_broker, null in every environment; no regional landing bucket resource for replay segments/knowledge packs found",
+    "current": "modules/data declares google_storage_bucket.segments: regional (var.region), CMEK, unlocked 7-day retention policy, deleted at 30 days, named for segments rather than 'landing' because that token is refused in a store name (R12-DATA-8012); output segment_bucket. Gated on enable_cloud_storage, false everywhere. fabricd has a GCS archive writer (QIP_EVENT_FABRIC_ARCHIVE_BUCKET) but nothing points it at this bucket, and nothing copies a segment into the dual-region archive.",
     "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:260 google_storage_bucket.segments",
+      "infrastructure/terraform/modules/data/outputs.tf:22 segment_bucket",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl:195 the_segment_store_is_regional_keyed_and_expires_what_it_holds",
+      "backend/crates/apps/qip-fabricd/src/config.rs:46 ARCHIVE_BUCKET",
       "infrastructure/terraform/fabric.tf:23 count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "No landing bucket; fabricd has no GCS writer config; gated off everywhere.",
+    "gap": "fabricd is not pointed at the bucket (fabric.tf belongs to lane L22, and event_fabric_broker is null everywhere), and must not be until a Storage Transfer job or compaction copies segments into the archive bucket: object lifecycle cannot move objects between buckets, as the closure assumed, so the 30-day expiry would otherwise delete the archive. Private Google Access on the fabricd subnet is unproven and enable_cloud_storage is an owner switch.",
     "implemented": false,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2771,10 +2785,10 @@
       "R12-FABRIC-8101"
     ],
     "blocked_by": "",
-    "verification": "terraform plan + fabricd integration",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "2026-10-18 (lane L13): regional segment bucket added. Mutation: location set to var.bucket_location failed 'must sit in the deployment's region'; deleting its retention_policy failed the acceptance test 'google_storage_bucket.segments sets no retention_policy'; both restored byte-for-byte. The closure's 'lifecycle rule into the archive bucket' is not something GCS lifecycle can do; the transfer is the missing piece."
   },
   {
     "id": "R12-DATA-8125",
@@ -2800,13 +2814,16 @@
   {
     "id": "R12-DATA-8126",
     "status": "PARTIAL",
-    "current": "One autoscaled cluster declared (gated); no app profile; no sink.",
+    "current": "google_bigtable_instance.timeseries declares two autoscaled clusters in zones -a and -b, with three google_bigtable_app_profile resources chosen by consistency need: ingest (single-cluster to the primary, read-your-writes), serve (multi-cluster routing, survives a zonal outage), batch (single-cluster to the secondary, PRIORITY_LOW). All gated on enable_bigtable, false everywhere; no fabric-sink-bigtable.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:322-347"
+      "infrastructure/terraform/modules/data/main.tf:440 google_bigtable_instance.timeseries (second cluster :469)",
+      "infrastructure/terraform/modules/data/main.tf:489 local.bigtable_app_profiles",
+      "infrastructure/terraform/modules/data/main.tf:519 google_bigtable_app_profile.timeseries",
+      "infrastructure/terraform/modules/data/tests/scaling.tftest.hcl:24 bigtable_has_two_clusters_in_different_zones_and_a_profile_per_workload"
     ],
-    "gap": "Second cluster, app profiles, sink.",
+    "gap": "fabric-sink-bigtable (R12-DATA-10035) does not exist, and enable_bigtable is false in every committed environment, so no committed plan renders the instance; enabling it is an owner switch and the Rust provider still refuses the Bigtable target (no gRPC adapter).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2814,10 +2831,10 @@
       "R12-FABRIC-8080"
     ],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/scaling.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): second cluster and three app profiles added; terraform 1.9.8 test in modules/data: 12 passed, 0 failed. Mutations: deleting the secondary cluster failed 'must declare at least two clusters'; switching ingest to multi-cluster routing failed 'must route to a single cluster'; both restored byte-for-byte. Kept PARTIAL: the sink half of the clause is R12-DATA-10035 and the plan the check asks for is mocked, not a committed environment's."
   },
   {
     "id": "R12-DATA-8127",
@@ -2927,13 +2944,15 @@
   },
   {
     "id": "R12-LEDGER-8132",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "google_spanner_instance.global pins edition = \"ENTERPRISE_PLUS\" with the nam-eur-asea multi-region config and 100 processing units; terraform validate and the module tftests pass with the attribute; the acceptance suite refuses its absence or a regional config. Still gated by enable_spanner, false in every environment, so no plan renders it.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:380-402 (edition at :395)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration",
+      "infrastructure/terraform/modules/data/tests/spanner_edition.tftest.hcl",
+      "infrastructure/terraform/modules/data/main.tf google_spanner_instance.global edition"
     ],
-    "gap": "enable_spanner is false in every committed environment, so the plan the check asks for renders no instance; enabling it is a paid-resource decision for the owner (and the ledger adapter against a live instance is unproven).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2941,10 +2960,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration; cd infrastructure/terraform/modules/data && terraform validate && terraform test",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_edition.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 (lane L02): edition added; terraform 1.9.8 validate: Success; terraform test: 6 passed, 0 failed. Mutation: deleted the edition line; the test failed \"does not pin edition\"; restored byte-for-byte. Kept PARTIAL because the check is a plan and nothing plans the instance."
+    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run."
   },
   {
     "id": "R12-LEDGER-8133",

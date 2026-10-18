@@ -4824,6 +4824,29 @@ fn every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed() {
             "{path}: {why}"
         );
     }
+
+    // R12-SEC-9127: ADR 0110's package and policy signing keys. Read inside
+    // the key's own body, because artefact-signing.tf would satisfy a
+    // file-wide match through any other resource that declared it.
+    let signing = without_comments(&read("infrastructure/terraform/artefact-signing.tf"));
+    let keys = terraform_resources(&signing, "google_kms_crypto_key");
+    let (_, artefact) = keys
+        .iter()
+        .find(|(name, _)| name == "artefact")
+        .expect("artefact-signing.tf declares google_kms_crypto_key.artefact");
+    let lines: Vec<String> = artefact.lines().map(collapsed).collect();
+    for wanted in [
+        "purpose = \"ASYMMETRIC_SIGN\"",
+        "protection_level = var.artefact_signing.protection_level",
+        "prevent_destroy = true",
+    ] {
+        assert!(
+            lines.iter().any(|line| line == wanted),
+            "google_kms_crypto_key.artefact lacks `{wanted}`: destroying a signing key makes \
+             every policy frame, halt, envelope and model pack ever signed under it \
+             unverifiable at once"
+        );
+    }
 }
 
 #[test]
@@ -13451,6 +13474,306 @@ fn the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule() {
     }
 }
 
+// --- a network firewall policy beside the VPC rules ---------------------------
+
+#[test]
+fn every_network_is_associated_with_a_network_firewall_policy() {
+    // R12-SEC-10023: segmentation that lives only in per-VPC rules erodes one
+    // rule at a time, and the catch-all ingress deny on each network is one
+    // resource somebody can delete to unblock a connection. The baseline
+    // policy holds the same deny as a separate object; this pairs every
+    // network the module declares with an association naming that policy.
+    let network = without_comments(&read(NETWORK_MODULE));
+
+    let networks = terraform_resources(&network, "google_compute_network");
+    assert!(
+        networks.len() >= 3,
+        "premise: the network module declares {} google_compute_network blocks",
+        networks.len()
+    );
+    let policies = terraform_resources(&network, "google_compute_network_firewall_policy");
+    let [(policy, _)] = policies.as_slice() else {
+        panic!(
+            "the network module declares {} network firewall policies, not one",
+            policies.len()
+        );
+    };
+    let policy_ref = format!("google_compute_network_firewall_policy.{policy}.name");
+
+    let associations = terraform_resources(
+        &network,
+        "google_compute_network_firewall_policy_association",
+    );
+    let (_, association) = associations
+        .iter()
+        .find(|(_, body)| {
+            hcl_field(body, "firewall_policy").as_deref() == Some(policy_ref.as_str())
+        })
+        .unwrap_or_else(|| panic!("no association binds {policy_ref} to a network"));
+    let iterated = hcl_field(association, "for_each").unwrap_or_default();
+    let targets = block_under(
+        &network,
+        &format!("{} = {{", iterated.trim_start_matches("local.")),
+    );
+    let mut bound: Vec<String> = Vec::new();
+    for line in targets.lines() {
+        if let Some((_, value)) = line.split_once('=') {
+            bound.push(collapsed(value));
+        }
+    }
+    for (name, body) in &networks {
+        let expected = if hcl_field(body, "for_each").is_some() {
+            // One per key of the map the network iterates.
+            let map = hcl_field(body, "for_each").unwrap_or_default();
+            let keys: Vec<String> = block_under(
+                &network,
+                &format!("{} = {{", map.trim_start_matches("local.")),
+            )
+            .lines()
+            .filter_map(|line| Some(line.split_once('=')?.0.trim().to_string()))
+            .collect();
+            assert!(!keys.is_empty(), "premise: {map} names no network");
+            keys.iter()
+                .map(|key| format!("google_compute_network.{name}[\"{key}\"].id"))
+                .collect::<Vec<_>>()
+        } else {
+            vec![format!("google_compute_network.{name}.id")]
+        };
+        for target in expected {
+            assert!(
+                bound.contains(&target),
+                "{target} is not associated with {policy_ref}; bound: {bound:?}"
+            );
+        }
+    }
+
+    // And the policy denies, rather than merely existing.
+    let rules = terraform_resources(&network, "google_compute_network_firewall_policy_rule");
+    let denies_from = |range: &str| {
+        rules.iter().any(|(_, body)| {
+            hcl_field(body, "firewall_policy").as_deref() == Some(policy_ref.as_str())
+                && hcl_field(body, "action").as_deref() == Some("\"deny\"")
+                && hcl_field(body, "direction").as_deref() == Some("\"INGRESS\"")
+                && body
+                    .lines()
+                    .any(|line| collapsed(line) == format!("src_ip_ranges = [\"{range}\"]"))
+                && body
+                    .lines()
+                    .any(|line| collapsed(line) == "ip_protocol = \"all\"")
+        })
+    };
+    for range in ["0.0.0.0/0", "::/0"] {
+        assert!(
+            denies_from(range),
+            "{policy_ref} has no rule denying all ingress from {range}"
+        );
+    }
+}
+
+#[test]
+fn the_platform_folder_carries_a_hierarchical_firewall_policy_denying_internet_ingress() {
+    // R12-SEC-9131: a project's VPC rules are as strong as whoever holds
+    // `compute.securityAdmin` in it. The foundation root sets a folder policy
+    // every project inherits and none can edit; this holds it to the folder,
+    // holds its denies, and holds the delegation that runs ahead of them to
+    // `goto_next` over ranges that exclude the internet — an `allow` there,
+    // or 0.0.0.0/0 in its list, would turn the control into a bypass.
+    let foundation = without_comments(&read("infrastructure/foundation/main.tf"));
+
+    let policies = terraform_resources(&foundation, "google_compute_firewall_policy");
+    let [(policy, body)] = policies.as_slice() else {
+        panic!(
+            "the foundation declares {} hierarchical firewall policies, not one",
+            policies.len()
+        );
+    };
+    assert_eq!(
+        hcl_field(body, "parent").as_deref(),
+        Some("\"folders/${local.folder_id}\""),
+        "the hierarchical firewall policy is not parented on the platform folder"
+    );
+    let policy_name = format!("google_compute_firewall_policy.{policy}[0].name");
+
+    let associations =
+        terraform_resources(&foundation, "google_compute_firewall_policy_association");
+    assert!(
+        associations.iter().any(|(_, body)| {
+            hcl_field(body, "firewall_policy").as_deref()
+                == Some(format!("google_compute_firewall_policy.{policy}[0].id").as_str())
+                && hcl_field(body, "attachment_target").as_deref()
+                    == Some("google_folder.platform[0].name")
+        }),
+        "no association binds google_compute_firewall_policy.{policy} to the platform folder"
+    );
+
+    let rules = terraform_resources(&foundation, "google_compute_firewall_policy_rule");
+    let of_policy: Vec<&String> = rules
+        .iter()
+        .filter(|(_, body)| {
+            hcl_field(body, "firewall_policy").as_deref() == Some(policy_name.as_str())
+        })
+        .map(|(_, body)| body)
+        .collect();
+    assert!(
+        of_policy.len() >= 3,
+        "premise: {} rules belong to {policy_name}",
+        of_policy.len()
+    );
+    let priority = |body: &str| -> u64 {
+        hcl_field(body, "priority")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    let mut lowest_deny = u64::MAX;
+    for range in ["0.0.0.0/0", "::/0"] {
+        let deny = of_policy.iter().find(|body| {
+            hcl_field(body, "action").as_deref() == Some("\"deny\"")
+                && hcl_field(body, "direction").as_deref() == Some("\"INGRESS\"")
+                && body
+                    .lines()
+                    .any(|line| collapsed(line) == format!("src_ip_ranges = [\"{range}\"]"))
+        });
+        let deny = deny.unwrap_or_else(|| panic!("{policy_name} has no ingress deny from {range}"));
+        lowest_deny = lowest_deny.min(priority(deny));
+    }
+    for body in &of_policy {
+        let action = hcl_field(body, "action").unwrap_or_default();
+        assert!(
+            action == "\"deny\"" || action == "\"goto_next\"",
+            "a rule of {policy_name} has action {action}; the folder policy may deny or hand on, \
+             never allow"
+        );
+        if action == "\"goto_next\"" {
+            assert!(
+                priority(body) < lowest_deny,
+                "a goto_next rule of {policy_name} runs after the deny, so it delegates nothing"
+            );
+        }
+    }
+    let delegated = block_under(&foundation, "firewall_delegated_ranges = [");
+    assert!(
+        delegated.contains("\"10.0.0.0/8\""),
+        "premise: firewall_delegated_ranges was not read: {delegated:?}"
+    );
+    for internet in ["\"0.0.0.0/0\"", "\"::/0\""] {
+        assert!(
+            !delegated
+                .lines()
+                .any(|line| collapsed(line).starts_with(internet)),
+            "firewall_delegated_ranges hands {internet} on to the projects, which delegates the \
+             whole internet past the deny"
+        );
+    }
+}
+
+// --- key classes are separate trust domains ----------------------------------
+
+#[test]
+fn no_principal_holds_a_grant_on_keys_of_two_classes() {
+    // R12-SEC-9137 and R12-SEC-7014: deployment signing (the Binary
+    // Authorization attestor), artefact signing (ADR 0110's policy, halt,
+    // envelope and model-pack keys) and encryption (every CMEK key) are
+    // separate trust domains only while no principal holds a grant on keys
+    // of two of them. A workload granted encrypt on a CMEK key and sign on an
+    // artefact key is one stolen token from both; a CI identity that could
+    // sign artefacts could ship a frame every cell trusts. Each key grant in
+    // the tree is classed by the key it names, and each class may grant only
+    // the principals that class exists for.
+    let mut members: std::collections::BTreeMap<String, std::collections::BTreeSet<&str>> =
+        std::collections::BTreeMap::new();
+    let mut grants = 0;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for kind in [
+            "google_kms_crypto_key_iam_member",
+            "google_kms_crypto_key_iam_binding",
+            "google_kms_crypto_key_iam_policy",
+        ] {
+            for (name, body) in terraform_resources(&text, kind) {
+                grants += 1;
+                let key = hcl_field(&body, "crypto_key_id").unwrap_or_default();
+                let role = hcl_field(&body, "role").unwrap_or_default();
+                let principal = hcl_field(&body, "member")
+                    .or_else(|| hcl_field(&body, "members"))
+                    .unwrap_or_default();
+                let at = format!("{}:{kind}.{name}", path.display());
+                assert!(
+                    kind != "google_kms_crypto_key_iam_policy",
+                    "{at} replaces a key's whole policy, which this check cannot class"
+                );
+                let class = if key.starts_with("google_kms_crypto_key.attestor.") {
+                    assert_eq!(
+                        principal, "\"serviceAccount:${var.ci_service_account}\"",
+                        "{at}: the deployment-signing key grants someone other than CI"
+                    );
+                    "deployment-signing"
+                } else if key == "each.value.id"
+                    && hcl_field(&body, "for_each").as_deref()
+                        == Some("google_kms_crypto_key.artefact")
+                {
+                    assert_eq!(
+                        (role.as_str(), principal.as_str()),
+                        (
+                            "\"roles/cloudkms.signer\"",
+                            "[local.artefact_signer_of[each.key]]"
+                        ),
+                        "{at}: an artefact key grants something other than sign to its one signer"
+                    );
+                    "artefact-signing"
+                } else {
+                    // Encryption keys are used by Google's own service agents
+                    // on the platform's behalf, never by a workload directly.
+                    assert_eq!(
+                        role, "\"roles/cloudkms.cryptoKeyEncrypterDecrypter\"",
+                        "{at}: a CMEK key grants {role}"
+                    );
+                    let service_agent = principal.contains(".iam.gserviceaccount.com")
+                        && (principal.contains("@gcp-sa-")
+                            || principal.contains("@container-engine-robot."))
+                        || principal.contains("google_storage_project_service_account.");
+                    assert!(
+                        service_agent,
+                        "{at}: a CMEK key grants {principal}, which is not a Google service agent"
+                    );
+                    "encryption"
+                };
+                members.entry(principal).or_default().insert(class);
+            }
+        }
+    }
+    assert!(grants >= 8, "premise: only {grants} key grants were read");
+    for class in ["deployment-signing", "artefact-signing", "encryption"] {
+        assert!(
+            members.values().any(|classes| classes.contains(class)),
+            "premise: no grant of class {class} was read"
+        );
+    }
+    for (principal, classes) in &members {
+        assert!(
+            classes.len() == 1,
+            "{principal} holds grants on keys of {classes:?}; key classes are separate trust domains"
+        );
+    }
+
+    // The artefact signers are the API's runtime identity and the model-pack
+    // publisher, neither of which is CI.
+    let signing = without_comments(&read("infrastructure/terraform/artefact-signing.tf"));
+    for signer in ["artefact_api_signer", "artefact_publisher_signer"] {
+        let value = signing
+            .lines()
+            .find_map(|line| {
+                collapsed(line)
+                    .strip_prefix(&format!("{signer} = "))
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| panic!("artefact-signing.tf no longer defines local.{signer}"));
+        assert!(
+            !value.contains("ci_service_account") && !value.contains("ci_identity"),
+            "local.{signer} names the CI identity, which already signs deployments"
+        );
+    }
+}
+
 // --- the agent identity holds no deploy grant ---------------------------------
 
 #[test]
@@ -13588,4 +13911,189 @@ fn no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_bench
         "no committed execution node sets create_egress_nat; dev's newyork-1 entry used to, so \
          this scan is reading the wrong files"
     );
+}
+
+// --- the service contract: state owner, scaling, degraded mode ---------------
+
+/// The catalogue fields every workload owes beyond its identity
+/// (R12-ARCH-10061): who owns its state, how it scales, and what it does
+/// degraded. A service with none of these written down is one whose second
+/// instance, or whose loss, somebody discovers in production.
+const SERVICE_CONTRACT_FIELDS: [&str; 3] = ["state_owner", "scaling", "degraded_mode"];
+
+/// The contract fields an entry leaves absent or blank.
+fn blank_contract_fields(body: &str) -> Vec<&'static str> {
+    SERVICE_CONTRACT_FIELDS
+        .into_iter()
+        .filter(|field| {
+            !body.lines().any(|line| {
+                let indent = line.len() - line.trim_start().len();
+                line.split_once('=').is_some_and(|(key, value)| {
+                    indent == 6
+                        && key.trim() == *field
+                        && !value.trim().trim_matches('"').trim().is_empty()
+                })
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode() {
+    let workloads = catalogue_workloads();
+    assert!(
+        !workloads.is_empty(),
+        "premise: the catalogue has workloads"
+    );
+    for (name, body) in &workloads {
+        let blank = blank_contract_fields(body);
+        assert!(
+            blank.is_empty(),
+            "catalogue workload `{name}` leaves {blank:?} blank; write who owns its state, \
+             how it scales and what it does degraded"
+        );
+    }
+}
+
+#[test]
+fn a_workload_pinned_to_one_instance_says_it_does_not_scale() {
+    // The prose must not contradict the numbers beside it: an entry capped at
+    // one instance that describes itself as horizontal is a description a
+    // reader would act on.
+    for (name, body) in catalogue_workloads() {
+        let max = catalogue_field(&body, "max_instances");
+        let scaling = catalogue_field(&body, "scaling");
+        if max == "1" {
+            assert!(
+                scaling.starts_with("none"),
+                "`{name}` is capped at one instance but its scaling reads: {scaling}"
+            );
+        } else {
+            assert!(
+                !scaling.starts_with("none"),
+                "`{name}` may run {max} instances but its scaling says it does not scale"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_blanked_contract_field_is_found_by_the_scan() {
+    // The scan run on a mutated copy of an entry: the committed catalogue is
+    // never touched.
+    let (name, body) = catalogue_workloads()
+        .into_iter()
+        .next()
+        .expect("the catalogue has a workload");
+    assert!(
+        blank_contract_fields(&body).is_empty(),
+        "premise: `{name}` is complete before it is mutated"
+    );
+    for field in SERVICE_CONTRACT_FIELDS {
+        let blanked: String = body
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with(field) && line.contains('=') {
+                    format!("      {field} = \"\"")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(blank_contract_fields(&blanked), vec![field]);
+        let removed: String = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with(field))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(blank_contract_fields(&removed), vec![field]);
+    }
+}
+
+// --- log retention -----------------------------------------------------------
+
+/// The `retention_days` expression of the observability module's workload log
+/// bucket, and whether that bucket is the project's own `_Default`.
+fn workload_bucket_retention(logging: &str) -> Option<String> {
+    let code = without_comments(logging);
+    let body = terraform_resources(&code, "google_logging_project_bucket_config")
+        .into_iter()
+        .find(|(name, _)| name == "workloads")?
+        .1;
+    body.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "retention_days").then(|| value.trim().to_string())
+    })
+}
+
+#[test]
+fn the_workload_log_bucket_has_a_retention_bounded_by_a_validated_variable() {
+    let logging = read("infrastructure/terraform/modules/observability/logging.tf");
+    let retention = workload_bucket_retention(&logging)
+        .expect("the observability module declares a workload log bucket with a retention");
+    assert_eq!(
+        retention, "var.log_retention_days",
+        "the retention is not the bounded variable"
+    );
+
+    let variables = read("infrastructure/terraform/modules/observability/variables.tf");
+    let block = variables
+        .split("variable \"log_retention_days\"")
+        .nth(1)
+        .expect("the module declares log_retention_days");
+    let block = &block[..block.find("\nvariable ").unwrap_or(block.len())];
+    let default: u32 = block
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "default").then(|| v.trim().parse().ok())?
+        })
+        .expect("the retention has a numeric default");
+    assert!(
+        (1..=400).contains(&default),
+        "the default {default} is outside the bound"
+    );
+    assert!(
+        block.contains("<= 400") && block.contains(">= 1"),
+        "the variable no longer bounds the retention on both sides"
+    );
+    assert!(
+        !without_comments(&logging).contains("bucket_id      = \"_Default\""),
+        "the module manages the project's _Default bucket, which this repository did not create"
+    );
+    assert!(
+        terraform_resources(&without_comments(&logging), "google_logging_project_sink")
+            .iter()
+            .any(|(name, body)| name == "workloads"
+                && body.contains("google_logging_project_bucket_config.workloads")),
+        "no sink routes the platform's logs to the bounded bucket"
+    );
+}
+
+#[test]
+fn an_unbounded_or_missing_log_retention_is_found_by_the_scan() {
+    let logging = read("infrastructure/terraform/modules/observability/logging.tf");
+    assert!(
+        workload_bucket_retention(&logging).is_some(),
+        "premise: the unmutated module declares a retention"
+    );
+    let literal = logging
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("retention_days") {
+                "  retention_days = 0".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(workload_bucket_retention(&literal).as_deref(), Some("0"));
+    let removed = logging
+        .lines()
+        .filter(|l| !l.contains("retention_days"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(workload_bucket_retention(&removed), None);
 }
