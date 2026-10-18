@@ -386,6 +386,14 @@ resource "google_spanner_instance" "global" {
   display_name = "QIP ${var.environment} global"
   labels       = var.labels
 
+  # Enterprise Plus is the edition whose multi-region configurations carry
+  # the external-consistency guarantee the ledger of record is placed on
+  # Spanner for (ADR 0113). Left unset, the provider plans the project's
+  # default edition, and a ledger on Standard would read as the same
+  # resource in every review while holding a weaker consistency contract;
+  # `qip-acceptance`'s infrastructure suite refuses the attribute's absence.
+  edition = "ENTERPRISE_PLUS"
+
   # Processing units rather than nodes: 1000 units is one node, and starting
   # below a node is the difference between an affordable mistake and an
   # expensive one.
