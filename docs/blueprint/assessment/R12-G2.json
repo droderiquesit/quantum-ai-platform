@@ -2456,7 +2456,7 @@
       ".github/workflows/deploy.yml:510-540",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:1071 is_digest_pinned"
     ],
-    "gap": "Publish packages/bundles or drop the repositories.",
+    "gap": "Nothing publishes to the rust_packages or deployment_bundles repositories (modules/registry/main.tf), but removing them is not this lane's to do: it deletes Artifact Registry resources on the next apply, needs the explicit approval naming the resource that the infrastructure rules require, and contradicts pipeline_waivers.rs, which asserts both repositories are declared. The choice is the owner's: publish to them (a deploy.yml step, a protected path) or remove them together with that waiver test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2467,7 +2467,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it."
   },
   {
     "id": "R12-CICD-9108",
@@ -3506,7 +3506,7 @@
       "infrastructure/terraform/modules/network/main.tf:271",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:248"
     ],
-    "gap": "Connectivity tests.",
+    "gap": "Not built. A google_network_management_connectivity_test needs a concrete source and destination (instance, IP, forwarding rule); the execution-node-to-API path has an internal Cloud Run service as its destination, which Connectivity Tests do not take as an endpoint, and execution nodes are not deployed in any environment (execution_nodes_enabled is false). A test declared against endpoints that do not exist would plan to nothing or fail on apply.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3517,7 +3517,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the network and execution-node modules; status unchanged. Buildable once a node exists: declare the test beside the node, keyed on the node count."
   },
   {
     "id": "R12-OBS-9156",
@@ -4057,13 +4057,15 @@
   {
     "id": "R12-MESH-9181",
     "status": "PARTIAL",
-    "current": "qip-mesh PeerLimits bound frame size and fan-out (refused, not truncated; tested); the edge-node's mesh link uses qip-transport rather than qip-mesh; no compression.",
+    "current": "qip-mesh PeerLimits and qip-peer-link's node_limits bound peer frame size (MAX_FRAME 64 KiB) and fan-out (MAX_EDGE_PEERS), refused not truncated. Since 2026-10-18 the deployed centre link states its own bound: every half of MeshLink is built with centre_limits() (backend/crates/apps/qip-edge-node/src/mesh.rs), pinning max_body to MAX_CENTRE_RESPONSE_BYTES (4 MiB), so an answer declaring more is refused before it is read or allocated; a poll carries at most max_poll_batch = 512 frames (backend/crates/libs/qip-transport/src/mesh.rs), and the centre link addresses exactly one peer by construction (MeshSettings.peer). No raw tick stream crosses the mesh: the uplink carries CellStateDelta.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:421-431,607",
-      "backend/crates/services/qip-mesh/tests/peer_rules.rs:130",
-      "backend/crates/apps/qip-edge-node/src/mesh.rs"
+      "backend/crates/apps/qip-edge-node/src/mesh.rs MAX_CENTRE_RESPONSE_BYTES, centre_limits",
+      "backend/crates/libs/qip-transport/src/mesh.rs max_poll_batch: 512",
+      "backend/crates/edge/qip-peer-link/src/wire.rs:845 limits_with",
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs::a_centre_answer_larger_than_the_bound_is_refused_before_it_is_read_and_the_cell_keeps_running"
     ],
-    "gap": "Apply bounds on the deployed link; compression.",
+    "gap": "Compression: frames travel as JSON with the compact touch encoding; a compressing codec would be a new persisted-codec dependency and needs its own ADR (ADR 0109). Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4071,10 +4073,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test peer_rules",
+    "verification": "cargo test -p qip-mesh --test peer_rules; cargo test -p qip-edge-node --test mesh a_centre_answer_larger_than_the_bound",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: bounds now explicit and tested on the deployed link. Mutation: doubling max_body in centre_limits made the client wait for the declared body and fail with 'the peer closed the connection while sending the body', so the test reported 'the over-size answer was not refused for its size'; restored byte for byte. Kept PARTIAL on compression."
   },
   {
     "id": "R12-FABRIC-9182",
