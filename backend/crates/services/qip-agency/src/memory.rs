@@ -26,6 +26,8 @@
 //! leaves it; the durable record of an intervention is the event log, not
 //! this.
 
+use crate::affordance::Method;
+use crate::autonomy::{Authority, Drift};
 use crate::{non_empty, required, text};
 use qip_core::{Decimal, Error};
 use serde::{Deserialize, Serialize};
@@ -119,11 +121,88 @@ impl ActionOutcomeDraft {
     }
 }
 
-/// The most recent `capacity` outcomes.
+/// What a plan's failure calls for, specific to the plan that failed
+/// (R12-RES-7111).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Mitigation {
+    /// Stop: send no further step of these tools for this class. The
+    /// policy is already back at shadow, so the engine will not; the
+    /// record says which tools a person restarting the class must look at.
+    Halt { tools: Vec<String> },
+    /// Roll back one executed step, newest first. Only after an executed
+    /// act, and every step narrow-reversible authority could send was
+    /// declared reversible, so a reversal exists. A shadowed act sent
+    /// nothing and has nothing to reverse.
+    Reverse { tool: String },
+}
+
+/// A plan that did not do what its policy predicted: the plan, how it
+/// departed, the authority it cost, and the stop and roll-back it calls for.
+/// Kept beside the outcomes so a failure is a record the platform can read
+/// back, not only a policy silently narrowed (R12-RES-7111).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailureEpisode {
+    pub class: Method,
+    pub action_sequence: Vec<String>,
+    pub environment_state: String,
+    pub observed: Observed,
+    /// `observed - counterfactual`.
+    pub effect: Decimal,
+    /// Every departure; never empty.
+    pub drift: Vec<Drift>,
+    pub authority_before: Authority,
+    pub authority_after: Authority,
+    /// The halt first, then each executed step's reversal, newest first.
+    pub mitigations: Vec<Mitigation>,
+}
+
+impl FailureEpisode {
+    /// The episode for `outcome`, or `None` when nothing drifted: a plan
+    /// that held to its prediction has not failed.
+    pub fn of(
+        class: Method,
+        outcome: &ActionOutcome,
+        effect: Decimal,
+        drift: Vec<Drift>,
+        authority: (Authority, Authority),
+    ) -> Option<Self> {
+        if drift.is_empty() {
+            return None;
+        }
+        let mut mitigations = vec![Mitigation::Halt {
+            tools: outcome.action_sequence.clone(),
+        }];
+        if outcome.observed == Observed::Measured {
+            mitigations.extend(
+                outcome
+                    .action_sequence
+                    .iter()
+                    .rev()
+                    .map(|tool| Mitigation::Reverse { tool: tool.clone() }),
+            );
+        }
+        Some(Self {
+            class,
+            action_sequence: outcome.action_sequence.clone(),
+            environment_state: outcome.environment_state.clone(),
+            observed: outcome.observed,
+            effect,
+            drift,
+            authority_before: authority.0,
+            authority_after: authority.1,
+            mitigations,
+        })
+    }
+}
+
+/// The most recent `capacity` outcomes, and as many failure episodes.
 #[derive(Debug)]
 pub struct ActionOutcomeMemory {
     capacity: usize,
     records: VecDeque<ActionOutcome>,
+    failures: VecDeque<FailureEpisode>,
 }
 
 impl ActionOutcomeMemory {
@@ -136,6 +215,7 @@ impl ActionOutcomeMemory {
         Ok(Self {
             capacity,
             records: VecDeque::new(),
+            failures: VecDeque::new(),
         })
     }
 
@@ -156,6 +236,19 @@ impl ActionOutcomeMemory {
 
     pub fn len(&self) -> usize {
         self.records.len()
+    }
+
+    /// Keep a failure episode, evicting the oldest when full.
+    pub(crate) fn keep_failure(&mut self, episode: FailureEpisode) {
+        if self.failures.len() == self.capacity {
+            self.failures.pop_front();
+        }
+        self.failures.push_back(episode);
+    }
+
+    /// Every failure episode held, oldest first.
+    pub fn failures(&self) -> impl Iterator<Item = &FailureEpisode> {
+        self.failures.iter()
     }
 
     pub fn is_empty(&self) -> bool {
