@@ -1486,3 +1486,40 @@ fn a_record_cap_above_the_ceiling_is_refused_at_construction_and_the_ceiling_is_
         "the ceiling itself was refused"
     );
 }
+
+/// R12-DATA-2014: a narrative fetch distils a document into records and keeps
+/// no copy of what it read. A canary planted in an article's body — the
+/// licensed text a restricted source forbids redistributing — must reach no
+/// record the adapter emits, in their debug or serialised form, and nothing
+/// the adapter itself holds. The premise half proves the canary crossed the
+/// socket inside the served bytes, so the test cannot pass on a fetch that
+/// never carried it. Mutated by copying the wire body into the news item's
+/// headline; the record then carries the canary and the test fails.
+#[test]
+fn a_canary_in_a_narrative_body_is_found_in_no_record_the_adapter_emits() {
+    const CANARY: &str = "CANARY-5d1e88a2-not-for-retention";
+    let body = FULL_PAYLOAD.replace("would be reduced.", &format!("would be reduced. {CANARY}"));
+    // Premise: the canary is in exactly the bytes the server serves.
+    assert!(body.contains(CANARY) && !FULL_PAYLOAD.contains(CANARY));
+    let (server, mut adapter) = adapter_serving(&body);
+
+    let records = adapter.poll(poll_instant()).expect("the fetch succeeds");
+
+    assert_eq!(server.served(), 1, "premise: the body crossed a socket");
+    assert_eq!(records.len(), 4, "premise: the document was distilled");
+    assert!(
+        !format!("{records:?}").contains(CANARY),
+        "a record carried the body"
+    );
+    for record in &records {
+        let json = serde_json::to_string(record).expect("a record serialises");
+        assert!(
+            !json.contains(CANARY),
+            "a serialised record carried the body"
+        );
+    }
+    assert!(
+        !format!("{adapter:?}").contains(CANARY),
+        "the adapter retained the body"
+    );
+}

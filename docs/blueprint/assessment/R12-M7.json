@@ -260,23 +260,26 @@
   {
     "id": "R12-DATA-7013",
     "status": "PARTIAL",
-    "current": "Training bucket in modules/ai and data module buckets exist; qip-storage has a GCS-backed BlobStore.",
+    "current": "modules/data declares google_storage_bucket.simulation (CMEK, unlocked 30-day retention policy; outputs/ deleted at 90 days, campaigns/ to COLDLINE at 90 and never deleted, manifests/ to NEARLINE at 365 and never deleted) beside the archive and model-artifact buckets; modules/ai holds the training bucket; qip-storage has a GCS-backed BlobStore. All gated on enable_cloud_storage, false everywhere; no deployed process writes a simulation output or campaign dataset to GCS.",
     "evidence": [
-      "infrastructure/terraform/modules/ai/main.tf:52 training bucket, :95 vertex metadata store, :113 vertex endpoint",
+      "infrastructure/terraform/modules/data/main.tf:297 google_storage_bucket.simulation",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl:220 the_simulation_bucket_bounds_outputs_and_keeps_campaigns_and_manifests",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:283 the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores",
+      "infrastructure/terraform/modules/ai/main.tf:52 training bucket",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs"
     ],
-    "gap": "No bucket set per artifact class (simulation outputs, campaign datasets) and no writer from a deployed process.",
+    "gap": "enable_cloud_storage is false in every committed environment (owner switch), so no committed plan renders the bucket; the model-artifact bucket still carries no retention policy; and no deployed process writes a simulation output, campaign dataset or manifest to GCS (the integration half of the verification).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan; integration test writing a manifest to GCS",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): simulation bucket added and BUCKET_CLASSES states its class. Mutations, each restored byte-for-byte: outputs/ kept 900 days failed 'Simulation outputs must be deleted at 90 days'; the campaigns/ rule turned to Delete failed 'No lifecycle rule may delete a campaign dataset'; manifests/ renamed failed the acceptance test 'names no lifecycle class for manifests/'. The acceptance test's training branch was conditional on a bucket that lives in modules/ai, so before this it asserted nothing about modules/data."
   },
   {
     "id": "R12-SEC-7014",
@@ -916,13 +919,15 @@
   {
     "id": "R12-FABRIC-7042",
     "status": "PARTIAL",
-    "current": "qip-cli event-fabric grant/isolate/release and inspect exist; broker isolate tested.",
+    "current": "qip-cli event-fabric grant (ACLs), isolate/release (isolation) and, since 2026-10-18, lag exist. 'qip event-fabric lag --peer --stream --partition --group' asks the broker's group/lag route and prints the group's committed offset, the partition's high watermark and their gap as the broker computed them; a group that never committed is refused, not reported caught up. Loopback-only peer and file-only operator token, as for isolate.",
     "evidence": [
       "backend/crates/apps/qip-cli/src/event_fabric/inspect.rs, admin.rs:181 event-fabric grant/isolate/release subcommands (qip-cli main.rs:75)",
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:699 Broker::isolate",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 operator isolates one partition"
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 operator isolates one partition",
+      "backend/crates/apps/qip-cli/src/event_fabric/lag.rs:83 lag::run",
+      "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs:393 the_lag_command_reports_a_groups_committed_offset_against_the_high_watermark"
     ],
-    "gap": "No lag/mirroring/replay views (no mirroring exists).",
+    "gap": "Two views remain: partition health (the broker's metadata route already returns leader epoch, high watermark and archived_through, but no CLI asks it, and the response carries no isolation state, so a health view would need the route to report isolation too) and fabric replay (qip replay replays the event log, not a fabric partition). Mirroring has no view because the fabric does not mirror (ADR 0100).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -930,10 +935,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cli; cargo test -p qip-fabricd --test broker",
+    "verification": "cargo test -p qip-cli --test event_fabric_admin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Lane L24 2026-10-18: lag view added. Mutation: printing the committed offset where the lag belongs fails the exact-line assertion; restored, qip-cli suite passes. Kept PARTIAL for the health and replay views."
   },
   {
     "id": "R12-FABRIC-7043",
@@ -1820,25 +1825,30 @@
   },
   {
     "id": "R12-CONTRACT-7082",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/action_intent.rs:88 ActionIntent = Validated<ActionIntentFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "qip-agency constructs a §27 qip_contracts::action_intent::ActionIntent for every step ActionGuard::preflight clears (guard.rs::intent :550, built at :470 only after every check passes): actor and on-whose-behalf (the goal approver), channel, the step's canonical JSON payload and its digest, provenance (cited evidence ids, goal and plan approval ids), the draft's disclosures, the four policies that admitted it, an idempotency key over plan id, index and payload digest, and the audit lineage. engine::execute carries them to Report::intents in shadow and when acting, and journal::record_pass writes each as AgencyRecord::IntentRecorded, decoded strictly when read back; PassLineage::verify refuses an intent that cites no plan approval the pass made. On qip-cli agency (main.rs -> agency::run -> record_pass) every pass the guard clears journals its intents; qip-deepbrain's ambient door builds them in the same preflight.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action_intent.rs:88 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1086 a_section_27_action_intent_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/services/qip-agency/src/guard.rs:470",
+      "backend/crates/services/qip-agency/src/guard.rs:550",
+      "backend/crates/services/qip-agency/src/journal.rs:143",
+      "backend/crates/services/qip-agency/src/journal.rs:408",
+      "backend/crates/services/qip-agency/src/journal.rs:623",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_shadow_pass_yields_a_decodable_action_intent_and_an_edited_payload_is_refused",
+      "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1102 a_section_27_action_intent_refuses_each_broken_invariant_including_an_edited_payload"
     ],
-    "gap": "No production seam constructs or consumes ActionIntent (grep of ActionIntentFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency a_shadow_pass_yields_a_decodable_action_intent && cargo +1.94.1 test -p qip-cli --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded INCORRECT->MISSING on 2026-10-11 by an independent spot-check: action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ActionIntent exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Closed 2026-10-18 (lane L10). Mutations fired: digesting a constant instead of the payload in guard::intent makes ActionIntent::new refuse and the shadow pass is withheld (test fails at its Shadowed premise); writing no IntentRecorded in record_pass fails the qip-cli journal-kinds assertion. The ambient door does not journal its intents (its outbox record is the draft); nothing in the tree consumes an ActionIntent as an input yet. qip-cli is an operator tool, not a deployed image."
   },
   {
     "id": "R12-CONTRACT-7083",
@@ -2462,24 +2472,29 @@
   },
   {
     "id": "R12-RES-7111",
-    "status": "PARTIAL",
-    "current": "ActionPolicy::observe narrows authority on side effects; stage admission refuses after a failure; no rollback actions or failure episode.",
+    "status": "COMPLETE",
+    "current": "A drift now creates a failure episode with a plan-specific stop and roll-back, not only a narrowed policy. engine::learn_outcome (engine.rs:496) computes ActionPolicy::drift (autonomy.rs:158: effect below or above the predicted interval, each unpredicted side effect, as Drift values), narrows through observe exactly when drift is non-empty, and files FailureEpisode::of (memory.rs:146; engine.rs:557) into ActionOutcomeMemory (keep_failure, memory.rs:242, bounded by the memory's capacity): the class, the action sequence, the regime, measured or simulated, the effect, every departure, the authority before and after, and the mitigations — a Halt naming the plan's tools and, after an executed (measured) act, a Reverse per step newest first; a shadowed act sent nothing and gets no reversal. The episode rides Learned to the journal (AgencyRecord::Learned.failure, journal.rs:451). Production callers: qip-deepbrain's ambient door calls engine::learn on every follow-up (ambient_agency.rs:698) with the memory it holds, and qip-cli agency learns every shadowed pass through learn_shadowed.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects",
-      "backend/crates/services/qip-agency/tests/agency.rs:857"
+      "backend/crates/services/qip-agency/src/autonomy.rs:158",
+      "backend/crates/services/qip-agency/src/engine.rs:557",
+      "backend/crates/services/qip-agency/src/memory.rs:146",
+      "backend/crates/services/qip-agency/src/memory.rs:242",
+      "backend/crates/services/qip-agency/src/journal.rs:451",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs:698",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_side_effect_the_policy_did_not_predict_files_a_failure_episode_with_its_stop_and_roll_back"
     ],
-    "gap": "Rollback/mitigation and failure episode.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency a_side_effect_the_policy_did_not_predict",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutation fired: dropping memory.keep_failure in learn_outcome fails the test at `one failure, one episode`. The Halt is in force the moment the episode is filed, because the policy is back at shadow and the engine sends nothing for its class; the Reverse mitigations are recorded and not executed, because under ADR 0114 no shipped adapter acts, so there is nothing to reverse in any deployment today."
   },
   {
     "id": "R12-RES-7112",

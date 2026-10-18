@@ -168,3 +168,73 @@ fn the_deep_brain_opens_its_ambient_agency_unconditionally_so_planning_and_tool_
         "the agency is handed to the run loop"
     );
 }
+
+/// R12-REFLEX-1165: the reflex node's scope items, each held to the file
+/// that composes it. The node's composition root builds the cell
+/// (`assemble_with_risk`: feature engine, mode gate, risk gate) and `main`
+/// supplies the strategy installer and the gateway; the simulated feed
+/// tracks venue state; netting and the inventory-target read happen inside
+/// `Cell::work`, which the node calls, so they are pinned in the cell rather
+/// than invented as node symbols. A symbol that leaves its file fails here
+/// naming the item.
+#[test]
+fn every_reflex_node_scope_item_is_still_composed_where_the_node_assembles_it() {
+    const NODE: &str = "crates/apps/qip-edge-node/src";
+    let items: [(&str, String, &str); 9] = [
+        (
+            "feature engine",
+            format!("{NODE}/lib.rs"),
+            "features: FeatureEngine",
+        ),
+        (
+            "risk gate",
+            format!("{NODE}/lib.rs"),
+            ".with_risk_gate(risk_gate)",
+        ),
+        (
+            "mode gate",
+            format!("{NODE}/lib.rs"),
+            ".with_mode_gate(mode_gate)",
+        ),
+        (
+            "risk assembly",
+            format!("{NODE}/main.rs"),
+            "assemble_with_risk(",
+        ),
+        (
+            "strategy installer",
+            format!("{NODE}/main.rs"),
+            "StrategyInstaller::new(",
+        ),
+        ("gateway", format!("{NODE}/main.rs"), "NodeGateway::open("),
+        (
+            "venue state",
+            format!("{NODE}/feed.rs"),
+            "VenueState::aggregated(",
+        ),
+        (
+            "netting",
+            "crates/edge/qip-edge/src/cell.rs".to_string(),
+            "let nets = net(intents);",
+        ),
+        (
+            "inventory targets",
+            "crates/edge/qip-edge/src/cell.rs".to_string(),
+            "let targets = self.inventory_targets();",
+        ),
+    ];
+    for (item, file, needle) in &items {
+        holds(file, needle, item);
+    }
+    // The pass that runs `Cell::work` is scheduled, not called from `main`.
+    holds(
+        &format!("{NODE}/scheduler.rs"),
+        "run_pass(cell, simulated, feed, requoter, stats, now)",
+        "pass",
+    );
+    holds(
+        &format!("{NODE}/pass.rs"),
+        "cell.work(now, &mut gateway)",
+        "pass",
+    );
+}

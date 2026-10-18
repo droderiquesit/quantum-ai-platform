@@ -27,6 +27,7 @@
 //! a record, so a draft is never silently lost to make room.
 
 use crate::engine::Adapter;
+use crate::goal::GoalSpec;
 use crate::plan::Step;
 use qip_contracts::action::{ExecutionRecord, GoalApproval, PlanApproval, ToolAudit};
 use qip_core::lineage::Lineage;
@@ -76,6 +77,11 @@ pub struct OutboxDraft {
     pub rate_window: u64,
     /// Which attempt wrote it (1 for the first).
     pub attempt: u32,
+    /// The sub-goal of the door's standing goal this draft served, as
+    /// `GoalSpec::decompose` validated it (R12-AGENCY-3002). `None` only on
+    /// a record written before the door decomposed its goal.
+    #[serde(default)]
+    pub sub_goal: Option<GoalSpec>,
 }
 
 impl EventBody for OutboxDraft {

@@ -670,3 +670,72 @@ fn availability_that_has_halved_is_a_supply_shock_and_slightly_less_is_not() {
     assert_eq!(kinds(5), 1, "exactly half is a shock");
     assert_eq!(kinds(6), 0, "a drop to six of ten is not");
 }
+
+// ---- External reconciliation (R12-LEDGER-5026)
+
+/// The ledger is reconciled against the marketplace's own record and each
+/// seeded difference is recorded as a break naming what differs; a record
+/// that agrees produces none. The premise comes first: the simulated
+/// marketplace's statement, kept by its own arithmetic, agrees with the
+/// ledger after a sale and a return, so the breaks below are the seeded
+/// differences and not a comparison that always fires.
+///
+/// Mutation (run, failed, restored): `CommercePlane::reconcile` skipping the
+/// net comparison — the seeded short payment records no break.
+#[test]
+fn a_seeded_difference_between_the_ledger_and_the_marketplaces_record_is_recorded_as_a_break() {
+    let mut p = plane();
+    p.sell("s1", "u1", "buyer", dec!("40"), None).expect("sold");
+    p.settle("s1").expect("settled");
+    p.return_unit("s1", Condition::Used, "Berlin-DC2", "platform")
+        .expect("returned");
+    assert!(
+        p.reconcile_with_marketplace().is_empty(),
+        "premise: the marketplace's own record agrees with the ledger: {:?}",
+        p.breaks()
+    );
+    assert_eq!(p.marketplace_statement().lines["s1"].net, dec!("-2.5"));
+
+    // The marketplace paid a cent short, says the unit stayed with the
+    // buyer, and reports a sale the ledger never made.
+    let mut statement = p.marketplace_statement().clone();
+    if let Some(line) = statement.lines.get_mut("s1") {
+        line.net = dec!("-2.51");
+        line.returned = false;
+    }
+    statement.lines.insert(
+        "s9".to_string(),
+        StatementLine {
+            unit: "u9".to_string(),
+            net: dec!("10"),
+            returned: false,
+        },
+    );
+    let found = p.reconcile(&statement);
+    let findings: Vec<(&str, &str)> = found
+        .iter()
+        .map(|b| (b.sale.as_str(), b.finding.as_str()))
+        .collect();
+    assert_eq!(
+        findings,
+        vec![
+            (
+                "s1",
+                "the ledger settled -2.5, the marketplace reports paying -2.51"
+            ),
+            (
+                "s1",
+                "the ledger records the unit returned and the marketplace kept"
+            ),
+            (
+                "s9",
+                "the marketplace reports a sale the ledger never settled"
+            ),
+        ]
+    );
+    assert_eq!(
+        p.breaks(),
+        found.as_slice(),
+        "every break found is recorded"
+    );
+}
