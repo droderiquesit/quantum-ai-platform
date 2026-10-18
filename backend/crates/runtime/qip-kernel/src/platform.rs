@@ -10744,6 +10744,9 @@ impl Platform {
             halted: self.autonomy.kill_switch().is_globally_tripped(),
         };
 
+        if let Some(slowest) = report.stages.iter().map(|o| o.elapsed).max() {
+            self.federation.observe_cycle(slowest);
+        }
         for outcome in &report.stages {
             let stage = labels([("stage", outcome.stage.as_str())]);
             let mut ran = stage.clone();
@@ -12047,6 +12050,13 @@ impl Platform {
                 live_authority: level.is_live(),
                 expired_manifests: self.expired_manifests(now).len(),
                 thin_subjects,
+                slowest_stage: self.federation.slowest_stage(),
+                degraded_capabilities: self.central_degradation(now).ok().map(|d| {
+                    qip_contracts::degradation::Capability::all()
+                        .into_iter()
+                        .filter(|c| d.freshness(*c) != qip_contracts::degradation::Freshness::Fresh)
+                        .count()
+                }),
             },
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
