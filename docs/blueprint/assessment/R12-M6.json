@@ -72,14 +72,14 @@
   {
     "id": "R12-MODEL-6004",
     "status": "PARTIAL",
-    "current": "Declined and filled orders are priced by the twin in LEARN (shared cap); hedged and unwound opportunities are not replayed.",
+    "current": "Declined and filled orders are priced by the twin in LEARN (shared cap), and a partly filled order is scored as partial (FillScore.unfilled, 2026-10-18); hedged and unwound opportunities are not replayed.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:826 declined and filled share one cap"
     ],
-    "gap": "No counterfactual for hedged or unwound positions; partial fills are not distinguished from full fills.",
+    "gap": "No counterfactual for hedged or unwound positions: Platform has no queue of hedge proposals or unwinds to price, and evaluate_alternatives prices a placed order's size arms, not a hedge or an unwind leg. Needs a design decision on what an unwound or hedged path's alternative is (the unhedged hold? the held-to-horizon position?) before a queue and a twin arm can be built. The partial-fill half is closed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -90,7 +90,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Narrowed 2026-10-18 (lane L01): partial fills distinguished in score_filled (a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left); hedged/unwound remain."
   },
   {
     "id": "R12-MODEL-6005",
@@ -750,18 +750,18 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:139 distil"
     ],
-    "gap": "Ensembles/new architectures; ModelPack lineage end to end.",
+    "gap": "Owner decision O04 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable accelerators (Vertex AI GPU/TPU) and decide whether they reach qip-optimization-engine's Substrate dispatch; ADR 0122 confines accelerators to the offline research lane. Enables: Gpu/Tpu substrate arms, measured workload fit, larger model families. Costs: Vertex AI enablement and accelerator hours; reopening ADR 0122's 'accelerators only here'; a model dependency if a family is not written in-tree.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O04 (design-decisions-2026-10-18)",
     "verification": "cargo test (crate producing ModelPack lineage)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O04; gap before it: Ensembles/new architectures; ModelPack lineage end to end."
   },
   {
     "id": "R12-EXPAND-6035",
@@ -792,7 +792,7 @@
       "backend/crates/libs/qip-quantum/src/foundry.rs:178 research family not built",
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 baseline always computed"
     ],
-    "gap": "Research families and QuantumExperiment artifact.",
+    "gap": "Decided by ADR 0134 (accepted 2026-10-18): The hybrid solver router is qip-optimization-engine's compute router: hedge and hypothesis searches submit to it asynchronously, the classical answer is always computed, a hedge result carries an unwind plan, and the next quantum research family is feature-subset selection on the simulated provider. Code left: a FeatureEnsembleSelection FamilyDeclaration with its QUBO encoding and greedy baseline, and a solvers.rs test asserting the experiment record and the baseline.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -803,7 +803,7 @@
     "verification": "cargo test (crate producing QuantumExperiment / Benchmark)",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D10; gap before it: Research families and QuantumExperiment artifact."
   },
   {
     "id": "R12-EXPAND-6037",
@@ -837,7 +837,7 @@
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:4076"
     ],
-    "gap": "Propagation to central training; ReflexDelta.",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: bounded episodes on CellReport and a qip-kernel/tests/central.rs test that an ingested report's episodes reach learn_from_cells.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -848,7 +848,7 @@
     "verification": "cargo test (crate producing RegionalEpisode / ReflexDelta)",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Propagation to central training; ReflexDelta."
   },
   {
     "id": "R12-EXPAND-6039",
@@ -1111,7 +1111,7 @@
     "evidence": [
       "backend/crates/services/qip-expansion/tests/loop.rs:475 a_campaign_refuses_a_stage_out_of_order_and_one_with_no_provenance"
     ],
-    "gap": "No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills.",
+    "gap": "Decided by ADR 0142 (accepted 2026-10-18): Shadow is a forward window where the candidate is scored and provably not installed; paper is a later disjoint window where it is installed and acts; ORDER becomes Historical, Simulated, Shadow, Paper. Code left: the reordered Environment::ORDER, the disjoint-window check, the two-phase fill-bias campaign with installation and withdrawal records, and a loop.rs test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1122,7 +1122,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. ADR lane 2026-10-18: gap re-graded against decision D18; gap before it: No shadow environment: Shadow is the second half of the post-start paper fills, and Simulated is a bootstrap of the historical fills. ADR lane 2026-10-18: gap re-graded against ADR 0142; gap before it: Delegable decision D18 (design-decisions-2026-10-18.json), ADR not yet written: Define the shadow environment for a paper platform as a candidate run beside the paper book without acting. Needs that ADR, then the code."
   },
   {
     "id": "R12-EXPAND-6051",
@@ -1565,7 +1565,7 @@
       "backend/crates/services/qip-agency/src/autonomy.rs:87 widen",
       "backend/crates/services/qip-agency/tests/agency.rs:1153"
     ],
-    "gap": "Authority-graded evidence schedule.",
+    "gap": "Decided by ADR 0141 (accepted 2026-10-18): Agency authority is a typed schedule widen reads, with evidence, rollback and approvers per level; nothing above NarrowReversible is granted, and External and Capital stay refused by ADR 0114 D8 and ADR 0003/0021/0108. Code left: the schedule table in autonomy.rs, widen reading it, the two ungranted variants, and tests/agency.rs asserting each level refuses lesser evidence and names the record that refuses it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1576,7 +1576,7 @@
     "verification": "cargo test -p qip-agency --test agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D17; gap before it: Authority-graded evidence schedule. ADR lane 2026-10-18: gap re-graded against ADR 0141; gap before it: Delegable decision D17 (design-decisions-2026-10-18.json), ADR not yet written: Agency authority levels with an evidence and rollback schedule per level; every level above internal drafting stays refused under ADR 0114 D8. Needs that ADR, then the code."
   },
   {
     "id": "R12-EXPAND-6072",
@@ -2092,18 +2092,18 @@
       "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter refuses every call",
       "backend/crates/services/qip-data-finder/src/decision.rs:464"
     ],
-    "gap": "Survey/experiment actions on the outside world need an ADR.",
+    "gap": "Owner decision O16 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Reopen ADR 0114 D8 for an outbound channel or external action surface. Enables: A real channel behind ConductGate, surveys, public adapters. Costs: A public channel, its credential and account, and reputational exposure.",
     "implemented": true,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O16 (design-decisions-2026-10-18)",
     "verification": "inspection: no Adapter implementation outside tests",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O16; gap before it: Survey/experiment actions on the outside world need an ADR."
   },
   {
     "id": "R12-AGENCY-6095",

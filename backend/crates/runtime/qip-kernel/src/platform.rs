@@ -93,7 +93,8 @@ use qip_capital_fabric::tolerance::{
     class_for_desk_cash,
 };
 use qip_capital_fabric::wallet::{
-    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, VenueAsset,
+    Asset, HoldingObservation, LedgerView, Provenance as HoldingProvenance, ReconciliationOutcome,
+    VenueAsset,
 };
 use qip_capital_fabric::{
     CapitalLocation, DemandForecast, DemandForecaster, DemandKind, DemandObservation, FundingCurve,
@@ -807,6 +808,11 @@ pub struct Platform {
     /// assembly like `asset_classes`; the release loop asks it which
     /// permission an order needs.
     derivative_types: BTreeMap<String, InstrumentType>,
+    /// The smallest tradable unit of every instrument — lot size times
+    /// contract multiplier — taken from the universe at assembly like
+    /// `asset_classes`. What the symbolic rule pack prices one lot with
+    /// (R12-REASON-3057).
+    lot_units: BTreeMap<String, Decimal>,
     /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
     /// so every derivative order is refused until a composition root grants.
     derivative_permissions: DerivativePermissions,
@@ -814,6 +820,12 @@ pub struct Platform {
     /// `None` refuses every derivative, because a grant with nobody to read
     /// it against must not admit anything.
     derivative_desk: Option<(String, Jurisdiction)>,
+    /// The jurisdictions this platform is licensed to execute in, read by
+    /// [`Platform::executable_scope`]. `None` applies no licence gate: the
+    /// determination is compliance's and a composition root states it through
+    /// [`Platform::license_jurisdictions`]. Once stated, an instrument whose
+    /// governing jurisdictions are not all in it is shadow, never executable.
+    licensed_jurisdictions: Option<BTreeSet<Jurisdiction>>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -1216,6 +1228,17 @@ const COUNTERFACTUALS_PER_CYCLE: usize = 8;
 /// reported on the cycle, because evicting the oldest waiting path would
 /// silently choose which veto goes unexamined.
 const DECLINED_HISTORY: usize = 256;
+
+/// The `control` an order refused for a wallet reconciliation halt is counted
+/// under, and the `gate` its rejection record carries (R12-ASSET-4074). A
+/// source literal, so the label has exactly one value for this refusal.
+const WALLET_HALT_CONTROL: &str = "wallet-halt";
+
+/// Why no proposal is signed while the desk's feed to the ledger cannot take
+/// another record (R12-RES-7098). One sentence for the cycle report; the
+/// counter carries it as `control="ledger"`, never as this text.
+const LEDGER_UNCOMMITTED_REASON: &str = "the desk's ledger feed is full or has a gap, so new \
+     exposure would not reach the authoritative ledger; cancels and fill booking continue";
 
 /// Minimum scored, declined paths on the same instrument before
 /// [`Platform::counterfactual_sizing_multiplier`] trusts the pattern enough to
@@ -3188,6 +3211,9 @@ struct FilledPath {
     /// of the fill error can say which way the twin was wrong.
     side: BookSide,
     decided_at: Timestamp,
+    /// What the venue left unfilled of the order when it reported, from the
+    /// order manager's own book (R12-MODEL-6004). Zero for a whole fill.
+    unfilled: Decimal,
 }
 
 /// What the twin found about one fill, once it has priced the sizes not
@@ -3225,6 +3251,21 @@ pub struct FillScore {
     /// prices. `None` where the twin's own `trade` alternative did not fill,
     /// so there was no simulated entry to compare. A statistic, not money.
     pub trade_error_bps: Option<f64>,
+    /// The quantity the venue left unfilled when it reported this order,
+    /// zero for a whole fill (R12-MODEL-6004). Without it a partial fill and
+    /// a whole one left the same score, and the size findings above — priced
+    /// on the quantity that traded — read as though the order had been the
+    /// size that was asked for. Defaults to zero for a score written before
+    /// the field existed, which is the reading those records were made under.
+    #[serde(default)]
+    pub unfilled: Decimal,
+}
+
+impl FillScore {
+    /// Whether the venue filled only part of the order this scores.
+    pub fn is_partial(&self) -> bool {
+        self.unfilled.is_positive()
+    }
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -4767,6 +4808,15 @@ impl Platform {
         // platform holds no record of is refused at the door every desk order
         // passes, not risk-checked against a book with no figures for it.
         let known_instruments: Vec<String> = asset_classes.keys().cloned().collect();
+        let lot_units: BTreeMap<String, Decimal> = universe
+            .iter()
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    object.lot_size * object.contract_multiplier,
+                )
+            })
+            .collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -5266,8 +5316,10 @@ impl Platform {
             inherited_through,
             asset_classes,
             derivative_types,
+            lot_units,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
+            licensed_jurisdictions: None,
             asset_class_registry,
             breadth: crate::breadth::BreadthPlane::default(),
             exposure_axes,
@@ -13713,6 +13765,51 @@ impl Platform {
     /// reference and returns a clause and a problem, so the derivation has no
     /// path back into the thesis, its conviction or any order: that is what
     /// keeps it advisory by construction rather than by convention.
+    /// What one lot of `subject` leaves of the position budget and of cash,
+    /// in whole currency units, for the symbolic rule pack (REASON-3057).
+    ///
+    /// Each is `None` where its inputs are unreadable — no lot on record, no
+    /// price yet, no position cap among the limits — so the pack is given a
+    /// fact only when there is one. The budget is equity times the tightest
+    /// `MaxPositionWeight`; the whole-unit floor makes the figure a strict
+    /// answer to "does one lot fit", never a rounding in the lot's favour.
+    fn lot_headrooms(&self, subject: &str) -> (Option<i64>, Option<i64>) {
+        let Some(unit) = self.lot_units.get(subject) else {
+            return (None, None);
+        };
+        let Some(price) = self
+            .price_history
+            .get(subject)
+            .and_then(|closes| closes.last())
+            .and_then(|close| Decimal::from_f64(*close))
+        else {
+            return (None, None);
+        };
+        let lot_notional = *unit * price;
+        let whole = |amount: Decimal| {
+            // Floored, so a headroom of minus one hundredth is minus one and
+            // still reads as a shortfall.
+            let floored = amount.to_f64().floor();
+            (floored.is_finite() && floored.abs() < 9.0e15).then_some(floored as i64)
+        };
+        let cap = self
+            .monitor
+            .limits()
+            .limits
+            .iter()
+            .filter_map(|limit| match limit.kind {
+                qip_risk::limits::LimitKind::MaxPositionWeight { limit } => Some(limit),
+                _ => None,
+            })
+            .fold(None, |tightest: Option<f64>, limit| {
+                Some(tightest.map_or(limit, |t| t.min(limit)))
+            });
+        let lot_headroom = cap
+            .and_then(Decimal::from_f64)
+            .and_then(|weight| whole(self.capital.equity() * weight - lot_notional));
+        (lot_headroom, whole(self.capital.cash - lot_notional))
+    }
+
     fn reason_symbolically(
         &mut self,
         opportunity: &Opportunity,
@@ -13737,6 +13834,7 @@ impl Platform {
                     .map(|latest| (id.clone(), *latest))
             })
             .collect();
+        let (lot_headroom, cash_headroom) = self.lot_headrooms(subject.as_str());
         let input = SymbolicInput {
             cycle: self.cycle,
             hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
@@ -13777,6 +13875,8 @@ impl Platform {
                 .asset_classes
                 .get(subject.as_str())
                 .map(|class| class.as_str().to_string()),
+            lot_headroom,
+            cash_headroom,
         };
         let derivation = {
             let world = self.world.read();
@@ -16388,12 +16488,28 @@ impl Platform {
         // same reason, which makes this the second layer rather than the only
         // one; it is the layer that states the reason once on the cycle
         // report instead of once per order.
-        let signable = action.permits_new_risk() && compliance.is_ok() && unevaluated.is_none();
+        //
+        // And a book whose accounting cannot be committed is not signable
+        // either (R12-RES-7098). The ledger is the authority for what the
+        // desk holds; a desk whose feed to it is full, or whose chain has
+        // advanced over a record it could not queue, is taking risk the
+        // authority has not been told about, and it would keep taking it for
+        // as long as nothing drains the feed. Withheld here, at the one place
+        // new exposure is authorised, so cancels and the book following the
+        // venue (`a_full_feed_does_not_stop_the_book_following_the_venue`)
+        // are untouched: only a *new* signature is refused.
+        let ledger_blocked = self.desk_ledger.is_full() || self.desk_ledger.has_gap();
+        let signable = action.permits_new_risk()
+            && compliance.is_ok()
+            && unevaluated.is_none()
+            && !ledger_blocked;
         if !signable {
             let reason = if !action.permits_new_risk() {
                 format!("the risk monitor is at {}", action.as_str())
             } else if let Some(refusal) = &unevaluated {
                 format!("the liquidity floor was not evaluated: {refusal}")
+            } else if ledger_blocked {
+                LEDGER_UNCOMMITTED_REASON.to_string()
             } else {
                 compliance
                     .err()
@@ -16419,6 +16535,8 @@ impl Platform {
                         "risk-monitor"
                     } else if unevaluated.is_some() {
                         "liquidity-read"
+                    } else if ledger_blocked {
+                        "ledger"
                     } else {
                         "compliance"
                     },
@@ -18415,6 +18533,13 @@ impl Platform {
     /// and a record that kept only the first could say what the platform earned
     /// and not what it declined.
     pub fn submit_order(&mut self, order: Order, now: Timestamp) -> Result<()> {
+        // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
+        // not traded into. Before the pre-trade routing on purpose: the
+        // desk's own books disagree with the custodian's about this asset,
+        // and no limit computed from them is a limit on what is really held.
+        if let Some(reason) = self.wallet_halt_for(order.object_id.as_str(), order.side) {
+            return self.refuse_for_wallet_halt(&order, reason, now);
+        }
         // R12-RISK-3022: the pre-trade check is routed through the cost router
         // as a decision that must be deterministic, and the order does not go
         // further without that routing. `Router::determine` returns a type that
@@ -18490,6 +18615,81 @@ impl Platform {
                     .unwrap_or_else(|| "refused with no reason recorded".to_string()),
             ))
         }
+    }
+
+    /// Why the desk may not send this order into the book its custodian
+    /// statement disagrees with, or `None` when nothing halts it
+    /// (R12-ASSET-4074).
+    ///
+    /// The wallet reconciliation halts a *venue-asset* and says so in the
+    /// fabric's latest outcome for it; this is where the desk side reads that
+    /// outcome. Two scopes, and only these two: an instrument the desk's venue
+    /// halted refuses every order in that instrument, and a halted settlement
+    /// cash refuses a *buy* anywhere at that venue, because a buy spends the
+    /// balance nobody can vouch for while a sell does not. Other venues and
+    /// other instruments are untouched, which is the same scoping
+    /// `CentralPlane::record_halt` gives a cell. The latest outcome per
+    /// venue-asset is what is read, so a later clean reconciliation lifts the
+    /// halt without a latch to clear.
+    pub fn wallet_halt_for(&self, object_id: &str, side: Side) -> Option<String> {
+        let desk_venue = VenueId::new(self.broker.name());
+        self.fabric
+            .state()
+            .reconciliations()
+            .values()
+            .find_map(|outcome| {
+                let ReconciliationOutcome::Halt {
+                    venue,
+                    asset,
+                    alert,
+                    ..
+                } = outcome
+                else {
+                    return None;
+                };
+                if *venue != desk_venue {
+                    return None;
+                }
+                let cash = asset.as_str() == SETTLEMENT_CURRENCY.to_string();
+                let applies = if cash {
+                    matches!(side, Side::Buy)
+                } else {
+                    asset.as_str() == object_id
+                };
+                applies.then(|| {
+                    format!(
+                        "{venue} {asset} is halted by the wallet reconciliation: {}",
+                        alert.message
+                    )
+                })
+            })
+    }
+
+    /// Put an order the wallet halt stopped on the record and refuse it.
+    fn refuse_for_wallet_halt(
+        &mut self,
+        order: &Order,
+        reason: String,
+        now: Timestamp,
+    ) -> Result<()> {
+        let correlation = self.correlation_for(now);
+        self.telemetry.metrics.count(
+            names::ORDERS_REFUSED,
+            labels([("control", WALLET_HALT_CONTROL)]),
+        );
+        let _ = self.capture(
+            now,
+            &correlation,
+            order.object_id.clone(),
+            Action::Rejected {
+                order_id: order.order_id.clone(),
+                gate: WALLET_HALT_CONTROL.to_string(),
+                reason: reason.clone(),
+            },
+            RealisedOutcome::nothing_happened(now),
+            reason.clone(),
+        );
+        Err(Error::denied(reason))
     }
 
     /// The strategy, capital policy, risk rule set and execution path an
@@ -18983,6 +19183,7 @@ impl Platform {
                         fill_price,
                         side: book_side(side),
                         decided_at: now,
+                        unfilled: shortfall.map_or(Decimal::ZERO, |(_, remaining)| remaining),
                     }),
                     None => self.capture_problems.push(format!(
                         "filled order {} will not be priced for its size: its fills do not \
@@ -19151,6 +19352,18 @@ impl Platform {
                 None
             }
         }
+    }
+
+    /// State the jurisdictions this platform is licensed to execute in.
+    /// Replaces any earlier statement whole; an empty set licenses nothing,
+    /// so every instrument becomes research-only until a jurisdiction is named.
+    pub fn license_jurisdictions(&mut self, jurisdictions: impl IntoIterator<Item = Jurisdiction>) {
+        self.licensed_jurisdictions = Some(jurisdictions.into_iter().collect());
+    }
+
+    /// The licence stated through [`Self::license_jurisdictions`], if any.
+    pub(crate) fn licensed_jurisdictions(&self) -> Option<&BTreeSet<Jurisdiction>> {
+        self.licensed_jurisdictions.as_ref()
     }
 
     /// Grant the derivative permissions this platform trades under, for
@@ -20664,6 +20877,7 @@ impl Platform {
                         smaller_favoured,
                         larger_favoured,
                         trade_error_bps,
+                        unfilled: path.unfilled,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -28847,6 +29061,7 @@ mod counterfactual_trial_seam_tests {
             smaller_favoured: false,
             larger_favoured,
             trade_error_bps: None,
+            unfilled: Decimal::ZERO,
         }
     }
 

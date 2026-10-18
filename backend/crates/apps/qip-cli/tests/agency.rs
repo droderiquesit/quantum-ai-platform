@@ -13,6 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use qip_agency::estimate::Experiment;
 use qip_agency::journal::{self, AgencyRecord};
 use qip_events::EventLog;
 use serde_json::{Value, json};
@@ -357,6 +358,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::ToolDecision { .. } => "tool",
             AgencyRecord::VoiceReleased { .. } => "voice",
             AgencyRecord::IntentRecorded { .. } => "intent",
+            AgencyRecord::PlanBlocked { .. } => "blocked",
             AgencyRecord::Learned { .. } => "learned",
             AgencyRecord::LearningWithheld { .. } => "learning withheld",
             AgencyRecord::PassConcluded { .. } => "concluded",
@@ -472,6 +474,67 @@ fn a_correlation_labelled_as_an_experiment_widens_nothing_and_says_so_on_the_rec
     );
 }
 
+/// R12-COVERAGE-7188: the shadow binary widens on a hold-out it drew itself,
+/// and refuses the same evidence once an operator drops a held-out cell.
+/// Mutation: in `Experiment::analyse`, delete the missing-outcome check — the
+/// second pass then widens on a hold-out missing its inconvenient cell.
+#[test]
+fn the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped() {
+    let scratch = Scratch::new("holdout");
+    let policy = scratch.write("policy.json", &policy_document());
+    let units: Vec<String> = (0..12).map(|i| format!("cell-{i:02}")).collect();
+    let design = Experiment::design("seed-2026-10-18", &units, 2500).unwrap();
+    let outcomes: serde_json::Map<String, Value> = units
+        .iter()
+        .map(|u| {
+            let value = if design.treated().contains(u) {
+                4.0
+            } else {
+                1.0
+            };
+            (u.clone(), json!(value))
+        })
+        .collect();
+    let widening = |outcomes: &serde_json::Map<String, Value>| {
+        let mut document = acting(1);
+        document["widening"]["evidence"] = json!({"hold_out_experiment": {
+            "seed": "seed-2026-10-18", "units": units, "hold_out_bps": 2500,
+            "outcomes": outcomes
+        }});
+        document
+    };
+
+    let whole = scratch.write("whole.json", &widening(&outcomes));
+    let (out, err, code) = qip(
+        &[&policy, &scratch.journal(), &whole],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 3, "stdout {out} stderr {err}");
+    assert!(
+        out.contains("widened Market on a HoldOutExperiment estimate"),
+        "{out}"
+    );
+
+    let mut dropped = outcomes.clone();
+    let cell = design.control().iter().next().unwrap().clone();
+    dropped.remove(&cell);
+    let partial = scratch.write("partial.json", &widening(&dropped));
+    let fresh = scratch.dir.join("fresh-holdout.jsonl");
+    let (out, err, code) = qip(
+        &[&policy, &fresh, &partial],
+        &["--policy", "--journal", "--request"],
+        &[],
+    );
+    assert_eq!(code, 0, "stdout {out} stderr {err}");
+    assert!(out.contains("widening Market refused"), "{out}");
+    assert!(
+        out.contains("a unit is not dropped after the fact"),
+        "{out}"
+    );
+    assert!(out.contains("outcome: shadowed"), "{out}");
+}
+
 /// The conduct gate and the eligibility register run in the binary, and
 /// their refusals are on the record. Mutation: in `Session::pass`, pass
 /// `eligibility: None` to `run_governed` — the GB-only venue is shadowed.
@@ -492,6 +555,21 @@ fn the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refu
     );
     assert_eq!(code, 3, "{out}");
     assert!(out.contains("no_rumour_engineering"), "{out}");
+    // R12-RES-7110: the withheld plan and the alternative sought are said
+    // and journaled. Mutation: in `engine::execute`, return `blocked: None`
+    // from the guard-refusal arm — neither the line nor the record appears.
+    assert!(
+        out.contains("plan withheld and kept: 1 step(s), 1 "),
+        "{out}"
+    );
+    assert!(out.contains("truthful alternative: do nothing"), "{out}");
+    assert!(
+        records(&journal).iter().any(|r| matches!(
+            r,
+            AgencyRecord::PlanBlocked { alternative, .. } if alternative == "no_action"
+        )),
+        "the withheld plan is on the journal"
+    );
 
     let mut elsewhere = policy_document();
     elsewhere["eligibility"][0]["jurisdictions"] = json!(["GB"]);

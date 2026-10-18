@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 
 /// The rule pack's name and version, cited by every verdict.
 pub const RULE_PACK: &str = "reason/advisory-eligibility";
-pub const RULE_PACK_VERSION: u32 = 1;
+pub const RULE_PACK_VERSION: u32 = 2;
 
 /// The hypothesis lifecycle's name and version.
 pub const HYPOTHESIS_LIFECYCLE: &str = "reason/hypothesis";
@@ -111,6 +111,19 @@ pub struct SymbolicInput {
     /// `AssetClass::as_str` spells it; `None` for a subject with no record.
     /// What the subject is typed against in [`platform_ontology`].
     pub subject_class: Option<String>,
+    /// Whole currency units left in the position budget after buying one lot
+    /// of the subject at its last price (R12-REASON-3057, market structure):
+    /// negative means the smallest unit the venue sells is larger than the
+    /// most the book may hold in one name, so no order could ever be both
+    /// expressible and inside the limit. `None` where the platform could not
+    /// read a lot, a price or a position cap — an unreadable fact is left
+    /// out of the pack rather than invented, and the rules that need it do
+    /// not fire.
+    pub lot_headroom: Option<i64>,
+    /// Whole currency units of cash left after paying for one lot
+    /// (R12-REASON-3057, accounting): negative means the cheapest trade the
+    /// instrument allows would drive the book's cash negative.
+    pub cash_headroom: Option<i64>,
 }
 
 /// The ontology version this build seeds. A recorded typing names it, so a
@@ -445,6 +458,12 @@ pub fn rule_pack() -> RulePack {
                     cmp("contested", Op::Eq, Value::Bool(false)),
                     cmp("kill_switch", Op::Eq, Value::Bool(false)),
                     cmp("live_authority", Op::Eq, Value::Bool(false)),
+                    // Market structure and accounting (REASON-3057). Stated
+                    // as "not below zero" so an unreadable headroom, which is
+                    // left out of the facts, withholds nothing it cannot
+                    // support; a readable negative one withholds eligibility.
+                    Cond::Not(Box::new(cmp("lot_headroom", Op::Lt, Value::Int(0)))),
+                    Cond::Not(Box::new(cmp("cash_headroom", Op::Lt, Value::Int(0)))),
                 ]),
                 "eligible",
                 Value::Bool(true),
@@ -465,6 +484,18 @@ pub fn rule_pack() -> RulePack {
                 "r40-thin-evidence",
                 cmp("evidence_items", Op::Lt, Value::Int(2)),
                 "thin_evidence",
+                Value::Bool(true),
+            ),
+            rule(
+                "r60-lot-exceeds-position-budget",
+                cmp("lot_headroom", Op::Lt, Value::Int(0)),
+                "lot_exceeds_budget",
+                Value::Bool(true),
+            ),
+            rule(
+                "r61-cash-short-of-one-lot",
+                cmp("cash_headroom", Op::Lt, Value::Int(0)),
+                "cash_short",
                 Value::Bool(true),
             ),
             rule(
@@ -490,6 +521,13 @@ pub fn rule_pack() -> RulePack {
                 forbidden: Cond::And(vec![
                     cmp("eligible", Op::Eq, Value::Bool(true)),
                     cmp("kill_switch", Op::Eq, Value::Bool(true)),
+                ]),
+            },
+            Invariant {
+                id: "i30-no-eligibility-on-negative-cash".into(),
+                forbidden: Cond::And(vec![
+                    cmp("eligible", Op::Eq, Value::Bool(true)),
+                    cmp("cash_headroom", Op::Lt, Value::Int(0)),
                 ]),
             },
         ],
@@ -532,7 +570,7 @@ fn rule_inputs(input: &SymbolicInput) -> Result<Vec<(String, Value)>> {
         )));
     }
     let count = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
-    Ok(vec![
+    let mut inputs = vec![
         ("status".into(), Value::Text(input.status.clone())),
         (
             "confidence_bp".into(),
@@ -543,7 +581,16 @@ fn rule_inputs(input: &SymbolicInput) -> Result<Vec<(String, Value)>> {
         ("evidence_items".into(), count(input.evidence_items)),
         ("kill_switch".into(), Value::Bool(input.kill_switch)),
         ("live_authority".into(), Value::Bool(input.live_authority)),
-    ])
+    ];
+    for (name, headroom) in [
+        ("lot_headroom", input.lot_headroom),
+        ("cash_headroom", input.cash_headroom),
+    ] {
+        if let Some(units) = headroom {
+            inputs.push((name.into(), Value::Int(units)));
+        }
+    }
+    Ok(inputs)
 }
 
 fn rules(input: &SymbolicInput) -> RuleDerivation {
@@ -1083,7 +1130,78 @@ mod tests {
             settlement: None,
             moves: BTreeMap::new(),
             subject_class: Some("equity".into()),
+            lot_headroom: Some(5_000),
+            cash_headroom: Some(900_000),
         }
+    }
+
+    /// REASON-3057: a hypothesis on an instrument whose smallest lot the book
+    /// could not pay for, or may not hold, is ruled against by the pack, and
+    /// the journaled record replays to the same verdict. Mutation: drop the
+    /// two headroom conditions from `r10-eligible` — both breaking cases turn
+    /// eligible and the first assertion of each fails.
+    #[test]
+    fn a_hypothesis_whose_smallest_lot_breaks_the_budget_or_the_cash_is_ruled_against_and_replays()
+    {
+        // Premise: the same hypothesis with room is eligible.
+        let healthy = derive(input(), &CausalGraph::default(), at(20));
+        assert_eq!(
+            healthy
+                .rules
+                .verdict
+                .derived()
+                .and_then(|v| v.facts.get("eligible")),
+            Some(&Value::Bool(true))
+        );
+        for (name, breaking, fact) in [
+            (
+                "lot",
+                SymbolicInput {
+                    lot_headroom: Some(-1),
+                    ..input()
+                },
+                "lot_exceeds_budget",
+            ),
+            (
+                "cash",
+                SymbolicInput {
+                    cash_headroom: Some(-1),
+                    ..input()
+                },
+                "cash_short",
+            ),
+        ] {
+            let d = derive(breaking, &CausalGraph::default(), at(20));
+            let verdict = d.rules.verdict.derived().expect("the pack evaluated");
+            assert_ne!(
+                verdict.facts.get("eligible"),
+                Some(&Value::Bool(true)),
+                "{name}"
+            );
+            assert_eq!(verdict.facts.get(fact), Some(&Value::Bool(true)), "{name}");
+            assert!(d.rules.verified, "{name}");
+            // The review approved it and the pack did not: the record says so.
+            assert!(!d.rules.agrees_with_review, "{name}");
+            verify(&d, &CausalGraph::default()).expect("the record replays");
+        }
+        // An unreadable headroom is left out and withholds nothing.
+        let unread = derive(
+            SymbolicInput {
+                lot_headroom: None,
+                cash_headroom: None,
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert_eq!(
+            unread
+                .rules
+                .verdict
+                .derived()
+                .and_then(|v| v.facts.get("eligible")),
+            Some(&Value::Bool(true))
+        );
     }
 
     #[test]

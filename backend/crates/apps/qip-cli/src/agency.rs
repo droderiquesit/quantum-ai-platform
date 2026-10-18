@@ -517,6 +517,23 @@ fn render(
             .unwrap_or_else(|| format!("proposal {}", index + 1));
         lines.push(format!("refused {label}: {}", refusal.message()));
     }
+    if let Some(blocked) = &report.blocked {
+        lines.push(format!(
+            "plan withheld and kept: {} step(s), {} the guard refuses even alone",
+            blocked.steps.len(),
+            blocked.offending.len()
+        ));
+        lines.push(match &blocked.alternative {
+            qip_agency::engine::Alternative::Reduced(steps) => format!(
+                "truthful alternative, proposed and not sent: the same plan without the refused \
+                 step(s), {} step(s) remaining",
+                steps.len()
+            ),
+            qip_agency::engine::Alternative::NoAction(why) => {
+                format!("truthful alternative: do nothing; {why}")
+            }
+        });
+    }
     if let Some(chain) = &report.approvals {
         lines.push(format!(
             "approvals journaled: goal by {}, plan by {}{}",
