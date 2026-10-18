@@ -29,6 +29,10 @@ qip-kernel.workspace = true
 # adapter, and this crate hands it one that refuses (ADR 0114); it does hold
 # the conduct policy, the guard kept across passes, and the journal.
 qip-agency.workspace = true
+# The market digital twin whose synthetic futures a pass may be simulated
+# against (R12-AGENCY-6088). `qip-agency` is a service and may not depend on
+# this one, so this composition root carries the seam between them.
+qip-twin.workspace = true
 # The legal-eligibility register the agency policy document declares.
 qip-compliance.workspace = true
 # The agency policy and pass documents are deserialised into this crate's own

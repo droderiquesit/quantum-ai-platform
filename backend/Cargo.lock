@@ -321,6 +321,7 @@ dependencies = [
  "qip-strategy",
  "qip-streaming",
  "qip-transport",
+ "qip-twin",
  "serde",
  "serde_json",
 ]

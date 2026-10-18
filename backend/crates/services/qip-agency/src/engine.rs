@@ -38,7 +38,7 @@ use crate::attribution::EffectAttribution;
 use crate::autonomy::{ActionPolicy, Authority};
 use crate::causal::Objective;
 use crate::comparison::ComparisonDraft;
-use crate::generate::{Simulated, Structural, StructuralDecl};
+use crate::generate::{ScenarioSource, Simulated, Structural, StructuralDecl};
 use crate::goal::GoalSpec;
 use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl, Voice};
 use crate::memory::{
@@ -1036,8 +1036,20 @@ pub struct Governance<'a> {
 /// the pass is begun on that guard before the act stage and ended after it
 /// on every path, so its approvals never outlive it.
 pub fn run_governed(
+    request: Request,
+    governance: Governance<'_>,
+    adapter: &mut dyn Adapter,
+) -> Result<Report, Error> {
+    run_governed_with(request, governance, None, adapter)
+}
+
+/// [`run_governed`] with the scenarios a composition root derives from a
+/// model this crate may not depend on (R12-AGENCY-6088): they are simulated
+/// beside the request's declared scenarios under every structural model.
+pub fn run_governed_with(
     mut request: Request,
     governance: Governance<'_>,
+    scenarios: Option<&dyn ScenarioSource>,
     adapter: &mut dyn Adapter,
 ) -> Result<Report, Error> {
     let Governance {
@@ -1060,14 +1072,21 @@ pub fn run_governed(
     match (guard, pass) {
         (Some(guard), Some(pass)) => {
             guard.begin_pass(pass)?;
-            let result = stages(request, policy, Some(&mut *guard), eligibility, adapter);
+            let result = stages(
+                request,
+                policy,
+                Some(&mut *guard),
+                eligibility,
+                scenarios,
+                adapter,
+            );
             guard.end_pass();
             result
         }
         (None, Some(_)) => Err(Error::invalid(
             "the request declares a pass but no guard was supplied to begin it on",
         )),
-        (guard, None) => stages(request, policy, guard, eligibility, adapter),
+        (guard, None) => stages(request, policy, guard, eligibility, scenarios, adapter),
     }
 }
 
@@ -1105,6 +1124,7 @@ fn stages(
     policy: Option<&ActionPolicy>,
     guard: Option<&mut ActionGuard>,
     eligibility: Option<(&EligibilityRegister, Timestamp)>,
+    scenarios: Option<&dyn ScenarioSource>,
     adapter: &mut dyn Adapter,
 ) -> Result<Report, Error> {
     let mut graph = AffordanceGraph::new();
@@ -1125,7 +1145,10 @@ fn stages(
             "`targets` is empty; name the variables the goal's target state is stated over",
         ));
     }
-    let structural = request.structural.map(Structural::build).transpose()?;
+    let structural = request
+        .structural
+        .map(|decl| Structural::build_with(decl, scenarios))
+        .transpose()?;
     let mut log = StageLog::new();
 
     // Observe: a desired state over something nobody can see is not checkable.
