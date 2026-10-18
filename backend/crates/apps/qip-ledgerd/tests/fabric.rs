@@ -92,6 +92,17 @@ struct Fabric {
 
 impl Fabric {
     fn start() -> Self {
+        Self::start_with(None)
+    }
+
+    /// A broker that reads retained-away segments back from `archive` and
+    /// rolls a segment per batch, so every batch but the last is sealed and
+    /// can be archived and retained away.
+    fn start_archived(archive: Arc<qip_storage::MemoryBlobStore>) -> Self {
+        Self::start_with(Some(archive))
+    }
+
+    fn start_with(archive: Option<Arc<qip_storage::MemoryBlobStore>>) -> Self {
         let unique = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "qip-ledgerd-fabric-{}-{unique}",
@@ -99,9 +110,17 @@ impl Fabric {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        // The archived broker declares the outcomes stream as production
+        // does (`infrastructure/event-fabric/streams.local.json`):
+        // irreplaceable, so its sealed segments are archived.
+        let retention = if archive.is_some() {
+            "irreplaceable"
+        } else {
+            "derived_state"
+        };
         let catalogue = format!(
             r#"{{"streams":[{{"name":"{STREAM}","qos_class":"p1_outcomes","partition_key":"cell",
-                "ordering":"per_partition","retention":"derived_state","replication_factor":1,
+                "ordering":"per_partition","retention":"{retention}","replication_factor":1,
                 "mirroring":"none","overload_policy":"refuse_producer","ack_profile":"archived",
                 "byte_quota_per_producer":67108864,"message_quota_per_producer":1000000,
                 "lag_limit":1000000,"entitlement_dataset":"qip-test","entitlement_usage":"research",
@@ -115,9 +134,20 @@ impl Fabric {
         ))
         .unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let broker = Arc::new(Broker::open(root.join("broker"), clock.clone()).unwrap());
+        let roll_every_batch = archive.is_some();
+        let mut broker = Broker::open(root.join("broker"), clock.clone()).unwrap();
+        if let Some(store) = archive {
+            broker = broker.with_archive_reader(store);
+        }
+        let broker = Arc::new(broker);
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
-            SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
+            let config = SegmentLogConfig::new(clock.clone())
+                .with_archive_required(policy.archive_required());
+            if roll_every_batch {
+                config.with_roll_after_bytes(1)
+            } else {
+                config
+            }
         });
         let service =
             Arc::new(Service::new(broker, identities, &catalogue, PARTITIONS, segments).unwrap());
@@ -1118,4 +1148,104 @@ fn a_ledger_that_commits_fills_reports_its_commit_objective_measured() {
     assert_eq!(others, 0);
     ledger.stop();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RES-9175: a derived store is rehydrated from immutable objects. Once the
+/// broker has archived the sealed segments of the outcomes stream and
+/// retained them away, a ledger started on an empty directory books the
+/// whole history — every batch but the hot one served from the archive — to
+/// exactly the balances the original store holds.
+///
+/// It also holds the worker's handling of a group that is ahead of its
+/// store: before the fix this test exposed, a rebuilding ledger committed
+/// each replayed batch backwards, the broker refused the rewind, and the
+/// consumer's circuit opened on every batch — 24 batches took 53 seconds.
+/// The group's checkpoint is never moved back.
+///
+/// Mutation: in `ArchiveReader`-backed `Broker::read_batch`, answer
+/// `Ok(None)` for a retained-away offset instead of hydrating — the fresh
+/// ledger books nothing and the wait times out. Mutation: never set
+/// `commit_deferred` in `PartitionWorker::commit_group` — every replayed
+/// batch is refused, the rebuild takes about 53 seconds, and the bound
+/// assertion fails.
+#[test]
+fn a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments() {
+    let archive = Arc::new(qip_storage::MemoryBlobStore::new());
+    let mut fabric = Fabric::start_archived(archive.clone());
+    let mut cell = Journal::new("cell-a");
+    // Enough one-fill batches that the log's minimum segment size seals
+    // several segments.
+    let orders: Vec<String> = (1..=24).map(|n| format!("o-{n}")).collect();
+    let prices = ["100.5", "101", "99", "98.25"];
+    let fills: Vec<(&str, u64, &str)> = orders
+        .iter()
+        .enumerate()
+        .map(|(n, order)| (order.as_str(), 1 + n as u64 % 5, prices[n % prices.len()]))
+        .collect();
+    for (order, quantity, price) in &fills {
+        let fill = cell.fill(order, *quantity, price, true);
+        fabric.produce(0, vec![fill]);
+    }
+
+    let original_dir = temp_dir("original");
+    let original = start_ledger(&original_dir, &fabric);
+    wait_until("the original store books every fill", || {
+        original.store().events().unwrap().len() == fills.len()
+    });
+    let original_balances = original.store().balances().unwrap();
+    original.stop();
+    assert_eq!(original_balances, refold(&fills, "cell-a"), "premise");
+
+    let broker = fabric.service.broker();
+    let archived = broker
+        .archive_sealed(
+            &qip_storage::segment::archive::Archiver::new(archive.clone()).with_manifest_index(),
+        )
+        .unwrap();
+    assert!(
+        archived >= 2,
+        "premise: the sealed segments archived, got {archived}"
+    );
+    let deleted = broker.retain_hot(1).unwrap();
+    assert!(
+        deleted >= 2,
+        "premise: local history retained away, got {deleted}"
+    );
+
+    let rebuilt_dir = temp_dir("rehydrated");
+    let rebuilt = start_ledger(&rebuilt_dir, &fabric);
+    // The group already committed past every batch this store replays. A
+    // worker that commits each one backwards is refused, and the transport's
+    // circuit opens on every refusal: 24 batches took 53 seconds. Caught-up
+    // deferral takes one refusal, so the rebuild is bounded well inside the
+    // wait.
+    let started = Instant::now();
+    wait_until("the fresh store books every fill", || {
+        rebuilt.store().events().unwrap().len() == fills.len()
+    });
+    let took = started.elapsed();
+    assert!(
+        took < StdDuration::from_secs(20),
+        "the rebuild was throttled by refused commits: {took:?}"
+    );
+    wait_until("the caught-up worker commits the last batch", || {
+        rebuilt
+            .statuses()
+            .get(&0)
+            .is_some_and(|s| s.last_error.is_none())
+    });
+    assert_eq!(
+        fabric
+            .service
+            .broker()
+            .committed_offset(GROUP, STREAM, 0)
+            .unwrap(),
+        Some(fills.len() as u64 - 1),
+        "the group checkpoint was not moved back"
+    );
+    assert_eq!(rebuilt.store().balances().unwrap(), original_balances);
+    assert!(rebuilt.store().parked().unwrap().is_empty());
+    rebuilt.stop();
+    let _ = std::fs::remove_dir_all(&original_dir);
+    let _ = std::fs::remove_dir_all(&rebuilt_dir);
 }

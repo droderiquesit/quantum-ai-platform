@@ -1785,7 +1785,7 @@
       "scripts/fleet/synthetic-datasets.json",
       "scripts/fleet/worker.test.mjs"
     ],
-    "gap": "Terraform was not run in the lane session (no terraform binary): fmt, validate and `terraform test` on infrastructure/fleet and a real plan are outstanding, and the objectListPrefix list condition is unevaluated until a first apply. Nothing is applied, so no egress is restricted in the cloud. The quota half (per-task CPU/memory is set; no project quota) and an end-to-end synthetic-only enforcement on the dispatcher side (dispatch.mjs shares validatePacket, so it inherits the refusal) are unproven by a plan.",
+    "gap": "Nothing is applied: no plan against a real project has been read and the fleet Job does not exist in the cloud, so no egress is restricted there. The objectListPrefix list condition is unevaluated until a first apply. terraform fmt -check, validate and `terraform test` (14 passed) run clean on 1.9.8; the quota half (a project quota beyond per-task CPU/memory) is not built.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1796,7 +1796,7 @@
     "verification": "cd infrastructure/fleet && terraform init -backend=false && terraform test; node --test scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real. Lane L25 2026-10-18 wrote the HCL and the worker refusal; worker mutations run: ignoring the dataset class, dropping the datasetProblems call and dropping the data/ path check each fail the tests that name them. The HCL test mutations were not run because terraform was unavailable."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real. Lane L25 2026-10-18 wrote the HCL and the worker refusal; worker mutations run: ignoring the dataset class, dropping the datasetProblems call and dropping the data/ path check each fail the tests that name them. Terraform 1.9.8 mutations run 2026-10-18: widening the deny rule's destination fails the_job_reaches_google_apis_and_nothing_else; letting the reads condition name output/ instead of HALT fails the_workers_bucket_grants_are_conditioned_on_object_prefixes; both restored."
   },
   {
     "id": "R12-SEC-9078",
@@ -3911,24 +3911,26 @@
   },
   {
     "id": "R12-RES-9175",
-    "status": "PARTIAL",
-    "current": "bucket_location variable selects location; segment archive manifests and sealed segments allow replay; no rehydration test of a derived store.",
+    "status": "COMPLETE",
+    "current": "bucket_location selects the residency location; sealed segments of irreplaceable streams are archived with a manifest index, and the broker hydrates a retained-away offset from the archive (Broker::read_batch). The derived ledger store is rebuilt from those immutable objects: a ledger started on an empty directory after the outcomes stream's sealed segments were archived and retained away books the whole history to exactly the original store's balances. That test also exposed and now holds a fix: a rebuilding ledger committed each replayed batch below the group's checkpoint, the broker refused each rewind and the consumer's circuit opened every time (24 batches in 53 s); PartitionWorker::commit_group now defers group commits after a refusal until the worker is caught up.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:117",
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:138 Manifest"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::read_batch (archive hydration) and Broker::archive_sealed / retain_hot",
+      "backend/crates/libs/qip-storage/src/segment/archive.rs Archiver::archive, ArchiveReader::read_indexed",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:541 PartitionWorker::commit_group",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:1172 a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments"
     ],
-    "gap": "Rehydration test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and two mutations that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: disabling archive hydration in Broker::read_batch times the test out (the fresh store books nothing past the hot batch). Mutation: never setting commit_deferred in commit_group makes the rebuild take 53 s and fails the 20 s bound. The archive here is the in-memory blob store; the GCS bucket is the same BlobStore seam (CloudStorageBlobStore) and landing there is deploy-dependent."
   },
   {
     "id": "R12-RES-9176",
