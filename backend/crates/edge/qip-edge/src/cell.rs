@@ -4570,6 +4570,19 @@ impl Cell {
         // passing unless this is on a chart.
         self.metrics
             .fill_time_unmeasured(self.fill_times.unmeasured());
+        // The age of the book this pass decides on, per venue heard, before
+        // the halt check: a halted cell with a dead feed is the case the
+        // `market-data-freshness` objective most needs to see. A venue never
+        // heard has no age and publishes none rather than a number nobody
+        // measured.
+        for (venue, heard) in &self.feed_heard {
+            // A heartbeat stamped after this pass's clock is not an age; it
+            // is two clocks disagreeing, and recording it as zero would read
+            // as a perfectly fresh book.
+            if now >= *heard {
+                self.metrics.book_age(venue, now.since(*heard));
+            }
+        }
         // §56.2 rule 21's silence, made a number for the same reason: a
         // venue with no settlement terms has every dependent leg admitted
         // unjudged, and a chart on which that reads as zero refusals is a

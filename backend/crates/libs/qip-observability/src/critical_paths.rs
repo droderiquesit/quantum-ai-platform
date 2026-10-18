@@ -130,16 +130,22 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
         rule,
     };
     vec![
+        // Market-data freshness (R12-OBS-7123): the age of the feed the cell
+        // traded on, per venue per pass, recorded by `Cell::work`. This read
+        // `EDGE_CAPABILITY_FRESHNESS` under `NotCountable` until 2026-10-18 -
+        // a policy-feed gauge that says nothing about market data, and no
+        // rule that could turn it into good and total counts - so the path
+        // evaluated unmeasured in every process.
         p(
             Slo::latency(
                 "market-data-freshness",
-                "market-ingestion",
+                EDGE_NODE_SERVICE,
                 0.999,
                 1000.0,
                 SloWindow::Day,
             ),
-            names::EDGE_CAPABILITY_FRESHNESS,
-            SourceRule::NotCountable,
+            names::EDGE_BOOK_AGE_MS,
+            SourceRule::LatencyUnder,
         ),
         // Decision latency: a pass from reading the feed to its decisions
         // acted on, timed by the node's pass meter around every pass that
