@@ -122,6 +122,9 @@ module "event_fabric_broker" {
   boot_image           = var.event_fabric_broker.boot_image
   journal_disk_size_gb = var.event_fabric_broker.journal_disk_size_gb
 
+  journal_provisioned_iops             = var.event_fabric_broker.journal_provisioned_iops
+  journal_provisioned_throughput_mibps = var.event_fabric_broker.journal_provisioned_throughput_mibps
+
   service_account_email = google_service_account.fabricd[0].email
 
   dns_zone_name             = var.event_fabric_broker.dns_domain

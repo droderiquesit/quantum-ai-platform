@@ -699,7 +699,7 @@
       "infrastructure/terraform/catalogue.tf Cloud Run catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6357 every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance"
     ],
-    "gap": "No per-service latency SLO tied to instance floor; dev runs no workload.",
+    "gap": "The closure cannot be built as written: modules/cloudrun has no min_instances input to put a validation on, because the service is a Config Connector manifest (ADR 0036) and min and max instances live in infrastructure/gitops/envs/*/*.yaml and in catalogue.tf. What holds today: infrastructure.rs::every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance pins both brains to a floor of one with a written justification. Missing: a declared latency or cold-start bound per workload, and a rule that a workload with a zero floor says it tolerates a cold start. Building that is a new catalogue field consumed by nothing but the test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -710,7 +710,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module; status unchanged."
   },
   {
     "id": "R12-DATA-10033",
@@ -934,14 +934,13 @@
   },
   {
     "id": "R12-MODEL-10043",
-    "status": "PARTIAL",
-    "current": "qip-training holds a Vertex adapter with tests; the ai module declares a metadata store and endpoint, gated off.",
+    "status": "COMPLETE",
+    "current": "qip-contracts carries Algorik types and names no cloud vendor's model or data API: no production source or manifest in the crate holds the words vertex, aiplatform, googleapis, gemini, google, bigquery or spanner (camelCase split), and model_gateway_boundary.rs::the_contract_layer_names_no_cloud_vendor_model_or_data_api holds that. The provider endpoint itself is pinned to the declared adapters by only_the_declared_adapters_name_a_model_provider_endpoint.",
     "evidence": [
-      "backend/crates/services/qip-training/src/vertex.rs",
-      "backend/crates/services/qip-training/tests/vertex.rs",
-      "infrastructure/terraform/modules/ai/main.tf:95 vertex metadata store; :113 endpoint"
+      "backend/crates/tests/qip-acceptance/tests/model_gateway_boundary.rs the_contract_layer_names_no_cloud_vendor_model_or_data_api",
+      "backend/crates/tests/qip-acceptance/tests/model_gateway_boundary.rs only_the_declared_adapters_name_a_model_provider_endpoint"
     ],
-    "gap": "Not enabled; no guard that contracts never name Vertex types.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -949,10 +948,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training --test vertex",
+    "verification": "cd backend && cargo test -p qip-acceptance --test model_gateway_boundary -- the_contract_layer_names_no_cloud_vendor_model_or_data_api",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: pub struct VertexRequest appended to qip-contracts/src/lib.rs failed the test naming that file and the word vertex; restored byte for byte. Comment lines are skipped, so the one doc comment saying a cell 'cannot reach Google' (trust.rs) is not a finding. The test covers the contract crate only; other shared vocabularies are not scanned."
   },
   {
     "id": "R12-MODEL-10044",

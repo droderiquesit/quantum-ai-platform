@@ -1285,7 +1285,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:47",
       "infrastructure/terraform/modules/data/main.tf:117,219"
     ],
-    "gap": "Class guard on writes; enable buckets.",
+    "gap": "Class guard on writes; enable buckets (the enable_cloud_storage switch is the owner's). The guard is not a one-line refusal in CloudStorageBlobStore::validate_key: the store is reached two ways with different key shapes. qip-fabricd opens it with a configurable archive prefix (QIP_EVENT_FABRIC_ARCHIVE_PREFIX) and writes segments/sha256/<hash>, manifests/<stream>/<partition>/<offset> and fabricd/startup-probe under it; StorageProvider::blob (provider.rs, StorageTarget::CloudStorage) makes the namespace the prefix and writes arbitrary keys under it, and deepbrain's namespaces include model-artifacts, knowledge-packs, lake, tick-desk, reflex-packages, now-surprise/ and preflight. A guard needs a declared class per store (the namespace or the archive role) checked against a committed list, refusing construction for an undeclared namespace; a fixed prefix list in validate_key would refuse real writes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1296,7 +1296,7 @@
     "verification": "cargo test -p qip-fabricd",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: kept PARTIAL after reading both construction paths; not implemented because the closure's fixed-prefix refusal would have refused fabricd's prefixed archive and every provider namespace outside the four it named."
   },
   {
     "id": "R12-AMBIENT-9056",

@@ -65,8 +65,6 @@ spec:
         value: /var/run/secrets/qip/capital-envelope-key/capital-envelope-key
       - name: QIP_CYCLE_INTERVAL_SECONDS
         value: '300'
-      - name: QIP_DEEPBRAIN_DISCOVER_EVERY
-        value: '12'
       - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
         value: 0.0.0.0:8080
       - name: QIP_DEPLOYMENT
