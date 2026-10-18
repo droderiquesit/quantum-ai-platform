@@ -2356,24 +2356,26 @@
   },
   {
     "id": "R12-RES-7105",
-    "status": "PARTIAL",
-    "current": "Federation arbitration keeps every view, branches, abstains or requests information; material disagreement raises a research task.",
+    "status": "COMPLETE",
+    "current": "Federation arbitration keeps every view, branches, abstains or requests information; material disagreement raises a research task, and now reduces authority: each UNDERSTAND pass derives, from the instrument's own arbitration spread, a Narrowing in (0, 1) from the declared NARROWING_SCHEDULE (0.75 from the material spread of 0.2, 0.5 from 0.4), and DECIDE's construct_from multiplies it into the instrument's weight bound beside ADR 0063's and ADR 0066's, naming it on the cycle's DECIDE detail. An instrument with no arbitration earns nothing, and Narrowing has no constructor above one (ADR 0125 decision 4).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/federation.rs:246-275,641 Disagreement/Decision/Arbitration, arbitrate",
-      "backend/crates/services/qip-world-model/tests/federation.rs:204,243,472,509 keeps every view; branches stay live; material disagreement raises research task"
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs Narrowing, NARROWING_SCHEDULE, narrowings_of, narrow",
+      "backend/crates/runtime/qip-kernel/src/platform.rs federation_narrowing set in understand_federation and applied in construct_from (grep -n federation_stage::narrow)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs a_material_federation_disagreement_narrows_the_instruments_bound_and_an_agreeing_one_does_not"
     ],
-    "gap": "Authority reduction on divergence; reached from a composition root not shown.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01) under ADR 0125 decision 4. Mutations: passing an empty narrowing map at the construct_from call failed the test at 'DECIDE did not name the federation's narrowing'; a schedule multiplier of 1.5 failed its 'nothing in the schedule enlarges a bound' assertion; both restored byte-for-byte and pass. The schedule's numbers are declared, not fitted, and LEARN has not scored them (ADR 0125, 'What it costs'). The module doc's 'Advisory, and structurally so' section was corrected in the same change. R12-WORLD-1003 and R12-WORLD-3037 name the same decision and were not graded by this lane."
   },
   {
     "id": "R12-RES-7106",

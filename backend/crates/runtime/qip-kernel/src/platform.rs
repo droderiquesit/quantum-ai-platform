@@ -666,6 +666,9 @@ pub struct Platform {
     /// Production models whose drift stands past their threshold, as the last
     /// registry read found them (R12-RES-7101). Bounded by the registry.
     drifted_models: BTreeSet<String>,
+    /// What the latest federation review earns each instrument in DECIDE's
+    /// caps (ADR 0125 decision 4), with the spread behind it.
+    federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -5300,6 +5303,7 @@ impl Platform {
             cycle_solver_routing: None,
             pending_routing: None,
             drifted_models: BTreeSet::new(),
+            federation_narrowing: BTreeMap::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -12303,6 +12307,13 @@ impl Platform {
             }),
         };
         let review = self.federation.run(&inputs, now);
+        // What this review's disagreements earn each instrument in DECIDE
+        // (ADR 0125 decision 4), replaced wholesale so a disagreement that
+        // has resolved stops narrowing on the next pass.
+        self.federation_narrowing = crate::federation_stage::narrowings_of(
+            &review,
+            inputs.instruments.iter().map(|view| view.subject.clone()),
+        );
         let detail = review.detail();
         let mut problems: Vec<String> = review
             .refused
@@ -12344,6 +12355,14 @@ impl Platform {
             ));
         }
         (detail, problems)
+    }
+
+    /// What the latest federation review earns each instrument in DECIDE's
+    /// caps, and the spread it rests on.
+    pub const fn federation_narrowing(
+        &self,
+    ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
+        &self.federation_narrowing
     }
 
     /// The World Model Federation as the UNDERSTAND stage runs it.
@@ -15172,6 +15191,17 @@ impl Platform {
         crate::regime_allocation::narrow(&mut caps, &mut capped, theses, |subject| {
             self.market_regime(subject)
         });
+        // ADR 0125 decision 4: a federation that disagrees about an
+        // instrument narrows its bound by the declared schedule, compounding
+        // with the two above and never above one.
+        crate::federation_stage::narrow(
+            &mut caps,
+            &mut capped,
+            theses
+                .iter()
+                .map(|thesis| thesis.object_id.as_str().to_string()),
+            &self.federation_narrowing,
+        );
         // Every survival tier and confidence contraction that bit, on the
         // same DECIDE detail line the caps above reach: the recorded capital
         // response a tail world the book does not survive is required to
