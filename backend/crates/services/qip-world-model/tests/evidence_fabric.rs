@@ -843,3 +843,58 @@ fn a_relation_is_recorded_on_both_claims_and_forgotten_on_both_when_one_is_evict
     // `d` disagrees with `b` too, and is held, so it is named.
     assert_eq!(b.contradicts, ["c", "d"]);
 }
+
+/// R12-EVID-2038: competing hypotheses survive capacity eviction. The oldest
+/// claim went first whatever it was, so a full fabric dropped one side of an
+/// open contest and the later evidence that would have resolved it found
+/// nothing to resolve. Now the oldest uncontested claim goes first.
+/// Mutation: evicting the front regardless of contests loses `a` and the
+/// contest with it.
+#[test]
+fn an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims() {
+    let mut fabric = EvidenceFabric::with_capacity(3, 16).unwrap();
+    fabric
+        .admit(
+            claim("a", "https://a.example", "rate is 1.10", "1.10", 1),
+            None,
+            at(20),
+        )
+        .unwrap();
+    fabric
+        .admit(
+            claim("b", "https://b.example", "rate is 1.20", "1.20", 2),
+            None,
+            at(20),
+        )
+        .unwrap();
+    // Premise: one open contest of two hypotheses.
+    let open = |f: &EvidenceFabric| {
+        f.contests()
+            .values()
+            .filter(|c| c.is_contested())
+            .map(|c| c.hypotheses.len())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(open(&fabric), [2]);
+
+    for (i, id) in ["x", "y", "z"].iter().enumerate() {
+        let unrelated = claim(
+            id,
+            "https://u.example",
+            &format!("gilt {id}"),
+            "4.0",
+            3 + i as i64,
+        )
+        .with_metadata(META_SUBJECT.into(), format!("GILT{i}"));
+        fabric.admit(unrelated, None, at(20)).unwrap();
+    }
+
+    // Premise: the fabric is at capacity and gave claims up to stay there.
+    assert_eq!(fabric.len(), 3);
+    assert!(fabric.get("a").is_some() && fabric.get("b").is_some());
+    assert_eq!(
+        open(&fabric),
+        [2],
+        "a hypothesis of the open contest was evicted"
+    );
+}

@@ -887,15 +887,15 @@
   {
     "id": "R12-EVID-2038",
     "status": "PARTIAL",
-    "current": "Contests keep every hypothesis and now resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser.",
+    "current": "Contests keep every hypothesis and resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser. Since 2026-10-18 capacity eviction takes the oldest claim standing in no open contest, so a full fabric no longer drops a competing hypothesis; only when every held claim is contested does the oldest go anyway, keeping the bound.",
     "evidence": [
+      "backend/crates/libs/qip-evidence/src/fabric.rs:1006 contest-exempt eviction",
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-704",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
-      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "Hypotheses are dropped on capacity eviction and nothing persists contests across restart; nothing downstream reads contests.",
+    "gap": "Nothing persists contests or their resolutions across restart (the fabric is in-memory and unjournaled; see R12-EVID-2032 for the topic blocker), and nothing downstream reads contests. A fabric whose every held claim is contested still evicts the oldest contested claim.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -905,10 +905,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine contradiction",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed)."
   },
   {
     "id": "R12-EVID-2039",
