@@ -11,7 +11,9 @@ use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timesta
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::evolution::{EvolutionConfig, EvolutionEngine};
 use qip_deepbrain::node::{self, Loops};
-use qip_deepbrain::operations::{CapabilitySwitch, IterationFacts, Operations, quantum_outcome};
+use qip_deepbrain::operations::{
+    CapabilitySwitch, IterationFacts, Operations, RemediationJournal, quantum_outcome, runbooks,
+};
 use qip_deepbrain::research::{ResearchConfig, ResearchLoop, limit_approach_signals};
 use qip_deepbrain::status::NodeStatus;
 use qip_financial::quality::DataQuality;
@@ -22,7 +24,9 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
 use qip_observability::Telemetry;
-use qip_observability::aiops::{Effector, EntityKey, SignalClass};
+use qip_observability::aiops::{
+    AuditRecord, AuditSink, Effector, EntityKey, Remediator, SignalClass,
+};
 use qip_observability::metrics::{labels, names};
 use qip_optimization_engine::QuantumDispatch;
 use qip_risk::limits::{LimitSet, RiskState};
@@ -472,6 +476,90 @@ fn the_effector_carries_out_nothing_but_disabling_this_nodes_own_research() {
     assert!(switch.is_disabled("research"));
 }
 
+/// A sink that cannot take a record, as a full disk or a lost file would be.
+#[derive(Debug)]
+struct UnwritableJournal;
+
+impl AuditSink for UnwritableJournal {
+    fn journal(&mut self, _record: &AuditRecord) -> qip_core::error::Result<()> {
+        Err(qip_core::error::Error::io("the journal's disk is full"))
+    }
+}
+
+/// R12-CICD-9081. An effect whose audit record stayed in the process left no
+/// account of itself once the restart it was waiting for came.
+#[test]
+fn an_incident_journals_the_authorising_record_before_the_effect_and_the_outcome_after() {
+    let platform = platform();
+    let journal = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ops =
+        Operations::journalled(start(), journal.clone()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        journal.records().unwrap_or_default().is_empty(),
+        "premise: nothing is journalled before an incident"
+    );
+    for i in 0..24i64 {
+        let ms = if i < 12 {
+            10.0 + (i % 2) as f64
+        } else {
+            1_000.0
+        };
+        let at = start().saturating_add(Duration::from_secs(i));
+        ops.observe(&platform, &facts(at, ms, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    assert!(ops.is_disabled("research"), "premise: the runbook ran");
+    let records = journal.records().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(records.len(), 2, "authorisation then outcome: {records:?}");
+    assert!(
+        records[0]
+            .result
+            .starts_with("authorised by shed-research-on-iteration-shift"),
+        "{:?}",
+        records[0]
+    );
+    assert_eq!(
+        records[1].result,
+        "research disabled until the process restarts"
+    );
+    assert_eq!(
+        records[1].prev_hash, records[0].hash,
+        "the two are one chain"
+    );
+    assert_eq!(&records[..], ops.remediator().audit().records());
+}
+
+/// R12-CICD-9081. Mutation: call `apply` before `journal_last` and this
+/// fails, because the effector has already switched research off.
+#[test]
+fn an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied() {
+    let mut remediator = Remediator::journalled(
+        runbooks(),
+        CapabilitySwitch::default(),
+        Box::new(UnwritableJournal),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !remediator.effector().is_disabled("research"),
+        "premise: research is on"
+    );
+    let refusal = remediator
+        .remediate("INC-1", "disable_capability", "research")
+        .err()
+        .unwrap_or_else(|| panic!("an unjournalled action must be refused"));
+    assert!(
+        refusal.message().contains("could not be journalled"),
+        "{}",
+        refusal.message()
+    );
+    assert!(
+        !remediator.effector().is_disabled("research"),
+        "the effector must not have run"
+    );
+    assert!(remediator.audit().verify());
+}
+
 fn routing(dispatch: QuantumDispatch, ran: &[&str]) -> SolverRoutingJournal {
     SolverRoutingJournal {
         chosen: "classical".into(),
@@ -893,4 +981,88 @@ fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() 
         "each once, in order"
     );
     assert_eq!(desk.scout_queue().count(), 0, "the pass took the queue");
+}
+
+/// R12-EXPAND-6059: the tools the node registers are the tools its settings
+/// say it runs, by the names the acquisition planner resolves them by.
+///
+/// The failure this prevents: the registry held three desks and the hosted
+/// endpoint, so a gap that needed a classical solver or a quantum backend —
+/// both of which the process runs — was queued as a tool to build and the
+/// sweep spent compute rebuilding what the router already had; and the
+/// opposite, a registry that listed a quantum backend on a node whose
+/// compute settings attached none, admitting a gap unblocked on a tool that
+/// would never answer. `tick-replay` stays unregistered because the node does
+/// not hold it (the deployed-sweep test in `expansion_rows.rs` depends on
+/// that).
+#[test]
+fn the_node_registers_every_tool_kind_it_actually_runs() {
+    use qip_agents::tools::ToolKind;
+    use qip_deepbrain::research::{node_tools, registered_tools, registered_tools_holding};
+    use qip_expansion::plan::AcquisitionAction;
+    use qip_kernel::compute_routing::{ComputeSettings, QuantumProviderChoice};
+
+    let off = ComputeSettings::default();
+    let simulated = ComputeSettings {
+        provider: QuantumProviderChoice::Simulated,
+        ..off
+    };
+    let names = |tools: &qip_agents::tools::ToolRegistry, kind| -> Vec<String> {
+        tools
+            .by_kind(kind)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect()
+    };
+
+    // Premise: the bare registry holds neither a solver nor a quantum
+    // backend, so what follows is added by `node_tools` and nothing else.
+    let bare = registered_tools().unwrap_or_else(|e| panic!("{e}"));
+    assert!(names(&bare, ToolKind::Solver).is_empty());
+    assert!(names(&bare, ToolKind::QuantumBackend).is_empty());
+
+    // Off: the classical router's solver, no quantum backend, no connector.
+    let held = registered_tools_holding(&node_tools(&off, &[])).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&held, ToolKind::Solver), ["classical-solver"]);
+    assert!(names(&held, ToolKind::QuantumBackend).is_empty());
+
+    // Simulated and two polled sources: the backend and a connector each.
+    let sources = vec!["src-a".to_string(), "src-b".to_string()];
+    let held = registered_tools_holding(&node_tools(&simulated, &sources))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(names(&held, ToolKind::QuantumBackend), ["quantum-backend"]);
+    assert_eq!(
+        names(&held, ToolKind::Connector),
+        ["connector/src-a", "connector/src-b", "source-discovery"]
+    );
+    // The names are the planner's: a gap formulating a solver finds both
+    // tools it needs registered rather than queued to build.
+    for (name, kind) in AcquisitionAction::FormulateSolver.tools() {
+        let spec = held
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} unregistered"));
+        assert_eq!(spec.kind(), *kind);
+    }
+    assert!(held.get("tick-replay").is_none());
+
+    // The loop the root builds counts what it holds.
+    let loop_ = ResearchLoop::new_for_node(
+        ResearchConfig::default(),
+        coverage(&[]),
+        &simulated,
+        &sources,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let round = {
+        let mut loop_ = loop_;
+        loop_
+            .sweep(&platform(), start(), &set(&["src-a"]), &set(&["US"]))
+            .unwrap_or_else(|e| panic!("{e}"))
+    };
+    assert_eq!(
+        round.registries.tools,
+        qip_deepbrain::research::tool_count(&held),
+        "{:?}",
+        round.registries
+    );
 }

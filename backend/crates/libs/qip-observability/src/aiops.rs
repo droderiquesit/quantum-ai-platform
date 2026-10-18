@@ -362,11 +362,22 @@ mod tests {
     }
 }
 
+/// Where an audit record is made durable. The trail in a [`Remediator`] lives
+/// in the process, so a restart after an effect loses the only account of it;
+/// a sink is the composition root's journal, written *before* the effector
+/// runs.
+pub trait AuditSink: std::fmt::Debug + Send {
+    /// Make `record` durable, or refuse. An error stops the action it
+    /// precedes.
+    fn journal(&mut self, record: &AuditRecord) -> Result<()>;
+}
+
 #[derive(Debug)]
 pub struct Remediator<E: Effector + std::fmt::Debug> {
     runbooks: Vec<Runbook>,
     effector: E,
     audit: AuditTrail,
+    sink: Option<Box<dyn AuditSink>>,
 }
 
 impl<E: Effector + std::fmt::Debug> Remediator<E> {
@@ -385,7 +396,22 @@ impl<E: Effector + std::fmt::Debug> Remediator<E> {
             runbooks,
             effector,
             audit: AuditTrail::default(),
+            sink: None,
         })
+    }
+
+    /// As [`Self::new`], with every record written to `sink` and an action
+    /// carried out only after the record authorising it is durable. A
+    /// production effector is built this way; the in-process trail of
+    /// [`Self::new`] is for tests that need no journal.
+    pub fn journalled(
+        runbooks: Vec<Runbook>,
+        effector: E,
+        sink: Box<dyn AuditSink>,
+    ) -> Result<Self> {
+        let mut remediator = Self::new(runbooks, effector)?;
+        remediator.sink = Some(sink);
+        Ok(remediator)
     }
 
     pub fn audit(&self) -> &AuditTrail {
@@ -411,19 +437,59 @@ impl<E: Effector + std::fmt::Debug> Remediator<E> {
         let Some(runbook) = found else {
             let why = format!("refused: no runbook names action {action} on {target}");
             self.audit.append(incident, action, target, "", &why);
+            // Nothing is carried out, so a sink that cannot take the refusal
+            // changes no outcome; the in-process trail still holds it.
+            let _ = self.journal_last();
             return Err(Error::denied(why));
         };
+        if self.sink.is_some() {
+            // The authorisation is journalled before the effect, so a crash
+            // between the two leaves a record of an action that may have run
+            // rather than an effect with no record.
+            self.audit.append(
+                incident,
+                action,
+                target,
+                &runbook,
+                &format!("authorised by {runbook}; applying"),
+            );
+            if let Err(e) = self.journal_last() {
+                let why = format!(
+                    "refused: the audit record could not be journalled ({}), and an action \
+                     with no durable record is not carried out",
+                    e.message()
+                );
+                self.audit.append(incident, action, target, &runbook, &why);
+                return Err(Error::denied(why));
+            }
+        }
         match self.effector.apply(action, target) {
             Ok(result) => {
                 self.audit
                     .append(incident, action, target, &runbook, &result);
+                self.journal_last().map_err(|e| {
+                    Error::io(format!(
+                        "{action} on {target} was applied, but its outcome could not be \
+                         journalled: {}",
+                        e.message()
+                    ))
+                })?;
                 Ok(result)
             }
             Err(e) => {
                 self.audit
                     .append(incident, action, target, &runbook, &format!("failed: {e}"));
+                let _ = self.journal_last();
                 Err(e)
             }
+        }
+    }
+
+    /// Write the newest record to the sink, where there is one.
+    fn journal_last(&mut self) -> Result<()> {
+        match (&mut self.sink, self.audit.records().last()) {
+            (Some(sink), Some(record)) => sink.journal(record),
+            _ => Ok(()),
         }
     }
 }

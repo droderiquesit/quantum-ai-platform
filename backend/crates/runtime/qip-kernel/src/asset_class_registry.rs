@@ -214,6 +214,65 @@ pub enum TaxTreatment {
     RealProperty,
 }
 
+/// The lifecycle engine that carries a class's positions from discovery to
+/// attribution (R12-ASSET-1015).
+///
+/// Three engines exist and they do not substitute: a listed or tokenized
+/// position walks `qip_portfolio::LifeStage`, a private commitment walks
+/// `qip_financial::private_stage::PrivateStage` (calls and distributions, no
+/// order book), and a physical good lives in `qip_financial::commerce::Ledger`
+/// (receipts, sales and returns of units). The mapping is [`Self::for_class`],
+/// an exhaustive `match`: a sixteenth `AssetClass` fails to compile until it
+/// names its engine, which holds the guarantee in the type system and not in a
+/// runtime check somebody could skip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleEngine {
+    PortfolioStages,
+    PrivateStages,
+    CommerceLedger,
+}
+
+impl LifecycleEngine {
+    pub const fn for_class(class: AssetClass) -> Self {
+        match class {
+            AssetClass::Equity
+            | AssetClass::FixedIncome
+            | AssetClass::Credit
+            | AssetClass::Rates
+            | AssetClass::ForeignExchange
+            | AssetClass::Commodity
+            | AssetClass::Derivative
+            | AssetClass::Prediction
+            | AssetClass::DigitalAsset
+            | AssetClass::Fund
+            | AssetClass::Cash
+            | AssetClass::StructuredProduct => Self::PortfolioStages,
+            AssetClass::PrivateMarket | AssetClass::RealAsset => Self::PrivateStages,
+            AssetClass::PhysicalProduct => Self::CommerceLedger,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PortfolioStages => "portfolio_stages",
+            Self::PrivateStages => "private_stages",
+            Self::CommerceLedger => "commerce_ledger",
+        }
+    }
+
+    /// The first state of the engine, read from the engine's own type so a
+    /// rename there moves this word with it. The commerce ledger has no stage
+    /// enum: a unit's first event is its receipt.
+    pub fn opens_with(self) -> &'static str {
+        match self {
+            Self::PortfolioStages => qip_portfolio::LifeStage::Discover.as_str(),
+            Self::PrivateStages => qip_financial::private_stage::PrivateStage::Committed.as_str(),
+            Self::CommerceLedger => "received",
+        }
+    }
+}
+
 /// One class's record — §17.7's nine fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AssetClassRecord {
@@ -235,6 +294,9 @@ pub struct AssetClassRecord {
     /// per policy by a person, which is where an instrument-level hedge
     /// belongs.
     hedge_classes: BTreeSet<AssetClass>,
+    /// Derived from `class` by [`LifecycleEngine::for_class`] rather than
+    /// passed in, so no constructor call can pair a class with the wrong one.
+    lifecycle: LifecycleEngine,
 }
 
 impl AssetClassRecord {
@@ -302,7 +364,12 @@ impl AssetClassRecord {
             tax,
             eligible_families,
             hedge_classes,
+            lifecycle: LifecycleEngine::for_class(class),
         })
+    }
+
+    pub const fn lifecycle(&self) -> LifecycleEngine {
+        self.lifecycle
     }
 
     pub const fn class(&self) -> AssetClass {
@@ -815,6 +882,23 @@ impl AssetClassRegistry {
 
     pub fn get(&self, class: AssetClass) -> Option<&AssetClassRecord> {
         self.records.get(&class)
+    }
+
+    /// The lifecycle engine of a registered class, or a refusal naming the
+    /// class: a position in a class no record registers has no lifecycle to
+    /// walk, and guessing one would file a private commitment under order
+    /// stages.
+    pub fn lifecycle_of(&self, class: AssetClass) -> Result<LifecycleEngine> {
+        self.records
+            .get(&class)
+            .map(AssetClassRecord::lifecycle)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "{} is not a registered asset class, so it has no lifecycle engine; register \
+                     the class in `AssetClassRegistry::shipped` first",
+                    class.as_str()
+                ))
+            })
     }
 
     pub fn is_registered(&self, class: AssetClass) -> bool {

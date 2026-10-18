@@ -864,13 +864,24 @@ fn run() -> Result<()> {
     // HMAC under a seed-derived key — is the defect W1.4 exists to remove.
     // Until it lands every package is compiled, counted as `held_unsigned`,
     // and written nowhere.
-    let mut research =
-        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?
-            .with_package_store(
-                config
-                    .storage
-                    .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
-            );
+    // The tools this process runs (R12-EXPAND-6059) are read from the
+    // settings already parsed rather than listed: the classical solver
+    // always, the quantum simulator where `compute` attached it, one
+    // connector per catalogued source polled above.
+    let mut research = qip_deepbrain::research::ResearchLoop::new_for_node(
+        research_config,
+        research_coverage,
+        &compute,
+        config
+            .connector_feed
+            .as_ref()
+            .map_or(&[][..], |feed| feed.source_ids.as_slice()),
+    )?
+    .with_package_store(
+        config
+            .storage
+            .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+    );
     if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
         (&language_model.replies, &language_model.hosted)
     {
@@ -906,10 +917,18 @@ fn run() -> Result<()> {
         "  agency outbox:    {} (drafts only; external action stays refused)",
         outbox_destination.describe()
     );
-    let mut operations = qip_deepbrain::operations::Operations::new(started)?;
+    // The remediation journal: the audit record of an automated action is
+    // written here before the action runs, so a node that restarts after
+    // disabling research still holds the account of why.
+    let remediation_journal = qip_deepbrain::operations::RemediationJournal::beside(
+        &config.event_log,
+        std::sync::Arc::new(qip_core::SystemClock),
+    )?;
+    let mut operations =
+        qip_deepbrain::operations::Operations::journalled(started, remediation_journal)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \
-         may switch off research until restart"
+         may switch off research until restart, and its audit record is journalled first"
     );
 
     // The tick desk (`tick_desk.rs`): the one reader of recorded market
