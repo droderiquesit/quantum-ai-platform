@@ -3752,12 +3752,15 @@
   {
     "id": "R12-COVERAGE-7167",
     "status": "PARTIAL",
-    "current": "ExecutableScope keeps out-of-scope opportunities shadow.",
+    "current": "ExecutableScope::with_jurisdictions (qip-contracts action.rs) adds a licence half: an instrument is executable only if it names governing jurisdictions and all are authorised, research-class routes are not gated, and an unlicensed instrument routes to a ShadowRecord. Platform::executable_scope applies it from Platform::license_jurisdictions, reading each instrument governing jurisdictions from its regulatory constraints; PreActionGate check 8 still refuses an unauthorised jurisdiction for agency actions.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:188",
-      "backend/crates/libs/qip-contracts/tests/action.rs:31"
+      "backend/crates/libs/qip-contracts/src/action.rs ExecutableScope::with_jurisdictions / licensed",
+      "backend/crates/runtime/qip-kernel/src/executable_scope.rs Platform::executable_scope",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::license_jurisdictions",
+      "backend/crates/libs/qip-contracts/tests/action.rs the_same_opportunity_is_researched_and_kept_shadow_in_an_unlicensed_jurisdiction",
+      "backend/crates/runtime/qip-kernel/tests/executable_scope.rs an_instrument_in_an_unlicensed_jurisdiction_is_shadowed_by_the_kernels_scope_and_never_queued"
     ],
-    "gap": "Legal gate per jurisdiction.",
+    "gap": "No composition root states the licence: nothing calls Platform::license_jurisdictions, so the deployed scope runs ungated. The determination of which jurisdictions the platform may execute in is compliance input the repository has never been given (the same position as the product catalogue); until a binary reads it from configuration the gate is proven but not on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3765,10 +3768,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-contracts --test action; cargo test -p qip-kernel --test executable_scope",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: removing the licensed conjunct in route_with_class failed the contracts test; returning the scope before with_jurisdictions in Platform::executable_scope failed the kernel test. Unset is ungated rather than fail-closed because an empty default would shadow every opportunity on the deployed path; stating an empty set does license nothing."
   },
   {
     "id": "R12-COVERAGE-7168",

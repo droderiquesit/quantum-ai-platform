@@ -814,6 +814,12 @@ pub struct Platform {
     /// `None` refuses every derivative, because a grant with nobody to read
     /// it against must not admit anything.
     derivative_desk: Option<(String, Jurisdiction)>,
+    /// The jurisdictions this platform is licensed to execute in, read by
+    /// [`Platform::executable_scope`]. `None` applies no licence gate: the
+    /// determination is compliance's and a composition root states it through
+    /// [`Platform::license_jurisdictions`]. Once stated, an instrument whose
+    /// governing jurisdictions are not all in it is shadow, never executable.
+    licensed_jurisdictions: Option<BTreeSet<Jurisdiction>>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -5269,6 +5275,7 @@ impl Platform {
             derivative_types,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
+            licensed_jurisdictions: None,
             asset_class_registry,
             breadth: crate::breadth::BreadthPlane::default(),
             exposure_axes,
@@ -19095,6 +19102,18 @@ impl Platform {
                 None
             }
         }
+    }
+
+    /// State the jurisdictions this platform is licensed to execute in.
+    /// Replaces any earlier statement whole; an empty set licenses nothing,
+    /// so every instrument becomes research-only until a jurisdiction is named.
+    pub fn license_jurisdictions(&mut self, jurisdictions: impl IntoIterator<Item = Jurisdiction>) {
+        self.licensed_jurisdictions = Some(jurisdictions.into_iter().collect());
+    }
+
+    /// The licence stated through [`Self::license_jurisdictions`], if any.
+    pub(crate) fn licensed_jurisdictions(&self) -> Option<&BTreeSet<Jurisdiction>> {
+        self.licensed_jurisdictions.as_ref()
     }
 
     /// Grant the derivative permissions this platform trades under, for
