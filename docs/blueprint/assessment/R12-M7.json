@@ -2550,7 +2550,7 @@
       "backend/crates/apps/qip-deepbrain/src/operations.rs:289 observe feeds five SignalClass values",
       "backend/crates/apps/qip-deepbrain/src/main.rs:646 Operations::new; :663 passed to run loop",
       "backend/crates/libs/qip-observability/tests/aiops.rs:20 five_signal_classes_about_one_instrument_are_reachable_from_its_single_node",
-      "backend/crates/apps/qip-deepbrain/tests/research.rs:229 asserts only Infrastructure on deployment key"
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity"
     ],
     "gap": "Graph over the platform (other binaries, edge nodes, infra), and a production test that the five classes share entity keys.",
     "implemented": true,
@@ -2563,7 +2563,7 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process. Lane L03, 2026-10-18: the closure's 'production test asserts only Infrastructure' is stale. Operations::signal records every class on the deployment key plus the model or venue key, and tests/research.rs:439 signals_of_all_five_classes_attach_to_the_shared_deployment_entity asserts all five classes on the one deployment node. What remains is the gap as stated: one process's graph, not the platform's."
   },
   {
     "id": "R12-CICD-7116",
@@ -4398,7 +4398,7 @@
       "backend/crates/apps/qip-deepbrain/src/research.rs:830 a_gap_with_a_zero_factor_launches_nothing_at_any_cost",
       "backend/crates/apps/qip-deepbrain/src/node.rs:450 sweep called from run loop"
     ],
-    "gap": "No observation is actually made: the chosen acquisition is only recorded (InfoRequest.record_acquisition); the menu is two fixed options and urgency is unmeasured.",
+    "gap": "The menu of observations is two fixed options rather than the node's catalogued source candidates, which state no per-candidate cost or discriminating power to rank on; the scout hand-off reaches the discovery desk, which is off in every committed deployment (QIP_DEEPBRAIN_DISCOVER_EVERY unset).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4409,7 +4409,7 @@
     "verification": "new acceptance suite",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now reached from the deep brain, but active sensing chooses among records, not real observations."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now reached from the deep brain, but active sensing chooses among records, not real observations. Lane L03, 2026-10-18: urgency is now measured from the gap's deadline (R12-AMBIENT-3106) and each launched request reaches the discovery desk as a scout job (R12-AMBIENT-9033). Still open: cheapest_viable's menu is the two fixed options (re-sweep, the class's declared acquisition); building it from the node's catalogued source candidates (main.rs load_source_candidates) needs per-candidate cost and discrimination figures the catalogue does not state, and the fetch runs only under QIP_DEEPBRAIN_DISCOVER_EVERY > 0."
   },
   {
     "id": "R12-MODEL-7201",

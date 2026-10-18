@@ -764,25 +764,30 @@
   {
     "id": "R12-AMBIENT-9033",
     "status": "PARTIAL",
-    "current": "Deepbrain ranks InfoRequests by rank_acquisitions within a budget (launch_ranked).",
+    "current": "Every request ResearchLoop::launch_ranked launches becomes a ScoutRequest on the round, in rank_acquisitions order, carrying the entities its gap named; node::run_with hands them to the discovery desk (DiscoveryDesk::hand_off, bounded at SCOUT_QUEUE), and the desk's next pass reads each job's entities as qip-data-finder discovery targets after the platform's own, from which queries_for/locations_for build the queries.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:252 InformationRequest",
-      "backend/crates/services/qip-world-model/tests/federation.rs"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:656-666 ScoutRequest",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1965-1971 a launch becomes a scout job",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:238-256 hand_off and scout_queue",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:327-343 the pass reads the jobs as targets",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:557-568 the node hands the round's jobs to the desk",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2812 a_launched_request_becomes_a_scout_job_in_rank_order_and_an_outranked_one_none (mutation: scout before the budget check; fails)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:806 a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass (mutation: skip the scout loop in maybe_run; fails)"
     ],
-    "gap": "Requests never reach qip-data-finder / Scout; launch only records.",
+    "gap": "Not deployed: the discovery desk runs only when QIP_DEEPBRAIN_DISCOVER_EVERY > 0 with a candidate catalogue (QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH), and both are unset in every committed deployment (infrastructure/environments/dev/terraform.tfvars leaves the cadence null), which this lane may not edit. The node hand-off line is exercised by the run loop but not mutation-proven through it: no committed fixture launches an information request in a node run, because the price-only anomalies the deep brain detects map to Wanting::Unknown and are unclassifiable, and every other detector states a zero economic value.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-WORLD-9004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_launched_request_becomes_a_scout_job_in_rank_order_and_an_outranked_one_none && cargo +1.94.1 test -p qip-deepbrain --test research a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: launched requests now reach the data-finder discovery path; deployable stays false on the discovery switch."
   },
   {
     "id": "R12-AMBIENT-9034",

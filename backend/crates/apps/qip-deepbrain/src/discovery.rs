@@ -48,7 +48,8 @@ use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::catalogue::CandidateEntry;
 use qip_data_finder::discovery_targets::{
-    CandidateLocation, DiscoveryQuery, EntityProfile, locations_for, queries_for,
+    CandidateLocation, DiscoveryQuery, DiscoveryTarget, EntityProfile, TargetReason, locations_for,
+    queries_for,
 };
 use qip_data_finder::probe::{NetworkProbe, SourceProbe};
 use qip_kernel::{Platform, SourceAssessment};
@@ -137,7 +138,16 @@ pub struct DiscoveryDesk {
     locations: Vec<CandidateLocation>,
     /// Targets the latest pass had no profile for, so generated no query.
     unprofiled: Vec<String>,
+    /// Scout jobs the research loop launched and the node handed over, in
+    /// rank order (R12-AMBIENT-9033), bounded by [`SCOUT_QUEUE`]. Read and
+    /// emptied by the next pass, whose targets they extend.
+    scout: std::collections::VecDeque<crate::research::ScoutRequest>,
 }
+
+/// Scout jobs the discovery desk holds between passes. Past it the oldest
+/// job leaves: a desk that has not run for that long is answering nobody,
+/// and the newest asks are the ones still worth an answer.
+pub const SCOUT_QUEUE: usize = 64;
 
 /// Parse an operator's entity profiles (R12-DATA-2016): a JSON array of
 /// [`EntityProfile`]. Refuses an empty list, an entity named twice, and any
@@ -196,6 +206,7 @@ impl DiscoveryDesk {
             queries: Vec::new(),
             locations: Vec::new(),
             unprofiled: Vec::new(),
+            scout: std::collections::VecDeque::new(),
         }
     }
 
@@ -216,7 +227,26 @@ impl DiscoveryDesk {
             queries: Vec::new(),
             locations: Vec::new(),
             unprofiled: Vec::new(),
+            scout: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Take the scout jobs a research sweep launched, in the order it
+    /// launched them (R12-AMBIENT-9033). The next pass reads each job's
+    /// entities as targets after the platform's own, so the information a
+    /// sweep paid to ask for is looked for rather than only recorded.
+    pub fn hand_off(&mut self, requests: &[crate::research::ScoutRequest]) {
+        for request in requests {
+            if self.scout.len() == SCOUT_QUEUE {
+                self.scout.pop_front();
+            }
+            self.scout.push_back(request.clone());
+        }
+    }
+
+    /// The scout jobs waiting for the next pass, oldest first.
+    pub fn scout_queue(&self) -> impl Iterator<Item = &crate::research::ScoutRequest> {
+        self.scout.iter()
     }
 
     /// Generate queries for the targets these profiles describe (see
@@ -294,7 +324,22 @@ impl DiscoveryDesk {
         // this workspace finds a source it was not told about (CRAWL,
         // DATA-020), so a target no entry declares is reported on the pass
         // and answered by nobody — which is the finding, not a failure.
-        let targets = platform.discovery_targets(now)?;
+        let mut targets = platform.discovery_targets(now)?;
+        // The research loop's scout jobs after the platform's own targets,
+        // in launch order — which is rank order — each entity once. A job
+        // reads as a knowledge gap: the sweep asked for evidence because it
+        // did not hold it, which is the gap's meaning.
+        let mut seen: BTreeSet<String> = targets.iter().map(|t| t.entity.clone()).collect();
+        for request in std::mem::take(&mut self.scout) {
+            for entity in request.entities {
+                if !entity.trim().is_empty() && seen.insert(entity.clone()) {
+                    targets.push(DiscoveryTarget {
+                        entity,
+                        reason: TargetReason::KnowledgeGap,
+                    });
+                }
+            }
+        }
         // R12-DATA-2016: each profiled target becomes one query per
         // geography, domain and language, and each query is answered from the
         // catalogue where a candidate declares the entity and serves the
