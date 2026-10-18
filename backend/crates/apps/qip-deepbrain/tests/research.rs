@@ -7,6 +7,7 @@
 //! Each test asserts its premise first — that the platform holds the state
 //! the detector reads — so an empty platform cannot pass for a quiet one.
 
+use qip_capital_fabric::{CapitalLocation, DemandKind, Region};
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::evolution::{EvolutionConfig, EvolutionEngine};
@@ -558,6 +559,166 @@ fn an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied(
         "the effector must not have run"
     );
     assert!(remediator.audit().verify());
+}
+
+/// R12-OBS-9164: model package freshness and the research queue's depth are
+/// objectives backed by recorded series. A round of the operations loop and
+/// a research sweep move both from unmeasured to measured.
+///
+/// Mutation: delete the `names::MODEL_PACKAGE_FRESHNESS_CHECKS` count in
+/// `Operations::observe` or the `names::RESEARCH_QUEUE_CHECKS` count in
+/// `sweep_over`; the matching objective stays at zero observations.
+#[test]
+fn a_round_moves_the_model_freshness_and_research_queue_objectives_from_unmeasured_to_measured() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    let statuses = || {
+        qip_observability::critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service == "deepbrain"
+        })
+    };
+    let observations = |name: &str| {
+        statuses()
+            .iter()
+            .find(|s| s.slo.name == name)
+            .unwrap_or_else(|| panic!("{name} is not a deepbrain objective"))
+            .observations
+    };
+    assert_eq!(
+        observations("model-package-freshness"),
+        0,
+        "premise: nothing measured before the round"
+    );
+    assert_eq!(observations("research-queue-depth"), 0, "premise");
+
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    ops.observe(
+        &platform,
+        &IterationFacts {
+            package_promoted: true,
+            ..facts(start(), 10.0, &[])
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A"])]));
+    loop_
+        .sweep(&platform, start(), &set(&["vendor"]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(observations("model-package-freshness"), 1);
+    assert_eq!(observations("research-queue-depth"), 1);
+    assert!(
+        statuses()
+            .iter()
+            .filter(|s| ["model-package-freshness", "research-queue-depth"]
+                .contains(&s.slo.name.as_str()))
+            .all(|s| s.is_met),
+        "a fresh package and a shallow queue meet both"
+    );
+}
+
+/// A platform with four days of cash demand at its declared venue, so the
+/// planner has a lane to forecast and, over a five-day horizon, a movement
+/// that pays for itself.
+fn platform_with_a_funding_lane() -> Platform {
+    let mut platform = platform();
+    let (venue, region) = platform
+        .settlement_book()
+        .venues()
+        .map(|(venue, region)| (venue.clone(), region.as_str().to_string()))
+        .next()
+        .unwrap_or_else(|| panic!("premise: the platform declares a settling venue"));
+    let lane = CapitalLocation::new(Region::new(&region), qip_core::Currency::USD, venue);
+    for day in 0..4 {
+        platform.record_capital_demand(
+            lane.clone(),
+            DemandKind::Cash,
+            start().saturating_add(Duration::from_days(day)),
+            qip_core::dec!("250000"),
+        );
+    }
+    platform
+}
+
+fn capital_research(sentinel: bool) -> ResearchLoop {
+    let config = ResearchConfig {
+        capital_sentinel: sentinel,
+        capital_horizon: Duration::from_days(5),
+        ..ResearchConfig::default()
+    };
+    ResearchLoop::new(config, BTreeMap::new()).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn capital_signals(round: &qip_deepbrain::research::ResearchRound) -> usize {
+    round
+        .signals
+        .iter()
+        .filter(|s| s.class() == qip_contracts::ambient::SignalClass::Capital)
+        .count()
+}
+
+/// R12-AMBIENT-3072/3065: the DECIDE stage's pre-positioning plan reaches the
+/// attention router as a capital signal that takes the capital-preparation
+/// pathway and is dispatched as advice, not offered to the research desk as a
+/// gap; with the sentinel off the sweep raises none.
+///
+/// Mutation: route `SignalClass::Capital` to `Pathway::ResearchTask` in
+/// `RoutingPolicy::standard`; the event's pathway is not capital preparation
+/// and the advice is never dispatched.
+#[test]
+fn a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off()
+ {
+    let platform = platform_with_a_funding_lane();
+    let at = start().saturating_add(Duration::from_days(4));
+    let plan = platform
+        .pre_position(at, Duration::from_days(5))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        plan.moves.len(),
+        1,
+        "premise: the plan recommends one movement: {}",
+        plan.describe()
+    );
+
+    let mut off = capital_research(false);
+    let quiet = off
+        .sweep(&platform, at, &set(&["vendor"]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(capital_signals(&quiet), 0, "the sentinel is off");
+    assert!(quiet.capital_advice.is_empty());
+
+    let mut on = capital_research(true);
+    let round = on
+        .sweep(&platform, at, &set(&["vendor"]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(capital_signals(&round), 1, "{round:?}");
+    let event = round
+        .attention_events
+        .iter()
+        .find(|e| e.pathway == qip_contracts::ambient::Pathway::CapitalPreparation)
+        .unwrap_or_else(|| panic!("no event took the capital pathway: {round:?}"));
+    assert_eq!(
+        event.disposition,
+        qip_contracts::ambient::Disposition::Activated
+    );
+    assert_eq!(round.capital_advice.len(), 1, "{round:?}");
+    assert_eq!(
+        round.capital_advice[0].amount_base,
+        plan.moves[0].amount_base
+    );
+    assert!(
+        on.advisories()
+            .any(|a| a.view().contains("CapitalPreparation")),
+        "the advice is filed as an advisory"
+    );
+    assert!(
+        !on.desk()
+            .queue()
+            .ranked()
+            .iter()
+            .any(|e| e.item().research_question.contains("capital:")),
+        "a capital signal is not a research gap"
+    );
 }
 
 fn routing(dispatch: QuantumDispatch, ran: &[&str]) -> SolverRoutingJournal {

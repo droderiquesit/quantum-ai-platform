@@ -109,6 +109,32 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
     assert!(loud.is_err());
 }
 
+/// R12-AMBIENT-3065: `Pathway::CapitalPreparation` has a route. With four
+/// classes it had none, so the pathway the blueprint names for "prepare
+/// capital" was a label no signal could reach.
+///
+/// Mutation: route `SignalClass::Capital` to `Pathway::ResearchTask` in
+/// `RoutingPolicy::standard`.
+#[test]
+fn a_capital_signal_is_routed_to_capital_preparation_and_no_other_class_is() {
+    assert!(
+        SignalClass::ALL.contains(&SignalClass::Capital),
+        "premise: capital is a class"
+    );
+    let mut reached = Vec::new();
+    for class in SignalClass::ALL {
+        let mut router = AttentionRouter::new(policy(1_000, 0));
+        let events = router
+            .route(&signal(1, class, 9_000, 0), at(0))
+            .expect("routes");
+        assert_eq!(events.len(), 1, "{class:?}");
+        if events[0].pathway == Pathway::CapitalPreparation {
+            reached.push(class);
+        }
+    }
+    assert_eq!(reached, vec![SignalClass::Capital]);
+}
+
 #[test]
 fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway() {
     let mut rng = Lcg(7);
@@ -117,12 +143,13 @@ fn a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_clas
         SignalClass::Opportunity => Pathway::ResearchTask,
         SignalClass::Risk => Pathway::RiskReview,
         SignalClass::Assumption => Pathway::ReflexModelUpdate,
+        SignalClass::Capital => Pathway::CapitalPreparation,
     };
     let (mut quiet, mut material) = (0, 0);
     for i in 0..400usize {
         // A fresh router per case: this property is about one signal, not the budget.
         let mut router = AttentionRouter::new(policy(1_000, 0));
-        let class = SignalClass::ALL[(rng.next() % 4) as usize];
+        let class = SignalClass::ALL[(rng.next() % SignalClass::ALL.len() as u64) as usize];
         let severity = (rng.next() % 10_001) as u32;
         let events = router
             .route(&signal(i, class, severity, 0), at(0))
@@ -159,7 +186,12 @@ fn a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferre
         for c in 0..calls {
             let secs = w * WINDOW_SECS + if c == 0 { 0 } else { (rng.next() % 59) as i64 };
             let secs = secs.max(w * WINDOW_SECS);
-            let s = signal(n, SignalClass::ALL[(rng.next() % 4) as usize], 9_000, secs);
+            let s = signal(
+                n,
+                SignalClass::ALL[(rng.next() % SignalClass::ALL.len() as u64) as usize],
+                9_000,
+                secs,
+            );
             material_ids.insert(s.id().to_string());
             n += 1;
             events.extend(router.route(&s, at(secs)).expect("routes"));

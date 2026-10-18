@@ -1,14 +1,14 @@
 [
   {
     "id": "R12-MODEL-6001",
-    "status": "PARTIAL",
-    "current": "Generation (qip-kernel central/foundry.rs StrategyGenerator, qip-deepbrain evolution/succession) and judging (qip-evolution ChallengerTest/TrialLedger, kernel central/models.rs require_calibrated_baseline) are separate types, but the deepbrain learning desk both fits and scores its baseline and challenger in one round; no structural separation of identities or processes.",
+    "status": "COMPLETE",
+    "current": "The learning desk's class scoreboard is fed by qip_lifecycle::Evaluator, which scores a class's predictions on the holdout tail against the targets itself; its judge() takes two slices of numbers, so no generator score can be passed in, and the fit's own FitDiagnostics::claims_skill no longer reaches the board. An architecture test fails if the evaluator names a trainer type or a fit diagnostic, or if learning.rs calls claims_skill again.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:70-73 foundry uses qip-evolution generator and TrialLedger",
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65 require_calibrated_baseline gate",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:129-140 same desk fits (LocalTrainer) and scores (Scoreboard)"
+      "backend/crates/services/qip-lifecycle/src/evaluator.rs Evaluator::judge",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs Evaluator::new in the class-choice fit",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_evaluator_never_reads_the_generators_score_and_the_class_board_is_fed_by_it"
     ],
-    "gap": "No independent evaluator identity/process; no architecture test that the creator's own score cannot promote.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -16,10 +16,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture (new test: evaluator crate does not depend on generator scoring)",
+    "verification": "cargo test -p qip-acceptance --test architecture -- the_evaluator_never; cargo test -p qip-lifecycle --lib evaluator; cargo test -p qip-deepbrain --lib learning::",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations: naming a FitDiagnostics alias in evaluator.rs and re-adding a claims_skill call in learning.rs each fail the architecture test. The evaluator judges the same holdout tail the trainer scored; what is independent is the code and the inputs, not the rows, and a holdout the trainer chose is still the trainer's choice. The 23 learning tests pass unchanged on the evaluator's verdicts."
   },
   {
     "id": "R12-MODEL-6002",
@@ -1153,7 +1153,7 @@
     "evidence": [
       "backend/crates/services/qip-training/src/distill.rs:217"
     ],
-    "gap": "Lane promotion record and reflex deployment path.",
+    "gap": "No campaign, lineage or promotion record carries a latency budget, so a lane cannot be chosen from one: ResearchLoop::distil compiles a reflex package from every promoted fill-bias correction whatever its budget. Choosing Research / WarmService / Reflex needs a latency-budget field on the campaign or its desk item (a contract change in qip-contracts expansion and qip-expansion promotion.rs), and Reflex publication needs the ADR 0110 package signer, which no deployment installs (packages are held_unsigned).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1164,7 +1164,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Checked 2026-10-18: grep for latency_budget / LatencyBudget over qip-expansion, qip-contracts expansion and qip-deepbrain finds nothing. Not changed: inventing a default budget would make every promotion either stay research or become a reflex by a constant."
   },
   {
     "id": "R12-EXPAND-6053",
@@ -1235,12 +1235,13 @@
   {
     "id": "R12-EXPAND-6056",
     "status": "PARTIAL",
-    "current": "OntologyRegistry versioned by family; library-only (no caller outside qip-agents tests).",
+    "current": "ResearchLoop::new seeds an OntologyRegistry from SWEEP_ONTOLOGY and refuses to start without every type the sweep reads (check_ontology); each sweep records the registry counts. OntologyRegistry::extend (qip-agents) versions an existing type only on a passing evaluation it cites, reached through ResearchLoop::extend_ontology.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21",
-      "backend/crates/libs/qip-agents/src/registries.rs:42 register"
+      "backend/crates/libs/qip-agents/src/registries.rs OntologyRegistry::extend",
+      "backend/crates/apps/qip-deepbrain/src/research.rs extend_ontology, sweep_ontology, check_ontology",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs an_ontology_extension_without_an_evaluation_is_refused_and_a_cited_one_versions_the_type"
     ],
-    "gap": "Governed extension path and integration.",
+    "gap": "Nothing in the running binary calls extend_ontology: the only item the desk concludes is a fill-bias campaign, so no Ontology-class item ever finishes with an evaluation to cite. The registry is built inside ResearchLoop::new from the committed SWEEP_ONTOLOGY rather than in main.rs, and the coverage detector reads asset-class keys, not registry types.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1251,7 +1252,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: bypassing the passed-evaluation refusal in extend lets a failing evaluation version the type and fails the new test. Closing needs a concluded Ontology-class research item that carries a passing EvaluationRecord into extend_ontology."
   },
   {
     "id": "R12-EXPAND-6057",
@@ -1371,7 +1372,7 @@
       "backend/crates/libs/qip-agents/src/registries.rs:115",
       "backend/crates/libs/qip-contracts/src/expansion.rs:416 CapabilityEntry"
     ],
-    "gap": "Integration and population from real capabilities.",
+    "gap": "CapabilityRegistry (registries.rs) has no caller outside qip-agents tests and none was added: the UnsupportedRequest arm of the sweep is the coverage detector over asset-class and venue keys (detectors.rs coverage), which is not a request for a capability verb, so there is no input there to look up in a registry of the ten verbs. Populating it from the configured venues and the simulated broker's modes is mechanical; what it would be consulted against is the missing piece, and is a design decision for the expansion loop rather than a wiring one.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1382,7 +1383,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against the code: coverage() takes (universe map, covered set, floor) and raises per dimension value; no part of the sweep names a CapabilityVerb."
   },
   {
     "id": "R12-EXPAND-6063",
@@ -1521,7 +1522,7 @@
       "backend/crates/services/qip-expansion/src/campaigns.rs:46-61",
       "backend/crates/apps/qip-deepbrain/src/research.rs:800-850"
     ],
-    "gap": "Feed queue error, lead/lag, reaction residuals and paper/replay divergence; make an opened campaign run a tick replay.",
+    "gap": "The four remaining triggers have no source in the running node: LeadLagState (qip-world-model lead_lag.rs) has no production feeder, so there is no lead/lag anomaly to observe; the platform keeps no queue-position prediction against fill outcome, so QueuePredictionError has no residual; no world-event reaction residual is produced outside the tick desk's fusion; and a paper/replay divergence needs a tick replay of an opened campaign, which needs tick entitlements (the tick desk is off by default). Each trigger's observe call is one line once its residual exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1532,7 +1533,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: 'Unexplained' slippage is raw slippage vs arrival; nothing subtracts the twin's explained part."
+    "notes": "Checked 2026-10-18: observe_residual accepts all four; the sweep feeds FillPredictionError from fill scores and NewVenue/UnexplainedSlippage from the paper fills. Not wired because a residual with no measurement behind it would be invented."
   },
   {
     "id": "R12-EXPAND-6070",

@@ -70,6 +70,7 @@ pub mod openobserve;
 pub mod operations;
 pub mod reference;
 pub mod research;
+pub mod research_plan;
 pub mod roster;
 pub mod signal_mapper;
 pub mod source_alpha;

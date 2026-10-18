@@ -1722,7 +1722,7 @@
       "backend/crates/apps/qip-deepbrain/src/operations.rs::CapabilitySwitch",
       "backend/crates/apps/qip-deepbrain/src/operations.rs::runbooks"
     ],
-    "gap": "Runbooks are committed code, not signed; no signature verification of runbooks.",
+    "gap": "Runbooks are committed code and are not signed. The deep brain installs no artefact signer: QIP_ARTEFACT_SIGNER is read only by qip-api (signing.rs), and the deep brain's package signer is unset (reflex packages are held_unsigned). Signing the set needs a signer in the deep brain's process (a KMS key grant, a protected-path Terraform change) and a verifier in Operations::new that refuses an unsigned or tampered set.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1733,7 +1733,7 @@
     "verification": "inspection / cargo test -p qip-acceptance",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. The refuse-and-audit half is already structural: a runbook set is fixed at construction, Remediator::new refuses an action outside PERMITTED_ACTIONS, and a target the effector does not hold is audited as failed (aiops_remediation.rs)."
   },
   {
     "id": "R12-GOV-9075",
@@ -3703,25 +3703,27 @@
   },
   {
     "id": "R12-OBS-9164",
-    "status": "PARTIAL",
-    "current": "belief-calibration-within-tolerance declared; agent failures counted; SolverBenchmarked journals quantum/classical comparison; no package-freshness or training-queue SLO.",
+    "status": "COMPLETE",
+    "current": "Two objectives are declared in slo.rs (model-package-freshness: a promoted package at most a week old; research-queue-depth: at most 768 items) and bound in critical_paths.rs to counters of checks recorded where the age gauge (Operations::observe) and the queue-depth gauge (ResearchLoop::sweep_over) are written, so both read unmeasured until a round runs and measured after.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:371",
-      "backend/crates/libs/qip-observability/src/metrics.rs:682",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2797"
+      "backend/crates/libs/qip-observability/src/slo.rs model_package_freshness, research_queue_depth",
+      "backend/crates/libs/qip-observability/src/critical_paths.rs critical_path_slos",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs MODEL_PACKAGE_FRESHNESS_CHECKS",
+      "backend/crates/apps/qip-deepbrain/src/research.rs RESEARCH_QUEUE_CHECKS",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_round_moves_the_model_freshness_and_research_queue_objectives_from_unmeasured_to_measured"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-deepbrain --test research -- a_round_moves; cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: pointing either counter site at the gauge name leaves its objective at zero observations and fails the test. Both objectives are evaluated by the deep brain's existing evaluate_where over its own registry; no alert policy is added, so nothing pages on them until workload_metrics_exist is flipped."
   },
   {
     "id": "R12-OBS-9165",

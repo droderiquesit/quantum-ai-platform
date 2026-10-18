@@ -2068,7 +2068,7 @@
       "backend/crates/services/qip-cost-router/src/router.rs:161-168 rationale",
       "backend/crates/services/qip-cost-router/tests/cost_router.rs"
     ],
-    "gap": "No agent budgets; TPU budget zero; ComputePlan only on QPU grants.",
+    "gap": "No agent bids: a granted agent bid has no consumer. Agent budgets live in qip-agents BudgetLedger instances constructed inside each agent run (runtime.rs) and the cost router's per-decision ledger, neither reachable from ResearchLoop, so a grant could raise nothing; today agent compute is bounded by ResearchConfig.agent_budgets (R12-AMBIENT-9034), a ceiling and not a bid. TPU budget zero is a deployment fact.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2079,7 +2079,7 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. WorkKind::Agent exists in the market and allocate_within accepts such a bid; the missing half is what a grant does."
   },
   {
     "id": "R12-QUANT-10095",
@@ -2387,7 +2387,7 @@
       "backend/crates/libs/qip-contracts/tests/ambient.rs",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Fabric task publication.",
+    "gap": "The deep brain has no Fabric producer: only qip-edge-node (outbox.rs) and qip-cli construct one. Publishing research tasks needs a registered research-task topic (qip-events topic.rs has ResearchCampaignClosed/Flagged and no research-task topic), a produce grant on a p3_research stream in the deployed catalogue (FABRIC-110), and a broker endpoint and trust for the deep brain; the catalogue and endpoints are infrastructure/environments paths a lane may not edit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2398,7 +2398,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18. Patch for a later infrastructure lane: a deepbrain produce grant on the research stream in the event-fabric catalogue and a QIP_FABRIC broker endpoint in the deepbrain manifests; then ResearchLoop hands each queued item's envelope to the node's transport."
   },
   {
     "id": "R12-GOV-10109",

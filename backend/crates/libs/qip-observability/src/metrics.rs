@@ -1428,4 +1428,11 @@ pub mod names {
     /// freshness. Absent, not zero, until a first package is promoted —
     /// a zero would read as a model promoted this instant.
     pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
+    /// Each iteration's reading of that age against the freshness objective's
+    /// ceiling, by outcome (`fresh`, `stale`): the good/total split the
+    /// age gauge cannot carry (R12-OBS-9164).
+    pub const MODEL_PACKAGE_FRESHNESS_CHECKS: &str = "qip_model_package_freshness_checks_total";
+    /// Each sweep's reading of the research queue's depth against the
+    /// queue-depth objective's ceiling, by outcome (`within`, `over`).
+    pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
 }

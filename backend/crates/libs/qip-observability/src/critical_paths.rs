@@ -87,8 +87,8 @@ impl CriticalPath {
 pub const EDGE_NODE_SERVICE: &str = "edge-node";
 
 /// Market-data freshness, decision latency, order/fill integrity, ledger
-/// commit, reconciliation, model serving, data provenance and quantum job
-/// success.
+/// commit, reconciliation, model serving, data provenance, quantum job
+/// success, model package freshness and the research queue's depth.
 pub fn critical_path_slos() -> Vec<CriticalPath> {
     let p = |slo, source_series, rule| CriticalPath {
         slo,
@@ -166,6 +166,20 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
             Slo::availability("quantum-job-success", "deepbrain", 0.95, SloWindow::Week),
             names::QUANTUM_JOBS,
             SourceRule::CounterOutcome { good: "succeeded" },
+        ),
+        // Model package freshness and the training/evaluation backlog
+        // (R12-OBS-9164): each is read from a counter of checks, recorded
+        // where the age gauge and the queue-depth gauge are written, because
+        // a gauge carries no good/total split.
+        p(
+            crate::slo::model_package_freshness(),
+            names::MODEL_PACKAGE_FRESHNESS_CHECKS,
+            SourceRule::CounterOutcome { good: "fresh" },
+        ),
+        p(
+            crate::slo::research_queue_depth(),
+            names::RESEARCH_QUEUE_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
         ),
     ]
 }

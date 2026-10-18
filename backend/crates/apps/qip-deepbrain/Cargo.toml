@@ -86,6 +86,9 @@ qip-expansion.workspace = true
 # `qip-world-model`. Both Lane 3, both workspace-internal.
 qip-twin.workspace = true
 qip-world-model.workspace = true
+# The capital-sentinel tests record demand at a funding lane, whose location
+# and demand kind are this crate's types; the node itself names neither.
+qip-capital-fabric.workspace = true
 
 [dev-dependencies]
 # The campaign tests decode the closed-manifest record straight off the
