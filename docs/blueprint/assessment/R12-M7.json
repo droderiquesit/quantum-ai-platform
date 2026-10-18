@@ -2205,14 +2205,16 @@
   },
   {
     "id": "R12-RES-7100",
-    "status": "PARTIAL",
-    "current": "Cell quarantines a rejecting venue with a journaled reason; stalled feed gets no new order; resting orders withdrawn and reconciled on return.",
+    "status": "COMPLETE",
+    "current": "Cell quarantines a rejecting venue with a journaled reason; a stalled feed gets no new order; resting orders are withdrawn and reconciled on return; and an order that would have gone to a silent or quarantined venue is placed at a healthy venue listing the same instrument, because Cell::venue_for drops a withheld venue from the candidate set and journals the narrower set in VenueChosen.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:9552 venue_for skips a venue venue_withheld names (silent feed or quarantine), so the choice falls to a venue still heard",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1175 an_order_that_would_have_gone_to_a_silent_venue_is_placed_at_the_healthy_venue_listing_the_same_instrument: XLON chosen over XPAR while both are heard, then the same strategy's order goes to XPAR with XLON absent from the journaled candidates and nothing refused",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:288,535,604 stalled feed gets no new order; rejecting venue quarantined until cooldown",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:380,992",
       "backend/crates/edge/qip-edge/tests/failure_isolation.rs:176"
     ],
-    "gap": "Reroute/hedge-elsewhere half not verified by a named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2223,7 +2225,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: the reroute half is now a named test. Mutation: deleting the venue_withheld skip in Cell::venue_for fails the new test at the reroute assertion (the order goes to XLON's fallback and is refused) and the quarantine test at venue_failure.rs:562. Hedging elsewhere is not claimed: the row's clause reads rerouted/hedged and the reroute is what the cell does; a hedge on feed loss is R12-RES-10132's playbook."
   },
   {
     "id": "R12-RES-7101",

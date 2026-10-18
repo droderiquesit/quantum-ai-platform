@@ -90,6 +90,7 @@ fn foundry_with(threshold: f64) -> Result<Foundry> {
             classical_baseline: Some("annealing".into()),
             objective: Some("PortfolioProblem::objective_at".into()),
             promotion_threshold: Some(threshold),
+            encoding: Some("PortfolioProblem::to_qubo".into()),
         },
     )?;
     Ok(f)
@@ -285,5 +286,55 @@ fn attaching_a_quantum_arm_to_a_foundry_without_the_family_is_refused() -> Resul
             available: true,
         }));
     assert!(r.is_err());
+    Ok(())
+}
+
+/// R12-QUANT-1076: the foundry's registration names the encoder, and the
+/// router refuses a family whose declared encoder is not the one its quantum
+/// arm calls. Without the comparison the declaration is free text: a family
+/// could be admitted with an encoding nobody wrote, and the registry would
+/// still read as a family with an encoding. The platform's own foundry must
+/// pass the same check, or the guard would only prove it refuses everything.
+#[test]
+fn a_portfolio_family_declaring_an_encoder_the_router_does_not_run_is_refused() -> Result<()> {
+    let mut foreign = Foundry::new();
+    foreign.register(
+        FamilyKind::PortfolioAllocation,
+        &FamilyDeclaration {
+            classical_baseline: Some("annealing".into()),
+            objective: Some("PortfolioProblem::objective_at".into()),
+            promotion_threshold: Some(0.01),
+            encoding: Some("PortfolioProblem::to_ising".into()),
+        },
+    )?;
+    let refused = ComputeRouter::classical(1)
+        .with_policy(zero_margin_policy())?
+        .with_foundry(foreign)
+        .with_quantum(Arc::new(Scripted {
+            assignment: vec![0; 12],
+            available: true,
+        }));
+    match refused {
+        Err(error) => assert!(
+            error.message().contains("`PortfolioProblem::to_ising`")
+                && error.message().contains("`PortfolioProblem::to_qubo`"),
+            "the refusal does not name both encoders: {}",
+            error.message()
+        ),
+        Ok(_) => panic!("a family declaring an encoder the router does not run was admitted"),
+    }
+
+    let admitted = ComputeRouter::classical(1)
+        .with_policy(zero_margin_policy())?
+        .with_foundry(Foundry::platform()?)
+        .with_quantum(Arc::new(Scripted {
+            assignment: vec![0; 12],
+            available: true,
+        }));
+    assert!(
+        admitted.is_ok(),
+        "the platform's own foundry declares an encoder the router refuses: {:?}",
+        admitted.err()
+    );
     Ok(())
 }

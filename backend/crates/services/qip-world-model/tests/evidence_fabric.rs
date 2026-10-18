@@ -707,3 +707,82 @@ fn a_source_flooding_the_fabric_against_its_peers_is_spam_and_repeated_impossibl
     );
     let _ = Duration::ZERO;
 }
+
+/// R12-EVID-2035: what copies must not move is the *supporting weight* a
+/// later claim earns, not merely the origin count `independent_origins`
+/// reports — a fabric could count one origin and still credit each copy.
+/// The same probe is admitted after one copy, after ten, and after one copy
+/// plus a genuinely independent origin. Mutation: crediting corroboration
+/// per corroborating claim instead of per independent origin raises the
+/// ten-copy weight above the one-copy weight.
+#[test]
+fn ten_copies_leave_the_supporting_weight_unchanged_and_a_new_origin_raises_it() {
+    fn probe_after(copies: usize, independent: bool) -> (f64, f64) {
+        let mut fabric = EvidenceFabric::default();
+        for i in 0..copies {
+            let text = if i % 2 == 0 {
+                "Acme beats estimates!"
+            } else {
+                "ACME beats  estimates."
+            };
+            fabric
+                .admit(
+                    claim(
+                        &format!("copy{i}"),
+                        &format!("https://outlet{i}.example"),
+                        text,
+                        "beat",
+                        i as i64,
+                    ),
+                    None,
+                    at(20),
+                )
+                .unwrap();
+        }
+        if independent {
+            fabric
+                .admit(
+                    claim(
+                        "own",
+                        "https://acme.example",
+                        "Acme reports record revenue",
+                        "beat",
+                        3,
+                    ),
+                    None,
+                    at(20),
+                )
+                .unwrap();
+        }
+        let (verdict, _) = fabric
+            .admit(
+                claim(
+                    "probe",
+                    "https://desk.example",
+                    "Analysts confirm the quarter came in ahead",
+                    "beat",
+                    15,
+                ),
+                None,
+                at(20),
+            )
+            .unwrap();
+        (verdict.belief_weight, verdict.authenticity.score)
+    }
+
+    let (one_copy, one_copy_auth) = probe_after(1, false);
+    let (ten_copies, ten_copies_auth) = probe_after(10, false);
+    let (new_origin, new_origin_auth) = probe_after(1, true);
+    // Premise: one copy corroborates the probe at all, so "unchanged" is not
+    // the trivial equality of two weights that both earned nothing.
+    let (alone, _) = probe_after(0, false);
+    assert!(one_copy > alone, "one copy {one_copy} vs alone {alone}");
+
+    assert_eq!(ten_copies_auth, one_copy_auth);
+    assert_eq!(ten_copies, one_copy);
+    assert!(new_origin_auth > one_copy_auth);
+    assert!(
+        new_origin > one_copy,
+        "new origin {new_origin} vs one copy {one_copy}"
+    );
+}

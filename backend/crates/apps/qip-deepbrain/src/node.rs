@@ -569,6 +569,22 @@ pub fn run_with(
                     .side_failures
                     .push(format!("research: {}", error.message())),
             }
+            // The evolution round that preceded this sweep in the same gap
+            // rides on the sweep record (R12-EXPAND-1117), so a reader of the
+            // research round sees the challengers minted and the champion
+            // crowned that its research followed, without opening the
+            // desk's own log.
+            if let (Some(round), Some(evolution)) =
+                (outcome.research.as_mut(), outcome.evolution.as_ref())
+            {
+                round.evolution = Some(crate::research::EvolutionTrace {
+                    subject: evolution.subject.clone(),
+                    proposed: evolution.proposed,
+                    registered: evolution.registered,
+                    challengers_minted: evolution.challenge.as_ref().map_or(0, |c| c.minted),
+                    crowned: evolution.challenge.as_ref().and_then(|c| c.crowned.clone()),
+                });
+            }
             if let (Some(round), Some(journal)) =
                 (outcome.research.as_ref(), loops.ambient.as_deref_mut())
                 && let Err(error) = journal.record(cycles, round, now)
