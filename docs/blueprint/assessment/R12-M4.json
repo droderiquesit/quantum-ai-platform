@@ -422,11 +422,14 @@
   {
     "id": "R12-MODEL-4020",
     "status": "PARTIAL",
-    "current": "The deep brain keeps a scoreboard by class and by Platform::regime_context and registers a challenger only where its precedent in the current regime beats the baseline; acceptance does not require cross-regime evidence.",
+    "current": "ModelCard records validated_regimes and training_bounds. ModelCard::decision_eligibility_in refuses a card used in a regime it was never validated in (when it names any). ModelRegistry::require_for_decision_in is the refusing call, and ineligible_in_regime is the listing. The deep brain's learning desk stamps every card it registers with the regime the round classified (Platform::regime_context) and each feature's min and max over the fitted-and-judged rows, and each round lists a promoted model in another regime as ineligible with 'never scored in <regime>'. A card with no recorded regime stays unrestricted, so cards that predate the field keep working. No decision-time caller passes a regime yet.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:244-260 choose_class per regime"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, regime_gap, ModelRegistry::require_for_decision_in, ineligible_in_regime",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope and the ineligible_in_regime call in learn()",
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs a_model_validated_in_one_regime_is_refused_in_another",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_model_fitted_in_one_regime_is_listed_ineligible_in_another"
     ],
-    "gap": "No cross-regime validation gate and no restriction of a model to its validated regimes.",
+    "gap": "The refusal is reported in the learning round and available at ModelRegistry::require_for_decision_in, but the decision-time admissions (qip_compliance ModelRiskRegister::admit via require_for_decision, the cost-router reputation filter) still call the regime-free decision_eligibility and carry no regime to pass. Nothing in a cell's pass reads validated_regimes.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -434,10 +437,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: regime_gap returning None admits the calm-only card in the stressed regime (2 qip-ai tests fail); dropping the record_validation_scope call leaves the card with no recorded regime and the deepbrain round lists nothing (assertion left: []). Kept PARTIAL: the decision-time admissions are the remaining half."
   },
   {
     "id": "R12-MODEL-4021",
@@ -2186,12 +2189,13 @@
   {
     "id": "R12-RISK-4099",
     "status": "PARTIAL",
-    "current": "ModelCard::decision_eligibility refuses on drift, failed or stale evaluation; ModelRiskRegister in qip-compliance; deep brain tracks drifted features. Adversarial inputs and regime mismatch not covered.",
+    "current": "ModelCard::decision_eligibility_in now refuses, beyond drift, failed or stale evaluation, an input that is not a finite number, one outside the (min, max) the fit saw for that feature (ModelCard.training_bounds, built with with_training_bounds, which refuses an inverted or non-finite range and a feature the card does not consume), a bounded feature with no input, and a regime the card was never validated in. The deep brain stamps every registered card with the bounds and regime, and each learning round checks the newest feature row against its standing models of the subject and lists any that fail.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:336-361",
-      "backend/crates/libs/qip-compliance/src/model_risk.rs"
+      "backend/crates/libs/qip-ai/src/registry.rs ModelCard::decision_eligibility_in, with_training_bounds",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs record_validation_scope, and the latest-row check feeding ineligible_in_regime in learn()",
+      "backend/crates/libs/qip-ai/tests/regime_scope.rs an_input_outside_the_range_the_model_was_fitted_on_is_refused, a_non_finite_or_missing_input_is_refused_rather_than_passed_through"
     ],
-    "gap": "Adversarial-input and regime-mismatch checks.",
+    "gap": "The input-range and regime refusals reach an operator through the learning round's ineligible list, not a decision: the decision-time admissions (ModelRiskRegister::admit, the cost-router reputation filter) still call the input-free decision_eligibility and a cell's pass supplies no inputs to check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2199,10 +2203,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-ai --test regime_scope && cargo test -p qip-deepbrain --lib a_model_fitted_in_one_regime",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the range test replaced by false admits the extrapolating input (an_input_outside_... fails); deleting the is_finite branch admits NaN (a_non_finite_... fails). Kept PARTIAL: same remaining half as R12-MODEL-4020."
   },
   {
     "id": "R12-RISK-4100",
