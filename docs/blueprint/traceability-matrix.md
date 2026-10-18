@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 398 | 26.2% |
+| Blueprint completion (COMPLETE) | 399 | 26.3% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1216 | 80.1% |
 | Integrated (reached from a composition root) | 846 | 55.7% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 398 |
-| PARTIAL | 973 |
+| COMPLETE | 399 |
+| PARTIAL | 972 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -29,7 +29,7 @@ register (ADR 0099), and there is no second one.
 | Domain | Reqs | COMPLETE | PARTIAL | MISSING | BLOCKED | Other | Implemented | Tested | E2E |
 |---|---|---|---|---|---|---|---|---|---|
 | [ARCH](#arch) | 23 | 7 | 16 | 0 | 0 | 0 | 21 | 19 | 0 |
-| [CONTRACT](#contract) | 43 | 13 | 30 | 0 | 0 | 0 | 43 | 43 | 0 |
+| [CONTRACT](#contract) | 43 | 14 | 29 | 0 | 0 | 0 | 43 | 43 | 0 |
 | [FABRIC](#fabric) | 94 | 30 | 53 | 10 | 1 | 0 | 74 | 68 | 0 |
 | [REFLEX](#reflex) | 56 | 22 | 31 | 1 | 0 | 2 | 55 | 48 | 0 |
 | [MESH](#mesh) | 45 | 7 | 38 | 0 | 0 | 0 | 43 | 40 | 0 |
@@ -100,7 +100,7 @@ register (ADR 0099), and there is no second one.
 | R12-CONTRACT-6109 | ForecastState contract: typed multi-horizon prediction | backend/crates/libs/qip-contracts/src/forecast.rs:309 ForecastState = Validated<ForecastStateFields>, deny_unknown_fields decode and invariant checks | PARTIAL | No production seam constructs or consumes ForecastState (grep of ForecastStateFields outside qip-contracts finds nothing). |  | P1 | cargo test -p qip-contracts |  |
 | R12-CONTRACT-6110 | WorldBranch contract: one plausible future | WorldBranch is a Validated contract with deny_unknown_fields; qip-twin futures.rs converts a branch to it (to_world_branch). | PARTIAL | to_world_branch has no production caller. The triage closure (call Future::to_world_branch in Platform::stage_simulate where qip-twin futures are evaluated) rests on a seam that does not exist: stage_simulate evaluates no qip-twin futures, and FutureTree/TwinState::fit have no caller outside qip-twin/tests/futures.rs (grep -rn FutureTree backend/crates --include=*.rs). Closing this row first requires growing a FutureTree in SIMULATE from the desk price series (TwinState::fit over bar closes, TreeConfig, WorldDriver selection) and only then journaling one WorldBranch per live branch; that is an M-sized kernel change, not the S the triage sized it as. |  | P1 | cargo test -p qip-contracts |  |
 | R12-CONTRACT-6111 | InformationRequest contract: active sensing request | qip-world-model federation.rs now constructs the contract: Federation::information_request returns qip_contracts::control::InformationRequest (question, expected information value, deadline, allowed sources, budget) through Validated::new, and FederationStage::run consumes it onto FederationReview::information_requests, which is journaled and decodes as the contract. The local federation InformationRequest (proposition, models) remains the arbitration decisions payload. A federation test proves the emitted request round-trips as the contract and is refused without a budget. | PARTIAL | The constructing seam runs only when FederationStage::set_stakes has been called, and platform.rs does not call it yet (patch in the L14 lane report for L01); until then no deployed binary constructs or consumes the contract. qip_contracts::ambient::InfoRequest is still what the ambient path uses. |  | P1 | cd backend && cargo +1.94.1 test -p qip-world-model --test federation a_material_disagreement_with_exposure |  |
-| R12-CONTRACT-6112 | ModelVote contract: model-tournament prediction | backend/crates/libs/qip-contracts/src/control.rs:107 ModelVote = Validated<ModelVoteFields>, deny_unknown_fields decode and invariant checks | PARTIAL | No production seam constructs or consumes ModelVote (grep of ModelVoteFields outside qip-contracts finds nothing). |  | P1 | cargo test -p qip-contracts |  |
+| R12-CONTRACT-6112 | ModelVote contract: model-tournament prediction | TournamentStage (qip-kernel model_tournament.rs), run by REASON and LEARN in every cycle, keeps each forecaster's Brier score at every resolution (bounded at SCORE_HISTORY = 32) and, for every entrant whose forecast it admits and who has that history, builds one Validated qip_contracts::control::ModelVote (model, version from the analyst run's manifest digest or the kernel version for a detector, the stated probability, regime, score history, compute cost from the run's metered spend) and journals it on TournamentReview.votes; an entrant without history, or whose cost is not an amount, is named in TournamentReview.voteless instead. | COMPLETE |  |  | P1 | cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after && cargo +1.94.1 test -p qip-kernel --lib a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused |  |
 | R12-CONTRACT-6113 | ComputePlan contract: hybrid compute routing | qip-expansion meta.rs plan_for constructs ComputePlan for QPU-granted bids; deepbrain research uses meta; contract tests cover decode refusal and round-trip. | PARTIAL | ComputePlan issued only on QPU grants; not shown on by default in a deployed path with a test through the binary. |  | P1 | cargo test -p qip-contracts |  |
 | R12-CONTRACT-6114 | HedgePlan contract: portfolio protection plan | Kernel hedge brain (qip-kernel/src/hedge.rs) constructs and journals a validated HedgePlan in DECIDE, and every central root now declares hedge candidates from its loaded catalogue (qip-api, qip-fastbrain, qip-deepbrain main.rs -> PlatformConfig::with_hedge_candidates(paper_hedge_candidates(..))), so a book failing a stressed world inside the withheld hedge capacity is planned a HedgePlan in production by default. Contract tests refuse missing/unknown fields and round-trip. | COMPLETE |  |  | P1 | cargo test -p qip-contracts && cargo test -p qip-kernel --test catalogue_hedge_candidates |  |
 | R12-CONTRACT-6115 | CapitalGrant contract: bounded deployable authority | CapitalGrant = Validated<CapitalGrantFields> decodes with deny_unknown_fields, refuses a record missing any field and each broken invariant, and round-trips byte-identically; Platform::fund_capital_grant states one from every CapitalEnvelope the plane issues and ships it to qip-ledgerd in CapitalGrantFunded and CapitalGrantRecalled, which decode it through the same refusals. The check (a grant missing any field is refused on decode; a round-trip is byte-identical) is met. | COMPLETE |  |  | P0 | cargo test -p qip-contracts --test control_contracts; cargo test -p qip-kernel --test central issuing_a_grant_queues_its_funding_for_the_ledger_and_a_restart_requeues_the_same_record |  |
