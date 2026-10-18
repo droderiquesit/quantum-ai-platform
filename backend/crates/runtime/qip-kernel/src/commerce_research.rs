@@ -606,6 +606,16 @@ impl CommerceResearch {
             ..CommerceSimulated::default()
         };
         self.work_listed(&mut run)?;
+        // Every pass ends the day's sales reconciled against the
+        // marketplace's own record (R12-LEDGER-5026). A break is reported on
+        // the pass and kept on the plane; neither record is corrected, since
+        // which side is wrong is the finding.
+        for found in self.plane.reconcile_with_marketplace() {
+            run.problems.push(format!(
+                "reconciliation break on {}: {}",
+                found.sale, found.finding
+            ));
+        }
         let take = self.queue.len().min(CANDIDATES_PER_PASS);
         let candidates: Vec<Candidate> = self.queue.drain(..take).collect();
         for candidate in candidates {
