@@ -70,6 +70,14 @@ resource "google_compute_instance_template" "event_fabric_broker" {
     disk_type    = var.disk_type
     disk_size_gb = var.journal_disk_size_gb
 
+    # Provisioned rather than left to the type's default, because every
+    # acknowledgement waits on this disk's fsync (ADR 0100 §3): a journal
+    # sized by capacity alone inherits whatever performance Google derives
+    # from its size, and an append rate the catalogue promises is then a
+    # number nothing provisioned (FABRIC-085).
+    provisioned_iops       = var.journal_provisioned_iops
+    provisioned_throughput = var.journal_provisioned_throughput_mibps
+
     labels = {
       component   = "event-fabric-broker"
       qip_journal = "true"

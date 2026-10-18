@@ -3639,3 +3639,85 @@ fn every_pass_that_decided_and_only_those_is_timed_into_the_decision_latency_ser
     assert_eq!(decided.count, 2, "the refused pass was timed as a decision");
     Ok(())
 }
+
+/// R12-OBS-7124: the decision-latency critical path is evaluated, in the
+/// process that records its series. It named `EXECUTION_LATENCY_MS`, which
+/// no production site records, so the deep brain evaluated it unmeasured on
+/// every round while the node's pass meter timed every pass into
+/// `EDGE_DECISION_LATENCY_MS` and nothing read it.
+///
+/// A scrape before any pass reads the objective unmeasured — observations at
+/// zero and no budget gauge — and a scrape after one metered pass reads it
+/// measured from that pass.
+///
+/// Mutation: delete the `EDGE_DECISION_LATENCY_MS` recording site in
+/// `PassMeter::measure` — the scrape after the pass still reads zero
+/// observations and the measured assertion fires.
+#[test]
+fn a_scrape_after_a_metered_pass_evaluates_the_decision_latency_objective_as_measured() -> Result<()>
+{
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let registry = Arc::clone(node.scrape_registry());
+    let meter = PassMeter::new(Arc::clone(&registry), std::time::Duration::from_secs(2))?;
+    let mut stats = PassStats::default();
+    let objective = labels([("objective", "decision-latency")]);
+    let scrape =
+        || qip_edge_node::telemetry::respond(b"GET /metrics HTTP/1.1\r\n\r\n", &registry, "{}");
+
+    let (_, before) = scrape();
+    assert!(
+        before.contains(names::SLO_OBSERVATIONS),
+        "premise: the scrape evaluates the node's objectives:\n{before}"
+    );
+    let snapshot = registry.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+        Some(0.0),
+        "premise: before any pass the objective is unmeasured"
+    );
+    assert_eq!(
+        snapshot.gauge(names::SLO_BUDGET_CONSUMED, &objective),
+        None,
+        "premise: an unmeasured objective has no budget"
+    );
+
+    let ran = meter.measure(|| {
+        run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            None,
+            &mut stats,
+            t(10),
+        )
+    })?;
+    assert!(
+        matches!(ran, PassOutcome::Ran { .. }),
+        "premise: the pass ran: {ran:?}"
+    );
+
+    let (_, after) = scrape();
+    let snapshot = registry.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+        Some(1.0),
+        "the scrape after a metered pass does not evaluate decision latency from it:\n{after}"
+    );
+    assert!(
+        snapshot
+            .gauge(names::SLO_BUDGET_CONSUMED, &objective)
+            .is_some(),
+        "a measured objective carries no budget gauge"
+    );
+    // The node evaluates its own paths and no other: a path whose series it
+    // never records would read unmeasured here forever.
+    assert_eq!(
+        snapshot.gauge(
+            names::SLO_OBSERVATIONS,
+            &labels([("objective", "ledger-commit")])
+        ),
+        None,
+        "the node evaluated a path it records no series for"
+    );
+    Ok(())
+}

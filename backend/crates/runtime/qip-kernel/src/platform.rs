@@ -938,6 +938,20 @@ pub struct Platform {
     /// desk that grew with uptime would be the failure [`SERIES_HISTORY`]
     /// documents, reached by a second road.
     market: Upstream<MarketView>,
+    /// The research organisation's episodic and semantic memory, the slot the
+    /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
+    ///
+    /// The desk was handed `ResearchMemory::new()` inside an `Arc` and nothing
+    /// could write it, so the reviewer's two memory checks — an analyst whose
+    /// hit rate is poor over ten resolutions, and a lesson that applies to
+    /// the situation — read an empty memory on every cycle in every binary.
+    /// LEARN now writes it where a thesis resolves; see
+    /// [`Self::write_research_memory`].
+    research_memory: Upstream<ResearchMemory>,
+    /// Per claim class, the recent resolutions a lesson about that class is
+    /// built from, and whether one has been promoted. Bounded by the anomaly
+    /// kinds the detectors raise and by [`LESSON_WINDOW`] per class.
+    research_lessons: BTreeMap<String, LessonTally>,
     /// Where liquidity lives per instrument across venues, fed from books and
     /// quotes as they arrive, each at its own observed instant.
     liquidity: LiquidityTopology,
@@ -4922,6 +4936,7 @@ impl Platform {
         // capability and label `Desk::new` itself chose — not a second
         // spelling of either.
         let world = Upstream::new(WorldModel::new());
+        let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
             snapshot: MarketSnapshot::new(now),
             universe,
@@ -4962,6 +4977,7 @@ impl Platform {
         );
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
+        desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
         let organisation = Organisation::standard(
@@ -5334,6 +5350,8 @@ impl Platform {
             observation_history: BTreeMap::new(),
             world,
             market,
+            research_memory,
+            research_lessons: BTreeMap::new(),
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
             capital: TrackedCapital::new(initial_equity, now),
@@ -6049,6 +6067,14 @@ impl Platform {
     /// the backtest.
     pub fn remembered_episodes(&self, now: Timestamp) -> impl Iterator<Item = &Episode> {
         self.episodes.episodes(now)
+    }
+
+    /// The research organisation's memory as the desk's reviewer reads it:
+    /// one analyst episode per directional stance on every resolved thesis,
+    /// and the lessons LEARN promoted (R12-WORLD-3032). A read guard on the
+    /// slot the desk's gate shares, not a copy.
+    pub fn research_memory(&self) -> Reading<'_, ResearchMemory> {
+        self.research_memory.read()
     }
 
     /// Produce the cycle's episodic digest — payload slot 4 — and journal it.
@@ -14047,7 +14073,8 @@ impl Platform {
         outcomes: &[ThesisOutcome],
         claims: &[ThesisClaim],
         now: Timestamp,
-    ) -> Result<usize> {
+    ) -> Result<(usize, Vec<String>)> {
+        let mut lessons = Vec::new();
         let expected: BTreeMap<&str, f64> = claims
             .iter()
             .map(|claim| (claim.hypothesis_id.as_str(), claim.expected_move_bps))
@@ -14070,10 +14097,138 @@ impl Platform {
                 expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
             });
             episode.known_at = now;
+            if let Some(lesson) = self.write_research_memory(&episode, now) {
+                lessons.push(lesson);
+            }
             self.episodes.remember(episode)?;
             remembered += 1;
         }
-        Ok(remembered)
+        Ok((remembered, lessons))
+    }
+
+    /// Write one resolved episode into the research organisation's memory,
+    /// and promote or retire the lesson about its claim class (R12-WORLD-3032).
+    ///
+    /// Each analyst that took a side is charged one episode, right when the
+    /// series moved the way it leaned. The episode's `occurred_at` is `now`,
+    /// the instant the outcome became knowable, and not the instant of the
+    /// work: `ResearchMemory::hit_rate` filters on that field alone, so a
+    /// stamp at the work's instant would let a brief as of any later moment
+    /// read an outcome that was not yet known then.
+    ///
+    /// The lesson is a caution, because the reviewer reads every applicable
+    /// lesson as an objection: "claims of this class moved against their
+    /// direction", supported by the resolutions that went wrong and
+    /// contradicted by those that went right, applying wherever the
+    /// opportunity's context names the class — the detectors' own kind
+    /// labels, which is what that context lists. Promoted through
+    /// `ResearchMemory::promote` under the default policy, so one bad call
+    /// is not a lesson; superseded once the window no longer clears the
+    /// policy, so a class that has started working stops being objected to.
+    /// At most one lesson per class is ever promoted, which bounds the
+    /// lesson list by the detector kinds. Returns a line naming a lesson
+    /// promoted or retired, for the stage detail.
+    fn write_research_memory(&mut self, episode: &Episode, now: Timestamp) -> Option<String> {
+        use qip_agents::memory::{
+            Episode as ResearchEpisode, EpisodeOutcome as ResearchOutcome, Lesson, PromotionPolicy,
+        };
+        use qip_core::ids::{AgentRunId, LessonId};
+        let outcome = episode.outcome.as_ref()?;
+        let moved = outcome.realised_move_bps;
+        if !moved.is_finite() || moved == 0.0 {
+            return None;
+        }
+        self.research_memory.update(|memory| {
+            for stance in &episode.stances {
+                let leaned = match stance.direction {
+                    StanceDirection::Positive => 1.0,
+                    StanceDirection::Negative => -1.0,
+                    StanceDirection::Ambiguous | StanceDirection::Neutral => continue,
+                };
+                let correct = leaned * moved > 0.0;
+                memory.record_episode(ResearchEpisode {
+                    run_id: AgentRunId::from_string(format!(
+                        "{}:{}",
+                        episode.episode_id, stance.agent_id
+                    )),
+                    agent_id: stance.agent_id.clone(),
+                    occurred_at: now,
+                    question: format!(
+                        "which way {} would move on a {} claim",
+                        episode.instrument, episode.claim.claim
+                    ),
+                    conclusion: format!("{:?}", stance.direction).to_ascii_lowercase(),
+                    evidence: vec![episode.episode_id.clone()],
+                    conviction: stance.conviction,
+                    outcome: Some(ResearchOutcome {
+                        resolved_at: outcome.resolved_at,
+                        correct,
+                        realised_bps: Some(moved),
+                        explanation: format!(
+                            "the series moved {moved:.1} bps over the claim's horizon"
+                        ),
+                    }),
+                });
+            }
+        });
+
+        if episode.claim.direction == 0.0 {
+            return None;
+        }
+        let class = episode.claim.class.clone();
+        let held = episode.claim.direction * moved > 0.0;
+        let run = AgentRunId::from_string(episode.episode_id.clone());
+        let tally = self.research_lessons.entry(class.clone()).or_default();
+        let window = if held {
+            &mut tally.held
+        } else {
+            &mut tally.failed
+        };
+        window.push_back(run);
+        if window.len() > LESSON_WINDOW {
+            window.pop_front();
+        }
+        let lesson_id = LessonId::from_string(format!("lesson-claims-{class}"));
+        let candidate = Lesson {
+            lesson_id: lesson_id.clone(),
+            learned_at: now,
+            learned_by: "learn-stage".to_string(),
+            applies_when: class.clone(),
+            statement: format!(
+                "{class} claims have moved against their direction in {} of the last {} \
+                 resolutions",
+                tally.failed.len(),
+                tally.failed.len() + tally.held.len()
+            ),
+            supporting_episodes: tally.failed.iter().cloned().collect(),
+            contradicting_episodes: tally.held.iter().cloned().collect(),
+            superseded_at: None,
+        };
+        let policy = PromotionPolicy::default();
+        let clears = candidate.supporting_episodes.len() >= policy.minimum_support
+            && candidate.smoothed_support() >= policy.minimum_smoothed_support;
+        match tally.lesson {
+            LessonState::Unpromoted if clears => {
+                let statement = candidate.statement.clone();
+                let promoted = self
+                    .research_memory
+                    .update(|memory| memory.promote(candidate, policy));
+                promoted.ok().map(|_| {
+                    tally.lesson = LessonState::Live;
+                    format!("lesson {} promoted: {statement}", lesson_id.as_str())
+                })
+            }
+            LessonState::Live if !clears => {
+                self.research_memory
+                    .update(|memory| memory.supersede(&lesson_id, now));
+                tally.lesson = LessonState::Retired;
+                Some(format!(
+                    "lesson {} retired: {class} claims no longer clear the promotion policy",
+                    lesson_id.as_str()
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Turn an approved hypothesis into the thesis construction can size.
@@ -17347,9 +17502,12 @@ impl Platform {
         }
         // Each resolved thesis's episode enters memory here, knowable from
         // now, so the next REASON can recall it as precedent.
-        let remembered = self.remember_resolved(&outcomes, &claims, now)?;
+        let (remembered, lessons) = self.remember_resolved(&outcomes, &claims, now)?;
         if remembered > 0 {
             summary.push_str(&format!("; {remembered} episode(s) remembered"));
+        }
+        for lesson in lessons {
+            summary.push_str(&format!("; {lesson}"));
         }
         if scored_by_regime > 0 {
             summary.push_str(&format!(
@@ -22223,6 +22381,28 @@ pub(crate) const EPISODE_ID_PREFIX: &str = "ep-";
 
 /// The episode id a hypothesis's episode is kept under, on both sides of
 /// the resolve seam.
+/// Resolutions per claim class a lesson about that class is built from.
+const LESSON_WINDOW: usize = 64;
+
+/// The recent resolutions of one claim class, split by whether the claim
+/// held, and where its lesson stands.
+#[derive(Debug, Default)]
+struct LessonTally {
+    held: std::collections::VecDeque<qip_core::ids::AgentRunId>,
+    failed: std::collections::VecDeque<qip_core::ids::AgentRunId>,
+    lesson: LessonState,
+}
+
+/// A class's lesson: never promoted, live, or superseded for good. Retired
+/// is terminal so the memory's lesson list is bounded by the claim classes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LessonState {
+    #[default]
+    Unpromoted,
+    Live,
+    Retired,
+}
+
 fn episode_id_for(hypothesis_id: &str) -> String {
     format!("{EPISODE_ID_PREFIX}{hypothesis_id}")
 }
@@ -28882,6 +29062,84 @@ mod episodic_slot_tests {
             model_version: None,
             model_derived: false,
         }
+    }
+
+    /// R12-WORLD-3032: the desk's research memory was an empty copy nothing
+    /// could write, so the reviewer's hit-rate and lesson objections never
+    /// fired in any binary. LEARN now charges each analyst's stance to it and
+    /// promotes — and later retires — a caution about a claim class that
+    /// keeps moving against its direction.
+    #[test]
+    fn resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads() {
+        use qip_ai::memory::{AnalystStance, StanceDirection};
+        let mut platform = platform();
+        // The premise: the reviewer's gate reads the slot LEARN writes, not
+        // a copy, so everything asserted below is what the desk sees.
+        assert!(platform.research_memory.feeds(&platform.desk.memory));
+        let context =
+            "First alert on obj-AAA in the past week; 1 detector signal(s): mean_reversion";
+        let resolve = |platform: &mut Platform, n: u64, moved: f64| {
+            let at = start().saturating_add(Duration::from_hours(n as i64));
+            let mut episode = resolved(&format!("ep-{n}"), at);
+            episode.stances = vec![AnalystStance {
+                agent_id: "analyst-a".to_string(),
+                direction: StanceDirection::Positive,
+                conviction: 0.7,
+            }];
+            if let Some(outcome) = episode.outcome.as_mut() {
+                outcome.realised_move_bps = moved;
+            }
+            (platform.write_research_memory(&episode, at), at)
+        };
+
+        // Three claims that went the wrong way: charged, and not yet a lesson.
+        for n in 1..=3 {
+            assert_eq!(resolve(&mut platform, n, -12.0).0, None);
+        }
+        let (promoted, promoted_at) = resolve(&mut platform, 4, -12.0);
+        let line = promoted.expect("four failures under the default policy promote a lesson");
+        assert!(
+            line.starts_with("lesson lesson-claims-mean_reversion promoted: "),
+            "{line}"
+        );
+        {
+            let memory = platform.research_memory.read();
+            assert_eq!(memory.episode_count(), 4);
+            assert_eq!(memory.hit_rate("analyst-a", promoted_at), Some(0.0));
+            let lessons = memory.applicable_lessons(context, promoted_at);
+            assert_eq!(
+                lessons.len(),
+                1,
+                "the lesson applies where the context names its class"
+            );
+            assert_eq!(lessons[0].supporting_episodes.len(), 4);
+        }
+
+        // Eight that held: the caution no longer clears the policy and is
+        // superseded, readable for the past and gone for the present.
+        let mut retired = None;
+        let mut retired_at = promoted_at;
+        for n in 5..=12 {
+            let (line, at) = resolve(&mut platform, n, 12.0);
+            retired_at = at;
+            if line.is_some() {
+                retired = line;
+                break;
+            }
+        }
+        let line = retired.expect("a class that started holding has its caution retired");
+        assert!(
+            line.starts_with("lesson lesson-claims-mean_reversion retired: "),
+            "{line}"
+        );
+        let memory = platform.research_memory.read();
+        assert!(memory.applicable_lessons(context, retired_at).is_empty());
+        assert_eq!(memory.applicable_lessons(context, promoted_at).len(), 1);
+        assert!(
+            memory
+                .hit_rate("analyst-a", retired_at)
+                .is_some_and(|rate| rate > 0.0)
+        );
     }
 
     #[test]

@@ -400,7 +400,11 @@ impl Operations {
             round.quantum = Some(outcome);
         }
 
-        let statuses = critical_paths::evaluate(&metrics.snapshot());
+        // The node's paths are evaluated by the node, against the registry
+        // that records their series; here they would read unmeasured forever.
+        let statuses = critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service != critical_paths::EDGE_NODE_SERVICE
+        });
         critical_paths::record(&metrics, &statuses);
         round.objectives_missed = statuses
             .iter()

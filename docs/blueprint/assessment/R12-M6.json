@@ -610,7 +610,7 @@
     "verification": "cargo test (crate producing EvidencePolicy / SourceScore)",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EXPAND-6028",
@@ -1215,7 +1215,7 @@
       "backend/crates/services/qip-data-finder/src/decision.rs:464-476",
       "backend/crates/apps/qip-api/src/registration_views.rs"
     ],
-    "gap": "Discovery methods and sensors/marketplaces as registry entries.",
+    "gap": "RegisteredSource::entry (decision.rs) is read only by tests/source_registry.rs: no binary consults the Source Registry entry on a running path, and discovery itself runs in the deep brain only when QIP_DEEPBRAIN_DISCOVER_EVERY is set (unset in every committed environment). Discovery method is already recorded and required: SourceCandidate::validate refuses an empty discovered_from and SourceLineage carries it into the entry's provenance. Sensors have no category of their own: §7.6.1's table has eight and a physical sensor feed classifies as PhysicalAndGeospatial; adding a ninth variant to qip_financial::SourceCategory would contradict the table it encodes, so the grader's closure (SourceCategory::Sensor) is not taken.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1226,7 +1226,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment."
   },
   {
     "id": "R12-EXPAND-6056",
@@ -1272,13 +1272,15 @@
   },
   {
     "id": "R12-EXPAND-6058",
-    "status": "PARTIAL",
-    "current": "BrainSpec contract with competency domains, tools, evaluations, abstention, authority envelope, calibration and parent version; no registry store.",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain brains.rs holds the Brain Registry the node starts on: BrainRegistry::register validates every BrainSpec (competency domains, tools, source permissions, memory scope, model stack, evaluations, abstention rules, authority envelope, calibration, version and parent lineage) and refuses an entry missing a declared field or an id registered twice. brains::standard registers one entry per agent on the organisation the platform convened (Platform::organisation().roster(), read rather than listed), the four NOW specialists and the two ambient brains; main.rs builds it after the platform is assembled and before anything is served, so a convened agent without a valid entry stops the process, and prints the count on the banner. Models remain recorded in qip-ai's ModelRegistry (ModelCard), the registry the learning desk registers every fit in.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:444",
-      "backend/crates/libs/qip-contracts/tests/brain_registry.rs:4"
+      "backend/crates/apps/qip-deepbrain/src/brains.rs BrainRegistry::register, standard, organisation_spec",
+      "backend/crates/apps/qip-deepbrain/src/main.rs qip_deepbrain::brains::standard(platform.organisation().roster())",
+      "backend/crates/libs/qip-contracts/src/expansion.rs BrainSpec::validate",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs"
     ],
-    "gap": "Registry store and integration.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1286,10 +1288,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L04. Mutations fired: the roster loop in standard skipped (`.take(0)`) fails every_agent_the_platform_convenes_and_both_ambient_brains_have_a_validated_entry; `spec.validate()?` removed from register fails an_entry_missing_a_declared_field_or_registered_twice_is_refused; restored byte-identical each time. calibration is 0.0 for every entry because nothing scores a brain's output through this registry yet; the floor of the field, not a measurement."
   },
   {
     "id": "R12-EXPAND-6059",
@@ -2490,14 +2492,16 @@
   },
   {
     "id": "R12-CONTRACT-6112",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/control.rs:107 ModelVote = Validated<ModelVoteFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "TournamentStage (qip-kernel model_tournament.rs), run by REASON and LEARN in every cycle, keeps each forecaster's Brier score at every resolution (bounded at SCORE_HISTORY = 32) and, for every entrant whose forecast it admits and who has that history, builds one Validated qip_contracts::control::ModelVote (model, version from the analyst run's manifest digest or the kernel version for a detector, the stated probability, regime, score history, compute cost from the run's metered spend) and journals it on TournamentReview.votes; an entrant without history, or whose cost is not an amount, is named in TournamentReview.voteless instead.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/control.rs:107 type",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:506 a_model_vote_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:515 a_model_vote_refuses_each_broken_invariant"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::model_vote",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage::record_score",
+      "backend/crates/libs/qip-contracts/src/control.rs:107",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::tests::a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused"
     ],
-    "gap": "No production seam constructs or consumes ModelVote (grep of ModelVoteFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2505,10 +2509,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after && cargo +1.94.1 test -p qip-kernel --lib a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it. Closed 2026-10-18 by lane L06. Mutations, restored byte for byte: removing the record_score call in learn left every entrant without standing and the third cycle journaled no vote (the test names the seven forecasters scored and an empty voter set); defaulting an unrepresentable cost to zero in model_vote failed the unit test at a vote with no cost was cast. Consumer side: votes are journaled, read by nothing that decides yet; R12-MODEL-9031 covers the consensus."
   },
   {
     "id": "R12-CONTRACT-6113",

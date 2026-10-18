@@ -88,14 +88,16 @@ const DECLARED_PROVIDER_FILES: [(&str, &str); 3] = [
 /// The production files permitted to implement the language-model port.
 const DECLARED_PORT_IMPLEMENTATIONS: [&str; 2] = [
     // The port itself, its deterministic stand-in, the unavailable remote
-    // placeholder and the fallback chain — none performs I/O.
+    // placeholder, the fallback chain and the reply-counting decorator the
+    // deep brain's tally wraps a model in — none performs I/O.
     "backend/crates/libs/qip-ai/src/language.rs",
     "backend/crates/services/qip-reasoning-engine/src/providers/huggingface.rs",
 ];
 
 /// The production files permitted to invoke a model.
 const DECLARED_INVOCATIONS: [&str; 2] = [
-    // `complete_structured`'s default body and the fallback chain delegating.
+    // `complete_structured`'s default body, the fallback chain delegating,
+    // and the reply-counting decorator passing each call through.
     "backend/crates/libs/qip-ai/src/language.rs",
     // `AgentRuntime::complete`: capability check, then budget, then the call.
     "backend/crates/libs/qip-agents/src/runtime.rs",

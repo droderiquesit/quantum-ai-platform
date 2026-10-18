@@ -79,6 +79,13 @@ impl CriticalPath {
     }
 }
 
+/// The service name of the objectives the regional execution node evaluates
+/// against its own registry. A path whose series only the node records is
+/// evaluated there and nowhere else: the deep brain's registry never holds the
+/// series, so evaluating it there would publish a permanent "unmeasured" for a
+/// path that is in fact measured one process away.
+pub const EDGE_NODE_SERVICE: &str = "edge-node";
+
 /// Market-data freshness, decision latency, order/fill integrity, ledger
 /// commit, reconciliation, model serving, data provenance and quantum job
 /// success.
@@ -100,9 +107,20 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
             names::EDGE_CAPABILITY_FRESHNESS,
             SourceRule::NotCountable,
         ),
+        // Decision latency: a pass from reading the feed to its decisions
+        // acted on, timed by the node's pass meter around every pass that
+        // ran. This named `EXECUTION_LATENCY_MS` and the fast brain until
+        // 2026-10-18, a series no production site records, so the path was
+        // unmeasured in every process while the node recorded the real one.
         p(
-            Slo::latency("decision-latency", "fastbrain", 0.99, 50.0, SloWindow::Day),
-            names::EXECUTION_LATENCY_MS,
+            Slo::latency(
+                "decision-latency",
+                EDGE_NODE_SERVICE,
+                0.99,
+                50.0,
+                SloWindow::Day,
+            ),
+            names::EDGE_DECISION_LATENCY_MS,
             SourceRule::LatencyUnder,
         ),
         p(
@@ -154,8 +172,16 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
 
 /// Every critical path evaluated against one snapshot, in catalogue order.
 pub fn evaluate(snapshot: &Snapshot) -> Vec<SloStatus> {
+    evaluate_where(snapshot, |_| true)
+}
+
+/// The critical paths `keep` admits, evaluated against one snapshot, in
+/// catalogue order. A process evaluates the paths whose series it records:
+/// the node those of [`EDGE_NODE_SERVICE`], the deep brain the rest.
+pub fn evaluate_where(snapshot: &Snapshot, keep: impl Fn(&CriticalPath) -> bool) -> Vec<SloStatus> {
     critical_path_slos()
         .iter()
+        .filter(|path| keep(path))
         .map(|path| {
             let (good, total) = path.counts(snapshot);
             path.evaluate(good, total)
