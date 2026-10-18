@@ -24,8 +24,18 @@
 //!    GOV-6124's three records, each with its own actor and time;
 //! 4. every tool decision the registry audited during the pass, with what it
 //!    charged, which is what [`resume`] re-applies on the next start;
-//! 5. [`AgencyRecord::PassConcluded`] — the outcome, the stages, the steps,
-//!    the eligibility refusals and the simulated branches.
+//! 5. what the pass learned, when the caller offered an outcome:
+//!    [`AgencyRecord::Learned`] carries the outcome as the memory kept it
+//!    (its [`crate::memory::Observed`] says whether it was measured or the
+//!    pass's own simulation), the attribution, the effect the policy was
+//!    held to, the interval and side effects it was held to, and the
+//!    authority before and after — everything a reader needs to recompute
+//!    the update from the log alone; [`AgencyRecord::LearningWithheld`]
+//!    carries the reason nothing was learned, because an outcome that is
+//!    absent is recorded as absent, not invented;
+//! 6. [`AgencyRecord::PassConcluded`] — the outcome, the stages (through
+//!    `Update` when the pass learned), the steps, the eligibility refusals
+//!    and the simulated branches.
 //!
 //! # Topic
 //!
@@ -38,12 +48,15 @@
 //! schema lock, which are another lane's. If the agency ever publishes on the
 //! fabric, it gets its own topic then.
 
+use crate::attribution::EffectAttribution;
+use crate::autonomy::Authority;
 use crate::causal::SimulationResult;
-use crate::engine::{Outcome, Report};
+use crate::engine::{Learning, LearningOutcome, Outcome, Report};
 use crate::estimate::EstimatorKind;
+use crate::memory::ActionOutcome;
 use qip_contracts::action::{ExecutionRecord, GoalApproval, Method, PlanApproval, ToolAudit};
 use qip_core::lineage::Lineage;
-use qip_core::{CorrelationId, Error, EventId, Timestamp};
+use qip_core::{CorrelationId, Decimal, Error, EventId, Timestamp};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +125,29 @@ pub enum AgencyRecord {
         pass: u64,
         decision: ToolAudit,
     },
+    /// The observe-effect, attribute and update stages ran on this outcome.
+    Learned {
+        pass: u64,
+        outcome: Box<ActionOutcome>,
+        attribution: Box<EffectAttribution>,
+        /// `actual_observations - no_action_counterfactual`: what the policy
+        /// was held to.
+        effect: Decimal,
+        /// The interval and side effects the policy predicted, so `after`
+        /// follows from `effect` by the drift rule and nothing else.
+        predicted_uplift_low: Decimal,
+        predicted_uplift_high: Decimal,
+        predicted_side_effects: Vec<String>,
+        authority_before: Authority,
+        authority_after: Authority,
+    },
+    /// Nothing was learned from this pass, and why.
+    LearningWithheld {
+        pass: u64,
+        /// The learn stage that refused, when one was reached.
+        stage_failed: Option<String>,
+        reason: String,
+    },
     PassConcluded {
         pass: u64,
         /// `shadowed`, `executed`, `refused`, `stopped`, `no_action`,
@@ -137,6 +173,8 @@ impl AgencyRecord {
             | Self::PlanApproved { pass, .. }
             | Self::Executed { pass, .. }
             | Self::ToolDecision { pass, .. }
+            | Self::Learned { pass, .. }
+            | Self::LearningWithheld { pass, .. }
             | Self::PassConcluded { pass, .. } => *pass,
         }
     }
@@ -150,6 +188,8 @@ impl AgencyRecord {
             Self::PlanApproved { .. } => "plan-approved",
             Self::Executed { .. } => "executed",
             Self::ToolDecision { .. } => "tool",
+            Self::Learned { .. } => "learned",
+            Self::LearningWithheld { .. } => "learning-withheld",
             Self::PassConcluded { .. } => "concluded",
         }
     }
@@ -240,6 +280,11 @@ pub struct PassEntry<'a> {
     pub audit_from: usize,
     pub goal_target: &'a str,
     pub acting_identity: &'a str,
+    /// What the pass learned, or why it did not, when the caller runs the
+    /// learn stages. `None` is a caller that offers no outcome at all and
+    /// is journaled as such: no learning record, and the stages stop where
+    /// the pass stopped.
+    pub learning: Option<&'a Learning>,
     /// When the platform recorded the pass.
     pub at: Timestamp,
 }
@@ -254,6 +299,7 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
         audit_from,
         goal_target,
         acting_identity,
+        learning,
         at,
     } = entry;
     let mut w = Writer {
@@ -345,6 +391,40 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
             decision.at,
         )?;
     }
+    match learning.map(|l| &l.outcome) {
+        Some(LearningOutcome::Learned(learned)) => w.write(
+            AgencyRecord::Learned {
+                pass,
+                outcome: Box::new(learned.outcome.clone()),
+                attribution: Box::new(learned.attribution.clone()),
+                effect: learned.effect,
+                predicted_uplift_low: learned.predicted_uplift.0,
+                predicted_uplift_high: learned.predicted_uplift.1,
+                predicted_side_effects: learned.predicted_side_effects.iter().cloned().collect(),
+                authority_before: learned.before,
+                authority_after: learned.after,
+            },
+            at,
+        )?,
+        Some(LearningOutcome::Withheld(reason)) => w.write(
+            AgencyRecord::LearningWithheld {
+                pass,
+                stage_failed: learning
+                    .and_then(|l| l.failed)
+                    .filter(|stage| report.failed != Some(*stage))
+                    .map(|stage| format!("{stage:?}")),
+                reason: reason.clone(),
+            },
+            at,
+        )?,
+        None => {}
+    }
+    // The stages are the learning's when there was one: it continued the
+    // pass's log, so it holds the pass's stages and whatever came after.
+    let (passed, failed) = match learning {
+        Some(learning) => (&learning.passed, learning.failed),
+        None => (&report.passed, report.failed),
+    };
     let (outcome, detail, steps) = outcome_label(&report.outcome);
     let simulations = report
         .simulations
@@ -365,8 +445,8 @@ pub fn record_pass(log: &mut EventLog, entry: PassEntry<'_>) -> Result<(), Error
             pass,
             outcome: outcome.to_string(),
             detail,
-            stages_passed: report.passed.iter().map(|s| format!("{s:?}")).collect(),
-            failed: report.failed.map(|s| format!("{s:?}")),
+            stages_passed: passed.iter().map(|s| format!("{s:?}")).collect(),
+            failed: failed.map(|s| format!("{s:?}")),
             steps,
             eligibility_refusals: report.eligibility.clone(),
             simulations,

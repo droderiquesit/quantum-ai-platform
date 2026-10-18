@@ -46,8 +46,13 @@
     "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml"]
   },
   "deploy_range_advisory": {
-    "comment": "ADR 0123, owner-accepted 2026-10-12. dev reads the agent-boundary range verdict as advice: refusals are printed, the deploy proceeds. The guard admits only dev whatever this list says.",
+    "comment": "ADR 0124 §3 (the owner accepted this on 2026-10-12 citing ADR 0123, whose record was never written; 0123 is the ledger-operations ADR, and 0124 records this decision under its own number). dev reads the agent-boundary range verdict as advice: refusals are printed, the deploy proceeds. The guard admits only dev whatever this list says.",
     "environments": ["dev"]
+  },
+  "self_reviewable_protected_paths": {
+    "comment": "ADR 0124 §1, owner-accepted 2026-10-18. Protected paths an agent-authored change may touch without a person's approval of the head commit: the ADR index when GitHub reports it modified (globs), and a NEW decision record when GitHub reports it added (added_only_globs). Both are judged by the status GitHub returns for the file: a bare path, a removed, renamed or copied file, and an edit to an accepted ADR all still need a person, and a rename is judged on the path it left as well as the one it took. Nothing under .claude/rules/ is here — the domain notes carry Prohibited lists that bind agents, and the session's own permission layer refused an agent edit to its rules as self-modification. Everything else protected keeps the rule above: every rule file, CLAUDE.md, every workflow, every gate script and policy (this file included), the tfvars and the paper-trading Terraform layer. A change touching one self-reviewable path and one other protected path still needs the approval, and the refusal names only the paths that need it.",
+    "globs": ["docs/adr/README.md"],
+    "added_only_globs": ["docs/adr/0*.md"]
   },
   "roles": {
     "chief-orchestrator": { "kind": "planner", "may_edit": [] },

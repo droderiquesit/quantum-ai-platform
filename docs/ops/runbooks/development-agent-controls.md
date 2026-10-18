@@ -57,6 +57,19 @@ withdraw one; a request for changes does. Approvals by a `[bot]` account, a
 login matching the agent patterns, or a reviewer without write access to the
 repository do not count.
 
+Since ADR 0124 §1 two protected shapes need no approval: the ADR index
+(`docs/adr/README.md`) when the pull request *modifies* it, and a decision
+record (`docs/adr/0*.md`) that the pull request *adds*. GitHub's file status
+is what the guard reads, so an edit to an accepted ADR, a removed, renamed or
+copied file, and a list of bare paths all still need a person; a rename is
+judged on the path it left as well as the one it took, so a protected file
+cannot leave its rule by being moved. The refusal names only the paths that
+need a person. Every other protected path, every rule file included, keeps
+the rule above. ADR 0124 §2 also records the owner's standing authorisation
+for the agent to merge its own pull request once ci is green and every check
+that needs a person has one; nothing here enforces that, and the limit below
+still holds.
+
 ## What none of this can see — read before relying on it
 
 - **An agent indistinguishable from its user, off the protected paths.**

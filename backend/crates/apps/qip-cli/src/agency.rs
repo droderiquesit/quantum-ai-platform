@@ -40,6 +40,21 @@
 //!   data reproduces the attribution's identification and effect, and the
 //!   approver holds the authority (`qip_agency::engine::widen`). Granted or
 //!   refused, it is journaled.
+//! * **Every shadowed pass learns, and the record says what from.** No
+//!   adapter is wired, so no effect is ever measured in the world; what a
+//!   shadowed pass has is its own structural model's no-action branch. After
+//!   a pass ends shadowed, [`qip_agency::simulated::evidence`] builds the
+//!   outcome and attribution from the pass's simulated branches, labelled
+//!   simulated throughout, and [`qip_agency::engine::learn_shadowed`] runs
+//!   the observe-effect, attribute and update stages on them: the outcome is
+//!   kept in this session's [`ActionOutcomeMemory`] and the action class's
+//!   policy is held to the uplift it predicted, which may return a widened
+//!   policy to shadow. The update is journaled beside the pass with the
+//!   interval it was judged against, so a reader of the log can recompute
+//!   it. A pass with nothing to learn from — not shadowed, no structural
+//!   model, steps of two classes, no policy for the class — journals a
+//!   withheld learning with the reason rather than an outcome somebody made
+//!   up. Nothing gates this: there is no flag to turn it off.
 //!
 //! # What it still cannot do
 //!
@@ -56,11 +71,16 @@
 
 use qip_agency::attribution::EffectAttribution;
 use qip_agency::autonomy::ActionPolicy;
-use qip_agency::engine::{Adapter, Governance, Outcome, Report, Request, run_governed, widen};
+use qip_agency::engine::{
+    Adapter, Governance, Learning, LearningOutcome, Outcome, Report, Request, learn_shadowed,
+    run_governed, widen,
+};
 use qip_agency::estimate::EstimateInput;
 use qip_agency::guard::{ActionGuard, GuardPolicy};
 use qip_agency::journal::{self, PassEntry, Provenance, WideningOutcome};
+use qip_agency::memory::ActionOutcomeMemory;
 use qip_agency::plan::{ActingIdentity, Step};
+use qip_agency::simulated;
 use qip_compliance::eligibility::{EligibilityRecord, EligibilityRegister};
 use qip_contracts::action::Method;
 use qip_core::error::{Error, Result};
@@ -81,6 +101,10 @@ pub const POLICY_VARIABLE: &str = "QIP_AGENCY_POLICY_FILE";
 
 /// The variable naming the journal when `--journal` is absent.
 pub const JOURNAL_VARIABLE: &str = "QIP_AGENCY_JOURNAL";
+
+/// How many learned outcomes one invocation keeps in its working set. The
+/// durable record is the journal; this bounds what `recommend` could read.
+pub const MEMORY_CAPACITY: usize = 256;
 
 const USAGE: &str = "usage: qip agency shadow [--policy <path>] [--journal <path>] --request <path> \
                      [--request <path> ...]";
@@ -215,6 +239,7 @@ pub struct Session {
     guard: ActionGuard,
     register: EligibilityRegister,
     policies: BTreeMap<Method, ActionPolicy>,
+    memory: ActionOutcomeMemory,
     provenance: Provenance,
     next_pass: u64,
 }
@@ -265,6 +290,7 @@ impl Session {
             guard,
             register,
             policies,
+            memory: ActionOutcomeMemory::with_capacity(MEMORY_CAPACITY)?,
             provenance: Provenance {
                 code_version: code_version(),
                 policy_version: format!(
@@ -279,6 +305,49 @@ impl Session {
     /// The guard this session holds.
     pub fn guard(&self) -> &ActionGuard {
         &self.guard
+    }
+
+    /// The outcomes this invocation has learned.
+    pub fn memory(&self) -> &ActionOutcomeMemory {
+        &self.memory
+    }
+
+    /// Run the learn stages on what the pass simulated, or say why not.
+    ///
+    /// Only an `Err` from the engine itself — a report whose outcome and
+    /// stage log disagree — stops the pass; a missing outcome, a missing
+    /// policy and a stage's refusal are each a withheld learning on the
+    /// record, because the pass ran and its verdict stands whether or not
+    /// anything could be learned from it.
+    fn learn(&mut self, pass: u64, report: &Report, goal_target: &str) -> Result<Learning> {
+        if !matches!(report.outcome, Outcome::Shadowed(_)) {
+            return Ok(Learning::withheld(
+                report,
+                "the pass was not shadowed: no plan cleared every gate, so there is no simulated \
+                 action to learn from",
+            ));
+        }
+        let evidence = match simulated::evidence(report, pass, goal_target) {
+            Ok(evidence) => evidence,
+            Err(absent) => return Ok(Learning::withheld(report, absent.message())),
+        };
+        let Some(policy) = self.policies.get_mut(&evidence.class) else {
+            return Ok(Learning::withheld(
+                report,
+                format!(
+                    "no action policy is configured for {:?}; the simulated effect has no \
+                     predicted uplift to be held to, so nothing learns from it",
+                    evidence.class
+                ),
+            ));
+        };
+        learn_shadowed(
+            report,
+            policy,
+            &mut self.memory,
+            evidence.outcome,
+            &evidence.attribution,
+        )
     }
 
     fn widen(&mut self, decl: WideningDecl) -> WideningOutcome {
@@ -363,6 +432,7 @@ impl Session {
             },
             &mut Unwired,
         )?;
+        let learning = self.learn(number, &report, &goal_target)?;
         journal::record_pass(
             journal,
             PassEntry {
@@ -373,11 +443,12 @@ impl Session {
                 audit_from,
                 goal_target: &goal_target,
                 acting_identity: &acting,
+                learning: Some(&learning),
                 at: now,
             },
         )?;
         self.next_pass += 1;
-        render(number, &report, widening.as_ref())
+        render(number, &report, widening.as_ref(), &learning)
     }
 }
 
@@ -385,6 +456,7 @@ fn render(
     number: u64,
     report: &Report,
     widening: Option<&WideningOutcome>,
+    learning: &Learning,
 ) -> Result<(Vec<String>, u8)> {
     let mut lines = vec![
         format!("agency pass {number}: no adapter is wired, so nothing below was sent"),
@@ -399,7 +471,7 @@ fn render(
         }
         None => {}
     }
-    if let Some(stage) = report.failed {
+    if let Some(stage) = learning.failed.or(report.failed) {
         lines.push(format!("stage failed: {stage:?}"));
     }
     lines.push(format!("levers: {}", report.levers.join(", ")));
@@ -433,6 +505,21 @@ fn render(
                 .map(|e| format!(", execution by {}", e.executor))
                 .unwrap_or_default()
         ));
+    }
+    match &learning.outcome {
+        LearningOutcome::Learned(learned) => lines.push(format!(
+            "learned from the simulated outcome, not a measured one: effect {} against the \
+             predicted uplift [{}, {}]; {:?} authority {:?} before, {:?} after",
+            learned.effect,
+            learned.predicted_uplift.0,
+            learned.predicted_uplift.1,
+            learned.attribution.action_class,
+            learned.before,
+            learned.after
+        )),
+        LearningOutcome::Withheld(reason) => {
+            lines.push(format!("learning withheld: {reason}"));
+        }
     }
     let code = match &report.outcome {
         Outcome::Shadowed(steps) => {

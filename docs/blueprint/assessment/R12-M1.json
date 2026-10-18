@@ -120,17 +120,17 @@
   {
     "id": "R12-AGENCY-1006",
     "status": "PARTIAL",
-    "current": "Stage ladder via CLI shadow; deepbrain drafts to outbox through the guard; engine::learn exists but uncalled.",
+    "current": "Stage ladder via CLI shadow; deepbrain drafts to outbox through the guard. After a shadowed pass with a structural model, qip-cli calls engine::learn_shadowed on the pass's simulated outcome: observe-effect, attribute and update run, the attribution is journaled (AgencyRecord::Learned) and the action policy is held to its predicted uplift. With no action policy the engine executes nothing (Act is shadowed).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:30 Stage enum",
-      "backend/crates/services/qip-agency/src/engine.rs:341 run",
-      "backend/crates/apps/qip-cli/src/agency.rs:30 Unwired adapter refuses every call",
-      "backend/crates/services/qip-agency/tests/agency.rs 27 tests"
+      "backend/crates/services/qip-agency/src/engine.rs Stage enum, run, learn_shadowed",
+      "backend/crates/services/qip-agency/src/simulated.rs evidence",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::learn; Unwired adapter refuses every call",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
     ],
-    "gap": "No learning of measured effect into the world model from a running path; external action refused (ADR 0114).",
+    "gap": "The effect learned is the pass's own simulation, declared simulated on the record; a measured causal effect needs an executed action, which every shipped adapter refuses (ADR 0114).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -138,7 +138,7 @@
     "verification": "cargo test -p qip-agency; cargo test -p qip-cli (agency shadow)",
     "work_item": "",
     "size": "XL",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-REFLEX-1007",
@@ -557,17 +557,17 @@
   {
     "id": "R12-AGENCY-1025",
     "status": "PARTIAL",
-    "current": "ToolRegistry/ActionGuard refuse and audit unregistered tools in CLI shadow and deepbrain intake paths.",
+    "current": "ToolRegistry/ActionGuard refuse and audit unregistered tools in CLI shadow and deepbrain intake paths. After a shadowed pass qip-cli attributes the simulated effect against the structural model's no-action branch (simulated::evidence: observed - counterfactual per scenario) and journals it.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:281 ToolRegistry",
-      "backend/crates/libs/qip-contracts/src/action.rs:201 ExecutableScope::route",
-      "backend/crates/services/qip-agency/src/attribution.rs:35 EffectAttributionDraft",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 shadow only"
+      "backend/crates/libs/qip-contracts/src/action.rs ToolRegistry, ExecutableScope::route",
+      "backend/crates/services/qip-agency/src/simulated.rs evidence",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::learn",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
     ],
-    "gap": "No production attribution against a no-action counterfactual (engine::learn uncalled); no learning of which actions changed outcomes.",
+    "gap": "The no-action counterfactual is the structural model's, not an observed one; which actions changed outcomes in the world is not learned because no action is sent (ADR 0114).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -575,7 +575,7 @@
     "verification": "cargo test -p qip-contracts; cargo test -p qip-agency",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-AMBIENT-1026",
@@ -3444,24 +3444,28 @@
   },
   {
     "id": "R12-AGENCY-1152",
-    "status": "PARTIAL",
-    "current": "EffectAttribution validated in engine::learn (Attribute stage) and in widening; engine::learn has no production caller, so no post-action attribution is performed by a binary.",
+    "status": "COMPLETE",
+    "current": "EffectAttribution validated in engine::learn (Attribute stage) and in widening. qip agency shadow runs post-action attribution on the default path: after every shadowed pass with a structural model, simulated::evidence builds the attribution of the simulated effect (identification names the model and says nothing was observed), engine::learn_shadowed validates it, and journal::record_pass writes AgencyRecord::Learned carrying it. The binary test asserts the record's figures against a hand computation; skipping the call (mutation) fails it.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/attribution.rs:49",
-      "backend/crates/services/qip-agency/src/engine.rs::learn"
+      "backend/crates/services/qip-agency/src/simulated.rs evidence",
+      "backend/crates/services/qip-agency/src/engine.rs learn_shadowed",
+      "backend/crates/services/qip-agency/src/journal.rs AgencyRecord::Learned",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::learn",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_shadowed_pass_learns_its_simulated_effect_and_nothing_is_recommended_on_it"
     ],
-    "gap": "Post-action attribution in a running path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cargo test -p qip-agency --test agency; cargo test -p qip-cli --test agency_record",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-DATA-1153",
@@ -4081,14 +4085,15 @@
   {
     "id": "R12-AGENCY-1182",
     "status": "PARTIAL",
-    "current": "Engine stages, affordance graph, SCM with do()-surgery (causal.rs), generation, simulation, authority gates via CLI shadow and deepbrain intake. Closed-loop attribution (engine::learn) has no production caller; multi-step orchestration beyond shadow absent.",
+    "current": "Engine stages, affordance graph, SCM with do()-surgery (causal.rs), generation, simulation, authority gates via CLI shadow and deepbrain intake. Closed-loop attribution now reached from qip-cli: engine::learn_shadowed after each shadowed pass, with the named binary test. Multi-step orchestration beyond shadow absent.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:341"
+      "backend/crates/services/qip-agency/src/engine.rs run, learn_shadowed",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
     ],
-    "gap": "Closed-loop attribution and orchestration integrated from a composition root.",
+    "gap": "Orchestration beyond a single shadowed pass has no code reached from a composition root; the attribution loop closes on a simulated effect only (ADR 0114).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4096,7 +4101,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-AGENCY-1183",
@@ -4122,12 +4127,14 @@
   {
     "id": "R12-AGENCY-1184",
     "status": "PARTIAL",
-    "current": "EffectAttribution and Comparison types; kernel counterfactual scoring of declined/filled orders; no uplift estimation.",
+    "current": "EffectAttribution and Comparison types; estimators in estimate.rs; kernel counterfactual scoring of declined/filled orders; counterfactual branches and no-action baselines now feed a policy update from qip-cli after each shadowed pass (simulated::evidence, engine::learn_shadowed).",
     "evidence": [
-      "backend/crates/services/qip-agency/src/attribution.rs:49",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled"
+      "backend/crates/services/qip-agency/src/simulated.rs evidence",
+      "backend/crates/services/qip-agency/src/estimate.rs",
+      "backend/crates/runtime/qip-kernel/src/platform.rs score_filled",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "No graph is updated from a measured effect, and the effect that updates the policy is simulated; experiments and synthetic controls run only on operator-supplied data for widening.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4138,7 +4145,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-ARCH-1185",
@@ -4446,16 +4453,16 @@
   {
     "id": "R12-AGENCY-1199",
     "status": "PARTIAL",
-    "current": "engine::learn validates attribution, keeps the outcome in ActionOutcomeMemory and updates ActionPolicy; no production caller and no world-model update consumes attribution.",
+    "current": "engine::learn validates the attribution, keeps the outcome in ActionOutcomeMemory and updates ActionPolicy; qip-cli calls it (learn_shadowed) after every shadowed pass on the simulated outcome, journaled as AgencyRecord::Learned with the interval the policy was held to.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/attribution.rs:49",
-      "backend/crates/services/qip-agency/src/engine.rs:41 Update stage",
-      "backend/crates/services/qip-agency/src/engine.rs::learn"
+      "backend/crates/services/qip-agency/src/engine.rs learn, learn_shadowed",
+      "backend/crates/apps/qip-cli/src/agency.rs Session::learn",
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
     ],
-    "gap": "World-model update from attribution in a production path.",
+    "gap": "No intervention is executed (ADR 0114), and the attribution updates the action policy, not a world model; the effect is simulated, declared so.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -4465,7 +4472,7 @@
     "verification": "cargo test -p qip-agency",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
   },
   {
     "id": "R12-EVID-1200",

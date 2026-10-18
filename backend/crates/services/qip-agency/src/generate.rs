@@ -132,6 +132,11 @@ impl Structural {
         self.generate.is_some()
     }
 
+    /// The objective every branch is scored on, and which way is better.
+    pub fn objective(&self) -> &Objective {
+        &self.objective
+    }
+
     /// Simulate the steps of `root` that fire under `facts`.
     pub fn simulate(
         &self,

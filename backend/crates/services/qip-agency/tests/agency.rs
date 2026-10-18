@@ -493,14 +493,18 @@ fn an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused() {
 // ============================================================================
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
+use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
 use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, EvidenceCitation};
 use qip_agency::engine::{
-    Adapter, Decision, EdgeDecl, Execution, Gated, LeverEvidence, ORDER, Outcome, ProposalDraft,
-    Request, Stage, StageLog, VariableDecl, decide, execute, learn, run, run_with, widen,
+    Adapter, Decision, EdgeDecl, Execution, Gated, LearningOutcome, LeverEvidence, ORDER, Outcome,
+    ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn, learn_shadowed,
+    run, run_with, widen,
 };
+use qip_agency::generate::StructuralDecl;
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
-use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory};
+use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory, Observed};
 use qip_agency::plan::{Proposal, select};
+use qip_agency::simulated;
 use qip_contracts::action::Ground;
 use qip_contracts::expansion::EffectAttribution;
 use qip_core::Error;
@@ -1499,13 +1503,14 @@ fn outcome(state: &str, observed: i64, counterfactual: i64) -> ActionOutcomeDraf
         attribution_confidence: Some(tenths(7)),
         side_effects: list(&[]),
         no_action_counterfactual: Some(d(counterfactual)),
+        observed: Some(Observed::Measured),
     }
 }
 
 #[test]
 fn an_action_outcome_missing_any_of_its_nine_fields_or_its_audience_or_delay_is_refused_and_not_remembered()
  {
-    let cases: [(&str, fn(&mut ActionOutcomeDraft)); 11] = [
+    let cases: [(&str, fn(&mut ActionOutcomeDraft)); 12] = [
         ("intervention_context", |o| o.intervention_context = None),
         ("environment_state", |o| o.environment_state = None),
         ("audience", |o| o.audience = None),
@@ -1521,6 +1526,10 @@ fn an_action_outcome_missing_any_of_its_nine_fields_or_its_audience_or_delay_is_
         ("no_action_counterfactual", |o| {
             o.no_action_counterfactual = None
         }),
+        // The twelfth: whether the figures were measured or simulated. A
+        // record that does not say is a simulation one reader away from
+        // being filed as a measurement.
+        ("observed", |o| o.observed = None),
     ];
     let mut memory = ActionOutcomeMemory::with_capacity(2).unwrap();
     memory
@@ -2055,5 +2064,255 @@ fn the_same_message_under_two_identities_is_withheld_before_any_call() {
         report.audit.is_empty(),
         "nothing was charged: {:?}",
         report.audit
+    );
+}
+
+// ---- shadow learning: the simulated outcome, declared simulated ----------
+
+/// `request()` with the desk's structural model: quote size narrows the
+/// spread by 0.6 per unit, one quoter step moves it by 10, under a calm and
+/// a stressed (+3) scenario. Hand computation, objective "decrease spread":
+/// calm 6 -> 0, stressed 9 -> 3, effect 6 in both branches.
+fn with_structural_model(mut request: Request) -> Request {
+    request.structural = Some(StructuralDecl {
+        models: vec![StructuralModelDecl {
+            name: "desk".into(),
+            links: vec![StructuralLink {
+                cause: "quote_size".into(),
+                effect: "spread".into(),
+                coefficient: -0.6,
+            }],
+            variables: Vec::new(),
+            intercepts: BTreeMap::from([("spread".to_string(), 6.0)]),
+            noise_variance: BTreeMap::new(),
+        }],
+        fitted: Vec::new(),
+        scenarios: vec![
+            Scenario {
+                name: "calm".into(),
+                exogenous: BTreeMap::new(),
+            },
+            Scenario {
+                name: "stressed".into(),
+                exogenous: BTreeMap::from([("spread".to_string(), 3.0)]),
+            },
+        ],
+        objective: Objective {
+            variable: "spread".into(),
+            direction: Direction::Decrease,
+        },
+        actuation: BTreeMap::from([("quoter".to_string(), 10.0)]),
+        generate: None,
+    });
+    request
+}
+
+/// A shadowed act holds `Act`'s slot without passing it, and what may be
+/// learned after it is exactly an outcome that says it is simulated: a
+/// measured outcome after a shadowed act measured nothing, and a simulated
+/// outcome after an executed act would replace the observation that exists.
+/// Mutation: in `engine::learn_outcome`, make the `(true, Observed::Measured)`
+/// arm fall through — the measured-after-shadowed assertions fail.
+#[test]
+fn learning_after_a_shadowed_act_admits_only_an_outcome_that_says_it_is_simulated() {
+    let mut policy = narrow();
+    let mut memory = ActionOutcomeMemory::with_capacity(4).unwrap();
+
+    // Executed act, simulated outcome: refused at observe-effect.
+    let mut log = acted_log();
+    let mut simulated = outcome("calm", 7, 4);
+    simulated.observed = Some(Observed::Simulated);
+    let err = learn(
+        &mut log,
+        &quoted(),
+        &mut policy,
+        &mut memory,
+        simulated,
+        &identified(Method::Market),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("prediction"), "{err}");
+    assert_eq!(log.failed(), Some(Stage::ObserveEffect));
+    assert!(memory.is_empty());
+
+    // Shadowed act: off the passed list, and a measured outcome is refused.
+    let report = run(request(), None, &mut Counting::default()).unwrap();
+    assert!(matches!(report.outcome, Outcome::Shadowed(_)), "premise");
+    assert!(report.act_shadowed, "premise: the act was shadowed");
+    assert_eq!(report.passed, &ORDER[..7], "a shadowed act did not pass");
+    let learning = learn_shadowed(
+        &report,
+        &mut policy,
+        &mut memory,
+        outcome("calm", 7, 4),
+        &identified(Method::Market),
+    )
+    .unwrap();
+    let LearningOutcome::Withheld(reason) = &learning.outcome else {
+        panic!("{learning:?}")
+    };
+    assert!(reason.contains("nothing ran"), "{reason}");
+    assert_eq!(learning.failed, Some(Stage::ObserveEffect));
+    assert!(memory.is_empty());
+
+    // Shadowed act, simulated outcome: learned, through Update.
+    let mut simulated = outcome("calm", 7, 4);
+    simulated.observed = Some(Observed::Simulated);
+    let learning = learn_shadowed(
+        &report,
+        &mut policy,
+        &mut memory,
+        simulated,
+        &identified(Method::Market),
+    )
+    .unwrap();
+    let LearningOutcome::Learned(learned) = &learning.outcome else {
+        panic!("{learning:?}")
+    };
+    assert_eq!(learned.outcome.observed, Observed::Simulated);
+    assert_eq!(learned.effect, d(3));
+    assert_eq!(
+        (learned.before, learned.after),
+        (Authority::NarrowReversible, Authority::NarrowReversible)
+    );
+    assert_eq!(learning.passed, [&ORDER[..7], &ORDER[8..]].concat());
+    assert_eq!(learning.failed, None);
+    assert_eq!(memory.len(), 1);
+
+    // A pass that shadowed no plan offers nothing: an error, not a guess.
+    let mut over = request();
+    over.proposals[0].root = step("quoter", 51);
+    let report = run(over, None, &mut Counting::default()).unwrap();
+    assert_eq!(report.outcome, Outcome::NoAction, "premise");
+    assert!(!report.act_shadowed);
+    let mut simulated = outcome("calm", 7, 4);
+    simulated.observed = Some(Observed::Simulated);
+    assert!(
+        learn_shadowed(
+            &report,
+            &mut policy,
+            &mut memory,
+            simulated,
+            &identified(Method::Market)
+        )
+        .is_err()
+    );
+    assert_eq!(memory.len(), 1);
+}
+
+/// The evidence a shadowed pass offers is its own simulation, computed from
+/// the report and labelled simulated in every field a reader could mistake:
+/// the figures match the hand computation in `with_structural_model`, the
+/// drift rule runs on them (narrow() predicts [1, 5]; the model says 6, so
+/// the widened policy returns to shadow), the memory keeps the record, and
+/// recommends nothing on it however positive it is, while a measured record
+/// in the same state is recommended. With no structural model the evidence
+/// is refused by name, not invented.
+/// Mutations: in `simulated::evidence`, write `Effect { mean: 0.0, std_dev:
+/// 0.0 }` (the attribution assertions fail); in `memory::recommend_for`,
+/// drop the `observed != Measured` filter (the `None` assertion fails).
+#[test]
+fn a_shadowed_pass_learns_its_simulated_effect_and_nothing_is_recommended_on_it() {
+    let report = run(
+        with_structural_model(request()),
+        None,
+        &mut Counting::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Shadowed(_)),
+        "premise: {:?}",
+        report.outcome
+    );
+    let evidence = simulated::evidence(&report, 7, "spread under 5 bps").unwrap();
+    assert_eq!(evidence.class, Method::Market);
+    let o = &evidence.outcome;
+    assert_eq!(o.observed, Some(Observed::Simulated));
+    assert_eq!(o.action_sequence, list(&["quoter"]));
+    assert_eq!(
+        o.environment_state.as_deref(),
+        Some("simulated: desk/calm, desk/stressed")
+    );
+    assert_eq!(o.audience.as_deref(), Some("simulated: nobody reached"));
+    assert_eq!(
+        o.intervention_context.as_deref(),
+        Some("shadow pass 7: spread under 5 bps")
+    );
+    assert_eq!(o.delay_secs, Some(60), "the plan's own time to effect");
+    assert_eq!(o.predicted_effect, Some(d(5)));
+    assert_eq!(o.attribution_confidence, Some(tenths(9)));
+    assert_eq!(o.actual_observations, Decimal::from_f64(-1.5));
+    assert_eq!(o.no_action_counterfactual, Decimal::from_f64(-7.5));
+    assert_eq!(o.side_effects, Some(vec![]));
+    let a = &evidence.attribution;
+    assert_eq!(a.action_class, Method::Market);
+    assert_eq!(
+        a.effect,
+        Effect {
+            mean: 6.0,
+            std_dev: 0.0
+        }
+    );
+    assert_eq!(
+        a.observations,
+        vec![HorizonObservation {
+            horizon_ms: 60_000,
+            value: 6.0
+        }]
+    );
+    assert!(
+        (a.identifiability - 0.9).abs() < 1e-12,
+        "{}",
+        a.identifiability
+    );
+    assert_eq!(a.causal_chain, ["quote_size", "spread"]);
+    assert_eq!(a.goal_id, "agency-pass-7:goal");
+    assert!(
+        matches!(&a.identification, Identification::Observational { strategy }
+            if strategy.starts_with("simulated:") && strategy.contains("nothing was observed")),
+        "{:?}",
+        a.identification
+    );
+    assert!(a.validate().is_ok(), "the evidence is a valid attribution");
+
+    let mut policy = narrow();
+    let mut memory = ActionOutcomeMemory::with_capacity(4).unwrap();
+    let learning = learn_shadowed(
+        &report,
+        &mut policy,
+        &mut memory,
+        evidence.outcome.clone(),
+        &evidence.attribution,
+    )
+    .unwrap();
+    let LearningOutcome::Learned(learned) = &learning.outcome else {
+        panic!("{learning:?}")
+    };
+    assert_eq!(learned.effect, d(6));
+    assert_eq!(learned.predicted_uplift, (d(1), d(5)));
+    assert_eq!(
+        (learned.before, learned.after),
+        (Authority::NarrowReversible, Authority::Shadow)
+    );
+    assert_eq!(policy.authority(), Authority::Shadow);
+    assert_eq!(memory.len(), 1);
+
+    // Positive, remembered, and recommended on by nothing.
+    let state = "simulated: desk/calm, desk/stressed";
+    assert_eq!(memory.recommend(state, 1).unwrap(), None);
+    memory.record(outcome(state, 7, 4)).unwrap();
+    assert_eq!(
+        memory.recommend(state, 1).unwrap(),
+        Some(vec!["quoter".to_string()]),
+        "a measured record in the same state is"
+    );
+
+    // No model, no simulated outcome: refused by name.
+    let bare = run(request(), None, &mut Counting::default()).unwrap();
+    assert!(matches!(bare.outcome, Outcome::Shadowed(_)), "premise");
+    let err = simulated::evidence(&bare, 8, "spread under 5 bps").unwrap_err();
+    assert!(
+        err.to_string().contains("no structural model simulated"),
+        "{err}"
     );
 }
