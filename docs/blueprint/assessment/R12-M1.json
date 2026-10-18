@@ -986,12 +986,12 @@
   {
     "id": "R12-RISK-1043",
     "status": "PARTIAL",
-    "current": "Capital-fabric TransferIntent requires a stated purpose and passes a deterministic gate; transfers are journaled and simulated. No real money movement exists (paper only).",
+    "current": "A transfer reaches the fabric only as a FabricCommand::Gate carrying a TransferIntent, and Platform::decide_fabric (runtime/qip-kernel/src/platform.rs:8785) re-derives the corridor ruling the command states, runs the seven deterministic checks and journals the verdict. qip-api's FabricFeed applies an operator-declared command file through it; backend/crates/apps/qip-api/tests/fabric.rs proves from that composition-root seam that a transfer off the signed corridor set is vetoed under CorridorAuthority, that a generated transfer over any cap is vetoed whole and one under all caps is admitted at the amount asked (for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_...), and that a stated ruling the layer did not derive is refused. A veto is itself a record on the chain by design (a refusal is a decision), and no money moves: paper only. The capital engine's pre-positioning plan deliberately never becomes a TransferIntent (pre_positioning.rs module doc, ADR 0021).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/gate.rs:113 TransferIntent",
       "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:667 lane refused"
     ],
-    "gap": "Test from a composition root that a transfer exceeding the gate is refused before any journal entry.",
+    "gap": "No committed deployment declares a fabric command file (QIP_CAPITAL_FABRIC_PATH is wired through var.capital_fabric_file in catalogue.tf but that variable is null in every environment tfvars; dev carries it commented out at terraform.tfvars:426), so on every running root no TransferIntent is ever built and the gate is exercised only by the serving-desk tests. The grader's closure (build an intent per planned pre-positioning move in pre_position) was not implemented: a GateCommand carries three enforcement-point attestations that a human establishes out of band, and a machine minting them from its own plan would attest to itself. Closing needs an operator declaration mounted in a deployment (infrastructure/environments/** is a protected path) or an ADR changing ADR 0021's permitted half.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1002,7 +1002,7 @@
     "verification": "cargo test -p qip-risk --test limit_fixtures; cargo test -p qip-edge; cargo test -p qip-capital-fabric",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
   },
   {
     "id": "R12-RISK-1044",
@@ -1273,24 +1273,16 @@
   },
   {
     "id": "R12-AGENCY-1056",
-    "status": "PARTIAL",
-    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Truthfulness is check_factual_support (conduct_brain.rs:250-279): non-empty content needs at least one citation with a non-blank evidence_id and confidence in 0..=10000, plus the mandatory no_false_claims phrase rule (FALSE_CLAIM_PHRASES, conduct_brain.rs:101-116). No claim is checked against the cited evidence.",
+    "status": "COMPLETE",
+    "current": "The conduct gate resolves every citation against the platform's record of evidence (conduct_brain::EvidenceResolver, EvidenceManifest): the id must resolve, the citation must state a claim, and the claim's statement fingerprint (the evidence fabric's own) must equal the recorded one. ActionGuard::with_evidence attaches it. The shadow binary always attaches one built from the operator's policy `evidence` list, so a policy with no list withholds every pass. The requester writes the draft and its citations; the operator writes the manifest.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/main.rs:73",
-      "backend/crates/apps/qip-cli/src/agency.rs:227",
-      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
-      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
-      "backend/crates/services/qip-agency/src/engine.rs:316-349",
-      "backend/crates/services/qip-agency/src/guard.rs:264-336",
-      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:250-279",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:101-116",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_factual_support_blocks_when_no_citations",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_citation_with_no_evidence_id_or_an_impossible_confidence_is_not_factual_support"
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::EvidenceResolver, EvidenceManifest, checks::check_factual_support_resolving",
+      "backend/crates/services/qip-agency/src/guard.rs::ActionGuard::with_evidence",
+      "backend/crates/apps/qip-cli/src/agency.rs::AgencyPolicy.evidence, Session::open",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_citation_that_resolves_to_no_record_the_wrong_source_or_another_statement_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_resolves_every_citation_against_the_operators_evidence_and_a_policy_with_none_withholds_every_pass"
     ],
-    "gap": "Resolve each citation against the evidence store and compare the claim with it; add factual-support and no_false_claims cases to the before-adapter guard test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1298,29 +1290,21 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test conduct_brain",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old gap (no binary composes the guard / guard optional) is now closed by qip-cli (commit 567f8248, 5d9aca21). Grade held at PARTIAL on the substance of the check, not on wiring. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: the factual-support resolution skipped (an unresolved or mismatched claim is sent); the CLI building its guard with no evidence attached (every case executes as before). Limits stated, not hidden: the resolver the shadow binary attaches is the operator's evidence manifest (policy `evidence`), an export of what the evidence fabric holds, not a live read of the fabric; and the deepbrain ambient door attaches none, because a signal's evidence ids are the detectors' own labels (`up:...`, an anomaly-cluster tag), not fabric record ids, so a fabric resolver there would refuse every ambient draft."
   },
   {
     "id": "R12-AGENCY-1057",
-    "status": "PARTIAL",
-    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). check_provenance (conduct_brain.rs:282-301) fails any citation whose source_id is not in the policy's authorized_sources.",
+    "status": "COMPLETE",
+    "current": "Provenance resolves each citation through the same EvidenceResolver and takes the source the record names, not the one the citation declares: a citation declaring an authorized source for evidence recorded under another, or for evidence that resolves to nothing, withholds the plan before any adapter call. The shadow binary attaches the operator's manifest on every pass.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/main.rs:73",
-      "backend/crates/apps/qip-cli/src/agency.rs:227",
-      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
-      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
-      "backend/crates/services/qip-agency/src/engine.rs:316-349",
-      "backend/crates/services/qip-agency/src/guard.rs:264-336",
-      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:282-301",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::check_provenance_blocks_when_source_unauthorized"
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::checks::check_provenance_resolving",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_citation_that_resolves_to_no_record_the_wrong_source_or_another_statement_withholds_the_plan_before_any_adapter_call (case: the record names 'blog')",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_resolves_every_citation_against_the_operators_evidence_and_a_policy_with_none_withholds_every_pass"
     ],
-    "gap": "Resolve citations against the evidence store/manifest before trusting the source; refuse a draft with no citations where provenance is required.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1328,10 +1312,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test conduct_brain",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Binary wiring and the before-adapter guard test ('provenance' case, agency.rs:1569-1576) are now real; graded down to PARTIAL (taking the lower grade) because the check verifies a declaration, not provenance. Every field the guard checks (drafts, citations, jurisdiction, approver names) is declared by the request document itself (guard.rs:96-103, 57-63), so the gate checks what the requester says the intervention is."
+    "notes": "Closed 2026-10-18 (lane L10). Mutation that fired: the provenance resolution skipped (the forged-source citation is sent). A draft with no citations is already refused by factual support. Limits stated, not hidden: the resolver the shadow binary attaches is the operator's evidence manifest (policy `evidence`), an export of what the evidence fabric holds, not a live read of the fabric; and the deepbrain ambient door attaches none, because a signal's evidence ids are the detectors' own labels (`up:...`, an anomaly-cluster tag), not fabric record ids, so a fabric resolver there would refuse every ambient draft."
   },
   {
     "id": "R12-AGENCY-1058",
@@ -1552,7 +1536,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
       "backend/crates/services/qip-agency/tests/agency.rs::a_plan_with_a_deceptive_step_anywhere_in_it_is_infeasible_whatever_its_expected_effect"
     ],
-    "gap": "The content check is still a phrase list; no structural tie of an unsupported claim to the absence of resolving evidence (R12-AGENCY-1056's resolver). A tool's Method is declared by whoever builds the affordance graph, by design (operator policy).",
+    "gap": "The before-adapter no_false_claims case exists and its mutation fired. With R12-AGENCY-1056's resolver now attached on the shadow binary a citation's claim must equal its recorded statement, but a draft's prose is not tied to its citations: a draft can cite a true claim and still say 'guaranteed' in its content, so FALSE_CLAIM_PHRASES remains the only detector of promissory language. Remaining: bind each assertion sentence in the content to a citation claim (sentence-level), which needs a rule separating assertions from action descriptions such as 'Quote 20 lots'; a tool's Method is declared by operator policy by design.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1563,26 +1547,20 @@
     "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency each_guard_check_alone",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-18 (lane L10): the missing before-adapter case now exists and its mutation fired (replacing `guaranteed` in FALSE_CLAIM_PHRASES makes the case Execute). Held PARTIAL on the structural half of the closure."
+    "notes": "Re-graded 2026-10-18 (lane L10): the missing before-adapter case exists and its mutation fired (replacing `guaranteed` in FALSE_CLAIM_PHRASES makes the case Execute). The evidence resolver (R12-AGENCY-1056) landed the same day, which is the prerequisite for the structural half; the sentence-to-claim binding is not built. Held PARTIAL."
   },
   {
     "id": "R12-AGENCY-1066",
-    "status": "PARTIAL",
-    "current": "qip-cli now composes the guard mandatorily: main.rs:73 -> qip_cli::agency::run (agency.rs:499) -> Session::open builds ActionGuard::from_policy from the operator's --policy (agency.rs:216-259, :227), refuses a policy registering no tool (:220-225), refuses a request carrying its own `guards` by key (:314-319), and passes guard: Some(&mut self.guard) to run_governed (:339-347). engine.rs:316-349 refuses with no guard and runs guard.preflight (guard.rs:264-336) before guard.authorise(step).and_then(adapter.call) (engine.rs:347-349). The only adapter is Unwired, which refuses every call (agency.rs:89-97; ADR 0114). qip-cli is an operator tool, not a deployed image (deploy.yml:375). Undisclosed promotion is caught only if the operator lists a disclosure kind in required_disclosures and the draft lacks it or leaves its text blank (conduct_brain.rs:325-345).",
+    "status": "COMPLETE",
+    "current": "A draft that names, as whole words, an instrument or product the platform holds (conduct_brain::HoldingsResolver, HoldingsList) must carry a `position` disclosure with text, or the disclosure check withholds it as undisclosed promotion before any adapter call; a blank position disclosure discloses nothing. ActionGuard::with_holdings attaches it, and the shadow binary always attaches the operator's policy `holdings` list. The detector keys on what the words are about and who is positioned in it, not on a promotional phrase list.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/main.rs:73",
-      "backend/crates/apps/qip-cli/src/agency.rs:227",
-      "backend/crates/apps/qip-cli/src/agency.rs:314-319",
-      "backend/crates/apps/qip-cli/src/agency.rs:339-347",
-      "backend/crates/services/qip-agency/src/engine.rs:316-349",
-      "backend/crates/services/qip-agency/src/guard.rs:264-336",
-      "backend/crates/services/qip-agency/tests/agency.rs::each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_pass_the_conduct_gate_or_the_eligibility_register_refuses",
-      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs:325-345",
-      "backend/crates/services/qip-agency/src/conduct_brain.rs::tests::a_required_disclosure_present_by_kind_with_blank_text_discloses_nothing"
+      "backend/crates/services/qip-agency/src/conduct_brain.rs::HoldingsResolver, HoldingsList, checks::check_disclosures_with_holdings",
+      "backend/crates/services/qip-agency/src/guard.rs::ActionGuard::with_holdings",
+      "backend/crates/apps/qip-cli/src/agency.rs::AgencyPolicy.holdings, Session::open",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_draft_naming_an_instrument_the_platform_holds_needs_a_position_disclosure_or_is_withheld",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_withholds_a_draft_promoting_a_held_instrument_without_a_position_disclosure"
     ],
-    "gap": "No detector of promotion exists: a promotional draft passes whenever required_disclosures is empty, which ConductGate::new permits (conduct_brain.rs:477-490) and the CLI's own test policy uses (qip-cli/tests/agency.rs:30). No test drives a promotional action to refusal before the adapter.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1590,10 +1568,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged in substance; binary composition now present."
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: the detector disabled (the undisclosed promotion executes); the CLI attaching no holdings (shadowed instead of withheld). Limits stated: the shadow binary's holdings are the operator's list, not a read of Platform positions (the closure named a deepbrain implementation over Platform positions; deepbrain's ambient door drafts internal notices for a person and attaches none), and the empty default is the operator saying the platform holds nothing."
   },
   {
     "id": "R12-EXEC-1067",
@@ -1655,7 +1633,7 @@
       "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal",
       "backend/crates/services/qip-agency/src/conduct_brain.rs:141-160"
     ],
-    "gap": "Phrase list only: 'per people close to the matter', 'reportedly', 'chatter suggests' and similar pass. No structural check (e.g. a claim not backed by an evidence item) ties rumour to the absence of evidence.",
+    "gap": "Phrase list only for rumour: 'per people close to the matter', 'reportedly', 'chatter suggests' pass unless listed. The evidence resolver (R12-AGENCY-1056) now exists, but the structural rule the closure asks for (an assertion sentence with no resolving citation is rumour) needs a binding of sentences to citations, and without it every uncited sentence of an ordinary action description ('Quote 20 lots on venue-a') would be refused as rumour. Remaining: that binding, then the rule.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1666,7 +1644,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Guard case 'no_rumour_engineering' and the CLI rumour test (qip-cli/tests/agency.rs:442-454) do refuse before the adapter, and the binary now composes it."
+    "notes": "Round-2 independent audit, 2026-10-11: guard case 'no_rumour_engineering' and the CLI rumour test do refuse before the adapter, and the binary composes it. Re-read 2026-10-18 (lane L10) after R12-AGENCY-1056 landed: the resolver is the prerequisite and is in place; the sentence-level rule is not, and building it on whole-draft citations would refuse honest drafts. Held PARTIAL."
   },
   {
     "id": "R12-ARCH-1070",
@@ -2009,7 +1987,7 @@
       "backend/crates/apps/qip-deepbrain/src/language.rs:44 providers",
       "backend/crates/services/qip-training/src/distill.rs:110 FidelityReport"
     ],
-    "gap": "Distil from large-model teachers.",
+    "gap": "The learning desk already distils its own fitted teachers into a linear student on the holdout probe (qip_training::distill::distil, FidelityReport recorded), but no slow-lane large-model teacher exists: language.rs returns completions and structured text, none wrapped as a TrainedTeacher over a probe dataset, and the hosted provider runs only under the language-model variable, so a distillation from it would not run on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2020,7 +1998,7 @@
     "verification": "cargo test -p qip-training",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against learning.rs fit and language.rs. A DeterministicModel teacher would run by default but would distil a template, which is not the slow-lane model the row names."
   },
   {
     "id": "R12-REFLEX-1086",
@@ -3649,7 +3627,7 @@
       "backend/crates/apps/qip-deepbrain/src/evolution.rs:36",
       "backend/crates/services/qip-lifecycle/src/demotion.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Scale of thousands is measured for generation and trial counting only (evolution.rs the_same_challenger_wins_a_small_search_and_loses_a_large_one generates 5,000 candidates and counts 5,000 trials); promotion and demotion of 1,000+ strategies through the lifecycle ledger, and a bound on that ledger's working set (LifecycleLedger keeps every strategy's entries in a BTreeMap with no cap), are unmeasured.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3660,7 +3638,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; a scale test over an unbounded ledger would measure growth, not a bounded working set. Kept PARTIAL."
   },
   {
     "id": "R12-ASSET-1160",
@@ -3692,7 +3670,7 @@
       "backend/crates/libs/qip-financial/tests/ladder.rs",
       "backend/crates/tests/qip-acceptance/tests/region_share.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Rides R12-CAPITAL-4075/4078/4079: idle-cash routing needs a yield shelf nothing supplies and a floor that must be the survival governor's, and DatedLadder needs dated obligations the kernel does not produce except through the commitment book. Design decisions recorded on those rows come first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3703,7 +3681,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-RISK-1162",
@@ -3735,7 +3713,7 @@
       "backend/crates/services/qip-capital-fabric/src/rebalance.rs",
       "backend/crates/tests/qip-acceptance/tests/capital_corridor.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Yield routing is blocked on the shelf named under R12-CAPITAL-4078; financing/credit is licence-gated and excluded under ADR 0003 and is to be recorded as such in the register once routing exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3746,7 +3724,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 (lane L01)."
   },
   {
     "id": "R12-LEDGER-1164",
@@ -3757,7 +3735,7 @@
       "backend/crates/apps/qip-ledgerd/src/main.rs:1",
       "backend/crates/tests/qip-acceptance/tests/arch_035_ledger_consistency.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "Depends on three rows that are not done: tax lots (R12-LEDGER-5008, tried and dropped 2026-10-18 for three coupled reasons), margin, collateral, commitments and inventory (R12-COVERAGE-7164: operations are bookable and read back, no production producer), and settlement state (ADR 5011). Fees are booked from the fill's reported fee; accruals post through operations with no production producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3768,7 +3746,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L15; nothing in the code changed."
   },
   {
     "id": "R12-REFLEX-1165",
@@ -4011,7 +3989,7 @@
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs:443",
       "backend/crates/services/qip-twin/src/counterfactual.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "The tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant required) and TickDesk::round replays no multi-leg plan: it is handed an empty decision list by maybe_round, and nothing builds a MultiLegPlan from the journal. The saga replay itself is proven in the simulation engine (tests/tick_replay.rs a_three_leg_plan_whose_second_venue_fails_unwinds_the_first_leg_and_charges_the_cost); what is missing is the caller.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4022,7 +4000,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Checked 2026-10-18; register text that the saga was unproven is stale."
   },
   {
     "id": "R12-TICK-1177",

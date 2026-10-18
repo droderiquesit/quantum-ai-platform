@@ -8,10 +8,12 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_contracts::replay::{
-    AppliedReadings, ControlPosition, PassMarker, PressureRecord, ReplayManifest, WireRecord,
+    AppliedReadings, ControlPosition, PassMarker, PressureRecord, ReplayAssumptions,
+    ReplayManifest, WireRecord,
 };
 use qip_core::EventId;
 use qip_core::error::Result;
+use std::collections::BTreeMap;
 
 fn marker() -> PassMarker {
     PassMarker {
@@ -130,4 +132,97 @@ fn a_pass_marker_hash_changes_when_an_applied_pressure_or_wire_reading_changes()
         "an applied region-wire reading did not move the reproducibility hash"
     );
     Ok(())
+}
+
+fn assumptions() -> ReplayAssumptions {
+    ReplayAssumptions {
+        clock: "the pass clock reading".to_string(),
+        latency: "none: every offset is zero".to_string(),
+        queue: "price-time priority on the simulated book".to_string(),
+        fill: "the matching engine's own fills at the resting price".to_string(),
+        impact: "none modelled".to_string(),
+    }
+}
+
+fn versions() -> BTreeMap<String, String> {
+    BTreeMap::from([("fill".to_string(), "sim-exchange-1".to_string())])
+}
+
+/// Mutation: make `hash_with` ignore `assumptions` (hash the marker alone) —
+/// two runs under different fill assumptions share a reproducibility hash.
+#[test]
+fn a_manifest_states_its_assumptions_and_model_versions_and_a_change_to_either_changes_the_hash()
+-> Result<()> {
+    let bare = ReplayManifest::new(marker())?;
+    assert!(
+        bare.assumptions().is_none(),
+        "premise: a bare manifest states none"
+    );
+    let text = serde_json::to_string(&bare)?;
+    assert!(
+        !text.contains("assumptions") && !text.contains("model_versions"),
+        "a manifest that states none must encode as it always did"
+    );
+
+    let stated = ReplayManifest::with_assumptions(marker(), assumptions(), versions())?;
+    assert!(stated.is_consistent()?);
+    assert_ne!(
+        stated.reproducibility_hash(),
+        bare.reproducibility_hash(),
+        "stating assumptions must be part of what is reproduced"
+    );
+    let mut other_fill = assumptions();
+    other_fill.fill = "every order fills in full at the touch".to_string();
+    assert_ne!(
+        ReplayManifest::with_assumptions(marker(), other_fill, versions())?.reproducibility_hash(),
+        stated.reproducibility_hash()
+    );
+    let mut other_versions = versions();
+    other_versions.insert("fill".to_string(), "sim-exchange-2".to_string());
+    assert_ne!(
+        ReplayManifest::with_assumptions(marker(), assumptions(), other_versions)?
+            .reproducibility_hash(),
+        stated.reproducibility_hash()
+    );
+
+    let back: ReplayManifest = serde_json::from_str(&serde_json::to_string(&stated)?)?;
+    assert_eq!(back, stated);
+    assert_eq!(back.assumptions(), Some(&assumptions()));
+    assert_eq!(back.model_versions(), &versions());
+    assert!(back.is_consistent()?);
+    // Altering an assumption after the hash was taken is caught.
+    let altered = serde_json::to_string(&stated)?.replace("none modelled", "linear impact");
+    assert!(!serde_json::from_str::<ReplayManifest>(&altered)?.is_consistent()?);
+    Ok(())
+}
+
+#[test]
+fn a_blank_assumption_or_a_missing_model_version_is_refused_naming_what_is_missing() {
+    // Premise: the complete statement is accepted.
+    assert!(ReplayManifest::with_assumptions(marker(), assumptions(), versions()).is_ok());
+    type Edit = fn(&mut ReplayAssumptions);
+    let edits: [(&str, Edit); 5] = [
+        ("clock", |a| a.clock = " ".to_string()),
+        ("latency", |a| a.latency.clear()),
+        ("queue", |a| a.queue.clear()),
+        ("fill", |a| a.fill.clear()),
+        ("impact", |a| a.impact.clear()),
+    ];
+    for (name, blank) in edits {
+        let mut broken = assumptions();
+        blank(&mut broken);
+        let refused = ReplayManifest::with_assumptions(marker(), broken, versions())
+            .expect_err("a blank assumption must be refused");
+        assert!(
+            refused.message().contains(&format!("no {name} assumption")),
+            "{name}: {}",
+            refused.message()
+        );
+    }
+    assert!(
+        ReplayManifest::with_assumptions(marker(), assumptions(), BTreeMap::new()).is_err(),
+        "no model versions stated"
+    );
+    let blank_version = BTreeMap::from([("fill".to_string(), String::new())]);
+    assert!(ReplayManifest::with_assumptions(marker(), assumptions(), blank_version).is_err());
 }

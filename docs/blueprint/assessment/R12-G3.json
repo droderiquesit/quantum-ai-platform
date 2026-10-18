@@ -2068,7 +2068,7 @@
       "backend/crates/services/qip-cost-router/src/router.rs:161-168 rationale",
       "backend/crates/services/qip-cost-router/tests/cost_router.rs"
     ],
-    "gap": "No agent budgets; TPU budget zero; ComputePlan only on QPU grants.",
+    "gap": "No agent bids: a granted agent bid has no consumer. Agent budgets live in qip-agents BudgetLedger instances constructed inside each agent run (runtime.rs) and the cost router's per-decision ledger, neither reachable from ResearchLoop, so a grant could raise nothing; today agent compute is bounded by ResearchConfig.agent_budgets (R12-AMBIENT-9034), a ceiling and not a bid. TPU budget zero is a deployment fact.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2079,7 +2079,7 @@
     "verification": "cargo test -p qip-cost-router",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. WorkKind::Agent exists in the market and allocate_within accepts such a bid; the missing half is what a grant does."
   },
   {
     "id": "R12-QUANT-10095",
@@ -2387,7 +2387,7 @@
       "backend/crates/libs/qip-contracts/tests/ambient.rs",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Fabric task publication.",
+    "gap": "The deep brain has no Fabric producer: only qip-edge-node (outbox.rs) and qip-cli construct one. Publishing research tasks needs a registered research-task topic (qip-events topic.rs has ResearchCampaignClosed/Flagged and no research-task topic), a produce grant on a p3_research stream in the deployed catalogue (FABRIC-110), and a broker endpoint and trust for the deep brain; the catalogue and endpoints are infrastructure/environments paths a lane may not edit.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2398,7 +2398,7 @@
     "verification": "cargo test -p qip-contracts --test ambient",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Checked 2026-10-18. Patch for a later infrastructure lane: a deepbrain produce grant on the research stream in the event-fabric catalogue and a QIP_FABRIC broker endpoint in the deepbrain manifests; then ResearchLoop hands each queued item's envelope to the node's transport."
   },
   {
     "id": "R12-GOV-10109",
@@ -2693,12 +2693,13 @@
   {
     "id": "R12-TICK-10121",
     "status": "PARTIAL",
-    "current": "qip-twin counterfactual/regret and qip-simulation-engine; no candidate-world propagation to counterparties.",
+    "current": "qip-twin FutureTree::portfolio_outcomes(&positions) (futures.rs) weights each live branch impact_bps by signed position and renormalised probability into a PortfolioOutcome distribution; counterfactual/regret and qip-simulation-engine as before. Tested by tests/futures.rs::a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to_one (mutations: drop the /mass renormalisation, drop the position weight - both fail). No caller feeds it positions yet.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs",
+      "backend/crates/services/qip-twin/src/futures.rs",
+      "backend/crates/services/qip-twin/tests/futures.rs",
       "backend/crates/services/qip-simulation-engine"
     ],
-    "gap": "Scenario tree to portfolio propagation.",
+    "gap": "qip-deepbrain tick_desk.rs grows the tree but has no portfolio-position input, so portfolio_outcomes runs only in test; counterparty propagation absent. Feed the desk the platform book and journal the distribution to close.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2706,10 +2707,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-twin",
+    "verification": "cargo test -p qip-twin --test futures",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 L22: method + test added; kept PARTIAL because no binary calls it."
   },
   {
     "id": "R12-CAPITAL-10122",
@@ -3120,7 +3121,7 @@
       "backend/crates/libs/qip-agents/src/budget.rs",
       "backend/crates/libs/qip-agents/src/runtime.rs:468"
     ],
-    "gap": "Benchmarks and training quotas.",
+    "gap": "Queue quotas exist and are tested (QueueQuotas in qip-training job.rs, enforced by LocalTrainingProvider::submit and the Vertex provider) but no composition root constructs a training provider with quotas, so no running process bounds a queue; and no benefit-per-dollar or per-latency benchmark exists (ComputeLedger records cost and latency per decision, the reputation book scores accuracy per condition, and nothing joins them).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3131,7 +3132,7 @@
     "verification": "cargo test -p qip-agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's TrainingSpec::concurrency_quota duplicates QueueQuotas, which already refuses a submit into a full queue (training.rs:1677). The open work is a deepbrain-side provider that declares quotas, and a benefit signal the router can divide by cost. Kept PARTIAL."
   },
   {
     "id": "R12-FINOPS-10140",
@@ -3434,7 +3435,7 @@
       "scripts/game-day/harness.mjs",
       "docs/ops/game-days/README.md"
     ],
-    "gap": "A frozen-sink scenario in the harness measuring broker memory and P0/P1 priority, run and recorded.",
+    "gap": "Three things are missing and the first two are code: the harness has no memory measurement (no /proc/<pid>/status sampling), no process that drives producers past a lag limit (there is no standalone producer binary; the cell produces outcomes only when it fires orders, which a local drill cannot make it do — see R12-RES-10154), and a scenario file. The sink freeze itself is available as the existing 'pause' fault (SIGSTOP on qip-ledgerd).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3447,7 +3448,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from harness.mjs's fault kinds and the scenarios directory; nothing in the code changed."
   },
   {
     "id": "R12-RES-10154",
@@ -3457,7 +3458,7 @@
       "docs/ops/game-days/results/2026-10-11-ledgerd-loss.json",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Drill with a strategy plan producing outcomes.",
+    "gap": "The closure as graded (give the scenario a strategy plan) cannot make the cell fire an order locally: strategies.rs deploys a plan only once a verified, fresh, digest-matched policy payload names it and a capital grant for the strategy has arrived, and the arbitrage desk waits on the same signed channel. The scenario starts fabricd, qip-edge-node and qip-ledgerd; none publishes a signed payload or a grant (qip-api's mesh.rs does), so the P1 outcomes stream stays empty and the verdict stays inconclusive. Closing needs either qip-api (or a fixture publisher) in the scenario with its signing material, or an edge-node test mode that deploys a plan without a payload, which would weaken the digest check and is refused here.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3470,7 +3471,7 @@
     "verification": "game-day",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: A drill record exists but does not show what the row asks: it is inconclusive by its own verdict. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Drill row; record does not show the property."
+    "notes": "Round-2 independent audit, 2026-10-11: inconclusive by its own verdict. Re-graded 2026-10-17: record does not show the property. Gap corrected 2026-10-18 by lane L17 from strategies.rs and the stale-policy scenario's own drill text ('no local binary is a policy publisher'); nothing in the code changed."
   },
   {
     "id": "R12-RES-10155",
@@ -3520,13 +3521,15 @@
   {
     "id": "R12-SEC-10157",
     "status": "PARTIAL",
-    "current": "Boundaries exist (prod refused by workflows, no repo variables, no long-lived keys, dispatch inputs never pasted into shells) but no simulation.",
+    "current": "Boundaries exist (prod refused by workflows, no repo variables, no long-lived keys, dispatch inputs never pasted into shells). Since 2026-10-18 a drill exercises them: scripts/game-day/agent-escalation.mjs hands agent-guard.mjs and agent-lanes.mjs thirteen attacks (a workflow edit with no approval, a bot's, an agent identity's, an earlier commit's and a non-writer's approval; a planner landing code; an undefined role; an undefined lane; agent dispatch of deploy.yml and infra.yml; lane manifests granting a coder the workflows, over the budget ceiling, and with no acceptance command) beside a control that must be admitted, and records the verdict in docs/ops/game-days/agent-escalation/. All held on the committed policy; a policy with the protected paths emptied is reported breached.",
     "evidence": [
+      "scripts/game-day/agent-escalation.mjs",
+      "scripts/game-day/agent-escalation.test.mjs",
+      "docs/ops/game-days/agent-escalation/2026-10-18-agent-escalation.json",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5073 the_infrastructure_workflow_cannot_touch_production",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5471 production_is_never_deployed_automatically"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell"
     ],
-    "gap": "Simulation harness.",
+    "gap": "The drill is a scripted agent against the two judges, not a model, and it is not in CI: adding scripts/game-day/agent-escalation.test.mjs to ci.yml's scripts job is a protected-path change (patch: docs/blueprint/lanes/L23-patch-SEC-10157-ci.patch). A secret read and a connection outside the egress allow-list need the sandbox's runner and firewall, so a step in .github/workflows/agent-sandbox.yml (protected) still has to run them and fail on success.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3534,10 +3537,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "game-day",
+    "verification": "node --test scripts/game-day/agent-escalation.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, the relaxed-policy, the lying-record and the command tests failed). Kept PARTIAL for the two protected-path steps."
   },
   {
     "id": "R12-RES-10158",

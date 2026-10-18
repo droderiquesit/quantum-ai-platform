@@ -1363,6 +1363,11 @@ pub mod names {
     /// node's pass meter times it: the series the reflex
     /// `decision-latency-p99` and `-p99.9` objectives are read from.
     pub const EDGE_DECISION_LATENCY_MS: &str = "qip_edge_decision_latency_ms";
+    /// Milliseconds since the cell last heard each venue's feed, per venue
+    /// per pass, as `Cell::work` reads it before the halt check. The series
+    /// the `market-data-freshness` critical path is read from: a book older
+    /// than the objective's threshold is a pass that decided on stale prices.
+    pub const EDGE_BOOK_AGE_MS: &str = "qip_edge_book_age_ms";
 
     // Ledger metrics (ledgerd)
     pub const LEDGER_COMMITS: &str = "qip_ledger_commits_total";
@@ -1373,6 +1378,17 @@ pub mod names {
     pub const LEDGER_UNBALANCED_REFUSED: &str = "qip_ledger_unbalanced_refused_total";
     pub const LEDGER_LAG: &str = "qip_ledger_lag_records";
     pub const LEDGER_STORE_RETRIES: &str = "qip_ledger_store_retries_total";
+    /// How long the longest-parked cell has been parked, in seconds. A park
+    /// is the ledger's reconciliation mismatch: a record it could not book
+    /// honestly, held until a gap fills or an operator releases it.
+    pub const LEDGER_MISMATCH_AGE_SECONDS: &str = "qip_ledger_mismatch_age_seconds";
+    /// Each reading of the outcome-to-ledger lag, judged against the
+    /// `ledger-lag` objective's ceiling: `outcome` is `within` or `over`.
+    pub const LEDGER_LAG_CHECKS: &str = "qip_ledger_lag_checks_total";
+    /// Each reading of the mismatch age, judged against the
+    /// `ledger-mismatch-age` objective's ceiling: `outcome` is `within` or
+    /// `over`.
+    pub const LEDGER_MISMATCH_AGE_CHECKS: &str = "qip_ledger_mismatch_age_checks_total";
 
     // The deep brain's research, ambient and operations loops
     // (`qip-deepbrain/src/{research,operations}.rs`). Every label is an enum
@@ -1428,4 +1444,11 @@ pub mod names {
     /// freshness. Absent, not zero, until a first package is promoted —
     /// a zero would read as a model promoted this instant.
     pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
+    /// Each iteration's reading of that age against the freshness objective's
+    /// ceiling, by outcome (`fresh`, `stale`): the good/total split the
+    /// age gauge cannot carry (R12-OBS-9164).
+    pub const MODEL_PACKAGE_FRESHNESS_CHECKS: &str = "qip_model_package_freshness_checks_total";
+    /// Each sweep's reading of the research queue's depth against the
+    /// queue-depth objective's ceiling, by outcome (`within`, `over`).
+    pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
 }

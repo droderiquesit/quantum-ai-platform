@@ -660,6 +660,12 @@ pub struct Platform {
     /// read twice: a cycle that reaches no construction journals nothing
     /// rather than the last cycle's comparison.
     cycle_solver_routing: Option<SolverRoutingJournal>,
+    /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
+    /// quantum contract (R12-QUANT-4063).
+    pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
+    /// Production models whose drift stands past their threshold, as the last
+    /// registry read found them (R12-RES-7101). Bounded by the registry.
+    drifted_models: BTreeSet<String>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -820,6 +826,12 @@ pub struct Platform {
     /// `None` refuses every derivative, because a grant with nobody to read
     /// it against must not admit anything.
     derivative_desk: Option<(String, Jurisdiction)>,
+    /// The jurisdictions this platform is licensed to execute in, read by
+    /// [`Platform::executable_scope`]. `None` applies no licence gate: the
+    /// determination is compliance's and a composition root states it through
+    /// [`Platform::license_jurisdictions`]. Once stated, an instrument whose
+    /// governing jurisdictions are not all in it is shadow, never executable.
+    licensed_jurisdictions: Option<BTreeSet<Jurisdiction>>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -1732,6 +1744,11 @@ const FABRIC_CORRELATION: &str = "capital-fabric-journal";
 /// the label's cardinality is fixed at compile time and no instrument,
 /// strategy or order id can ever reach it.
 const LIQUIDITY_FIGURE: &str = "liquidity";
+
+/// The name the cross-margin read is filed under in `RiskState::unevaluated`
+/// when a venue statement exists and the review of it could not be computed.
+/// A source literal, for the reason `LIQUIDITY_FIGURE` is one.
+const MARGIN_FIGURE: &str = "margin";
 
 /// The exposure buckets one instrument record vouches for.
 ///
@@ -3200,6 +3217,9 @@ struct FilledPath {
     /// of the fill error can say which way the twin was wrong.
     side: BookSide,
     decided_at: Timestamp,
+    /// What the venue left unfilled of the order when it reported, from the
+    /// order manager's own book (R12-MODEL-6004). Zero for a whole fill.
+    unfilled: Decimal,
 }
 
 /// What the twin found about one fill, once it has priced the sizes not
@@ -3237,6 +3257,21 @@ pub struct FillScore {
     /// prices. `None` where the twin's own `trade` alternative did not fill,
     /// so there was no simulated entry to compare. A statistic, not money.
     pub trade_error_bps: Option<f64>,
+    /// The quantity the venue left unfilled when it reported this order,
+    /// zero for a whole fill (R12-MODEL-6004). Without it a partial fill and
+    /// a whole one left the same score, and the size findings above — priced
+    /// on the quantity that traded — read as though the order had been the
+    /// size that was asked for. Defaults to zero for a score written before
+    /// the field existed, which is the reading those records were made under.
+    #[serde(default)]
+    pub unfilled: Decimal,
+}
+
+impl FillScore {
+    /// Whether the venue filled only part of the order this scores.
+    pub fn is_partial(&self) -> bool {
+        self.unfilled.is_positive()
+    }
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -5263,6 +5298,8 @@ impl Platform {
             cycle_family_structure: None,
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
+            pending_routing: None,
+            drifted_models: BTreeSet::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -5290,6 +5327,7 @@ impl Platform {
             lot_units,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
+            licensed_jurisdictions: None,
             asset_class_registry,
             breadth: crate::breadth::BreadthPlane::default(),
             exposure_axes,
@@ -9901,6 +9939,12 @@ impl Platform {
         self.governor.policy()
     }
 
+    /// Free cash and the funding-maturity tier the survival waterfall last
+    /// withheld — the figures `LimitKind::MinFundingBuffer` is read from.
+    pub fn survival_funding_read(&self) -> Option<(Decimal, Decimal)> {
+        self.governor.funding_read()
+    }
+
     /// The gross the survival kernel stands behind now — the figure
     /// `LimitKind::MaxSurvivalGross` reads in every pre-trade check.
     pub fn survival_gross_ceiling(&self) -> Option<Decimal> {
@@ -12587,19 +12631,41 @@ impl Platform {
     ///
     /// Returns a vector of routing decisions that were journalled this cycle,
     /// for observability and for the stage outcome detail.
-    fn route_quantum_decisions(&mut self, _now: Timestamp) -> Vec<RoutingDecision> {
-        // M6 A4 Packet 1: infrastructure wire for quantum routing.
-        // This method will be expanded by later packets to:
-        // - Check for active optimization problems in the portfolio or reasoning engine
-        // - For each problem, compute a classical baseline solution
-        // - For each problem, optionally compute a quantum solution
-        // - Create a RoutingDecision comparing the two
-        // - Journal the decision with metadata for auditability
-        //
-        // For now, return empty vector as no problems may be active yet.
-        // As later packets wire in the quantum router integration, this will
-        // populate the vector with actual routing decisions.
-        Vec::new()
+    fn route_quantum_decisions(&mut self, now: Timestamp) -> Vec<RoutingDecision> {
+        // The previous DECIDE's solve, taken so each is journalled once. It
+        // is the previous cycle's because UNDERSTAND runs before DECIDE:
+        // the record carries that cycle's number, not this one's.
+        let Some((cycle, routing)) = self.pending_routing.take() else {
+            return Vec::new();
+        };
+        match crate::quantum_routing::contract_of(cycle, &routing) {
+            Ok(None) => Vec::new(),
+            Ok(Some(recorded)) => {
+                let decision = recorded.decision.clone();
+                match self.journal_record(
+                    recorded,
+                    crate::quantum_routing::QUANTUM_ROUTING_ORIGIN,
+                    now,
+                ) {
+                    Ok(()) => vec![decision],
+                    Err(error) => {
+                        self.capture_problems.push(format!(
+                            "cycle {cycle}'s solve was stated in the quantum contract and not \
+                             journalled: {}",
+                            error.message()
+                        ));
+                        Vec::new()
+                    }
+                }
+            }
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "cycle {cycle}'s solve could not be stated in the quantum contract: {}",
+                    error.message()
+                ));
+                Vec::new()
+            }
+        }
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -14438,7 +14504,8 @@ impl Platform {
     ) -> Result<qip_contracts::degradation::DegradationState> {
         use qip_contracts::degradation::{
             BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, Capability,
-            CausalGraphFreshness, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+            CausalGraphFreshness, DegradationState, Freshness, SELF_MODEL_HORIZON,
+            SelfModelFreshness,
         };
         let mut state = DegradationState::fully_available();
         let self_model = SelfModelFreshness::assess(
@@ -14447,7 +14514,18 @@ impl Platform {
             SELF_MODEL_HORIZON,
             now,
         )?;
-        state.observe(Capability::SelfModel, self_model.freshness());
+        // A production model past its drift threshold is a component the
+        // platform has just measured as unreliable, which is what this row
+        // is the estimate of. It reads no better than stale however fresh the
+        // outcomes are (R12-RES-7101): a rollback retires the card and
+        // clears the reading, and a rollback that could not run leaves the
+        // sizing narrowed rather than the drift silent.
+        let self_model_freshness = if self.drifted_models.is_empty() {
+            self_model.freshness()
+        } else {
+            self_model.freshness().max(Freshness::Stale)
+        };
+        state.observe(Capability::SelfModel, self_model_freshness);
         let causal = CausalGraphFreshness::assess(
             self.world.read().causal().last_updated(),
             CAUSAL_GRAPH_HORIZON,
@@ -14458,6 +14536,30 @@ impl Platform {
             BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
+    }
+
+    /// Read the model registry for production models that have drifted past
+    /// their threshold, and remember which (R12-RES-7101).
+    ///
+    /// The registry belongs to the process that serves models, not to the
+    /// platform, so the platform only learns of drift when that process says
+    /// so; the deep brain's learning round calls this after it has measured
+    /// drift and rolled back what it could. What is kept is the set of
+    /// references and nothing else: [`Self::central_degradation`] reads
+    /// "any" from it and narrows the self-model row, and a later call with a
+    /// registry whose drifted cards were retired empties the set again.
+    pub fn observe_model_drift(&mut self, registry: &qip_ai::registry::ModelRegistry) {
+        self.drifted_models = registry
+            .iter()
+            .filter(|card| card.stage == qip_ai::registry::ModelStage::Production)
+            .filter(|card| card.drift_score > card.drift_threshold)
+            .map(qip_ai::registry::ModelCard::reference)
+            .collect();
+    }
+
+    /// The production models the last registry read found drifted.
+    pub const fn drifted_models(&self) -> &BTreeSet<String> {
+        &self.drifted_models
     }
 
     /// The credit register derived from the universe at assembly: one profile
@@ -14996,6 +15098,7 @@ impl Platform {
         // on exactly the cycles an operator most wants to read.
         let comparison = SolverRoutingJournal::of(&outcome.routing);
         self.cycle_solver_routing = Some(comparison.clone());
+        self.pending_routing = Some((self.cycle, outcome.routing.clone()));
         // QUANT-031's benchmark record, from the same value the cycle entry
         // carries; `SolverBenchmarked` says why that is one comparison under
         // two keys and not two accounts of it. A log that will not take it
@@ -18285,6 +18388,7 @@ impl Platform {
         // pre-trade veto and the monitor read. See `crate::shared_cause` for
         // why the per-family level has no producer and no shipped cap.
         let state = crate::shared_cause::observe(&self.world, &self.price_history, state);
+        let state = self.with_margin_and_funding(state, figures);
         // Both maps or neither. The fractions are a sum over the same ladder
         // the day counts come from, so filling one from a ladder whose totals
         // could not be computed would leave the two halves of one liquidity
@@ -18300,6 +18404,74 @@ impl Platform {
             },
             Err(error) => state.with_unevaluated(LIQUIDITY_FIGURE, error.message()),
         }
+    }
+
+    /// Margin utilisation and the funding buffer, for `LimitKind::MaxMarginUtilisation`
+    /// and `LimitKind::MinFundingBuffer` (R12-RISK-4098).
+    ///
+    /// Both existed as measurements — the cross-margin review raised a finding
+    /// and a stage problem on a call, and the survival waterfall withheld the
+    /// funding-maturity tier — and neither reached the gate, so an order could
+    /// deepen a call the platform had just reported or draw a book below the
+    /// commitments it owed. They are filed here, on the one state the gate and
+    /// the monitor both read, from the same review and the same sizing the
+    /// survival kernel already ran, never a second derivation.
+    ///
+    /// **Margin utilisation is over observed venues only.** Maintenance at a
+    /// venue nobody has a statement for is the cross-margin finding's to
+    /// report, and a desk is entitled to have handed in nothing; folding it in
+    /// here would refuse every order of every deployment that observes one
+    /// venue and not another. With no statement the figure stays absent. A
+    /// review that cannot be read when a statement exists is filed as
+    /// unevaluated, which refuses, because an obligation that could not be
+    /// measured is not an obligation of zero.
+    ///
+    /// **The funding buffer is filed only while a commitment stands**, from
+    /// the latest sizing or seed of the survival governor: equity less held capital less the
+    /// funding-maturity tier, over equity. Non-positive equity files negative
+    /// infinity, a floor breach, rather than an undefined ratio.
+    fn with_margin_and_funding(
+        &self,
+        state: RiskState,
+        figures: &impl AggregateFigures,
+    ) -> RiskState {
+        let mut state = state;
+        if !self.holdings_observed.is_empty() {
+            match crate::cross_margin::review(
+                &self.holdings_observed,
+                figures,
+                &MarginModel::default(),
+                SETTLEMENT_CURRENCY,
+            ) {
+                Ok(review) => {
+                    let required = review.maintenance_required - review.unobserved_maintenance();
+                    state.margin_utilisation = Some(if !required.is_positive() {
+                        0.0
+                    } else if review.cover_observed.is_positive() {
+                        required.to_f64() / review.cover_observed.to_f64()
+                    } else {
+                        f64::INFINITY
+                    });
+                }
+                Err(error) => {
+                    state = state.with_unevaluated(MARGIN_FIGURE, error.message());
+                }
+            }
+        }
+        if let Some((free_cash, maturing)) = self.governor.funding_read()
+            && maturing.is_positive()
+        {
+            let equity = self.capital.equity();
+            state.funding_buffer = Some(if !equity.is_positive() {
+                f64::NEG_INFINITY
+            } else {
+                match free_cash.checked_sub(maturing) {
+                    Some(left) => left.to_f64() / equity.to_f64(),
+                    None => f64::NEG_INFINITY,
+                }
+            });
+        }
+        state
     }
 
     /// The book as a liquidity ladder, or a refusal naming what stopped it.
@@ -19124,6 +19296,7 @@ impl Platform {
                         fill_price,
                         side: book_side(side),
                         decided_at: now,
+                        unfilled: shortfall.map_or(Decimal::ZERO, |(_, remaining)| remaining),
                     }),
                     None => self.capture_problems.push(format!(
                         "filled order {} will not be priced for its size: its fills do not \
@@ -19292,6 +19465,18 @@ impl Platform {
                 None
             }
         }
+    }
+
+    /// State the jurisdictions this platform is licensed to execute in.
+    /// Replaces any earlier statement whole; an empty set licenses nothing,
+    /// so every instrument becomes research-only until a jurisdiction is named.
+    pub fn license_jurisdictions(&mut self, jurisdictions: impl IntoIterator<Item = Jurisdiction>) {
+        self.licensed_jurisdictions = Some(jurisdictions.into_iter().collect());
+    }
+
+    /// The licence stated through [`Self::license_jurisdictions`], if any.
+    pub(crate) fn licensed_jurisdictions(&self) -> Option<&BTreeSet<Jurisdiction>> {
+        self.licensed_jurisdictions.as_ref()
     }
 
     /// Grant the derivative permissions this platform trades under, for
@@ -20805,6 +20990,7 @@ impl Platform {
                         smaller_favoured,
                         larger_favoured,
                         trade_error_bps,
+                        unfilled: path.unfilled,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -26031,6 +26217,85 @@ mod central_sizing_tests {
     }
 
     #[test]
+    fn a_drifted_production_model_narrows_the_central_multiplier_until_the_registry_stops_naming_it()
+     {
+        // The failure this guards (R12-RES-7101): a production model past its
+        // drift threshold was rolled back or refused a decision, and the
+        // centre went on sizing at the multiplier a healthy panel earned, so
+        // capital was not shrunk by a component the platform had just
+        // measured as unreliable.
+        use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage};
+        use qip_core::ModelId;
+        let mut platform = platform();
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        feed_self_model(
+            &mut platform,
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            resolves_at,
+        );
+        let at = resolves_at.saturating_add(Duration::from_secs(100));
+        let multiplier = |platform: &Platform| {
+            platform
+                .central_degradation(at)
+                .expect("the table reads")
+                .central_sizing_multiplier()
+        };
+        let healthy = multiplier(&platform);
+        assert_eq!(
+            healthy,
+            dec!("0.375"),
+            "premise: a fed self-model narrows nothing beyond the two unavailable rows"
+        );
+
+        let mut card = ModelCard::new(
+            ModelId::from_string("m-drift"),
+            "drift",
+            "1",
+            "desk",
+            start(),
+        );
+        card.stage = ModelStage::Production;
+        card.drift_threshold = 0.2;
+        card.drift_score = 0.1;
+        let mut registry = ModelRegistry::new();
+        registry.register(card);
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "a model inside its threshold narrowed"
+        );
+
+        registry
+            .record_drift("drift@1", 0.9)
+            .expect("the card is registered");
+        assert!(
+            registry
+                .iter()
+                .any(|card| card.drift_score > card.drift_threshold),
+            "premise: the card has drifted past its threshold"
+        );
+        platform.observe_model_drift(&registry);
+        assert_eq!(platform.drifted_models().len(), 1);
+        assert_eq!(
+            multiplier(&platform),
+            healthy * dec!("0.75"),
+            "a drifted production model did not narrow the self-model row to its stale factor"
+        );
+
+        // Retiring the card — what a rollback does — clears the reading.
+        registry.retire("drift@1", at).expect("the card retires");
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "the narrowing outlived the model"
+        );
+    }
+
+    #[test]
     fn a_backdated_causal_graph_narrows_the_central_multiplier_to_the_stale_value_and_a_fresh_one_does_not()
      {
         // The failure this closes: the centre's table started row 2 fresh
@@ -29042,6 +29307,7 @@ mod counterfactual_trial_seam_tests {
             smaller_favoured: false,
             larger_favoured,
             trade_error_bps: None,
+            unfilled: Decimal::ZERO,
         }
     }
 

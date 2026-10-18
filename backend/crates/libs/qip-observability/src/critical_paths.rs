@@ -24,6 +24,11 @@ pub enum SourceRule {
     /// counted bad, so bucketing can make the path look worse and never
     /// better.
     LatencyUnder,
+    /// A counter labelled `outcome` where the named outcomes are the failures:
+    /// total is every outcome's count, good is the total less those. For a
+    /// rate the failure is the thing counted (a refusal, a conflict) and
+    /// "good" is everything else the process did with the same input.
+    CounterExcluding { bad: &'static [&'static str] },
     /// The series is a gauge or an unlabelled counter that carries no
     /// good/total split. Evaluates unmeasured, and says so, rather than
     /// inventing a denominator.
@@ -74,6 +79,16 @@ impl CriticalPath {
                         (good + under, total + h.count)
                     })
             }
+            SourceRule::CounterExcluding { bad } => {
+                let total = snapshot.counter_total(self.source_series);
+                let failed: u64 = bad
+                    .iter()
+                    .map(|outcome| {
+                        snapshot.counter(self.source_series, &labels([("outcome", outcome)]))
+                    })
+                    .sum();
+                (total.saturating_sub(failed), total)
+            }
             SourceRule::NotCountable => (0, 0),
         }
     }
@@ -86,9 +101,28 @@ impl CriticalPath {
 /// path that is in fact measured one process away.
 pub const EDGE_NODE_SERVICE: &str = "edge-node";
 
+/// The name of the outcome-to-ledger lag objective.
+pub const LEDGER_LAG_OBJECTIVE: &str = "ledger-lag";
+/// The name of the reconciliation mismatch age objective.
+pub const LEDGER_MISMATCH_AGE_OBJECTIVE: &str = "ledger-mismatch-age";
+/// The name of the transaction abort rate objective.
+pub const LEDGER_ABORT_OBJECTIVE: &str = "ledger-abort-rate";
+/// The most records a ledger partition may trail the broker's high watermark
+/// by at a reading that still counts as keeping up. A declared figure, not a
+/// measured one: nothing has run long enough to say what a healthy ledger's
+/// lag is, and the objective exists so that when something has, the number
+/// moves in one place.
+pub const LEDGER_LAG_CEILING_RECORDS: f64 = 1000.0;
+/// The longest a cell may stay parked, in seconds, at a reading that still
+/// counts as reconciled. Declared like [`LEDGER_LAG_CEILING_RECORDS`], and
+/// for the same reason: a gap resolves in seconds, an operator-held park by
+/// definition does not, and five minutes separates the two without claiming
+/// to know an operator's response time.
+pub const LEDGER_MISMATCH_AGE_CEILING_SECONDS: f64 = 300.0;
+
 /// Market-data freshness, decision latency, order/fill integrity, ledger
-/// commit, reconciliation, model serving, data provenance and quantum job
-/// success.
+/// commit, reconciliation, model serving, data provenance, quantum job
+/// success, model package freshness and the research queue's depth.
 pub fn critical_path_slos() -> Vec<CriticalPath> {
     let p = |slo, source_series, rule| CriticalPath {
         slo,
@@ -96,16 +130,22 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
         rule,
     };
     vec![
+        // Market-data freshness (R12-OBS-7123): the age of the feed the cell
+        // traded on, per venue per pass, recorded by `Cell::work`. This read
+        // `EDGE_CAPABILITY_FRESHNESS` under `NotCountable` until 2026-10-18 -
+        // a policy-feed gauge that says nothing about market data, and no
+        // rule that could turn it into good and total counts - so the path
+        // evaluated unmeasured in every process.
         p(
             Slo::latency(
                 "market-data-freshness",
-                "market-ingestion",
+                EDGE_NODE_SERVICE,
                 0.999,
                 1000.0,
                 SloWindow::Day,
             ),
-            names::EDGE_CAPABILITY_FRESHNESS,
-            SourceRule::NotCountable,
+            names::EDGE_BOOK_AGE_MS,
+            SourceRule::LatencyUnder,
         ),
         // Decision latency: a pass from reading the feed to its decisions
         // acted on, timed by the node's pass meter around every pass that
@@ -166,6 +206,73 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
             Slo::availability("quantum-job-success", "deepbrain", 0.95, SloWindow::Week),
             names::QUANTUM_JOBS,
             SourceRule::CounterOutcome { good: "succeeded" },
+        ),
+        // Model package freshness and the training/evaluation backlog
+        // (R12-OBS-9164): each is read from a counter of checks, recorded
+        // where the age gauge and the queue-depth gauge are written, because
+        // a gauge carries no good/total split.
+        p(
+            crate::slo::model_package_freshness(),
+            names::MODEL_PACKAGE_FRESHNESS_CHECKS,
+            SourceRule::CounterOutcome { good: "fresh" },
+        ),
+        p(
+            crate::slo::research_queue_depth(),
+            names::RESEARCH_QUEUE_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
+        ),
+    ]
+}
+
+/// The ledger's other three objectives (R12-OBS-9162), declared beside the
+/// eight critical paths and not among them: `critical_path_slos` is one
+/// objective per critical path and a test holds it at eight, while these are
+/// the ledger's own refinement of its path, evaluated only by `qip-ledgerd`
+/// against the registry that records their series. Kept out of the catalogue
+/// the deep brain evaluates, which would publish them as permanently
+/// unmeasured from a registry that never holds a ledger series.
+///
+/// Outcome-to-ledger lag and reconciliation mismatch age are backlogs: each
+/// reading of the gauge is judged against the ceiling and counted `within` or
+/// `over` on a checks series, which is what the rule reads. The ceilings are
+/// the declaration's, in one place; the recorder reads them from here.
+/// Transaction abort rate is the commits the ledger refused or found in
+/// conflict, out of every commit it decided.
+pub fn ledger_objectives() -> Vec<CriticalPath> {
+    let p = |slo, source_series, rule| CriticalPath {
+        slo,
+        source_series,
+        rule,
+    };
+    vec![
+        p(
+            Slo::backlog_at_most(
+                LEDGER_LAG_OBJECTIVE,
+                "ledger",
+                LEDGER_LAG_CEILING_RECORDS,
+                0.99,
+                SloWindow::Hour,
+            ),
+            names::LEDGER_LAG_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
+        ),
+        p(
+            Slo::backlog_at_most(
+                LEDGER_MISMATCH_AGE_OBJECTIVE,
+                "ledger",
+                LEDGER_MISMATCH_AGE_CEILING_SECONDS,
+                0.99,
+                SloWindow::Hour,
+            ),
+            names::LEDGER_MISMATCH_AGE_CHECKS,
+            SourceRule::CounterOutcome { good: "within" },
+        ),
+        p(
+            Slo::availability(LEDGER_ABORT_OBJECTIVE, "ledger", 0.999, SloWindow::Day),
+            names::LEDGER_COMMITS,
+            SourceRule::CounterExcluding {
+                bad: &["conflict", "refused"],
+            },
         ),
     ]
 }

@@ -73,6 +73,18 @@ pub struct StructuralDecl {
     pub generate: Option<GenerateDecl>,
 }
 
+/// R12-AGENCY-6088: scenarios a composition root derives from a model this
+/// crate may not depend on, such as a market digital twin's synthetic
+/// futures (`qip-twin` is a service, and a service does not depend on a
+/// service). Each scenario is simulated beside the request's declared ones,
+/// under every structural model, so a candidate's results are the models
+/// times the declared scenarios plus the source's.
+pub trait ScenarioSource: std::fmt::Debug {
+    /// The scenarios to add, refused (`Err`) when the source cannot state
+    /// them rather than silently contributing none.
+    fn scenarios(&self) -> Result<Vec<Scenario>, Error>;
+}
+
 /// The built simulation context.
 #[derive(Debug, Clone)]
 pub struct Structural {
@@ -92,6 +104,29 @@ pub struct Simulated {
 
 impl Structural {
     pub fn build(decl: StructuralDecl) -> Result<Self, Error> {
+        Self::build_with(decl, None)
+    }
+
+    /// [`Self::build`] with the scenarios `source` states appended to the
+    /// declared ones. A source scenario named like a declared one is refused:
+    /// two branches under one name are one branch in every report.
+    pub fn build_with(
+        mut decl: StructuralDecl,
+        source: Option<&dyn ScenarioSource>,
+    ) -> Result<Self, Error> {
+        if let Some(source) = source {
+            let declared: BTreeSet<String> =
+                decl.scenarios.iter().map(|s| s.name.clone()).collect();
+            for scenario in source.scenarios()? {
+                if declared.contains(&scenario.name) {
+                    return Err(Error::invalid(format!(
+                        "the scenario source names `{}`, which the request already declares",
+                        scenario.name
+                    )));
+                }
+                decl.scenarios.push(scenario);
+            }
+        }
         let mut models = Vec::new();
         for model in decl.models {
             models.push(StructuralModel::new(model)?);

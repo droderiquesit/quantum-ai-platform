@@ -496,13 +496,20 @@ fn an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused() {
 
 use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
-use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
-use qip_agency::engine::{
-    Adapter, Alternative, Decision, EdgeDecl, Execution, Gated, LearningOutcome, LeverEvidence,
-    ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn,
-    learn_shadowed, run, run_with, widen,
+use qip_agency::conduct_brain::{
+    CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation, EvidenceDecl,
+    EvidenceManifest, HoldingsList, POSITION_DISCLOSURE,
 };
-use qip_agency::estimate::{Estimate, EstimatorKind, Experiment, correlation};
+use qip_agency::engine::{
+    Adapter, Alternative, Decision, EdgeDecl, Execution, Gated, Governance, LearningOutcome,
+    LeverEvidence, ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide,
+    execute, learn, learn_shadowed, run, run_governed_with, run_with, widen,
+};
+use qip_agency::estimate::{
+    Estimate, EstimatorKind, Experiment, bayesian_causal, correlation, matched_control,
+    stage_assignment, staged_experiment,
+};
+use qip_agency::generate::ScenarioSource;
 use qip_agency::generate::StructuralDecl;
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
 use qip_agency::memory::{ActionOutcomeDraft, ActionOutcomeMemory, Observed};
@@ -512,6 +519,7 @@ use qip_contracts::action::Ground;
 use qip_contracts::expansion::EffectAttribution;
 use qip_core::Error;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A deterministic generator: the workspace permits no property-test crate.
 fn lcg(mut seed: u64) -> impl FnMut(u64) -> u64 {
@@ -952,6 +960,7 @@ fn quote_draft() -> CommunicationDraft {
         evidence_citations: vec![EvidenceCitation {
             source_id: "venue-feed".into(),
             evidence_id: "spread-series-1".into(),
+            claim: None,
             confidence_bps: 9000,
         }],
         disclosures: vec![Disclosure {
@@ -1820,6 +1829,427 @@ fn an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_n
         "an outcome for a cell never assigned"
     );
     assert!(experiment.analyse_horizons(&BTreeMap::new()).is_err());
+}
+
+// ---- R12-AGENCY-6102: matched, staged and Bayesian estimators ----------------
+
+#[test]
+fn matched_controls_recover_an_effect_a_naive_comparison_misses_and_refuse_a_treated_unit_with_no_match()
+ {
+    // Outcome = 2 x covariate + 3 if treated. The treated sit high on the
+    // covariate, so a plain difference in means credits them with the lift
+    // the covariate gave them.
+    let treated_x = [5.0, 6.0, 7.0];
+    let pool_x = [1.0, 2.0, 3.0, 4.0, 5.1, 6.1, 7.1];
+    let treated_y: Vec<f64> = treated_x.iter().map(|x| 2.0 * x + 3.0).collect();
+    let pool_y: Vec<f64> = pool_x.iter().map(|x| 2.0 * x).collect();
+    let rows = |xs: &[f64]| xs.iter().map(|x| vec![*x]).collect::<Vec<_>>();
+    let naive = treated_y.iter().sum::<f64>() / 3.0 - pool_y.iter().sum::<f64>() / 7.0;
+    assert!(
+        (naive - 3.0).abs() > 3.0,
+        "premise: the naive gap {naive} is mostly the covariate, not the effect of 3"
+    );
+
+    let matched =
+        matched_control(&rows(&treated_x), &treated_y, &rows(&pool_x), &pool_y, 0.2).unwrap();
+    assert_eq!(matched.kind(), EstimatorKind::MatchedControl);
+    // Each pair differs by 0.1 on the covariate, worth 0.2: 3 - 0.2.
+    assert!(
+        (matched.effect() - 2.8).abs() < 1e-9,
+        "{}",
+        matched.effect()
+    );
+    assert!(
+        matches!(matched.identification(), Identification::Observational { strategy } if strategy.contains("matching")),
+        "{:?}",
+        matched.identification()
+    );
+    // Without a unit near enough, the estimate is refused, not computed over
+    // the rest.
+    let far = matched_control(
+        &rows(&[5.0, 6.0, 40.0]),
+        &[13.0, 15.0, 83.0],
+        &rows(&pool_x),
+        &pool_y,
+        0.2,
+    );
+    assert!(
+        far.unwrap_err()
+            .to_string()
+            .contains("no unused control within")
+    );
+    assert!(
+        matched_control(
+            &rows(&treated_x),
+            &treated_y,
+            &rows(&pool_x[..2]),
+            &pool_y[..2],
+            0.2
+        )
+        .is_err()
+    );
+    assert!(matched_control(&rows(&treated_x), &treated_y, &rows(&pool_x), &pool_y, 0.0).is_err());
+    assert!(matched_control(&vec![vec![]; 3], &treated_y, &vec![vec![]; 7], &pool_y, 0.2).is_err());
+}
+
+#[test]
+fn a_staged_rollout_drawn_here_is_an_experiment_in_every_period_and_a_missing_period_or_unit_is_refused()
+ {
+    let units = cells();
+    let stage_of = stage_assignment("rollout-seed", &units, 3).unwrap();
+    let per_stage: Vec<usize> = (0..3)
+        .map(|s| stage_of.values().filter(|v| **v == s).count())
+        .collect();
+    assert_eq!(
+        per_stage,
+        [4, 4, 4],
+        "premise: twelve cells in three equal waves"
+    );
+    assert_ne!(
+        stage_of,
+        stage_assignment("another-seed", &units, 3).unwrap(),
+        "premise: the seed moves the waves"
+    );
+    let outcomes = |lift: f64| -> BTreeMap<usize, BTreeMap<String, f64>> {
+        (1..3)
+            .map(|period| {
+                let per_unit = units
+                    .iter()
+                    .map(|u| {
+                        let treated = stage_of[u] < period;
+                        (u.clone(), 1.0 + if treated { lift } else { 0.0 })
+                    })
+                    .collect();
+                (period, per_unit)
+            })
+            .collect()
+    };
+    let estimate = staged_experiment("rollout-seed", &units, 3, &outcomes(2.0)).unwrap();
+    assert_eq!(estimate.kind(), EstimatorKind::StagedExperiment);
+    assert_eq!(*estimate.identification(), Identification::Experiment);
+    assert!(
+        (estimate.effect() - 2.0).abs() < 1e-9,
+        "{}",
+        estimate.effect()
+    );
+
+    let mut no_second_period = outcomes(2.0);
+    no_second_period.remove(&2);
+    assert!(staged_experiment("rollout-seed", &units, 3, &no_second_period).is_err());
+    let mut dropped = outcomes(2.0);
+    dropped.get_mut(&1).unwrap().remove(&units[0]);
+    assert!(staged_experiment("rollout-seed", &units, 3, &dropped).is_err());
+    assert!(staged_experiment("", &units, 3, &outcomes(2.0)).is_err());
+    assert!(
+        stage_assignment("s", &units[..5], 3).is_err(),
+        "waves of one have no variance"
+    );
+    assert!(stage_assignment("s", &units, 1).is_err());
+}
+
+#[test]
+fn a_bayesian_causal_estimate_follows_the_data_under_a_wide_prior_and_the_prior_under_a_tight_one()
+{
+    // y = 1 + 3 d + 0.5 x with a small deterministic wobble; treated units
+    // have larger x, so x is a confounder the model adjusts for.
+    let n = 12;
+    let d: Vec<f64> = (0..n).map(|i| f64::from(i % 2 == 0)).collect();
+    let x: Vec<Vec<f64>> = (0..n)
+        .map(|i| vec![f64::from(i) + if i % 2 == 0 { 3.0 } else { 0.0 }])
+        .collect();
+    let y: Vec<f64> = (0..n as usize)
+        .map(|i| 1.0 + 3.0 * d[i] + 0.5 * x[i][0] + [0.05, -0.04, 0.02][i % 3])
+        .collect();
+    let wide = bayesian_causal(&d, &x, &y, 100.0).unwrap();
+    assert_eq!(wide.kind(), EstimatorKind::BayesianCausal);
+    assert!((wide.effect() - 3.0).abs() < 0.1, "{}", wide.effect());
+    assert!(wide.standard_error().unwrap() > 0.0);
+    assert!(
+        matches!(wide.identification(), Identification::Observational { strategy } if strategy.contains("Bayesian")),
+        "{:?}",
+        wide.identification()
+    );
+    let tight = bayesian_causal(&d, &x, &y, 1e-3).unwrap();
+    assert!(
+        tight.effect().abs() < 0.5,
+        "a prior of width 0.001 pulls the effect toward zero: {}",
+        tight.effect()
+    );
+    // Refused: a non-indicator, everyone treated, a blank prior, collinear
+    // covariates.
+    let mut odd = d.clone();
+    odd[0] = 2.0;
+    assert!(bayesian_causal(&odd, &x, &y, 1.0).is_err());
+    assert!(bayesian_causal(&vec![1.0; n as usize], &x, &y, 1.0).is_err());
+    assert!(bayesian_causal(&d, &x, &y, 0.0).is_err());
+    let copies: Vec<Vec<f64>> = d.iter().map(|v| vec![*v]).collect();
+    assert!(
+        bayesian_causal(&d, &copies, &y, 1.0).is_err(),
+        "the treatment as its own covariate"
+    );
+}
+
+// ---- R12-AGENCY-6088: scenarios a composition root derives from a twin -----------
+
+#[derive(Debug)]
+struct FakeTwin(Vec<Scenario>);
+
+impl ScenarioSource for FakeTwin {
+    fn scenarios(&self) -> Result<Vec<Scenario>, Error> {
+        Ok(self.0.clone())
+    }
+}
+
+fn twin_scenario(name: &str, spread: f64) -> Scenario {
+    Scenario {
+        name: name.into(),
+        exogenous: BTreeMap::from([("spread".to_string(), spread)]),
+    }
+}
+
+#[test]
+fn a_candidate_is_simulated_once_per_model_and_per_scenario_the_composition_roots_twin_adds() {
+    let governance = || Governance {
+        policy: None,
+        guard: None,
+        eligibility: None,
+    };
+    let mut plain = request();
+    plain.guards = None;
+    let base =
+        run_governed_with(plain.clone(), governance(), None, &mut Counting::default()).unwrap();
+    let models = 1;
+    let declared = 2;
+    assert_eq!(
+        base.simulations[0].results.len(),
+        models * declared,
+        "premise: the request's one model under its two declared scenarios"
+    );
+
+    let twin = FakeTwin(vec![
+        twin_scenario("twin-a", 9.0),
+        twin_scenario("twin-b", -3.0),
+    ]);
+    let with = run_governed_with(
+        plain.clone(),
+        governance(),
+        Some(&twin),
+        &mut Counting::default(),
+    )
+    .unwrap();
+    let results = &with.simulations[0].results;
+    assert_eq!(results.len(), models * (declared + 2), "{results:?}");
+    let scenarios: BTreeSet<&str> = results.iter().map(|r| r.scenario.as_str()).collect();
+    assert_eq!(
+        scenarios,
+        BTreeSet::from(["calm", "stressed", "twin-a", "twin-b"])
+    );
+    let a = results.iter().find(|r| r.scenario == "twin-a").unwrap();
+    let calm = results.iter().find(|r| r.scenario == "calm").unwrap();
+    assert!(
+        (a.no_action - calm.no_action).abs() > 1e-9,
+        "the twin's exogenous value moved the branch: {a:?} vs {calm:?}"
+    );
+
+    // A twin scenario named like a declared one is two branches under one name.
+    let clash = FakeTwin(vec![twin_scenario("calm", 1.0)]);
+    let err =
+        run_governed_with(plain, governance(), Some(&clash), &mut Counting::default()).unwrap_err();
+    assert!(err.to_string().contains("already declares"), "{err}");
+}
+
+// ---- R12-AGENCY-1056 / 1057: citations resolved against the platform's record -----
+
+const SPREAD_STATEMENT: &str = "quoted spreads on venue-a are wider than the desk target";
+
+fn spread_manifest(source: &str) -> Arc<EvidenceManifest> {
+    Arc::new(
+        EvidenceManifest::new(vec![EvidenceDecl {
+            id: "spread-series-1".into(),
+            source_id: source.into(),
+            statement: SPREAD_STATEMENT.into(),
+        }])
+        .unwrap(),
+    )
+}
+
+/// The `quoter` decl with its citation stating the claim it supports.
+fn cited_decl() -> GuardDecl {
+    let mut decl = guard_decl();
+    decl.communications
+        .get_mut("quoter")
+        .unwrap()
+        .evidence_citations[0]
+        .claim = Some(SPREAD_STATEMENT.into());
+    decl
+}
+
+#[test]
+fn a_citation_that_resolves_to_no_record_the_wrong_source_or_another_statement_withholds_the_plan_before_any_adapter_call()
+ {
+    type Mutate = fn(&mut GuardDecl);
+    let policy = narrow();
+    let attempt = |decl: GuardDecl, manifest: Arc<EvidenceManifest>| {
+        let mut guard = ActionGuard::from_decl(decl)
+            .unwrap()
+            .with_evidence(manifest);
+        let mut plain = request();
+        plain.guards = None;
+        let mut adapter = Counting::default();
+        let report = run_with(plain, Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+        (report.outcome, adapter.calls.len())
+    };
+
+    let (outcome, calls) = attempt(cited_decl(), spread_manifest("venue-feed"));
+    assert!(
+        matches!(outcome, Outcome::Executed(_)),
+        "premise: a citation that resolves and says what the record says is sent: {outcome:?}"
+    );
+    assert_eq!(calls, 1, "premise");
+
+    let cases: Vec<(&str, &str, Mutate)> = vec![
+        // Both checks refuse an unresolved id; this needle is factual support's.
+        (
+            "is not support until it names a record",
+            "venue-feed",
+            |d| {
+                d.communications
+                    .get_mut("quoter")
+                    .unwrap()
+                    .evidence_citations[0]
+                    .evidence_id = "spread-series-9".into();
+            },
+        ),
+        ("is not the statement the record holds", "venue-feed", |d| {
+            d.communications
+                .get_mut("quoter")
+                .unwrap()
+                .evidence_citations[0]
+                .claim = Some("quoted spreads on venue-a are tight".into());
+        }),
+        ("states no claim", "venue-feed", |d| {
+            d.communications
+                .get_mut("quoter")
+                .unwrap()
+                .evidence_citations[0]
+                .claim = None;
+        }),
+        // The citation declares the authorized source; the record says the
+        // evidence came from somewhere else.
+        ("the record names 'blog'", "blog", |_| {}),
+    ];
+    for (needle, recorded_source, mutate) in cases {
+        let mut decl = cited_decl();
+        mutate(&mut decl);
+        let (outcome, calls) = attempt(decl, spread_manifest(recorded_source));
+        match outcome {
+            Outcome::Stopped(why) => assert!(why.contains(needle), "{needle}: {why}"),
+            other => panic!("{needle}: the plan was not withheld: {other:?}"),
+        }
+        assert_eq!(calls, 0, "{needle}: an adapter was called");
+    }
+}
+
+#[test]
+fn an_evidence_manifest_refuses_a_blank_or_repeated_record() {
+    let record = |id: &str, source: &str, statement: &str| EvidenceDecl {
+        id: id.into(),
+        source_id: source.into(),
+        statement: statement.into(),
+    };
+    assert!(
+        EvidenceManifest::new(vec![record("a", "s", "x")]).is_ok(),
+        "premise"
+    );
+    assert!(EvidenceManifest::new(vec![record(" ", "s", "x")]).is_err());
+    assert!(EvidenceManifest::new(vec![record("a", "", "x")]).is_err());
+    assert!(EvidenceManifest::new(vec![record("a", "s", "  ")]).is_err());
+    assert!(
+        EvidenceManifest::new(vec![record("a", "s", "x"), record("a", "t", "y")]).is_err(),
+        "two records under one id"
+    );
+}
+
+// ---- R12-AGENCY-1066: undisclosed promotion of what the platform holds ------------
+
+#[test]
+fn a_draft_naming_an_instrument_the_platform_holds_needs_a_position_disclosure_or_is_withheld() {
+    let policy = narrow();
+    let holdings = || Arc::new(HoldingsList::new(vec!["venue-a bonds".to_string()]).unwrap());
+    let attempt = |decl: GuardDecl, held: Arc<HoldingsList>| {
+        let mut guard = ActionGuard::from_decl(decl).unwrap().with_holdings(held);
+        let mut plain = request();
+        plain.guards = None;
+        let mut adapter = Counting::default();
+        let report = run_with(plain, Some(&policy), Some(&mut guard), &mut adapter).unwrap();
+        (report.outcome, adapter.calls.len())
+    };
+    let promotional = |decl: &mut GuardDecl| {
+        decl.communications.get_mut("quoter").unwrap().content =
+            "Quote 20 lots: venue-a bonds are the better risk on this tape".into();
+    };
+
+    // Premise: the same words, with the platform holding nothing of the kind,
+    // pass; so the refusal below is the holding and not the wording.
+    let mut elsewhere = guard_decl();
+    promotional(&mut elsewhere);
+    let (outcome, calls) = attempt(
+        elsewhere,
+        Arc::new(HoldingsList::new(vec!["venue-b notes".to_string()]).unwrap()),
+    );
+    assert!(
+        matches!(outcome, Outcome::Executed(_)),
+        "premise: {outcome:?}"
+    );
+    assert_eq!(calls, 1, "premise");
+
+    let mut undisclosed = guard_decl();
+    promotional(&mut undisclosed);
+    let (outcome, calls) = attempt(undisclosed, holdings());
+    match outcome {
+        Outcome::Stopped(why) => {
+            assert!(why.contains("undisclosed promotion"), "{why}");
+            assert!(why.contains("venue-a bonds"), "{why}");
+        }
+        other => panic!("the promotion was not withheld: {other:?}"),
+    }
+    assert_eq!(calls, 0, "an adapter was called");
+
+    // A blank position disclosure discloses nothing.
+    let mut blank = guard_decl();
+    promotional(&mut blank);
+    blank
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .disclosures
+        .push(Disclosure {
+            kind: POSITION_DISCLOSURE.into(),
+            text: "  ".into(),
+        });
+    let (outcome, calls) = attempt(blank, holdings());
+    assert!(matches!(outcome, Outcome::Stopped(_)), "{outcome:?}");
+    assert_eq!(calls, 0);
+
+    let mut disclosed = guard_decl();
+    promotional(&mut disclosed);
+    disclosed
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .disclosures
+        .push(Disclosure {
+            kind: POSITION_DISCLOSURE.into(),
+            text: "The desk holds venue-a bonds".into(),
+        });
+    let (outcome, calls) = attempt(disclosed, holdings());
+    assert!(matches!(outcome, Outcome::Executed(_)), "{outcome:?}");
+    assert_eq!(calls, 1);
+
+    assert!(
+        HoldingsList::new(vec!["  ".into()]).is_err(),
+        "a blank holding names nothing"
+    );
 }
 
 // ---- R12-AGENCY-6108: for whom, and with what delay -------------------------

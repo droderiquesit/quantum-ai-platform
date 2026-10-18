@@ -3973,3 +3973,79 @@ fn a_scrape_after_a_metered_pass_evaluates_the_decision_latency_objective_as_mea
     );
     Ok(())
 }
+
+/// R12-OBS-7123: the market-data-freshness critical path is evaluated in the
+/// process that records its series. It was bound to
+/// `EDGE_CAPABILITY_FRESHNESS` under `NotCountable`: a policy-feed gauge
+/// that says nothing about prices and a rule that could never produce a
+/// count, so every process published the path as permanently unmeasured.
+///
+/// A scrape before any pass reads the objective unmeasured; a scrape after a
+/// pass that heard the feed reads it measured, and a cell whose feed went
+/// quiet for longer than the objective's 1000 ms threshold reads as having
+/// spent budget rather than as fresh.
+///
+/// Mutation: delete the `book_age` recording loop in `Cell::work` — the
+/// scrape after the pass still reads zero observations and the measured
+/// assertion fires. Mutation: record the age as zero — the stale reading
+/// consumes no budget and the final assertion fires.
+#[test]
+fn a_scrape_after_a_pass_evaluates_the_market_data_freshness_objective_from_the_books_age()
+-> Result<()> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    let registry = Arc::clone(node.scrape_registry());
+    let mut stats = PassStats::default();
+    let objective = labels([("objective", "market-data-freshness")]);
+    let scrape =
+        || qip_edge_node::telemetry::respond(b"GET /metrics HTTP/1.1\r\n\r\n", &registry, "{}");
+
+    let (_, before) = scrape();
+    let snapshot = registry.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+        Some(0.0),
+        "premise: before any pass the objective is unmeasured:\n{before}"
+    );
+
+    let ran = run_pass(
+        &mut node.cell,
+        &mut gateway,
+        &mut feed,
+        None,
+        &mut stats,
+        t(10),
+    )?;
+    assert!(
+        matches!(ran, PassOutcome::Ran { .. }),
+        "premise: the pass ran: {ran:?}"
+    );
+    let (_, after) = scrape();
+    let snapshot = registry.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+        Some(1.0),
+        "a pass that heard the feed did not make freshness measured:\n{after}"
+    );
+    let fresh = snapshot
+        .gauge(names::SLO_BUDGET_CONSUMED, &objective)
+        .expect("a measured objective carries a budget gauge");
+
+    // The feed goes quiet: no pass publishes, and the cell is asked to work
+    // ten seconds after it last heard the venue.
+    node.cell.work(t(20), &mut gateway)?;
+    let _ = scrape();
+    let snapshot = registry.snapshot();
+    assert_eq!(
+        snapshot.gauge(names::SLO_OBSERVATIONS, &objective),
+        Some(2.0),
+        "premise: the quiet pass added a second reading"
+    );
+    let stale = snapshot
+        .gauge(names::SLO_BUDGET_CONSUMED, &objective)
+        .expect("a measured objective carries a budget gauge");
+    assert!(
+        stale > fresh,
+        "a book ten seconds old consumed no more budget than a fresh one: {fresh} -> {stale}"
+    );
+    Ok(())
+}

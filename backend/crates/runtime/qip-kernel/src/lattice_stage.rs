@@ -37,7 +37,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use qip_contracts::forecast::Forecast;
+use qip_contracts::forecast::{Forecast, ForecastState};
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
 use qip_world_model::causal::CausalGraph;
@@ -206,6 +206,12 @@ pub struct LatticeReview {
     pub at: Timestamp,
     /// Every forecast issued this pass, whole.
     pub issued: Vec<Forecast>,
+    /// The §24.9 control-plane projection of each forecast in `issued`, in
+    /// the same order: the compact record a control loop reads without the
+    /// model internals. Defaulted so a record journaled before the
+    /// projection existed still decodes.
+    #[serde(default)]
+    pub states: Vec<ForecastState>,
     /// Forecasts issued out of turn because the NOW Brain was surprised.
     pub woken: Vec<String>,
     /// Questions answered by the default ensemble because the reputation
@@ -569,10 +575,22 @@ impl LatticeStage {
         self.regime_seen
             .retain(|s, _| present.contains(s.as_str()) || slotted.contains(s.as_str()));
 
+        // A forecast that cannot project is refused on the record rather than
+        // dropped from `states` silently, which would leave the two lists
+        // different lengths with no explanation.
+        let mut states = Vec::with_capacity(issued.len());
+        for forecast in &issued {
+            match forecast.state() {
+                Ok(state) => states.push(state),
+                Err(e) => refused.push((forecast.target.clone(), e.message().to_string())),
+            }
+        }
+
         LatticeReview {
             cycle: inputs.cycle,
             at: now,
             issued,
+            states,
             woken,
             fallbacks,
             scored,
