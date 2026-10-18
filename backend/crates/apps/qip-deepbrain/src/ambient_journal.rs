@@ -28,7 +28,7 @@
 //! Record. Nothing here reads the log back into a decision, and a journaled
 //! signal is still an advisory: no `PromotionCase` is built in this file.
 
-use crate::research::ResearchRound;
+use crate::research::{AssumptionState, ResearchRound};
 use qip_contracts::ambient::{AmbientSignal, AttentionEvent};
 use qip_core::error::{Error, Result};
 use qip_core::lineage::Lineage;
@@ -56,6 +56,20 @@ pub enum AmbientRecord {
         cycle: u64,
         event: AttentionEvent,
         woke: Option<String>,
+    },
+    /// A conditional scenario the sweep generated from one signal
+    /// (R12-AMBIENT-1005), caused by that signal's record.
+    Scenario {
+        cycle: u64,
+        signal_id: String,
+        scenario: qip_simulation_engine::scenario::Scenario,
+    },
+    /// Every assumption the loop holds and how it stands after the sweep
+    /// (R12-AMBIENT-1143). Written every sweep the table is non-empty, so
+    /// a sweep that challenged nothing still records what is holding.
+    AssumptionHealth {
+        cycle: u64,
+        assumptions: Vec<AssumptionState>,
     },
 }
 
@@ -193,6 +207,35 @@ impl AmbientJournal {
                     woke: round.woken.get(&event.signal_id).map(|s| (*s).to_string()),
                 },
                 event.at,
+                at,
+            )?;
+            count += 1;
+        }
+        for generated in &round.scenarios {
+            let caused = match by_signal.get(generated.signal_id.as_str()) {
+                Some(parent) => lineage.caused_by(parent, AMBIENT_ORIGIN),
+                None => lineage.clone(),
+            };
+            self.append(
+                &caused,
+                AmbientRecord::Scenario {
+                    cycle,
+                    signal_id: generated.signal_id.clone(),
+                    scenario: generated.scenario.clone(),
+                },
+                at,
+                at,
+            )?;
+            count += 1;
+        }
+        if !round.assumptions.is_empty() {
+            self.append(
+                &lineage,
+                AmbientRecord::AssumptionHealth {
+                    cycle,
+                    assumptions: round.assumptions.clone(),
+                },
+                at,
                 at,
             )?;
             count += 1;

@@ -97,25 +97,26 @@
   },
   {
     "id": "R12-AMBIENT-1005",
-    "status": "PARTIAL",
-    "current": "node::run_with runs ResearchLoop every cycle without a request: it forecasts (NowEstimator), finds weak signals and contradictions, wakes specialists, and journals AmbientSignal/AttentionEvent records; a disabled loop journals nothing.",
+    "status": "COMPLETE",
+    "current": "node::run_with runs ResearchLoop every cycle without a request: it forecasts (NowEstimator), finds weak signals and contradictions, wakes specialists, and since 2026-10-18 generates scenarios — every risk or assumption signal routed whose subject the platform holds a tape for yields a qip-simulation-engine Scenario (hypothetical, validated) stating that subject's latest measured move as a one-day shock — journaled as an AmbientRecord::Scenario caused by its signal's record beside the AmbientSignal/AttentionEvent records.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:66 AmbientSignal",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:1 log round-trip tests (topics borrowed, not registered)"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1360 conditional_scenarios called from every sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1736-1800 conditional_scenarios",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:62-69,221-232 the Scenario record, caused by its signal's record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:237 a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (mutation: drop the conditional_scenarios call; no scenario record and the test fails)"
     ],
-    "gap": "The ambient mesh generates no scenarios.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention plus a qip-deepbrain node test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "2026-10-18 lane L03: closed. A signal on nothing priced (a coverage gap on an asset class, a belief class) gets no scenario rather than an invented shock."
   },
   {
     "id": "R12-AGENCY-1006",
@@ -3255,23 +3256,29 @@
   },
   {
     "id": "R12-AMBIENT-1143",
-    "status": "PARTIAL",
-    "current": "Research sweep raises Assumption-class signals (LowConfidence, ModelDrift, UnsupportedRequest gaps) each sweep and journals them.",
-    "evidence": [],
-    "gap": "No maintained assumption-health state; signals on gaps only.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop keeps an assumption-health table keyed by the research question each Assumption-class challenge (low_confidence, model_drift, unsupported_request) raised, bounded at RETAINED with the longest-held entry evicted first. Every sweep advances each entry's sweeps-since-challenge, folds this sweep's challenges in, gauges qip_ambient_assumptions{state=challenged|holding}, and puts the whole table on the round, which the ambient journal writes as an AssumptionHealth record — so a sweep that raised no gap still records what is holding.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs:592-620 AssumptionState",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1252-1259 challenges collected each sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1676-1733 hold_assumptions",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:70-76,234-245 the AssumptionHealth record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:346 a_sweep_with_no_new_gap_still_journals_the_held_assumption_health (mutation: skip the AssumptionHealth append; the quiet sweep journals no health and the test fails)"
+    ],
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_sweep_with_no_new_gap_still_journals_the_held_assumption_health",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed."
   },
   {
     "id": "R12-AMBIENT-1144",

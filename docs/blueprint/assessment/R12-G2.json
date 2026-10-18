@@ -3261,24 +3261,27 @@
   },
   {
     "id": "R12-OBS-9145",
-    "status": "PARTIAL",
-    "current": "SLO venue-round-trip-time-p99 declared; execution latency name registered in critical paths; no venue-ack recording on the cell send path.",
+    "status": "COMPLETE",
+    "current": "SLO venue-round-trip-time-p99 declared; the cell records qip_edge_venue_ack_latency_ms{venue}, the milliseconds from an order's release to the venue's first report on it over the order-entry channel, once per order in Cell::confirm, distinct from qip_edge_fill_time_millis which times the last share.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/telemetry.rs:227 EDGE_VENUE_ACK_LATENCY_MILLIS, described with the other edge series; :968 CellMetrics::venue_ack_latency",
+      "backend/crates/edge/qip-edge/src/cell.rs:6568 Cell::confirm records it on the first report of an order (filled was zero), skipping a report stamped before its release",
+      "backend/crates/edge/qip-edge/tests/dispersion.rs:640 the_venues_first_answer_on_an_order_is_published_as_its_ack_latency_apart_from_the_fill_time",
       "backend/crates/libs/qip-observability/src/slo.rs:276",
       "backend/crates/libs/qip-observability/src/critical_paths.rs"
     ],
-    "gap": "Record venue ack.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-edge --test dispersion",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The placer seam is synchronous, so the venue's acknowledgement as the cell can observe it is the first ExecutionReport on the order, carrying the venue's own instant; an order that rests unanswered gives no sample. Recorded on Cell::work's path, which qip-edge-node runs under QIP_VENUE_FEED=simulated; no node is deployed and nothing scrapes, so this is emission, not ingestion. The health verdict still takes a zero typical latency (cell.rs venue_withheld comment says why). Mutations: recording on every report fails the test with 2 acknowledgements for one order; never recording fails it with no series at all."
   },
   {
     "id": "R12-OBS-9146",
