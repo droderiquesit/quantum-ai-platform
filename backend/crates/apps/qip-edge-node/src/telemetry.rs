@@ -14,6 +14,7 @@
 //! as anything asked whether the node was alive.
 
 use crate::mesh::MeshHealth;
+use qip_observability::critical_paths;
 use qip_observability::metrics::{Labels, Metrics, names};
 use qip_peer_link::boundary::PeerStatus;
 use qip_transport::breaker::BreakerState;
@@ -52,8 +53,19 @@ pub fn requested_path(request: &[u8]) -> Option<&str> {
 /// the health body: this node has one probe answer and always did, and adding
 /// a scrape route must not turn an unrecognised path into a 404 an
 /// orchestrator has never had to handle before.
+///
+/// A scrape also evaluates the node's critical paths
+/// ([`critical_paths::EDGE_NODE_SERVICE`]) against the registry it is about
+/// to render, so the objective gauges it serves are those of the series in
+/// the same exposition. Here, on the health thread, rather than in the
+/// decision loop's turn: an evaluation walks the whole registry, and the
+/// decision thread may not wait on it.
 pub fn respond(request: &[u8], metrics: &Metrics, health_body: &str) -> (&'static str, String) {
     if requested_path(request) == Some("/metrics") {
+        let statuses = critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service == critical_paths::EDGE_NODE_SERVICE
+        });
+        critical_paths::record(metrics, &statuses);
         return (
             "text/plain; version=0.0.4; charset=utf-8",
             metrics.snapshot().to_prometheus(),

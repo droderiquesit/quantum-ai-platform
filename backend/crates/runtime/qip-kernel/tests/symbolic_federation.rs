@@ -149,7 +149,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
     assert_eq!(reviews.len(), 3, "one review per cycle, read from the log");
     let first = &reviews[0];
     // Premise: the population exists and every family is covered.
-    assert_eq!(first.population.len(), 7, "{:?}", first.population);
+    assert_eq!(first.population.len(), 9, "{:?}", first.population);
     for family in REQUIRED_FAMILIES {
         assert!(
             !first.uncovered.contains(&family.to_string()),
@@ -166,7 +166,7 @@ fn every_cycle_journals_one_federation_review_and_each_replays_and_reproduces_it
         .collect();
     assert_eq!(instrument.len(), 2, "one proposition per instrument");
     for a in &instrument {
-        assert_eq!(a.disagreement.views.len(), 5, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 7, "{a:?}");
         // Unscored members cannot be weighed, and the record says so rather
         // than averaging them.
         assert!(matches!(a.decision, Decision::RequestMoreInformation(_)));
@@ -428,7 +428,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     assert_eq!(reviews.len() as u64, cycles, "one review per cycle");
 
     // More than one model, with distinct scopes, live in the cycle (1003,
-    // 1129): five tape members on every instrument proposition.
+    // 1129): seven tape members on every instrument proposition.
     let last = reviews.last().expect("reviews");
     let scopes: std::collections::BTreeSet<String> = last
         .population
@@ -466,7 +466,7 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     for a in &scored {
         // Every view kept, minority included, on all four dimensions, with
         // the composite present only because performance is (1130, 3040).
-        assert_eq!(a.disagreement.views.len(), 5, "{a:?}");
+        assert_eq!(a.disagreement.views.len(), 7, "{a:?}");
         for v in &a.disagreement.views {
             assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
             assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
@@ -581,6 +581,7 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
         formed_at: now,
         horizon: Duration::from_days(5),
         moves: BTreeMap::from([("kestrel".to_string(), -0.05)]),
+        settlement: None,
     };
     let derivation = derive(input, &causal, now);
     // Premise: abduction named Kestrel, seen to move, so there is a cause to
@@ -660,6 +661,21 @@ fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refu
     assert!(
         derivation.temporal.inputs.is_some(),
         "the record keeps the instants its timeline was built from"
+    );
+    // R12-REASON-3055: the platform hands the subject's settlement
+    // convention from its asset-class record, and the timeline poses it
+    // against the deadline.
+    let settlement = derivation
+        .temporal
+        .inputs
+        .as_ref()
+        .and_then(|inputs| inputs.settlement.clone())
+        .expect("the platform handed the subject's settlement convention");
+    let posed = format!("settlement:{}:{}", settlement.0, derivation.hypothesis_id);
+    assert!(
+        derivation.temporal.links.iter().any(|l| l.cause == posed),
+        "{:?}",
+        derivation.temporal.links
     );
     assert_eq!(
         derivation.temporal.anomaly_to_hypothesis,
@@ -793,5 +809,38 @@ fn a_derivation_records_its_violated_assumptions_and_uncertainty_and_replay_refu
     let mut steadied = derivation;
     steadied.uncertainty = Some(0.0);
     assert_refused_for(&platform, &steadied, "uncertainty");
+    Ok(())
+}
+
+#[test]
+fn the_self_system_member_is_fed_the_previous_cycles_stage_latency_and_the_degradation_table()
+-> Result<()> {
+    // R12-WORLD-3052. The failure this guards: the self/system member read
+    // the kill switch, the autonomy level and expired manifests, and never
+    // how slow the platform ran or how stale its own capabilities were, so
+    // a platform degrading quietly forecast itself as healthy.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    for step in 0..2 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * step)));
+    }
+    let reviews = federation_stage::replay(&platform)?;
+    assert_eq!(reviews.len(), 2, "premise: one review per cycle");
+    // The first pass has no finished cycle behind it, and says so.
+    assert_eq!(reviews[0].system.slowest_stage, None);
+    assert!(
+        reviews[1].system.slowest_stage.is_some(),
+        "the second pass did not read the first cycle's stage latency"
+    );
+    for review in &reviews {
+        let degraded = review
+            .system
+            .degraded_capabilities
+            .expect("the degradation table was read");
+        assert!(
+            degraded <= qip_contracts::degradation::Capability::all().len(),
+            "{degraded}"
+        );
+    }
     Ok(())
 }

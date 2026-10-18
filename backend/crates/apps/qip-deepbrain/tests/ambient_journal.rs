@@ -625,3 +625,85 @@ fn a_storm_of_signals_never_wakes_past_the_attention_budget_and_the_excess_is_on
         + by_disposition.get("Shed").copied().unwrap_or(0);
     assert_eq!(held, 44, "{by_disposition:?}");
 }
+
+/// A tick campaign the sweep opened is concluded once a later sweep's fills
+/// re-measure its venue, and the delta is journaled (R12-EXPAND-6042): ten
+/// fills forty basis points off the twin open a fill-prediction campaign at
+/// the venue; eight more after it opened conclude it into a microstructure
+/// delta whose id is the campaign's, measured over those eight; a third
+/// sweep with nothing new concludes nothing again. Mutation: drop the
+/// `self.conclude_campaigns(..)` call in `sweep_over` — no delta and the
+/// test fails.
+#[test]
+fn a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta() {
+    use qip_deepbrain::research::FillObservation;
+    let platform = platform();
+    let fill = |minutes: i64, bps: f64| FillObservation {
+        venue: "XSIM".to_string(),
+        object_id: "BTC-USD".to_string(),
+        filled_at: start().saturating_add(Duration::from_mins(minutes)),
+        trade_error_bps: Some(bps),
+    };
+    let mut fills: Vec<FillObservation> = (0..10)
+        .map(|i| fill(i - 60, if i % 2 == 0 { 35.0 } else { 45.0 }))
+        .collect();
+    let mut loop_ = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let first = loop_
+        .sweep_over(&platform, &fills, &[], start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        first.campaigns_opened >= 1,
+        "premise: a campaign opened: {first:?}"
+    );
+    assert!(first.deltas.is_empty(), "nothing re-measured yet");
+
+    fills.extend((0..8).map(|i| fill(i + 1, if i % 2 == 0 { 38.0 } else { 42.0 })));
+    let later = start().saturating_add(Duration::from_hours(1));
+    let second = loop_
+        .sweep_over(&platform, &fills, &[], later, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !second.deltas.is_empty(),
+        "the re-measured campaign concluded: {second:?}"
+    );
+    for delta in &second.deltas {
+        assert_eq!(delta.venue.as_str(), "XSIM");
+        let [residual] = delta.residuals.as_slice() else {
+            panic!("one instrument studied: {delta:?}");
+        };
+        assert_eq!(
+            residual.samples, 8,
+            "measured over the fills since it opened"
+        );
+        assert_eq!(residual.observed, Decimal::from_int(40));
+    }
+    let mut ambient = journal();
+    ambient
+        .record(2, &second, later)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let journaled: Vec<String> = read(ambient.log())
+        .into_iter()
+        .filter_map(|r| match r {
+            AmbientRecord::MicrostructureDelta { delta, .. } => Some(delta.delta_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let concluded: Vec<String> = second.deltas.iter().map(|d| d.delta_id.clone()).collect();
+    assert_eq!(journaled, concluded, "every delta is journaled");
+
+    let third = loop_
+        .sweep_over(
+            &platform,
+            &fills,
+            &[],
+            later.saturating_add(Duration::from_hours(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        third.deltas.is_empty(),
+        "a concluded campaign is not concluded twice"
+    );
+}
