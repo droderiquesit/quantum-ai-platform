@@ -25,8 +25,8 @@
 //!
 //! [`LedgerOperationFields::settlement`] is the ledger's one-variant
 //! [`Settlement`]; there is nothing an operation could say to describe a
-//! live movement. A funded capital grant must carry `GrantMode::Paper`, the
-//! only mode [`crate::capital::CapitalGrant`] has.
+//! live movement. A funded or recalled capital grant must carry
+//! `GrantMode::Paper`, the only mode [`crate::capital::CapitalGrant`] has.
 //!
 //! # Attribution
 //!
@@ -161,6 +161,36 @@ pub enum CommitmentStage {
     Release,
 }
 
+/// Why the deployable capital of a funded grant is recalled from its book
+/// ([`OperationKind::CapitalGrantRecalled`]). Three causes and no fourth,
+/// because each is a fact a reader can check against the grant the
+/// operation carries: an expiry is at or after `expires_at`, and the other
+/// two are inside the window and name the act — the centre's recall order,
+/// or the renewal that funded the book under a later grant. A cause the
+/// grant's own window contradicts is refused rather than recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapitalRecallCause {
+    /// The grant's window ended; recorded at or after `expires_at`.
+    Expired,
+    /// The centre recalled the grant inside its window (a
+    /// `qip_capital::recall::RecallOrder`).
+    Revoked,
+    /// A later grant funded the same book inside this one's window, so this
+    /// one is no longer the grant in force.
+    Superseded,
+}
+
+impl CapitalRecallCause {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::Revoked => "revoked",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
 /// What an operation is. Each kind decides its own accounts; see the module
 /// documentation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +215,22 @@ pub enum OperationKind {
         cell: String,
         unit: String,
         grant: CapitalGrant,
+    },
+    /// Treasury recalls the deployable capital of a [`CapitalGrant`] it
+    /// funded: the same accounts as [`OperationKind::CapitalGrantFunded`],
+    /// swapped (Dr treasury, Cr the grant's book in `cell`), for the same
+    /// `grant.deployable()`, so a funding and its recall net the book to
+    /// zero by construction rather than by a producer restating the amount.
+    /// `cause` says why — see [`CapitalRecallCause`] — and `recorded_at`
+    /// must agree with it. Not a `Phase` on the funding, because a funding
+    /// is only admissible inside the grant's window and a recall at expiry
+    /// is recorded at or after it. R12-LEDGER-5016.
+    CapitalGrantRecalled {
+        treasury: String,
+        cell: String,
+        unit: String,
+        grant: CapitalGrant,
+        cause: CapitalRecallCause,
     },
     /// A book deposits units with a custodian (Establish: Dr custody, Cr
     /// trading) or withdraws them (Unwind). R12-LEDGER-5017.
@@ -373,6 +419,25 @@ impl LedgerOperationFields {
                 unit,
                 grant.deployable(),
                 est,
+            )
+            .to_vec(),
+            OperationKind::CapitalGrantRecalled {
+                treasury,
+                cell,
+                unit,
+                grant,
+                ..
+            } => pair(
+                Account::Trading {
+                    cell: cell.clone(),
+                    strategy: grant.strategy.as_str().to_string(),
+                },
+                Account::Treasury {
+                    treasury: treasury.clone(),
+                },
+                unit,
+                grant.deployable(),
+                Phase::Unwind,
             )
             .to_vec(),
             OperationKind::CustodyMovement {
@@ -567,7 +632,9 @@ impl Contract for LedgerOperationFields {
     /// between two counterparties (a movement the platform is not party to);
     /// a tax lot whose quantity and cost share a unit (the lot's two balances
     /// would merge into one number); a capital grant funded outside its
-    /// window; and then anything the event itself refuses.
+    /// window; a capital grant recalled before it was granted, recalled as
+    /// expired before its expiry, or recalled as revoked or superseded at or
+    /// after it; and then anything the event itself refuses.
     fn check(&self) -> Result<()> {
         let c = Self::NAME;
         named(c, "operation_id", &self.operation_id)?;
@@ -599,6 +666,55 @@ impl Contract for LedgerOperationFields {
                             grant.grant_id
                         ),
                     );
+                }
+            }
+            OperationKind::CapitalGrantRecalled { grant, cause, .. } => {
+                match grant.mode {
+                    GrantMode::Paper => {}
+                }
+                if self.recorded_at < grant.granted_at {
+                    return refuse(
+                        c,
+                        format!(
+                            "recalls grant {} before it was granted; nothing was funded to \
+                             recall",
+                            grant.grant_id
+                        ),
+                    );
+                }
+                // The cause and the instant must tell one story: a reader
+                // checking the record against the grant's window must not
+                // find an "expiry" recorded while the grant was live, or a
+                // "revocation" of a grant that had already lapsed on its own.
+                let live = grant.is_live(self.recorded_at);
+                match cause {
+                    CapitalRecallCause::Expired if live => {
+                        return refuse(
+                            c,
+                            format!(
+                                "recalls grant {} as expired at {} while its window runs to {}; a \
+                                 grant recalled inside its window is revoked or superseded, not \
+                                 expired",
+                                grant.grant_id,
+                                self.recorded_at.to_rfc3339(),
+                                grant.expires_at.to_rfc3339()
+                            ),
+                        );
+                    }
+                    CapitalRecallCause::Revoked | CapitalRecallCause::Superseded if !live => {
+                        return refuse(
+                            c,
+                            format!(
+                                "recalls grant {} as {} at {} after its window ended at {}; a \
+                                 grant past its expiry is recalled as expired",
+                                grant.grant_id,
+                                cause.as_str(),
+                                self.recorded_at.to_rfc3339(),
+                                grant.expires_at.to_rfc3339()
+                            ),
+                        );
+                    }
+                    _ => {}
                 }
             }
             OperationKind::PhysicalInventory {

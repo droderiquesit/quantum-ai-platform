@@ -29,7 +29,13 @@ NEEDS-VALIDATION 1 (= 1518). Later on 2026-10-18 LEDGER-5016 was promoted
 (249 to 250) by the lane that gave capital grants a ledger funding producer
 (ADR 0123 decision 6), after a full workspace run and five mutations fired;
 LEDGER-1197, LEDGER-10179, CONTRACT-6115 and CONTRACT-7066 had their text
-corrected and stayed PARTIAL with the unmet clause named. Earlier that day it
+corrected and stayed PARTIAL with the unmet clause named. Later still on
+2026-10-18 the lane that gave grant fundings a recall (ADR 0123 Amendment
+1: expiry, revocation and renewal each recall the funding once, replayed
+from the log) re-read the same five rows after a full workspace run and
+eleven mutations fired: no status moved (COMPLETE 250, PARTIAL 1121
+unchanged); LEDGER-5016's note that a funding is never recalled was
+removed and the other four name the recall beside the funding. Earlier that day it
 was COMPLETE 249, PARTIAL 1122. On 2026-10-17 it was COMPLETE 172, PARTIAL 1154,
 MISSING 159: eleven independent graders read 980 rows (ran nothing), 88
 were proposed COMPLETE, eleven were held back (nine TICK rows reachable only

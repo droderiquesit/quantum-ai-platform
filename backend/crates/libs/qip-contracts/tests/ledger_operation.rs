@@ -8,8 +8,8 @@
 use qip_contracts::capital::{CapitalGrantFields, CollateralClass, GrantMode};
 use qip_contracts::ledger::{Account, Direction, LedgerEvent, Settlement};
 use qip_contracts::ledger_operation::{
-    Book, CommitmentStage, InventoryEnd, LedgerOperation, LedgerOperationFields, OperationKind,
-    Phase, TransferEnd,
+    Book, CapitalRecallCause, CommitmentStage, InventoryEnd, LedgerOperation,
+    LedgerOperationFields, OperationKind, Phase, TransferEnd,
 };
 use qip_contracts::signal::StrategyId;
 use qip_contracts::validated::Validated;
@@ -79,6 +79,16 @@ fn every_kind() -> Vec<(OperationKind, BTreeSet<&'static str>)> {
                 cell: "newyork-1".to_string(),
                 unit: "USD".to_string(),
                 grant: Validated::new(grant()).expect("a valid grant"),
+            },
+            set(&["trading", "treasury"]),
+        ),
+        (
+            OperationKind::CapitalGrantRecalled {
+                treasury: "paper-pool".to_string(),
+                cell: "newyork-1".to_string(),
+                unit: "USD".to_string(),
+                grant: Validated::new(grant()).expect("a valid grant"),
+                cause: CapitalRecallCause::Revoked,
             },
             set(&["trading", "treasury"]),
         ),
@@ -218,7 +228,7 @@ fn net_per_unit(event: &LedgerEvent) -> BTreeMap<String, Decimal> {
 #[test]
 fn every_operation_kind_posts_to_its_own_subledgers_and_closes_in_every_unit() {
     let kinds = every_kind();
-    assert_eq!(kinds.len(), 12, "premise: one of every kind");
+    assert_eq!(kinds.len(), 13, "premise: one of every kind");
     for (i, (kind, expected)) in kinds.into_iter().enumerate() {
         let fields = operation(&format!("op-{i}"), kind);
         let admitted = Validated::new(fields.clone())
@@ -423,6 +433,138 @@ fn a_capital_grant_is_funded_for_its_deployable_capital_and_only_while_it_is_liv
     let mut late = funded;
     late.recorded_at = Timestamp::from_secs(1_790_086_400);
     assert!(Validated::new(late).is_err(), "an expired grant is funded");
+}
+
+/// A grant's recall is its funding's accounts swapped for its funding's
+/// amount, so a funding and its recall net the book and the treasury to
+/// zero — the book's deployable capital after both is exactly the grants
+/// still in force. And the cause must agree with the instant: an expiry is
+/// recorded at or after the window's end, a revocation or a supersession
+/// inside it, and nothing is recalled before it was granted. The failure
+/// these prevent: a recall that leaves a residue because a producer restated
+/// the amount, and a record whose cause a reader cannot check against the
+/// grant it carries.
+///
+/// Mutation: in the `CapitalGrantRecalled` postings arm, pass
+/// `Phase::Establish` — the recall funds the book a second time and the
+/// net-to-zero assertion fails. Mutation: in `check`, drop the
+/// `Expired if live` arm — the in-window expiry is admitted and the
+/// refusal assertion fails.
+#[test]
+fn a_capital_grant_recall_nets_its_funding_to_zero_and_its_cause_must_agree_with_the_instant() {
+    let validated = Validated::new(grant()).expect("valid grant");
+    let funded = operation(
+        "fund-cg-1",
+        OperationKind::CapitalGrantFunded {
+            treasury: "paper-pool".to_string(),
+            cell: "newyork-1".to_string(),
+            unit: "USD".to_string(),
+            grant: validated.clone(),
+        },
+    );
+    let recall = |cause: CapitalRecallCause, at: Timestamp| {
+        let mut fields = operation(
+            "recall-cg-1",
+            OperationKind::CapitalGrantRecalled {
+                treasury: "paper-pool".to_string(),
+                cell: "newyork-1".to_string(),
+                unit: "USD".to_string(),
+                grant: validated.clone(),
+                cause,
+            },
+        );
+        fields.recorded_at = at;
+        fields
+    };
+    let granted_at = grant().granted_at;
+    let expires_at = grant().expires_at;
+    let inside = Timestamp::from_secs(1_790_000_100);
+    assert!(
+        granted_at <= inside && inside < expires_at,
+        "premise: the instant is inside the window"
+    );
+
+    let expired = Validated::new(recall(CapitalRecallCause::Expired, expires_at))
+        .expect("premise: an expiry at the window's end is admitted");
+    let credit = expired
+        .to_event()
+        .expect("builds")
+        .postings()
+        .iter()
+        .find(|p| p.direction == Direction::Credit)
+        .cloned()
+        .expect("a credit leg");
+    assert_eq!(
+        credit.amount,
+        dec!("90000"),
+        "the deployable capital, not the amount"
+    );
+    assert_eq!(
+        credit.account,
+        Account::Trading {
+            cell: "newyork-1".to_string(),
+            strategy: "alpha".to_string()
+        },
+        "the recall credits the book the funding debited"
+    );
+    let mut balances: BTreeMap<Account, Decimal> = BTreeMap::new();
+    for fields in [&funded, &*expired] {
+        for posting in fields.to_event().expect("builds").postings() {
+            let entry = balances.entry(posting.account.clone()).or_default();
+            *entry = match posting.direction {
+                Direction::Debit => *entry + posting.amount,
+                Direction::Credit => *entry - posting.amount,
+            };
+        }
+    }
+    assert_eq!(balances.len(), 2, "premise: one pair of accounts");
+    assert!(
+        balances.values().all(|v| *v == Decimal::ZERO),
+        "a funding and its recall net to zero: {balances:?}"
+    );
+
+    for (cause, at) in [
+        (CapitalRecallCause::Revoked, inside),
+        (CapitalRecallCause::Superseded, inside),
+        (
+            CapitalRecallCause::Expired,
+            expires_at.saturating_add(qip_core::Duration::from_hours(1)),
+        ),
+    ] {
+        assert!(
+            Validated::new(recall(cause, at)).is_ok(),
+            "{} at {} is a recall the window agrees with",
+            cause.as_str(),
+            at.to_rfc3339()
+        );
+    }
+    for (cause, at, why) in [
+        (
+            CapitalRecallCause::Expired,
+            inside,
+            "an expiry recorded while the grant is live",
+        ),
+        (
+            CapitalRecallCause::Revoked,
+            expires_at,
+            "a revocation recorded after the window ended",
+        ),
+        (
+            CapitalRecallCause::Superseded,
+            expires_at,
+            "a supersession recorded after the window ended",
+        ),
+        (
+            CapitalRecallCause::Revoked,
+            granted_at.saturating_sub(qip_core::Duration::from_secs(1)),
+            "a recall before the grant was made",
+        ),
+    ] {
+        assert!(
+            Validated::new(recall(cause, at)).is_err(),
+            "{why} was admitted"
+        );
+    }
 }
 
 /// Movements the platform is not party to, and movements to oneself, are
