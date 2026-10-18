@@ -2799,13 +2799,14 @@
   {
     "id": "R12-RES-10126",
     "status": "PARTIAL",
-    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry; the Fabric-keeps-journaling half is unwired; no cross-region cover.",
+    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry (degraded.rs). Since 2026-10-18 the Fabric half is proven through the node's decision loop: with a centre that accepts and never answers, the cell keeps placing orders, applies no new policy, and its OrderSent journal entries reach the fabric spool the drain ships from; the drain to the regional broker is a separate thread and endpoint (fabric_envelope.rs).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_envelope_expires",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_the_sink_sends_is_read_back_from_the_broker_as_the_same_envelopes"
     ],
-    "gap": "Fabric journaling during outage; deployment.",
+    "gap": "Other regions covering eligible functions is deployment work (cross-region cover needs deployed cells); no execution node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2815,10 +2816,10 @@
       "R12-RES-10124"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage; cargo test -p qip-edge-node --test decision_loop a_cell_whose_centre_has_gone_silent",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the 'Fabric journaling during outage' half is now tested. Mutation: skipping Cell::flush in DecisionLoop::turn until the mesh worker has a health reading (which a silent centre never gives) made the test abort on its watchdog; restored byte for byte. Kept PARTIAL for cross-region cover."
   },
   {
     "id": "R12-RES-10127",
