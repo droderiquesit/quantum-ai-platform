@@ -1417,7 +1417,7 @@
       "backend/crates/services/qip-reasoning-engine/src/engine.rs:17 production imports the reasoning-engine type",
       "backend/crates/runtime/qip-kernel/src/central/belief.rs::belief_state"
     ],
-    "gap": "It gates locally; what crosses to cells is BeliefPriors slots, not BeliefState. A divergent BeliefState in qip-reasoning-engine/src/belief.rs remains.",
+    "gap": "Two different things share the name. qip-reasoning-engine's BeliefState (belief.rs, 70 lines) is a freshness clock - when a belief was last formed, read for Capability::BeliefState - and carries no probability, TTL or uncertainty, so a TryFrom to the contract's six-field BeliefState has nothing to convert. The contract BeliefState is built where it belongs, from episodes, in central/belief.rs and gates what ships to cells; what crosses to cells is still BeliefPriors slots. Closing needs either renaming the engine type (e.g. BeliefClock) so the contract owns the name, and a receiver that reads BeliefState rather than priors.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1428,7 +1428,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field refusal test added; still two types and the contract is unused. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: not implemented; a conversion at engine.rs:17 would have invented the fields."
   },
   {
     "id": "R12-CONTRACT-7064",
@@ -2375,7 +2375,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:280",
       "backend/crates/services/qip-expansion/src/gap.rs:20"
     ],
-    "gap": "Contradiction trace and alternate search in a reasoning fabric.",
+    "gap": "ContradictionResolution (contradiction.rs) has one consumer, trust_score.rs, and no running path: nothing in the cycle builds one. The closure's last clause (an unresolved contradiction marks the dependent proposal infeasible and blocks money movement) contradicts a standing design: Hypothesis::confidence_for_sizing narrows size on conflicting evidence and its doc says it is deliberately not folded into the action bar, so a contested thesis is held small and scored rather than refused. Blocking would be a reversal needing an ADR. Buildable without it: a derivation trace and an alternates search over ResolutionMethod on ContradictionResolution, fed from evidence the fabric already contests.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2388,7 +2388,7 @@
     "verification": "reasoning test",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented; see gap for the design conflict."
   },
   {
     "id": "R12-RES-7107",
@@ -3692,11 +3692,11 @@
   {
     "id": "R12-COVERAGE-7164",
     "status": "PARTIAL",
-    "current": "Cash/positions double-entry now run in ledgerd; obligations, collateral and inventory accounts absent.",
+    "current": "Cash/positions double-entry run in ledgerd. Account::Obligation/Collateral/Inventory exist and ledger_operation.rs posts them through CollateralPledge, MarginRequirement, Commitment, InventoryReservation and PhysicalInventory, which LedgerStore::record_operation books and qip-capital's LedgerObligations reads back; the only production producers of operations are the kernel's TreasuryAllocation and CapitalGrantFunded/Recalled (platform.rs).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::new"
     ],
-    "gap": "Obligations, collateral, physical inventory.",
+    "gap": "No production producer posts a collateral pledge, a margin requirement, a commitment or a physical-inventory movement: the kernel emits only treasury allocation and capital-grant funding/recall. A producer needs a source of truth for the fact, and none is named: margin has the risk engine's cross-margin requirement but no booking seam, collateral has survival.rs reading it and nothing writing it, and a paper platform holds no physical inventory to move. Each is a design decision about which event books it, not a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3707,7 +3707,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Constituents unmet."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits: constituents unmet. Gap corrected 2026-10-18 by lane L15 from platform.rs's OperationKind sites and ledger_operation.rs; nothing in the code changed."
   },
   {
     "id": "R12-COVERAGE-7165",
@@ -4057,12 +4057,12 @@
   {
     "id": "R12-COVERAGE-7181",
     "status": "PARTIAL",
-    "current": "qip-reasoning-engine; symbolic reasoner registration.",
+    "current": "Proof traces exist and run: qip-reasoning-engine rules.rs returns a Verdict whose TraceStep list is re-checked by RulePack::verify, and qip-kernel symbolic_stage.rs composes rules, timeline, Bayesian network, constraint conflict and lifecycle into one SymbolicDerivation (qip_contracts::symbolic, a checked trace) per hypothesis, called from platform.rs (derive, ~13883) and journaled. Constraint solving (constraint.rs) returns a minimal conflict. No planning reasoner exists.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Proof traces and constraint/planning.",
+    "gap": "Planning: no search over constraint goals. The register text 'no proof trace is attached to a conclusion' is stale for the derivation (symbolic_stage attaches one); what remains is that ReasoningOutcome (engine.rs) itself carries no trace, and the derivation is advisory by design, so a conclusion without a complete trace is not refused by anything that decides.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4073,7 +4073,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: gap corrected, not implemented. Promoting a trace to a refusal on the REASON conclusion is a sizing decision the symbolic_stage header reserves for an ADR."
   },
   {
     "id": "R12-COVERAGE-7182",

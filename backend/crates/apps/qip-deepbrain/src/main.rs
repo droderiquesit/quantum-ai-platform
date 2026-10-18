@@ -864,13 +864,24 @@ fn run() -> Result<()> {
     // HMAC under a seed-derived key — is the defect W1.4 exists to remove.
     // Until it lands every package is compiled, counted as `held_unsigned`,
     // and written nowhere.
-    let mut research =
-        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?
-            .with_package_store(
-                config
-                    .storage
-                    .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
-            );
+    // The tools this process runs (R12-EXPAND-6059) are read from the
+    // settings already parsed rather than listed: the classical solver
+    // always, the quantum simulator where `compute` attached it, one
+    // connector per catalogued source polled above.
+    let mut research = qip_deepbrain::research::ResearchLoop::new_for_node(
+        research_config,
+        research_coverage,
+        &compute,
+        config
+            .connector_feed
+            .as_ref()
+            .map_or(&[][..], |feed| feed.source_ids.as_slice()),
+    )?
+    .with_package_store(
+        config
+            .storage
+            .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+    );
     if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
         (&language_model.replies, &language_model.hosted)
     {

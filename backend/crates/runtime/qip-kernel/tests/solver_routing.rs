@@ -380,3 +380,92 @@ fn a_cycle_that_sizes_a_proposal_publishes_one_benchmark_keyed_by_family_and_siz
     );
     Ok(())
 }
+
+// --- the router's decision in the quantum contract (R12-QUANT-4063) ---------
+
+fn platform_with_mandate(maximum_holdings: Option<usize>) -> Result<Platform> {
+    let config = PlatformConfig {
+        review: ReviewPolicy {
+            minimum_surviving_confidence: REVIEW_FLOOR,
+            ..ReviewPolicy::default()
+        },
+        mandate: qip_portfolio_engine::construction::Mandate {
+            maximum_holdings,
+            ..qip_portfolio_engine::construction::Mandate::default()
+        },
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(config, context, Telemetry::silent(), universe(), limits())
+}
+
+fn contract_records(
+    platform: &Platform,
+) -> Result<Vec<qip_kernel::quantum_routing::QuantumRoutingRecorded>> {
+    use qip_events::{EventFilter, Topic};
+    platform
+        .replay_journal(&EventFilter::new().topic(Topic::OptimizationCompleted))?
+        .iter()
+        .map(|envelope| {
+            Ok(envelope
+                .decode::<qip_kernel::quantum_routing::QuantumRoutingRecorded>()?
+                .body)
+        })
+        .collect()
+}
+
+#[test]
+fn a_discrete_solve_is_stated_in_the_quantum_contract_with_its_classical_baseline_recomputed()
+-> Result<()> {
+    // The failure this guards: `qip_contracts::quantum` is the vocabulary the
+    // log shares for a quantum decision, and nothing in production built a
+    // `DecisionRequest` or a `SolverResult`, so the one rule that vocabulary
+    // exists to make checkable — a classical result on the same request —
+    // was never on the log.
+    let mut platform = platform_with_mandate(Some(1))?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    // Premise: the first cycle solved a problem, and the router kept a QUBO.
+    assert_eq!(benchmarks(&platform)?.len(), 1, "premise: cycle 1 sized");
+    // UNDERSTAND states the previous DECIDE's solve, so the second cycle
+    // writes the record.
+    platform.run_cycle(start().saturating_add(Duration::from_mins(5)));
+
+    let records = contract_records(&platform)?;
+    assert_eq!(records.len(), 1, "one solve, one contract record");
+    let record = &records[0];
+    assert_eq!(record.cycle, 1);
+    assert_eq!(record.request.id(), "portfolio-allocation:1");
+    let classical = record.decision.classical_result();
+    assert_eq!(
+        classical.kind(),
+        qip_contracts::quantum::SolverKind::Classical
+    );
+    assert!(classical.is_valid_for(&record.request));
+    assert!(
+        record.decision.quantum_result().is_none(),
+        "no quantum arm is attached, yet a quantum result was recorded"
+    );
+    // The objective is the one the assignment recomputes to, not the router's
+    // claim copied across.
+    let recomputed = qip_contracts::quantum::SolverResult::recompute_objective(
+        classical.assignment(),
+        record.request.qubo_terms(),
+        record.request.constant(),
+    );
+    assert!((classical.objective_value() - recomputed).abs() < 1e-12);
+    assert!(
+        classical.assignment().iter().any(|bit| *bit),
+        "the cardinality-one baseline selected nothing"
+    );
+
+    // And the continuous default states nothing, for the honest reason that it
+    // solved no binary problem.
+    let mut continuous = platform_with_mandate(None)?;
+    continuous.observe(bars("AAA", 120));
+    continuous.run_cycle(start());
+    assert_eq!(benchmarks(&continuous)?.len(), 1, "premise: cycle 1 sized");
+    continuous.run_cycle(start().saturating_add(Duration::from_mins(5)));
+    assert!(contract_records(&continuous)?.is_empty());
+    Ok(())
+}

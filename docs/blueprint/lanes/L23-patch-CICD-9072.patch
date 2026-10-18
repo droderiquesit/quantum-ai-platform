@@ -1,0 +1,88 @@
+diff --git a/scripts/agent-guard.mjs b/scripts/agent-guard.mjs
+index 6f93071d..e37ca67c 100644
+--- a/scripts/agent-guard.mjs
++++ b/scripts/agent-guard.mjs
+@@ -232,6 +232,13 @@ export function roleOf(commit) {
+   return trailers(inner?.message).find((t) => t.key === "agent-role")?.value;
+ }
+ 
++/** The `Agent-Model` a commit declares, lower-cased, or undefined. */
++export function modelOf(commit) {
++  const inner = commit?.commit ?? commit;
++  const model = trailers(inner?.message).find((t) => t.key === "agent-model")?.value;
++  return model === undefined ? undefined : lower(model);
++}
++
+ /**
+  * Judge a set of changes. `files` are repository paths; `commits` GitHub
+  * commit objects; `reviews` GitHub review objects.
+@@ -288,6 +295,32 @@ export function judgeChange({ policy, headRef, headSha, files, commits, reviews,
+     }
+   }
+ 
++  // 1a. Independent review (CICD-9072). Where one change carries both a coder
++  //     role's commit and a reviewer role's, the two must name different
++  //     models in an `Agent-Model` trailer: a model reviewing its own work
++  //     shares the blind spots that produced it, and a review that cannot
++  //     disagree is a second signature rather than a second opinion. A change
++  //     carrying only one of the kinds is not judged here (nothing to compare),
++  //     and a commit of either kind with no trailer, in a change that does
++  //     carry both, is refused rather than assumed different.
++  const kindOf = (commit) => policy.roles?.[roleOf(commit)]?.kind;
++  const coderCommits = agentCommits.filter((c) => kindOf(c) === "coder");
++  const reviewerCommits = agentCommits.filter((c) => kindOf(c) === "reviewer");
++  if (coderCommits.length > 0 && reviewerCommits.length > 0) {
++    const unnamed = [...coderCommits, ...reviewerCommits].filter((c) => modelOf(c) === undefined);
++    if (unnamed.length > 0) {
++      refusals.push(
++        `${unnamed.length} coder or reviewer commit(s) carry no Agent-Model trailer, so the reviewer's independence from the coder cannot be judged`,
++      );
++    } else {
++      const coders = new Set(coderCommits.map(modelOf));
++      const shared = [...new Set(reviewerCommits.map(modelOf))].filter((m) => coders.has(m));
++      if (shared.length > 0) {
++        refusals.push(`a reviewer-role commit names the same model as a coder-role commit (${shared.join(", ")}); a reviewer must be a different model from the one that wrote the change`);
++      }
++    }
++  }
++
+   // 1b. Lane territory (CICD-9083). A commit naming its lane is held to what
+   //     the round's manifest says that lane owns, so two lanes the plan kept
+   //     apart cannot meet in one file at merge time. The whole change is held
+diff --git a/scripts/agent-guard.test.mjs b/scripts/agent-guard.test.mjs
+index d20bf524..27c12473 100644
+--- a/scripts/agent-guard.test.mjs
++++ b/scripts/agent-guard.test.mjs
+@@ -708,3 +708,32 @@ test("a commit naming a lane the manifest lacks, or with no readable manifest, i
+   assert.match(judge(unreadable, "r3-capital-code")[0], /cannot be read/);
+   assert.ok(loadLanes({ lane_manifest: { path: "../etc/passwd" } }, "scripts/agent-policy.json").problem);
+ });
++
++// CICD-9072. A change carrying both a coder's and a reviewer's commit must name
++// two models. Mutation: delete the `shared.length > 0` refusal in judgeChange
++// (the same-model change is admitted), or the `unnamed` refusal (a missing
++// trailer is admitted).
++test("a reviewer role commit must name a different model from the coder role commit it reviews", () => {
++  const commit = (role, model) => ({
++    commit: {
++      author: { name: "Claude", email: "noreply@anthropic.com" },
++      message: `Do a thing\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nAgent-Role: ${role}${model ? `\nAgent-Model: ${model}` : ""}\n`,
++    },
++  });
++  const judge = (commits) =>
++    judgeChange({
++      policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
++      files: [], commits, reviews: [approval("dana")],
++    }).refusals;
++  // Premise: the independent pair, and a lone coder, are both admitted.
++  assert.deepEqual(judge([commit("backend-engineer", "model-a"), commit("code-reviewer", "model-b")]), []);
++  assert.deepEqual(judge([commit("backend-engineer")]), []);
++
++  const same = judge([commit("backend-engineer", "Model-A"), commit("code-reviewer", "model-a")]);
++  assert.equal(same.length, 1);
++  assert.match(same[0], /reviewer-role commit names the same model as a coder-role commit \(model-a\)/);
++
++  const unnamed = judge([commit("backend-engineer", "model-a"), commit("code-reviewer")]);
++  assert.equal(unnamed.length, 1);
++  assert.match(unnamed[0], /carry no Agent-Model trailer/);
++});

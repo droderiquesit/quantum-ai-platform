@@ -574,6 +574,10 @@ impl PartitionWorker {
             Ok(None) => {
                 self.failures = 0;
                 self.report(None);
+                // The age of a park grows while nothing is delivered, so an
+                // idle poll reads it too.
+                self.store.record_mismatch_age();
+                self.telemetry.evaluate_objectives();
                 if self.commit_deferred
                     && let Some(batch) = self.last_batch
                 {
@@ -661,6 +665,7 @@ impl PartitionWorker {
         }
         // Once per applied batch, not per record: a snapshot of the
         // registry is the cost, and the objective moves only on a commit.
+        self.store.record_mismatch_age();
         self.telemetry.evaluate_objectives();
         self.failures = 0;
         Step::Applied { records: applied }

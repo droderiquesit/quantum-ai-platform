@@ -131,6 +131,7 @@ use qip_kernel::Platform;
 use qip_kernel::central::models::{ModelRegistration, register_fit, require_calibrated_baseline};
 use qip_market::bar::Bar;
 use qip_quant::signal::Horizon;
+use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
 use qip_training::estimators::{DRIFT_BUCKETS, FeatureEstimators, StreamingDrift, degraded_models};
@@ -390,6 +391,13 @@ pub struct LearningRound {
     /// engine assembled it through one — every production round does; a
     /// desk driven directly by a test may not have.
     pub campaign: Option<crate::campaign::CampaignSummary>,
+    /// One [`TrainingCampaign`] per standing model this round found past its
+    /// own drift threshold and answered with the fit it registered
+    /// (R12-EXPAND-6032): which model, how far it had drifted, the window the
+    /// successor was fitted on and the lineage it inherits. Distinct from
+    /// [`Self::campaign`], which is the data-fetch campaign the window came
+    /// through. Empty when nothing drifted past its bound.
+    pub training_campaigns: Vec<TrainingCampaign>,
     /// Why no campaign opened this round: the stream was refused at the
     /// door — neither a source the platform holds an admission for nor one
     /// it generated, or a standing admission that has stopped granting.
@@ -536,6 +544,7 @@ impl LearningRound {
             distillation: None,
             distillation_refusal: None,
             campaign: None,
+            training_campaigns: Vec::new(),
             refused_by_door: Some(reason.into()),
             promotion: None,
             rolled_back: Vec::new(),
@@ -589,6 +598,12 @@ impl LearningRound {
             Some(campaign) => format!("; {}", campaign.describe()),
             None => String::new(),
         };
+        let campaign = self
+            .training_campaigns
+            .iter()
+            .fold(campaign, |line, retrain| {
+                format!("{line}; {}", retrain.describe())
+            });
         let unattributed = if self.unattributed.is_empty() {
             String::new()
         } else {
@@ -1246,6 +1261,7 @@ impl LearningDesk {
                         distillation: None,
                         distillation_refusal: None,
                         campaign: None,
+                        training_campaigns: Vec::new(),
                         refused_by_door: None,
                         class_choice: None,
                         promotion: None,
@@ -1261,6 +1277,12 @@ impl LearningDesk {
             .map(|(card, reason)| format!("{}: {reason}", card.reference()))
             .collect();
 
+        let training_campaigns = match &registration {
+            Some(registered) => {
+                self.open_training_campaigns(subject, &drift, &registered.reference, bars, now)?
+            }
+            None => Vec::new(),
+        };
         Ok(LearningRound {
             subject: subject.as_str().to_string(),
             registration,
@@ -1271,11 +1293,60 @@ impl LearningDesk {
             distillation,
             distillation_refusal,
             campaign: None,
+            training_campaigns,
             refused_by_door: None,
             class_choice,
             promotion: None,
             rolled_back: Vec::new(),
         })
+    }
+
+    /// One campaign per model this round measured past its own threshold,
+    /// each naming the fit that answered it.
+    ///
+    /// The lineage is read off the drifted card itself: the model, and the
+    /// source window and feature code it was fitted from, which
+    /// [`FeatureLineage::record_on`] wrote there. A card that predates the
+    /// lineage carries the model alone rather than an invented digest.
+    fn open_training_campaigns(
+        &self,
+        subject: &ObjectId,
+        drift: &[DriftObservation],
+        successor: &str,
+        bars: &[Bar],
+        now: Timestamp,
+    ) -> Result<Vec<TrainingCampaign>> {
+        let dataset_digest = crate::features::source_digest(bars);
+        let mut opened = Vec::new();
+        for observed in drift.iter().filter(|o| o.above_threshold) {
+            let Some(card) = self.registry.get(&observed.reference) else {
+                continue;
+            };
+            if observed.reference == successor {
+                continue;
+            }
+            let mut teacher_lineage = vec![format!("model:{}", observed.reference)];
+            for (key, label) in [
+                ("feature_source_digest", "fitted-on"),
+                ("feature_code_digest", "feature-code"),
+            ] {
+                if let Some(value) = card.parameters.get(key) {
+                    teacher_lineage.push(format!("{label}:{value}"));
+                }
+            }
+            opened.push(TrainingCampaign::open(CampaignDraft {
+                subject: subject.as_str().to_string(),
+                replaces: observed.reference.clone(),
+                drift_score: observed.population_stability_index,
+                drift_threshold: card.drift_threshold,
+                worst_feature: observed.worst_feature.clone(),
+                dataset_digest: dataset_digest.clone(),
+                teacher_lineage,
+                successor: successor.to_string(),
+                opened_at: now,
+            })?);
+        }
+        Ok(opened)
     }
 
     /// The features whose distribution has moved further than the estimators
@@ -2139,6 +2210,99 @@ mod tests {
                 .latest_evaluation()
                 .is_some_and(|evaluation| !evaluation.passed),
             "the card disagrees with the registration about whether the fit had skill"
+        );
+        Ok(())
+    }
+
+    /// R12-EXPAND-6032: the retraining a drift triggers leaves a record
+    /// naming the model it answered, the drift that justified it, the window
+    /// the successor was fitted on and the lineage it inherits.
+    ///
+    /// The failure this prevents: `degraded_models` and the per-model drift
+    /// score selected what to refit and the refit registered a model, and
+    /// nothing joined the two, so "why does this model exist" was answered by
+    /// a version number. Mutation: dropping the `open_training_campaigns`
+    /// call in `learn` empties the list and the first assertion after the
+    /// premise fails.
+    #[test]
+    fn a_drifted_model_opens_one_training_campaign_naming_its_drift_and_dataset() -> Result<()> {
+        let mut desk = learning_desk();
+        let calm = super::tests_support::learnable(400);
+        let first = desk
+            .maybe_learn(&subject(), &calm, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the first round"))?;
+        let drifted = first
+            .registration
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        assert!(
+            first.training_campaigns.is_empty(),
+            "premise: a first round has nothing standing to have drifted"
+        );
+
+        let shocked = super::tests_support::shocked(400);
+        let second = desk
+            .maybe_learn(&subject(), &shocked, REGIME, 2, at())?
+            .ok_or_else(|| Error::not_found("the second round"))?;
+        let successor = second
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a second registration"))?
+            .reference
+            .clone();
+        // Premise: the model did drift past its own threshold this round,
+        // and its successor is a different reference.
+        let observation = second
+            .drift
+            .iter()
+            .find(|o| o.reference == drifted)
+            .ok_or_else(|| Error::not_found("the drift measurement"))?;
+        assert!(observation.above_threshold);
+        assert_ne!(drifted, successor);
+
+        let [campaign] = second.training_campaigns.as_slice() else {
+            return Err(Error::invalid(format!(
+                "expected exactly one training campaign; got {:?}",
+                second.training_campaigns
+            )));
+        };
+        assert_eq!(campaign.replaces(), drifted);
+        assert_eq!(campaign.successor(), successor);
+        assert_eq!(campaign.subject(), subject().as_str());
+        assert!(
+            (campaign.drift_score() - observation.population_stability_index).abs() < 1e-12,
+            "the campaign carries the score the round measured"
+        );
+        assert_eq!(campaign.worst_feature(), observation.worst_feature);
+        assert_eq!(
+            campaign.dataset_digest(),
+            crate::features::source_digest(&shocked),
+            "the campaign names the window the successor was fitted on"
+        );
+        let standing = desk
+            .registry()
+            .get(&drifted)
+            .ok_or_else(|| Error::not_found("the drifted card"))?;
+        let fitted_on = standing
+            .parameters
+            .get("feature_source_digest")
+            .ok_or_else(|| Error::not_found("the drifted card's source digest"))?;
+        assert!(
+            campaign
+                .teacher_lineage()
+                .contains(&format!("fitted-on:{fitted_on}")),
+            "{:?}",
+            campaign.teacher_lineage()
+        );
+        assert!(
+            campaign
+                .teacher_lineage()
+                .contains(&format!("model:{drifted}"))
+        );
+        assert!(
+            second.describe().contains("retrained"),
+            "{}",
+            second.describe()
         );
         Ok(())
     }

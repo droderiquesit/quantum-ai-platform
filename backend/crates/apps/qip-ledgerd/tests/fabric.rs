@@ -1249,3 +1249,78 @@ fn a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archiv
     let _ = std::fs::remove_dir_all(&original_dir);
     let _ = std::fs::remove_dir_all(&rebuilt_dir);
 }
+
+/// OBS-9162: the ledger declares and measures its other three objectives —
+/// outcome-to-ledger lag, reconciliation mismatch age and transaction abort
+/// rate — beside the commit objective. Each is backed by a series the
+/// running worker records, and each reads measured once the series has
+/// moved: the first two are readings judged against a ceiling the catalogue
+/// declares, the third is the share of commits that were not refused or in
+/// conflict.
+///
+/// The stream carries one booked fill and one live fill, which the ledger
+/// refuses and parks its cell for, so the abort rate has a failure to count
+/// and the mismatch age a park to age.
+///
+/// Mutation: delete the `self.check(names::LEDGER_LAG_CHECKS, ..)` call in
+/// `LedgerTelemetry::lag` — `ledger-lag` never has an observation and the
+/// wait times out. Mutation: empty the `bad` list of the abort objective in
+/// `critical_path_slos` — the refusal counts as good and the budget-consumed
+/// assertion fails. Mutation: in `LedgerStore::record_parked_keys`, skip
+/// inserting into `parked_since` — the age stays zero and the
+/// `> 0.0` assertion fails.
+#[test]
+fn a_ledger_with_a_booked_fill_and_a_parked_cell_measures_lag_mismatch_age_and_abort_rate() {
+    let mut fabric = Fabric::start();
+    let mut booked = Journal::new("cell-a");
+    let good = booked.fill("o-1", 3, "100", true);
+    fabric.produce(0, vec![good]);
+    let mut stray = Journal::new("cell-b");
+    let live = stray.fill("o-2", 2, "101", false);
+    fabric.produce(0, vec![live]);
+
+    let dir = temp_dir("objectives");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until(
+        "the live fill's cell is parked and the good fill booked",
+        || {
+            ledger.store().parked().unwrap().len() == 1
+                && ledger.store().events().unwrap().len() == 1
+        },
+    );
+    let gauge = |name: &str, objective: Option<&str>| -> Option<f64> {
+        ledger
+            .metrics()
+            .snapshot()
+            .series
+            .iter()
+            .find(|s| {
+                s.name == name
+                    && s.labels.get("objective").map(String::as_str) == objective
+                    && (objective.is_some() || s.labels.is_empty())
+            })
+            .map(|s| match &s.value {
+                MetricValue::Gauge(v) => *v,
+                _ => f64::NAN,
+            })
+    };
+    for objective in ["ledger-lag", "ledger-mismatch-age", "ledger-abort-rate"] {
+        wait_until(&format!("{objective} has an observation"), || {
+            gauge(names::SLO_OBSERVATIONS, Some(objective)).is_some_and(|n| n >= 1.0)
+        });
+    }
+    wait_until("the abort objective has seen both commits", || {
+        gauge(names::SLO_OBSERVATIONS, Some("ledger-abort-rate")) == Some(2.0)
+    });
+    let consumed = gauge(names::SLO_BUDGET_CONSUMED, Some("ledger-abort-rate"))
+        .expect("a measured objective records its budget");
+    assert!(
+        consumed > 1.0,
+        "one refusal in two commits spends far more than the budget a 99.9% target allows: \
+         {consumed}"
+    );
+    let age = gauge(names::LEDGER_MISMATCH_AGE_SECONDS, None).expect("the age gauge is recorded");
+    assert!(age > 0.0, "a parked cell has a positive age: {age}");
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -209,7 +209,7 @@
       "backend/crates/services/qip-reasoning-engine/src/constraint.rs constraint reasoner",
       "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
     ],
-    "gap": "Neural-symbolic hybrids and planning reasoners absent.",
+    "gap": "Neural-symbolic hybrids and planning reasoners absent. Registering a planning or hybrid ModelClass would be a card in a test registry: the graph and causal cards in symbolic_reasoner_registration.rs are test fixtures, no binary registers a reasoner card. The real work is a planning search over qip-reasoning-engine's constraint goals and a path by which a registered model's prediction enters the Bayesian network (symbolic_stage.rs composes rules, timeline, network, constraint and lifecycle but takes no model prediction). symbolic_stage is advisory by design (its header), so a hybrid would be recorded, not acted on.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -220,7 +220,7 @@
     "verification": "cargo test -p qip-reasoning-engine; kernel REASON tests",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented; no running path to attach a registration to."
   },
   {
     "id": "R12-MODEL-4011",
@@ -1358,13 +1358,15 @@
   {
     "id": "R12-QUANT-4063",
     "status": "PARTIAL",
-    "current": "Quantum path is now asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts with JobClass research classes.",
+    "current": "Quantum path is asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts. The kernel now states a discrete solve in them: ComputeRouter keeps the QUBO and each QUBO run's assignment on its RoutingDecision, and Platform::route_quantum_decisions (no longer a stub) converts the previous DECIDE's solve into a DecisionRequest, a recomputed classical SolverResult, the quantum or quantum-inspired result where one ran, and a contract RoutingDecision, journalled on optimization.completed under kernel/quantum-routing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/quantum.rs:21-310",
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-235 JobClass",
-      "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway"
+      "backend/crates/runtime/qip-kernel/src/quantum_routing.rs contract_of / QuantumRoutingRecorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs route_quantum_decisions (grep -n 'fn route_quantum_decisions')",
+      "backend/crates/services/qip-optimization-engine/src/router.rs RoutedQubo, SolverRun.assignment",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs a_discrete_solve_is_stated_in_the_quantum_contract_with_its_classical_baseline_recomputed"
     ],
-    "gap": "ComputeRouter takes PortfolioProblem and returns its own RoutingDecision; nothing in production builds a qip_contracts::quantum::DecisionRequest or SolverResult. The kernel seam meant to journal contract decisions, Platform::route_quantum_decisions in qip-kernel platform.rs, is a stub returning Vec::new(). Closing needs a router-side conversion (the QUBO the arm submits as a DecisionRequest, each run as a SolverResult) and that stub replaced by a call journaling it; the stub is lane L01's file.",
+    "gap": "The default composition never reaches it: PlatformConfig::default's Mandate has maximum_holdings None, so DECIDE solves a continuous quadratic program, which has no QUBO, and route_quantum_decisions journals nothing there (the test pins that). It runs for a mandate that sets maximum_holdings. A quantum-enabled continuous problem still states nothing, because the contract's classical result must be a classical solve of the same QUBO the quantum arm was sent, and the router solves the QP baseline instead; stating it needs the router to also solve that QUBO classically (a design decision on its cost against ADR 0006's baseline). No test drives the quantum result arm end to end.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1374,10 +1376,10 @@
       "R12-QUANT-4029"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change."
+    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change. Advanced 2026-10-18 (lane L01), kept PARTIAL. Mutation: making route_quantum_decisions discard the pending solve failed the test at 'one solve, one contract record'; restored byte-for-byte, it passes. Found on the way: weights cannot stand in for the assignment (an encoding whose per-holding weight is zero loses the selection), so SolverRun now carries it."
   },
   {
     "id": "R12-QUANT-4064",
@@ -2028,7 +2030,7 @@
       "backend/crates/services/qip-learning-engine/src/attribution.rs:22-42 Source",
       "backend/crates/runtime/qip-kernel/src/sizing_review.rs"
     ],
-    "gap": "Four-way decomposition record.",
+    "gap": "A four-way split needs three order quantities this platform does not stamp together: the thesis's reference size, the size after sizing, and the size the book finally allocated. AttributionLineage::note_release (runtime/qip-kernel/src/attribution.rs) stamps strategy, capital policy, risk rule, execution path and quoted spread only, and 'allocation' has no counterfactual yet (what weight the book would have held with no allocator). Without those, prediction/sizing/allocation can only be defined by choosing the numbers; the existing per-fill total (signed_qty x (mark - fill) - commission) already splits exactly into the execution term (arrival to fill, plus commission) and the held move (arrival to mark). Next step: stamp the three quantities at release, then split the held move as q_ref x move (prediction), (q_sized - q_ref) x move (sizing), (q_final - q_sized) x move (allocation), and assert the sum equals the fill total.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2039,7 +2041,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented. Read attribution.rs and the learning engine's Attribution; the four-way record would have defined its own reference quantities rather than reading stamped ones, and the grader's closure names none of the three sources."
   },
   {
     "id": "R12-RISK-4093",

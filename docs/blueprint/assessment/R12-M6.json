@@ -701,13 +701,15 @@
   },
   {
     "id": "R12-EXPAND-6032",
-    "status": "PARTIAL",
-    "current": "qip-training has cadence/drift-triggered training and the deep brain retrains each round; no information-value-driven selection of what to label/collect.",
+    "status": "COMPLETE",
+    "current": "qip-training has cadence/drift-triggered training and the deep brain retrains each round. Each round that finds a standing model past its own drift threshold now opens one validated qip_training::campaign::TrainingCampaign per such model (LearningRound::training_campaigns, produced in learning.rs open_training_campaigns, shown on the round line), naming the model replaced, drift score and threshold, worst feature, the SHA-256 of the window the successor was fitted on, the teacher lineage read off the drifted card (model, source digest, feature-code digest) and the successor registered.",
     "evidence": [
-      "backend/crates/services/qip-training/src/cadence.rs",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:136 drift estimators"
+      "backend/crates/services/qip-training/src/campaign.rs:TrainingCampaign::open",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:open_training_campaigns",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs:a_drifted_model_opens_one_training_campaign_naming_its_drift_and_dataset",
+      "backend/crates/services/qip-training/tests/campaign.rs"
     ],
-    "gap": "Active-learning selection; TrainingCampaign artifact.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -715,10 +717,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing TrainingCampaign)",
+    "verification": "cargo test -p qip-training --test campaign; cargo test -p qip-deepbrain --lib a_drifted_model_opens_one_training_campaign_naming_its_drift_and_dataset",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Mutations: replacing the open_training_campaigns call in learn() with an empty list failed the deepbrain test; disabling the drift-over-threshold refusal in TrainingCampaign::open failed a_model_within_its_drift_bound_opens_no_campaign. Drift is the only selector wired to a campaign; the information-value selection of what to collect lives in the expansion desk acquisitions (R12-EXPAND-6046 and neighbours), not here. Campaigns live on the round, not in a journal."
   },
   {
     "id": "R12-EXPAND-6033",
@@ -1261,7 +1263,7 @@
       "backend/crates/libs/qip-contracts/src/expansion.rs:549",
       "backend/crates/libs/qip-contracts/tests/memory_registry.rs:4"
     ],
-    "gap": "Registry store and integration.",
+    "gap": "Registry store and integration. A MemoryRegistry in qip-agents/src/memory.rs is simple; the consult is not. ResearchMemory lives in the kernel Platform (platform.rs research_memory, its episodes recorded at platform.rs record_episode (~14187, located by symbol)), not in qip-deepbrain's main.rs, and a consult that can refuse an episode drops it from ResearchMemory::hit_rate, so it biases the calibration the platform scores its analysts on. A default policy that never refuses (importance threshold zero) would be a gate that cannot fire. The decision needed first: which MemoryKind an episode is, what its importance is, and whether a below-threshold episode is dropped or kept compressed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1272,7 +1274,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented after reading MemoryEntry/ValuePolicy (qip-contracts expansion.rs) and the single production record_episode site; see gap for the design question."
   },
   {
     "id": "R12-EXPAND-6058",
@@ -1299,14 +1301,15 @@
   },
   {
     "id": "R12-EXPAND-6059",
-    "status": "PARTIAL",
-    "current": "qip-agents ToolRegistry with ten ToolKinds, read-only start; used in qip-deepbrain to register and authorise the hosted model endpoint only.",
+    "status": "COMPLETE",
+    "current": "qip-agents ToolRegistry with ten ToolKinds, read-only start. qip-deepbrain registers the three desks (source-discovery, model-fit, stress-simulator) and, from the settings main.rs parsed, what the process runs: research::node_tools adds the classical solver always, the quantum-backend only where ComputeSettings attached the in-tree simulator, and one connector per catalogued source the node polls; ResearchLoop::new_for_node (called from main.rs) checks the desk and every BrainSpec against it. tick-replay and venue-adapter stay unregistered because the node holds neither (R12-EXPAND-6037).",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/tools.rs:109",
-      "backend/crates/apps/qip-deepbrain/src/language.rs:220-261",
-      "backend/crates/libs/qip-agents/tests/expansion_registries.rs:7"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:node_tools",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:ResearchLoop::new_for_node",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:new_for_node",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:the_node_registers_every_tool_kind_it_actually_runs"
     ],
-    "gap": "Register the other tool kinds the platform actually uses.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1314,10 +1317,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cargo test -p qip-deepbrain --test research the_node_registers_every_tool_kind_it_actually_runs",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Mutation: replacing the quantum-backend push in node_tools with a no-op failed the test at the QuantumBackend assertion; restored, passes. The parsers, browsers, geospatial and code-runtime kinds are not registered because no process runs them; the planner proposes them as tools to build."
   },
   {
     "id": "R12-EXPAND-6060",
@@ -1350,7 +1353,7 @@
       "backend/crates/libs/qip-agents/src/research.rs:33",
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs:64"
     ],
-    "gap": "The registry stores only hypothesis+verdict, with no experiments, open-question, benchmark-suite or contradiction fields; it refuses only an empty hypothesis or evidence.",
+    "gap": "The registry stores hypothesis plus Verdict, and a Null or Supported verdict already must cite non-empty evidence (research.rs record_version), so the 'refuse a verdict without an experiment' half exists as free text. Missing: structured experiment ids (ResearchCampaign has none - it holds a question and per-stage provenance), a list of open questions, a benchmark-suite field, and unresolved contradictions. Widening needs a campaign identity first, and the desk's two record() call sites (qip-expansion desk.rs conclude) and the tests that call record() change with the signature.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1361,7 +1364,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "2026-10-18 lane L23: not implemented; ExpansionDesk is on the deep-brain sweep, so the widened record would run, but ResearchCampaign has no id to cite."
   },
   {
     "id": "R12-EXPAND-6062",
