@@ -338,6 +338,62 @@ fn arbitration_records_all_four_dimensions_and_ranks_by_evidence_fit_when_only_t
     Ok(())
 }
 
+/// WORLD-1130: the arbitration record carries each view's lineage, so a
+/// reader can tell a fork of one hypothesis from an independent model
+/// without rebuilding the tree from the journal. A root reads as depth
+/// zero with no parents; a branch names its parent and trigger one deeper;
+/// a branch of a branch is two deep; and a merge sits one below its
+/// deepest parent and names both.
+#[test]
+fn arbitration_carries_each_views_lineage_matching_the_node_it_came_from() -> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("root", 1_000))?;
+    f.branch("root", "hawk", "h-hawkish", "CPI surprise", at(10))?;
+    f.branch("hawk", "hawk-2", "h-hawkish-sticky", "wage print", at(11))?;
+    f.branch("root", "dove", "h-dovish", "claims print", at(11))?;
+    f.merge("hawk-2", "dove", "blend", "both survived", at(12))?;
+    for id in ["root", "hawk", "blend"] {
+        assert_eq!(*f.status(id)?, Status::Live, "premise: {id} is live");
+        f.assess(id, view("q", 0.5, 0.5, 0.3, 20))?;
+    }
+    let a = f.arbitrate("q", at(21))?;
+    assert_eq!(
+        a.disagreement.views.len(),
+        3,
+        "premise: the three live members compared"
+    );
+    let by = |id: &str| {
+        a.disagreement
+            .views
+            .iter()
+            .find(|v| v.model == id)
+            .map(|v| v.lineage.clone())
+            .ok_or_else(|| qip_core::error::Error::invalid(format!("{id} missing")))
+    };
+    let root = by("root")?;
+    assert!(root.parents.is_empty() && root.trigger.is_none() && root.depth == 0);
+    let hawk = by("hawk")?;
+    assert_eq!(hawk.parents, vec!["root".to_string()]);
+    assert_eq!(hawk.trigger.as_deref(), Some("CPI surprise"));
+    assert_eq!(hawk.depth, 1);
+    let blend = by("blend")?;
+    assert_eq!(
+        blend.parents,
+        vec!["hawk-2".to_string(), "dove".to_string()],
+        "a merge names both parents"
+    );
+    assert_eq!(
+        blend.depth, 3,
+        "one below the deepest parent: hawk-2 is two deep, dove one"
+    );
+    for v in &a.disagreement.views {
+        let node = f.lineage(&v.model)?;
+        assert_eq!(v.lineage.parents, node.parents, "{}", v.model);
+        assert_eq!(v.lineage.trigger, node.trigger, "{}", v.model);
+    }
+    Ok(())
+}
+
 #[test]
 fn a_model_scores_its_own_resolved_forecasts_and_reports_unscored_before_any() -> Result<()> {
     let mut f = Federation::new();

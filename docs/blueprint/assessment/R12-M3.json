@@ -1202,26 +1202,29 @@
   },
   {
     "id": "R12-REASON-3056",
-    "status": "PARTIAL",
-    "current": "CausalGraph::intervene runs on every hypothesis subject in REASON and its affected set and paths are journaled.",
+    "status": "COMPLETE",
+    "current": "CausalGraph::counterfactual (qip-world-model inference.rs, not causal.rs) is now called in REASON: symbolic_stage::derive explains the surprise counterfactually for each abduced cause seen to move (best first, at most COUNTERFACTUALS_KEPT), recording what the subject would have done had the cause stayed flat, the total effect and the path count on InterventionSummary::counterfactuals, journaled with every SymbolicDerivation and decodable from older records (serde default).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:12008 reason_symbolically called in REASON for every formed hypothesis",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:537 derive",
-      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:179 a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdict_reproduces",
-      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:567 causal.intervene"
+      "backend/crates/services/qip-world-model/src/inference.rs::CausalGraph::counterfactual",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::CounterfactualExplanation",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::InterventionSummary::counterfactuals",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::derive (counterfactuals from abduction candidates)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::reason_symbolically (calls derive for every formed hypothesis)",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_stayed_flat",
+      "backend/crates/services/qip-world-model/tests/inference.rs::a_counterfactual_outcome_equals_the_hand_computed_value_and_cites_the_edges_it_used"
     ],
-    "gap": "Causal graph counterfactual explanations are not implemented in REASON; intervene results are not asserted by a test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test symbolic_federation && cargo +1.94.1 test -p qip-world-model --test inference",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. do-queries now wired into REASON. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Interventions and propagation are run; counterfactual explanations from the causal graph are absent, and confounders are only audited in a separate UNDERSTAND review."
+    "notes": "Closed 2026-10-18 (lane L14). Mutation: dropping every counterfactual from the record failed the kernel test at counterfactuals.len() 0 vs 1. Confounders remain audited in the UNDERSTAND review, outside this clause."
   },
   {
     "id": "R12-REASON-3057",
