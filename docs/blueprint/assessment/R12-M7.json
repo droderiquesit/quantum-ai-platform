@@ -3461,14 +3461,15 @@
   },
   {
     "id": "R12-COVERAGE-7154",
-    "status": "PARTIAL",
-    "current": "Agents and tool registry exist; lane test puts them in slow lane.",
+    "status": "COMPLETE",
+    "current": "Generalist planners run in the slow lane and use tools under policy. qip-agency's goal, plan and generate modules are the planner, AmbientAgency::open runs unconditionally in qip-deepbrain, and lane_placement.rs::qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter holds the placement: qip-agency is registered at Lane 3, exactly qip-cli and qip-deepbrain link it (both Lane 3 binaries), the closures of the edge node, the fast brain and the API do not contain it, and the only production implementors of the Adapter trait are the outbox drafting adapter and the CLI's Unwired adapter that refuses every step. execute refuses to send unguarded, and the guard owns the one contracts ToolRegistry that tools.rs re-exports.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents",
-      "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:218"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter",
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open",
+      "backend/crates/services/qip-agency/src/guard.rs registry: ToolRegistry",
+      "backend/crates/services/qip-agency/src/tools.rs"
     ],
-    "gap": "Generalist planners.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3476,10 +3477,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test lane_placement -- qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08); the register text 'generalist planners ... missing' was older than the code. Mutations, each restored byte for byte: qip-agency added to qip-edge's manifest failed the linking-crates assertion; the text impl Adapter for written into qip-api's lib.rs failed the implementor assertion. The fast brain and the API are registered at Lane 3 beside the deep brain, so lane placement alone does not keep a planner off the fast brain; the closure assertions do. The adapter claim reads source text (an impl of the trait outside two files), not a type-level fence."
   },
   {
     "id": "R12-COVERAGE-7155",
