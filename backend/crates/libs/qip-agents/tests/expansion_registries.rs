@@ -87,3 +87,64 @@ fn a_repeated_hypothesis_is_matched_to_its_recorded_null_result_before_any_exper
             .is_err()
     );
 }
+
+/// R12-COVERAGE-7170: the research registry is versioned like the ontology
+/// registry. Recording once overwrote the entry, so a null result re-opened
+/// later was lost from the record it was screened against. Mutation:
+/// accepting a version equal to the latest lets the stale `version 2` in.
+#[test]
+fn a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_version_is_kept() {
+    let mut registry = ResearchRegistry::new();
+    let first = registry
+        .record(
+            "credit leads equity",
+            Verdict::Null {
+                evidence: "exp-1".into(),
+            },
+        )
+        .unwrap();
+    let second = registry
+        .record("Credit leads  equity", Verdict::Open)
+        .unwrap();
+    // Premise: two verdicts, numbered in order, both held.
+    assert_eq!((first, second), (1, 2));
+    assert_eq!(registry.history("credit leads equity").len(), 2);
+
+    for stale in [0, 1, 2] {
+        assert!(
+            registry
+                .record_version(
+                    "credit leads equity",
+                    stale,
+                    Verdict::Supported {
+                        evidence: "exp-2".into(),
+                    },
+                )
+                .is_err(),
+            "version {stale} was accepted over latest 2"
+        );
+    }
+    assert_eq!(registry.latest_version("credit leads equity"), Some(2));
+    assert_eq!(
+        registry.screen("credit leads equity"),
+        Screening::AlreadyKnown {
+            hypothesis: "Credit leads  equity".into(),
+        }
+    );
+    assert_eq!(
+        registry.history("credit leads equity")[0].verdict,
+        Verdict::Null {
+            evidence: "exp-1".into()
+        }
+    );
+    registry
+        .record_version(
+            "credit leads equity",
+            3,
+            Verdict::Supported {
+                evidence: "exp-2".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(registry.latest_version("credit leads equity"), Some(3));
+}

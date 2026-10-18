@@ -802,24 +802,28 @@
   },
   {
     "id": "R12-EXPAND-6037",
-    "status": "PARTIAL",
-    "current": "The deployed sweep proposes a read-only ToolSpec and a ToolBuild curriculum item, with lineage, for a tool the node lacks (tick-replay, from feasibility-refusal clusters).",
+    "status": "COMPLETE",
+    "current": "AcquisitionAction::tools lists every tool an acquisition needs: FormulateSolver needs a classical Solver beside the QuantumBackend (ADR 0006's baseline), ReplayTicks needs a VenueAdapter beside the replay Simulator. The desk declares each as a Need, the queue proposes every missing one as a read-only ToolSpec and records a CapabilityPack (qip-agents tools.rs) grouping them under the gap's research question; the deployed deep-brain sweep proposes tick-replay and venue-adapter as one pack for a feasibility-refusal gap.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/tools.rs:88 propose",
-      "backend/crates/services/qip-expansion/tests/expansion.rs:450 missing parser becomes tool proposal + build item"
+      "backend/crates/services/qip-expansion/src/plan.rs:81 AcquisitionAction::tools (Solver and VenueAdapter arms)",
+      "backend/crates/libs/qip-agents/src/tools.rs:84 CapabilityPack",
+      "backend/crates/services/qip-expansion/src/curriculum.rs:457 ResearchQueue::packs",
+      "backend/crates/services/qip-expansion/tests/expansion.rs:718 a_quantum_gap_on_a_platform_with_no_classical_solver_proposes_one_solver_with_its_lineage",
+      "backend/crates/services/qip-expansion/tests/expansion.rs:743 an_execution_gap_on_a_platform_with_no_venue_adapter_proposes_one_adapter_with_its_lineage",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:460 deployed sweep proposes tick-replay + venue-adapter as one pack"
     ],
-    "gap": "plan.rs::tool() can never propose Solver or VenueAdapter kinds; no CapabilityPack type; only the simulator case is tested.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing ToolSpec / CapabilityPack)",
+    "verification": "cargo test -p qip-expansion --test expansion && cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": " Text corrected 2026-10-17 by an independent grader. Closed 2026-10-18 by lane L18: mutations deleting the classical-solver row, the venue-adapter row, and each CapabilityPack::new guard each fail their test; deleting venue-adapter also fails the deployed expansion_rows test. A proposal is a spec only: nothing is registered, so no solver or adapter is built or granted scope."
   },
   {
     "id": "R12-EXPAND-6038",
@@ -1041,12 +1045,13 @@
   {
     "id": "R12-EXPAND-6048",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/desk.rs:115 criteria_for fills eleven inputs; desk ranks and schedules in finish_sweep",
+    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for fills eleven inputs and passes the detector's economic_value through. detectors.rs::repeated_vetoes_priced measures a veto gap's economic value as the summed positive counterfactual earnings of the gate's regretted declines; the deployed sweep still calls the unpriced repeated_vetoes, so on the default path the value is zero, and urgency is stated Some(0.0).",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/expansion.rs:383 candidates_of_all_five_kinds_are_ranked_and_the_scheduler_starts_the_highest_ranked_eligible_item_first",
+      "backend/crates/services/qip-expansion/src/detectors.rs:223 repeated_vetoes_priced",
+      "backend/crates/services/qip-expansion/tests/expansion.rs:780 a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
       "backend/crates/services/qip-expansion/src/desk.rs:142 urgency: Some(0.0) stated, never measured"
     ],
-    "gap": "Economic value is zero from every qip-expansion detector and urgency is always zero; inputs are mostly proxies of severity, not measurements.",
+    "gap": "Default path not wired: apps/qip-deepbrain/src/research.rs::sweep_over must call repeated_vetoes_priced with each DeclinedScore's would_have_earned (crossed via as_f64_for_statistics) instead of repeated_vetoes; residual gaps carry no notional so slippage cost is unmeasurable from FillObservation; urgency needs a signal age the desk does not hold (signal_ttl lives in ResearchConfig) and stays a stated zero.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1054,10 +1059,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion --test expansion a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Integrated now; measured inputs still missing."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged."
   },
   {
     "id": "R12-EXPAND-6049",

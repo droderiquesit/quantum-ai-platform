@@ -662,4 +662,88 @@ mod tests {
         assert_eq!(entities[0].kind, EntityKind::Company);
         assert_eq!(entities[1].kind, EntityKind::Currency);
     }
+
+    /// R12-DATA-8011: the durable record of an ingested document has no field
+    /// able to hold the source's text. `NewsItem` carried the article in a
+    /// `body` field until schema version 2, and every story read went into
+    /// the sealed event log for good; the type is now what holds the line, and
+    /// this test is what notices when somebody puts a text field back — the
+    /// obvious code for a new adapter that wants "the article" is to add one.
+    ///
+    /// Two checks, because each misses what the other catches. The key set is
+    /// pinned exactly, so *any* new top-level field — however it is named —
+    /// fails here and makes its author read this comment. And the article's
+    /// own bytes must not appear anywhere in the serialised record, so a text
+    /// field smuggled in under an innocent name, or into the manifest, fails
+    /// too.
+    #[test]
+    fn an_ingested_news_item_serialises_no_field_able_to_hold_the_source_text() {
+        let article: &[u8] = b"Fourth-quarter shipments rose nineteen percent on new contracts.";
+        let at = Timestamp::from_millis(1_700_000_000_000);
+        let item = NewsItem {
+            item_id: "item-1".to_string(),
+            headline: "Supplier raises outlook".to_string(),
+            manifest: SourceManifest::of(
+                "test-newswire",
+                "http://vendor.test/docs#item-1",
+                at,
+                article,
+            )
+            .expect("a manifest of a non-empty read"),
+            source: NewsSource::Newswire,
+            published_at: at,
+            entities: Vec::new(),
+            sentiment: Sentiment {
+                polarity: 0.4,
+                confidence: 0.8,
+                novelty: 0.5,
+            },
+            topics: vec!["guidance".to_string()],
+            provenance: Provenance::new("test-newswire", at, at),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        };
+        let json = serde_json::to_value(&item).expect("a news item serialises");
+        let keys: std::collections::BTreeSet<&str> = json
+            .as_object()
+            .expect("a news item serialises as an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        // Premise: the record serialised the fields it has, not an empty shell
+        // that would pass every absence check below.
+        assert!(keys.contains("manifest") && keys.contains("headline"));
+        let expected: std::collections::BTreeSet<&str> = [
+            "item_id",
+            "headline",
+            "manifest",
+            "source",
+            "published_at",
+            "entities",
+            "sentiment",
+            "topics",
+            "provenance",
+            "quality",
+            "evidence_unretrievable",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            keys, expected,
+            "NewsItem's durable field set changed; a field able to hold source text must not \
+             reach the event log (blueprint §7.2, §56.4 rules 34 and 36)"
+        );
+        for forbidden in ["body", "text", "html", "content", "article", "raw"] {
+            assert!(
+                !keys.contains(forbidden),
+                "NewsItem serialised a `{forbidden}` field"
+            );
+        }
+        let serialised = serde_json::to_string(&item).expect("a news item serialises");
+        let source_text = std::str::from_utf8(article).expect("the fixture is UTF-8");
+        assert!(
+            !serialised.contains(source_text),
+            "the article's own text reached the serialised record: {serialised}"
+        );
+    }
 }
