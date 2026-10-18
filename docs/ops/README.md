@@ -5,6 +5,28 @@
 * [Policies](policies/README.md) — model, agent and data governance; change management
 * [Observability](observability/README.md) — what is instrumented and what to watch
 
+## Index of runbooks and records
+
+Every page under `docs/ops/runbooks/` and every page directly under `docs/ops/`
+is listed here, once. `architecture_memory_index.rs` fails when a page is added
+and not listed, because a runbook nobody can find from the index does not
+exist at the moment it is needed.
+
+* [Binaries](runbooks/binaries.md) — the config keys each binary reads
+* [Environment variables](runbooks/environment-variables.md) — every `QIP_*` variable Terraform sets on a workload
+* [Incident playbooks](runbooks/incidents.md)
+* [Break-glass](runbooks/break-glass.md) — changing a running environment when GitOps cannot
+* [Development-agent controls](runbooks/development-agent-controls.md)
+* [A new project, from scratch](runbooks/new-project-from-scratch.md)
+* [The owner's switches](runbooks/owner-switches.md) — each setting committed off, and who turns it on
+* [Proving ingestion before flipping `workload_metrics_exist`](runbooks/workload-metrics-ingestion-proof.md)
+* [Operator runbook](RUNBOOK.md)
+* [M5 deployment guide](M5_DEPLOYMENT.md) and [M5 operational runbook](M5_RUNBOOK.md) — the first vertical slice
+* [Execution region selection](execution-region-selection.md) — measured findings
+* [Execution measurements](execution-measurements.md)
+* [The ECB reference rates through the loop, live (2026-09-06)](live-source-frankfurter-2026-09-06.md)
+* [Hermes baseline (2026-10-04)](hermes-baseline-2026-10-04.md)
+
 Runbooks are in [docs/operations](../operations/README.md), and the one
 deployment path is [docs/operations/deployment-path.md](../operations/deployment-path.md).
 

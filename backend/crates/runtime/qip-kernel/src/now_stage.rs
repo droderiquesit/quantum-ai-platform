@@ -24,14 +24,15 @@
 //! Instrument, sector, region, venue and global market state from the bar
 //! history; portfolio state from the book's exposure; infrastructure state
 //! from the kill switch and the platform's blind spots; economy state from
-//! the world model's macro surprises; company state from fundamentals the
-//! world model holds about entities. Supply chain and policy have a domain
-//! and no feed: nothing the platform ingests today states them, and a
+//! the world model's macro surprises, except a central bank's published
+//! policy rate, whose surprise is policy state; company state from
+//! fundamentals the world model holds about entities. Supply chain has a
+//! domain and no feed: nothing the platform ingests today states it, and a
 //! variable fed from nothing would be a number nobody measured.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use qip_contracts::world_model::ModelDisagreement;
+use qip_contracts::world_model::{ModelDisagreement, WorldModelStateFields};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
@@ -56,6 +57,14 @@ pub const NOW_VOLATILITY_WINDOW: usize = 20;
 
 /// The seed the particle filter draws from, so a replay reproduces it.
 pub const NOW_SEED: u64 = 0x004e_4f57_5354_4147;
+
+/// The prefix of a published central-bank policy-rate series id
+/// (`POLICY_RATE.US.EFFR`, `POLICY_RATE.EA.DFR`): what routes a macro surprise
+/// to the policy partition.
+pub const POLICY_RATE_SERIES_PREFIX: &str = "POLICY_RATE.";
+
+/// The variable a policy-rate series' surprise moves, in the policy partition.
+pub const POLICY_SURPRISE: &str = "policy_rate_surprise";
 
 /// The source the bar-derived readings name, and their manifest's source.
 pub const BAR_SOURCE: &str = "kernel/bar-history";
@@ -127,6 +136,12 @@ pub struct NowReview {
     pub ensemble: Vec<String>,
     /// Live variables per scope kind after the pass.
     pub variables_by_scope: BTreeMap<String, usize>,
+    /// The §27 `WorldModelState` of every partition this pass moved a belief
+    /// in, as the brain projects it (R12-CONTRACT-7075): intervals and
+    /// manifest lineage, not readings. Absent from records written before
+    /// the field existed, and from a pass that moved nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub world_states: Vec<WorldModelStateFields>,
 }
 
 impl EventBody for NowReview {
@@ -225,6 +240,9 @@ impl NowStage {
                 refused.push((company_name(&reading.feature), e.message().to_string()));
             }
         }
+        if let Err(e) = self.brain.catalogue_mut().declare(policy_spec()) {
+            refused.push((POLICY_SURPRISE.to_string(), e.message().to_string()));
+        }
         let (mut observations, mut built_refused) = observations(&inputs);
         refused.append(&mut built_refused);
         let (mut own, mut own_refused) = own_observations(&inputs, now);
@@ -272,6 +290,26 @@ impl NowStage {
                 }
             }
         }
+        // Only partitions this pass moved: the state of one nothing touched is
+        // the state the log already holds, and journalling it again each pass
+        // would grow the log with no new fact. A partition with no live
+        // state refuses to project and is recorded as refused rather than
+        // dropped, so an empty projection is not read as a quiet one.
+        let moved: BTreeSet<_> = step
+            .deltas
+            .iter()
+            .map(|d| d.fields().partition.clone())
+            .collect();
+        let mut world_states = Vec::new();
+        for partition in &moved {
+            match self.brain.world_model_state(partition, now) {
+                Ok(state) => world_states.push(state.into_fields()),
+                Err(e) => refused.push((
+                    format!("world-model-state/{partition}"),
+                    e.message().to_string(),
+                )),
+            }
+        }
         NowReview {
             cycle: inputs.cycle,
             at: now,
@@ -291,7 +329,24 @@ impl NowStage {
                 .map(|(id, _)| id.to_string())
                 .collect(),
             variables_by_scope,
+            world_states,
         }
+    }
+}
+
+/// The policy-rate surprise: a standardised surprise like the economy's, but
+/// slower, because a central bank decides on a calendar of weeks rather than
+/// on a release cadence of days.
+fn policy_spec() -> VariableSpec {
+    VariableSpec {
+        name: POLICY_SURPRISE.to_string(),
+        domain: Domain::Policy,
+        scale: Scale::Absolute(1.0),
+        fresh_for: Duration::from_days(45),
+        expires_after: Duration::from_days(120),
+        constraint: Constraint::Unbounded,
+        drift_per_day: 0.05,
+        reading_noise: 0.5,
     }
 }
 
@@ -722,18 +777,30 @@ fn world_observations(stamped: &[Stamped<'_>]) -> (Vec<Observation>, Vec<(String
     let mut refused = Vec::new();
     for &(feed, r, at) in stamped {
         let (name, built) = match feed {
-            Feed::Macro => (
-                "macro_surprise".to_string(),
-                world_observation(
-                    Ok(Scope::global()),
-                    "macro_surprise".to_string(),
-                    Domain::Economy,
-                    r,
-                    &r.subject,
-                    format!("world/macro_surprise/{}@{}", r.subject, r.valid_at),
-                    at,
-                ),
-            ),
+            Feed::Macro => {
+                // A central bank's published policy rate is policy state, not
+                // economy state (R12-WORLD-3075): its surprise moves its own
+                // belief in the policy partition, and never the economy's
+                // `macro_surprise`, which a policy decision would otherwise
+                // blend with inflation and growth prints.
+                let (name, domain) = if r.subject.starts_with(POLICY_RATE_SERIES_PREFIX) {
+                    (POLICY_SURPRISE, Domain::Policy)
+                } else {
+                    ("macro_surprise", Domain::Economy)
+                };
+                (
+                    name.to_string(),
+                    world_observation(
+                        Ok(Scope::global()),
+                        name.to_string(),
+                        domain,
+                        r,
+                        &r.subject,
+                        format!("world/{name}/{}@{}", r.subject, r.valid_at),
+                        at,
+                    ),
+                )
+            }
             Feed::Company => (
                 company_name(&r.feature),
                 world_observation(

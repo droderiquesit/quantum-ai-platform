@@ -47,5 +47,6 @@ output "controls_not_applied" {
       "compute.vmExternalIpAccess",
     ],
     local.policies_applied && length(var.allowed_policy_member_customer_ids) > 0 ? [] : ["iam.allowedPolicyMemberDomains (optional; no customer ids given)"],
+    local.firewall_applied ? [] : ["hierarchical firewall policy (the platform root's network firewall policy still denies ingress per network)"],
   )
 }

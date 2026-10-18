@@ -1,16 +1,15 @@
 [
   {
     "id": "R12-MODEL-4001",
-    "status": "PARTIAL",
-    "current": "lane_placement acceptance suite computes qip-edge-node's normal-dependency closure and requires it to equal the register's lane-0 set and to exclude qip-simulation-engine/qip-training/qip-twin/qip-world-model; qip-edge depends only on in-tree edge/lib crates. Inline models are DistilledModel with a validated cost bound.",
+    "status": "COMPLETE",
+    "current": "Lane 0 has a bounded worst-case cost in a pass, not only in DistilledModel::cost: the compiler refuses a plan over CompilerLimits::default().max_nodes (512), and performance.rs::an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget deploys the largest chain-tree DistilledModel plan it admits, with a live feature input and the model promoted through the cell's policy, into a Cell and times whole Cell::work passes against the same 5000 us ceiling the baseline pass uses (about 490 us per pass in the debug profile on the measuring machine). It also pins the node budget to the 512 the time was measured at. lane_placement.rs still holds the lane-0 closure structurally.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150 lane-0 set == reflex-node closure",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:154-175 slow crates absent from qip-edge-node",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178-202 no fast-lane crate depends on a slower one",
-      "backend/crates/edge/qip-edge/Cargo.toml [dependencies] in-tree edge/lib crates only",
-      "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost bound"
+      "backend/crates/tests/qip-acceptance/tests/performance.rs an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget",
+      "backend/crates/edge/qip-strategy/src/compile.rs CompilerLimits::default",
+      "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150"
     ],
-    "gap": "Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0. None for the constraint as written; nothing is deployed (execution_nodes = {}), so it is proven structurally only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -18,10 +17,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test lane_placement",
+    "verification": "cd backend && cargo test -p qip-acceptance --test performance -- an_edge_work_pass_running_the_largest_model_the_compiler_admits_stays_inside_the_pass_budget",
     "work_item": "",
     "size": "S",
-    "notes": "Register is read from docs/architecture/lane-placement.md but the closure is computed from Cargo manifests, so the check is code-backed. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0."
+    "notes": "Re-graded 2026-10-18 (lane L08). The first draft of this test was vacuous and the register's closure would have been too: with constant model inputs the compiler folds the model into its answer, so the cell timed a plan of three nodes; the plan cost is now asserted to be within eight nodes of the budget. Mutations, each restored byte for byte: max_nodes raised to 20000 failed the pin at 'the compiler admits 20000 nodes; the pass budget below was measured at 512'; an 8 ms sleep in DistilledModel::evaluate failed the 5000 us ceiling at 8985 us per pass. A chain tree's evaluation is a cheap index walk (raising the budget forty-fold added under 100 us per pass), so the wall-clock ceiling alone would not catch a larger budget; the pin does. The ceiling is wall clock on shared hardware, loose by design; nothing is deployed."
   },
   {
     "id": "R12-MODEL-4002",
@@ -231,7 +230,7 @@
       "backend/crates/libs/qip-contracts/src/ambient.rs:76-160 ambient signal types",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Distilled ambient models in fast lanes with test.",
+    "gap": "Distilled ambient models in fast lanes with test. The NOW stage's expected-state estimator is a local-level filter over bounded variables, and qip_training::distil takes a fitted teacher with training rows; no teacher exists for it, so distilling it would fit a student to the filter's own outputs and call that a distillate. A cell plan carrying an inline ambient model also needs a promoted model pack release (R12-CONTRACT-7064) to be named to a cell.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -242,7 +241,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4012",
@@ -378,13 +377,12 @@
   {
     "id": "R12-QUANT-4018",
     "status": "PARTIAL",
-    "current": "ModelProducer::QuantumInformed is admitted only with its calibrated baseline; QuantumGateway output as a candidate is refused. No quantum-assisted training exists and eligibility by workload family is not checked at this seam.",
+    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family (qip_quantum::foundry::FamilyKind variant) that Foundry::platform() holds as Registered; a NotBuilt, unnamed or unknown family is refused with the foundry reason before anything is journalled.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:78-88 ModelProducer",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:630-650 refusal arms",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:713 a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built"
     ],
-    "gap": "No quantum-assisted variant is ever produced; no eligible-workload check.",
+    "gap": "The seam refuses ineligible workloads, but no production caller produces a QuantumInformed candidate (qip-deepbrain promotes only ModelProducer::TrainingPipeline through promote_model), so the check runs only when a test or a future desk names the producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -392,10 +390,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate."
   },
   {
     "id": "R12-MODEL-4019",
@@ -469,7 +467,7 @@
       "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
       "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
     ],
-    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record.",
+    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record. The only validation before promotion is the deep brain held-out rmse comparison; score_filled scores fills of cycles that already ran, with no per-candidate shadow run, so no PaperGate-style trial record exists to require. Needs a shadow-scoring stage that runs a candidate beside the incumbent over simulated or paper fills and journals the result before the kernel can refuse a promotion lacking it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -480,7 +478,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; requiring a trial record nothing produces would stop every promotion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4023",

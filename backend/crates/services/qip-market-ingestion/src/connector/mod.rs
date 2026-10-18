@@ -213,6 +213,20 @@ pub trait SourceConnector: std::fmt::Debug {
         runtime::measured_quality()
     }
 
+    /// The source's own position for one event in its numbered stream, where
+    /// the record the connector maps carries none: a trade id the venue
+    /// assigns in order, say. The evidence check names the event at the
+    /// position below it as this event's cause, so an event numbered later
+    /// but dated earlier is caught (R12-EVID-2036).
+    ///
+    /// Default: `None`. A connector returns a number here only when the
+    /// source states that its numbering is the order events happened in —
+    /// an arrival order or a page index is not one.
+    fn feed_sequence(&self, event: &envelope::RawEvent) -> Option<u64> {
+        let _ = event;
+        None
+    }
+
     /// Lifecycle: **checkpoint**. Where to resume from after this batch.
     ///
     /// Default: the newest event time the batch carried, which never moves

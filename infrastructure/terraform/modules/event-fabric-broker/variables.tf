@@ -56,9 +56,17 @@ variable "subnet_id" {
 
 variable "machine_type" {
   type        = string
-  description = "Machine type for event fabric brokers"
-  default     = "c3-standard-4"
+  description = "Machine type for event fabric brokers, a C4 or C4D shape (FABRIC-8096)."
+  default     = "c4-standard-4"
   nullable    = false
+
+  # FABRIC-084/8096 names the C4/C4D class for the broker: its Hyperdisk
+  # throughput is what the journal's provisioned figures assume, and the
+  # C3 shape this defaulted to is not the class the requirement sizes.
+  validation {
+    condition     = can(regex("^c4d?-(standard|highcpu|highmem)-[0-9]+(-lssd)?$", var.machine_type))
+    error_message = "machine_type must be a C4 or C4D shape, such as c4-standard-4 or c4d-highmem-8 (FABRIC-8096)."
+  }
 }
 
 variable "boot_image" {
@@ -183,6 +191,18 @@ variable "zone" {
   validation {
     condition     = var.zone == "" || can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", var.zone))
     error_message = "zone is a Compute Engine zone such as us-east4-a, or empty."
+  }
+}
+
+variable "broker_zones" {
+  type        = map(string)
+  description = "The zone of each broker, keyed by its internal address (FABRIC-008). An address not named takes var.zone. Two or three brokers must be placed in distinct zones; the machines refuse two in one zone."
+  default     = {}
+  nullable    = false
+
+  validation {
+    condition     = alltrue([for zone in values(var.broker_zones) : can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", zone))])
+    error_message = "Every broker_zones value is a Compute Engine zone such as us-east4-b."
   }
 }
 

@@ -62,6 +62,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, Topic};
+use qip_quantum::foundry::{FamilyKind, FamilyStatus, Foundry};
 use qip_strategy::model::DistilledModel;
 use qip_streaming::envelope::StreamEnvelope;
 use serde::{Deserialize, Serialize};
@@ -78,14 +79,24 @@ pub const MODEL_PROMOTION_ORIGIN: &str = "kernel/model-promotion";
 /// quantum gateway's output is a control signal (a selection or search
 /// result) that may inform a classical candidate, and that candidate arrives
 /// here as [`Self::QuantumInformed`] carrying the reference of the classical
-/// baseline it was compared against. A quantum result presented as the
+/// baseline it was compared against, and the workload family its quantum
+/// input answered (R12-QUANT-4018). A quantum result presented as the
 /// candidate itself is [`Self::QuantumGateway`], and is refused.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProducer {
     TrainingPipeline,
     QuantumGateway,
-    QuantumInformed { baseline: String },
+    QuantumInformed {
+        baseline: String,
+        /// The `qip_quantum::foundry::FamilyKind` (by its variant name) the
+        /// quantum input was produced for. Absent from records written
+        /// before the field existed; a candidate naming none is refused,
+        /// because a quantum benefit is claimed only on a workload family
+        /// the foundry has built.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workload: Option<String>,
+    },
 }
 
 impl ModelProducer {
@@ -368,6 +379,36 @@ impl ModelPack {
 }
 
 /// The first twelve characters of a digest, for a line a person reads.
+/// A quantum-informed candidate is evaluated only on a workload family the
+/// platform's foundry has built (blueprint §10, QUANT-004): a family recorded
+/// as not built has no encoding, baseline or benchmark, so no quantum
+/// advantage on it could have been measured. Refuses a missing family, a name
+/// that is no family, and a family the foundry holds only as not built.
+fn require_eligible_workload(reference: &str, workload: Option<&str>) -> Result<()> {
+    let Some(name) = workload else {
+        return Err(Error::denied(format!(
+            "{reference} is not promoted: a quantum-informed candidate must name the workload              family its quantum input answered, and this one names none"
+        )));
+    };
+    let Some(kind) = FamilyKind::ALL
+        .into_iter()
+        .find(|kind| format!("{kind:?}") == name)
+    else {
+        return Err(Error::denied(format!(
+            "{reference} is not promoted: `{name}` is not a workload family the blueprint names"
+        )));
+    };
+    match Foundry::platform()?.status(kind) {
+        Some(FamilyStatus::Registered(_)) => Ok(()),
+        Some(FamilyStatus::NotBuilt { reason }) => Err(Error::denied(format!(
+            "{reference} is not promoted: the {name} family is not built ({reason}); a quantum              benefit is evaluated only on a family with an encoding, baseline and benchmark"
+        ))),
+        None => Err(Error::denied(format!(
+            "{reference} is not promoted: the foundry does not account for the {name} family"
+        ))),
+    }
+}
+
 fn short(digest: &str) -> &str {
     digest.get(..12).unwrap_or(digest)
 }
@@ -682,7 +723,8 @@ impl Platform {
                     artifact.reference
                 )));
             }
-            ModelProducer::QuantumInformed { baseline } => {
+            ModelProducer::QuantumInformed { baseline, workload } => {
+                require_eligible_workload(&artifact.reference, workload.as_deref())?;
                 crate::central::models::require_calibrated_baseline(registry, baseline).map_err(
                     |error| {
                         Error::denied(format!(

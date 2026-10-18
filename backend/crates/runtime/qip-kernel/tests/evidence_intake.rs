@@ -14,16 +14,20 @@
     clippy::float_cmp
 )] // integration tests may unwrap: a panic is the failure report; the float comparisons are against the exact constant the fabric assigns an unsigned claim
 
+use qip_contracts::knowledge_delta::{ChangeOp, KnowledgeDelta, KnowledgeTarget, MergePolicy};
 use qip_core::{Context, Timestamp};
+use qip_events::Topic;
 use qip_financial::universe::Universe;
 use qip_kernel::evidence_intake::{
-    EVIDENCE_ABSORBED, EVIDENCE_POISONING_FINDINGS, PoisoningClass, PoisoningThresholds,
+    EVIDENCE_ABSORBED, EVIDENCE_POISONING_FINDINGS, KnowledgeDeltaRecord, PoisoningClass,
+    PoisoningThresholds,
 };
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::Telemetry;
 use qip_observability::metrics::labels;
 use qip_risk::limits::LimitSet;
+use qip_streaming::envelope::StreamEnvelope;
 use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
 use qip_world_model::{EvidenceFabric, EvidenceRecord};
 
@@ -601,4 +605,72 @@ fn an_unchecked_claim_under_a_forged_admissible_verdict_is_held_inadmissible_and
         .expect("the claim is held for the poisoning detector");
     assert!(!held.admissible, "the forged verdict was believed");
     assert_eq!(held.belief_weight, 0.0);
+}
+
+/// Every knowledge delta the kernel has journalled, re-admitted through the
+/// contract the way a receiving brain would read it.
+fn journalled_deltas(platform: &Platform) -> Vec<KnowledgeDelta> {
+    platform
+        .event_log()
+        .by_topic(Topic::WorldModelUpdated)
+        .into_iter()
+        .filter(|event| {
+            event
+                .idempotency_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("knowledge-delta/"))
+        })
+        .map(|event| {
+            let record = StreamEnvelope::from_frame(event)
+                .and_then(|envelope| envelope.decode::<KnowledgeDeltaRecord>())
+                .unwrap()
+                .body;
+            KnowledgeDelta::new(record.delta).unwrap()
+        })
+        .collect()
+}
+
+/// The audit found `qip_contracts::KnowledgeDelta` had no producer in any
+/// binary: the fabric computed its own internal delta and nothing turned it
+/// into the contract a second brain can receive. A batch of two sources
+/// disagreeing now leaves one delta per admitted claim, each advancing the
+/// fabric's version by exactly one, citing the claim and its document, and
+/// the second naming the first as a conflict under a review-required merge.
+/// Mutation: delete the journalling loop at the end of `absorb_evidence` —
+/// no delta is found and the first assertion fails.
+#[test]
+fn a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys() {
+    let mut platform = platform();
+    assert!(
+        journalled_deltas(&platform).is_empty(),
+        "premise: nothing has produced a delta before the batch"
+    );
+    let a = checked("a1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let b = checked("b1", "https://b.example", "rate 1.20", "1.20", &hash('b'));
+
+    let intake = platform.absorb_evidence(vec![a, b], at(30));
+
+    assert_eq!(intake.deltas_refused, 0, "{intake:?}");
+    assert_eq!(intake.knowledge_deltas, 2, "{intake:?}");
+    let deltas = journalled_deltas(&platform);
+    assert_eq!(deltas.len(), 2);
+    let first = deltas[0].fields();
+    let second = deltas[1].fields();
+    assert_eq!(first.target, KnowledgeTarget::WorldModel);
+    assert_eq!((first.base_version, first.new_version), (0, 1));
+    assert_eq!((second.base_version, second.new_version), (1, 2));
+    assert_eq!(
+        first.provenance,
+        vec!["a1".to_string(), format!("doc:{}", hash('a'))]
+    );
+    assert!(
+        matches!(&first.changes[..], [ChangeOp::Assert { key, value }]
+            if key.starts_with("EURUSD/rate@") && value == "1.10"),
+        "{:?}",
+        first.changes
+    );
+    assert!(first.conflicts.is_empty());
+    assert_eq!(first.merge_policy, MergePolicy::FastForwardOnly);
+    assert_eq!(second.conflicts, vec!["kd-a1".to_string()]);
+    assert_eq!(second.merge_policy, MergePolicy::ReviewRequired);
 }

@@ -853,12 +853,12 @@
   {
     "id": "R12-EXPAND-6039",
     "status": "PARTIAL",
-    "current": "KnowledgeDelta contract exists in qip-contracts.",
+    "current": "Platform::absorb_evidence (called by the connector composition roots) now leaves one validated qip_contracts::KnowledgeDelta per admissible, keyed claim, version-stepped by the fabric version, citing the claim and its document hash, naming contradicted claims as conflicts under a review-required merge, journalled on world_model.updated under origin kernel/knowledge-delta.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
-      "backend/crates/libs/qip-contracts/src/federation.rs"
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::knowledge_delta_for",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys"
     ],
-    "gap": "No producer on a binary path; no SharedEpisode.",
+    "gap": "No SharedEpisode producer; the delta is journalled locally and no brain publishes or consumes it, so it does not yet cross a brain boundary.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -866,10 +866,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing KnowledgeDelta / SharedEpisode)",
+    "verification": "cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: KnowledgeDelta producer landed; mutation (journalling loop removed) failed the new test at the knowledge_deltas == 2 assertion. Kept PARTIAL for SharedEpisode and for the cross-brain hop."
   },
   {
     "id": "R12-EXPAND-6040",
@@ -1694,14 +1694,15 @@
   },
   {
     "id": "R12-EXPAND-6077",
-    "status": "PARTIAL",
-    "current": "Models (calibrated baseline), tools (cited evaluation) and agency policies (identified attribution) need evidence before authority; other capability kinds have no authority path.",
+    "status": "COMPLETE",
+    "current": "Each authority-widening path requires a measured-value record and one suite enumerates them: authority_paths.rs::every_authority_widening_path_refuses_without_a_measured_value_record drives the calibrated-baseline gate (qip-kernel central/models.rs), the tool-scope promotion (qip-agents tools.rs, citing its evaluation) and the action-policy widening (qip-agency autonomy.rs, on an identified attribution and an approver) with empty or inadequate evidence, requires each to refuse and the authority to stay put, then admits complete evidence through the same seams.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/central/models.rs:65",
-      "backend/crates/libs/qip-agents/src/tools.rs:126",
-      "backend/crates/services/qip-agency/src/autonomy.rs:87"
+      "backend/crates/tests/qip-acceptance/tests/authority_paths.rs every_authority_widening_path_refuses_without_a_measured_value_record",
+      "backend/crates/runtime/qip-kernel/src/central/models.rs:65 require_calibrated_baseline",
+      "backend/crates/libs/qip-agents/src/tools.rs promote",
+      "backend/crates/services/qip-agency/src/autonomy.rs widen"
     ],
-    "gap": "Uniform rule across capability kinds.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1709,10 +1710,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency -p qip-agents",
+    "verification": "cd backend && cargo test -p qip-acceptance --test authority_paths",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations, each restored byte for byte: the blank-evaluation check in tools.rs::promote replaced by false failed the test at the blank-evaluation assertion; the is_identified check in ActionPolicy::widen replaced by false failed it at the policy assertion; an early Ok in require_calibrated_baseline failed it at the baseline assertion. The suite adds qip-agency as a dev-dependency of qip-acceptance (a workspace member; Cargo.lock gains one line, no third-party package). Kinds without a path cannot receive authority by construction; a fourth seam added elsewhere is not found by this test and needs its line here."
   },
   {
     "id": "R12-AGENCY-6078",

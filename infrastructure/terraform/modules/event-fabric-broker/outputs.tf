@@ -22,3 +22,8 @@ output "broker_srv_rdata" {
   value       = try(google_dns_record_set.event_fabric_broker_srv_tcp[0].rrdatas[0], null)
   description = "SRV record data pointing to broker A record"
 }
+
+output "broker_zones" {
+  description = "The zone each broker machine is planned in, keyed by its internal address (FABRIC-008)."
+  value       = { for address, machine in google_compute_instance_from_template.event_fabric_broker : address => machine.zone }
+}
