@@ -122,7 +122,32 @@ impl Agent for MicrostructureAnalyst {
         let sell_cost_bps = book.sweep_cost_bps(Side::Sell, self.reference_size);
         let depth = book.total_depth().to_f64();
 
+        // Queue dynamics: how long the resting queue at each touch takes to
+        // be worked through at the rate the tape last traded. The rate is the
+        // latest bar's volume over its interval — the recent tape the
+        // snapshot keeps — and the time is a lower bound: the tape carries no
+        // aggressor side, so each queue is timed as if every traded unit
+        // consumed it. A passive order joining the back of that queue waits
+        // at least this long to fill, which is the figure a placement needs
+        // and the one a touch-only imbalance cannot give.
+        let traded_rate = state.bars.last().and_then(|bar| {
+            let seconds = bar.interval.duration().as_secs_f64();
+            let volume = bar.volume.to_f64();
+            (seconds > 0.0 && volume > 0.0).then_some(volume / seconds)
+        });
+        let queue_depletion = |level: Option<qip_market::book::BookLevel>| {
+            traded_rate.and_then(|rate| level.map(|l| l.size.to_f64() / rate))
+        };
+        let bid_depletion = queue_depletion(book.best_bid());
+        let ask_depletion = queue_depletion(book.best_ask());
+
         let mut missing = Vec::new();
+        if traded_rate.is_none() {
+            missing.push(format!(
+                "no traded volume in the latest bar of {}; the queue at the touch cannot be timed",
+                subject.as_str()
+            ));
+        }
         if buy_cost_bps.is_none() {
             missing.push(format!(
                 "insufficient ask depth to fill {} units of {}",
@@ -173,6 +198,7 @@ impl Agent for MicrostructureAnalyst {
         ])
         .caveats(vec![
             "a book snapshot is a statement about this instant only".to_string(),
+            "queue depletion is a lower bound: the tape carries no aggressor side, so each touch is timed as if all traded volume hit it".to_string(),
         ]);
 
         for fact in touch.into_iter().flatten() {
@@ -195,6 +221,29 @@ impl Agent for MicrostructureAnalyst {
                 "bps",
                 &["book", "reference_size"],
             ));
+        }
+        if let Some(rate) = traded_rate {
+            builder = builder.fact(computed(
+                ctx,
+                "traded_rate_per_sec",
+                rate,
+                "units_per_sec",
+                &["bars"],
+            ));
+        }
+        for (label, depletion, touch) in [
+            ("bid_queue_depletion_secs", bid_depletion, "best_bid"),
+            ("ask_queue_depletion_secs", ask_depletion, "best_ask"),
+        ] {
+            if let Some(seconds) = depletion {
+                builder = builder.fact(computed(
+                    ctx,
+                    label,
+                    seconds,
+                    "seconds",
+                    &[touch, "traded_rate_per_sec"],
+                ));
+            }
         }
         if !missing.is_empty() {
             builder = builder.missing(missing);

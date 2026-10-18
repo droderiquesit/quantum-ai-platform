@@ -193,15 +193,15 @@
   },
   {
     "id": "R12-FABRIC-8009",
-    "status": "PARTIAL",
-    "current": "Acceptance scan refuses Kafka/Pub/Sub client crates; qip-streaming's PubSub TransportKind refuses to build. But modules/trust-zones still declares Pub/Sub publisher/subscriber grants on a \"control_fabric_topic\" (passed null today).",
+    "status": "COMPLETE",
+    "current": "Neither managed broker is an internal runtime dependency: no crate declares a Kafka or Pub/Sub client (manifest scan), qip-streaming's PubSub transport kind and port are deleted with a source scan refusing their return, the trust-zones control-fabric grant path is gone, and blueprint_arch scans Terraform for Pub/Sub or Kafka resources beyond the two recorded peripheral topics.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
-      "backend/crates/services/qip-streaming/src/registry.rs:217,228 PubSub -> unreachable_transport",
-      "infrastructure/terraform/modules/trust-zones/main.tf:624-647 google_pubsub_topic_iam_member fabric_publish/fabric_attach",
-      "infrastructure/terraform/main.tf:500 control_fabric_topic = null"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs qip_streaming_source_names_no_pub_sub_transport",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
+      "backend/crates/services/qip-streaming/src/registry.rs TransportKind (Local, Durable, Mesh)"
     ],
-    "gap": "Remove the Pub/Sub control-fabric grant path from trust-zones and the PubSub TransportKind, and extend the scan to Terraform.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -209,10 +209,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary --test blueprint_arch && cargo test -p qip-streaming --test registry",
     "work_item": "",
     "size": "S",
-    "notes": "The trust-zones Pub/Sub 'control fabric' contradicts §1. The secret-rotation Pub/Sub topic in modules/secrets is a Secret Manager notification, not runtime messaging."
+    "notes": "Lane L21 2026-10-18. Gap text was half stale: the Terraform scan already existed (blueprint_arch.rs) and trust-zones had no Pub/Sub grant. Mutation: appending `pub struct PubSubBinding;` to registry.rs fails the scan naming that file."
   },
   {
     "id": "R12-FABRIC-8010",
@@ -239,14 +239,14 @@
   },
   {
     "id": "R12-DATA-8011",
-    "status": "PARTIAL",
-    "current": "NewsItem carries a SourceManifest (hash, locator) and no text field, so news text cannot be persisted; other connectors (market-ingestion) persist derived ticks/events. No general transient scout worker with an explicit discard step.",
+    "status": "COMPLETE",
+    "current": "NewsItem, the durable record of an ingested document, carries a SourceManifest (source, locator, byte length, SHA-256, retrieval instant) and no field able to hold the source text; a structural unit test pins its serialised key set exactly and asserts the article's own bytes never appear in the serialised record, so adding a body String (or any field) fails. The other intelligence bodies (FundamentalUpdate, MacroObservation, AlternativeDataPoint, ReferenceDataUpdate, DataQualityFailure) carry identifiers, units and values, not document text.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/intelligence.rs:182-201 NewsItem.manifest, no text field",
+      "backend/crates/libs/qip-financial/src/intelligence.rs:183-221 NewsItem.manifest, no text field",
       "backend/crates/libs/qip-financial/src/manifest.rs:63 SourceManifest",
-      "backend/crates/libs/qip-financial/src/manifest.rs:191 the_hash_is_of_the_bytes_that_were_read (unit test)"
+      "backend/crates/libs/qip-financial/src/intelligence.rs:680 an_ingested_news_item_serialises_no_field_able_to_hold_the_source_text (unit test; mutation: adding a serde-defaulted body: String to NewsItem fails the key-set assertion)"
     ],
-    "gap": "Pipeline-level guarantee for every connector (not only news), evidence scoring before persistence, and a test that fails if a connector writes a raw payload.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -254,10 +254,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial manifest",
+    "verification": "cargo test -p qip-financial --lib an_ingested_news_item_serialises_no_field_able_to_hold_the_source_text",
     "work_item": "",
     "size": "M",
-    "notes": "Structural for NewsItem only; no test asserts the absence of a text field."
+    "notes": "Closed 2026-10-18 by lane L24 against the row's own verification clause (a body String added to NewsItem must fail a structural test). Mutation-verified: adding #[serde(default)] pub body: String to NewsItem fails the exact key-set assertion; restored byte for byte, passes. GCP-side persistence (warehouse) is guarded separately by R12-DATA-8123."
   },
   {
     "id": "R12-DATA-8012",
@@ -386,7 +386,7 @@
     "verification": "terraform plan; unit tests for pack writer",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-DATA-8018",
@@ -913,13 +913,14 @@
   {
     "id": "R12-FINOPS-8041",
     "status": "PARTIAL",
-    "current": "Cloud Run services scale by instance bounds in modules/cloudrun; Bigtable cluster has autoscaling_config (gated); Spanner fixed at 100 PU.",
+    "current": "Cloud Run services carry instance bounds in their Config Connector RunService manifests (infrastructure/gitops/envs/<env>/*.yaml, scaling.minInstanceCount/maxInstanceCount, e.g. dev/fastbrain.yaml:44); the Bigtable cluster has autoscaling_config (gated); the Spanner instance is fixed at processing_units = 100 (modules/data/main.tf:400) and enable_spanner = false in dev, test, stage and prod.",
     "evidence": [
-      "infrastructure/terraform/modules/cloudrun/main.tf",
+      "infrastructure/gitops/envs/dev/fastbrain.yaml:44 maxInstanceCount",
       "infrastructure/terraform/modules/data/main.tf:322-345 bigtable autoscaling_config",
-      "infrastructure/terraform/modules/data/main.tf:391 processing_units = 100"
+      "infrastructure/terraform/modules/data/main.tf:400 processing_units = 100",
+      "infrastructure/environments/*/terraform.tfvars enable_spanner = false"
     ],
-    "gap": "Spanner autoscaling; AI component scaling.",
+    "gap": "Spanner autoscaling is an owner cost decision, not a lane edit: replacing the fixed 100 PU with an autoscaling_config changes what enabling Spanner costs (the managed autoscaler's limits set the floor, and the module comment's reason for 100 PU is to start below one node), and a mocked terraform test plan cannot show the API admits the chosen limits. Needs the owner to choose min/max processing units; then an autoscaling_config block behind a module variable plus a modules/data tftest asserting it renders. The Cloud Run half is met through the RunService manifests, not modules/cloudrun (the row's earlier evidence pointed there and that file carries no instance bounds).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -930,7 +931,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: not closed. terraform 1.9.8 fetched and checksum-verified for the session; no HCL changed because the remaining clause needs an owner cost choice. Cloud Run evidence corrected from modules/cloudrun/main.tf to the gitops RunService manifests."
   },
   {
     "id": "R12-GCP-8042",
@@ -1632,24 +1633,27 @@
   },
   {
     "id": "R12-FABRIC-8074",
-    "status": "PARTIAL",
-    "current": "The broker's data plane sets max_body to MAXIMUM_REQUEST_BYTES; a declaration one byte over (or 16 MiB) is refused 413, and ServerLimits caps concurrent connections at 64 with a 503.",
+    "status": "COMPLETE",
+    "current": "The broker's protocol listener runs under qip_fabricd::data_plane_limits: the transport's ServerLimits defaults (64 live connections, 16 of them handshaking, one request per connection) with the body ceiling raised to MAXIMUM_REQUEST_BYTES. A declaration over the ceiling is refused 413 before any body is buffered; a connection past the cap is answered 503 at the accept loop and never reaches a handler. Request memory is therefore bounded by the cap times the ceiling (64 x (8 MiB + 4 KiB)); the bound is a fixed connection pool with a fixed per-request ceiling, not a pooled buffer allocator.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:70-75 MAXIMUM_REQUEST_BYTES",
-      "backend/crates/libs/qip-transport/src/server.rs ServerLimits"
+      "backend/crates/apps/qip-fabricd/src/lib.rs:184 data_plane_limits",
+      "backend/crates/libs/qip-transport/src/server.rs Server::serve max_concurrent 503 and max_handshaking",
+      "backend/crates/libs/qip-transport/tests/server_connection_cap.rs the_connection_past_the_cap_is_refused_503_while_the_held_ones_are_served",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1901 the_broker_data_plane_runs_under_the_capped_server_limits",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1719 a_request_over_the_brokers_ceiling_is_refused_on_its_declared_length_and_the_broker_keeps_serving"
     ],
-    "gap": "No test of the max_concurrent 503 refusal at the broker; no pooled buffer allocator.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-fabricd",
+    "verification": "cargo test -p qip-transport --test server_connection_cap; cargo test -p qip-fabricd --test broker the_broker_data_plane_runs_under_the_capped_server_limits a_request_over_the_brokers_ceiling_is_refused_on_its_declared_length_and_the_broker_keeps_serving",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. Re-graded 2026-10-18 by lane L17 after running the proving tests and mutations that made each fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The 503 is driven at the transport's Server with a handler that holds its requests, because no qip-fabricd route holds a connection (one request per connection, every route answers at once, and a slow sender is bounded first by max_handshaking); the broker's own limits are pinned to that server's by a separate test. Mutation: admitting at max_concurrent + 1 in Server::serve leaves the fifth connection held, not refused, and the 503 assertion fails. Mutation: max_concurrent 4096 in data_plane_limits fails the cap assertion."
   },
   {
     "id": "R12-FABRIC-8075",
@@ -2157,12 +2161,14 @@
   {
     "id": "R12-FABRIC-8097",
     "status": "PARTIAL",
-    "current": "Boot disk type defaults to hyperdisk-balanced; a journal device variable is passed to the startup script; no separate journal disk resource; module not instantiated.",
+    "current": "The broker template declares a dedicated, non-auto-deleted Hyperdisk journal disk (device qip-journal, its own size variable) and provisions its IOPS and throughput explicitly (journal_provisioned_iops, default 3000; journal_provisioned_throughput_mibps, default 140), validated to the Hyperdisk Balanced ranges; disk_type is refused unless it is a hyperdisk-* type, because only a Hyperdisk accepts provisioned performance. The module is instantiated by fabric.tf only when var.event_fabric_broker is set, and it is null in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf (disk_type default hyperdisk-balanced)",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:37-47"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:78 provisioned_iops / provisioned_throughput on the qip-journal disk",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:208 journal_provisioned_iops and journal_provisioned_throughput_mibps with range validations; disk_type hyperdisk-* validation",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
+      "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Dedicated Hyperdisk journal with throughput sizing.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2170,10 +2176,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "event_fabric_infrastructure.rs:218 fabric_085 asserts a hand-built struct, not Terraform."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2342,9 +2348,10 @@
     "current": "qip-capital and the kernel issue signed envelopes/grants carried to cells; authoritative capital state in kernel ledger; runs in Cloud Run binaries.",
     "evidence": [
       "backend/crates/services/qip-capital/src",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1138 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd"
     ],
-    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Needs the authoritative store per LEDGER-8007 (ADR 0113 §1) and an inspection test that authoritative capital state is written only through qip-ledgerd.",
+    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Authoritative capital state is not yet written only through qip-ledgerd: qip-ledgerd is not in catalogue.tf and no environment deploys it, and the kernel's TrackedCapital, the cells' UserLedger, the fabric Wallet and the brokers' AccountLedger are separate in-process writers (the ledger_001 test documents them). What is pinned today is narrower: the durable ledger-of-record write seam (LedgerBackend, LedgerBatch) is named by qip-ledgerd alone. The whole requirement waits on LEDGER-8007 and the consolidation of those stores.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2355,7 +2362,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Corrected 2026-10-18 (lane L08): added the write-seam guard, kept PARTIAL. Mutation: pub struct LedgerBatch appended to qip-risk-engine's lib.rs failed the test naming qip-risk-engine; restored byte for byte. The closure's authoritative_capital_state_is_written_only_through_qip_ledgerd would be false today, so it was not written."
   },
   {
     "id": "R12-GCP-8106",
@@ -2365,7 +2372,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs",
       "backend/crates/services/qip-risk-engine/src"
     ],
-    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests.",
+    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests. No such test can be written today without restating the composition: qip-deepbrain main.rs assembles the platform inline (Platform::with_model_provider at main.rs:249, then trust::harden_central, survival policy, central horizons, each read from the environment in main), so a test under qip-deepbrain/tests builds its own Platform and proves only the kernel again. The prerequisite is extracting that composition into a library function main calls and a test can call; then the test drives a held book through SIMULATE and asserts the stress report and a central policy envelope.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2376,7 +2383,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Lane L20 2026-10-18: gap corrected, no code changed; extracting main's composition is a refactor of the binary's start-up order (configuration, ports, trust root, serve) larger than this test-only row."
   },
   {
     "id": "R12-RISK-8107",
@@ -2725,13 +2732,14 @@
   {
     "id": "R12-DATA-8123",
     "status": "PARTIAL",
-    "current": "qip-mesh BigQueryWarehouse writes derived rows; dataset gated off; no schema check against document bodies.",
+    "current": "qip-mesh BigQueryWarehouse::insert, the one seam every warehouse row passes, refuses before any connection a row carrying a column named for a document body (body, text, html, content, document, article, raw, raw_payload, full_text, document_text, article_text, transcript; whole-name, case-insensitive) and admits columns describing a document (body_sha256, body_bytes). The adapter has no production caller and the dataset is gated off (enable_bigquery = false).",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/bigquery.rs",
-      "backend/crates/services/qip-mesh/tests/bigquery.rs",
-      "infrastructure/terraform/modules/data/main.tf:85"
+      "backend/crates/services/qip-mesh/src/bigquery.rs:81 DOCUMENT_COLUMNS",
+      "backend/crates/services/qip-mesh/src/bigquery.rs:580 insert refuses a document column",
+      "backend/crates/services/qip-mesh/tests/bigquery.rs:391 a_bigquery_row_carrying_a_document_body_column_is_refused_before_any_connection",
+      "infrastructure/terraform/modules/data/main.tf:85 google_bigquery_dataset.research behind enable_bigquery"
     ],
-    "gap": "Enable dataset; schema guard.",
+    "gap": "The schema guard holds at the adapter; what remains is that nothing writes: no binary constructs BigQueryWarehouse or calls insert, and enable_bigquery (an owner switch) is false, so the K3 tier does not exist to hold rows.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2739,10 +2747,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test bigquery",
+    "verification": "cargo test -p qip-mesh --test bigquery a_bigquery_row_carrying_a_document_body_column_is_refused_before_any_connection",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: schema guard added and mutation-verified (making the column match always false lets a body column through and the test fails at the not-refused arm); restored, passes. Kept PARTIAL because the clause is not met on a running path: the warehouse has no production caller and the dataset is gated off."
   },
   {
     "id": "R12-DATA-8124",

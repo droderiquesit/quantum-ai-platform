@@ -33,6 +33,7 @@ use qip_financial::constraints::{RegulatoryConstraints, TradingRestriction};
 use qip_financial::object::FinancialObject;
 use qip_financial::quality::Provenance;
 use qip_financial::universe::Universe;
+use qip_investment_agents::coverage::Scope;
 use qip_investment_agents::desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
 use qip_investment_agents::{Organisation, ids, manifests};
 use qip_market::bar::{Bar, Interval};
@@ -43,7 +44,7 @@ use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use qip_world_model::WorldModel;
 use qip_world_model::features::{Feature, FeatureValue};
 use qip_world_model::vocabulary::names;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The liquidity every fixture in this file states, because nothing states it
@@ -86,7 +87,7 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    assert_eq!(roster.len(), 19, "the organisation is nineteen agents");
+    assert_eq!(roster.len(), 20, "the organisation is twenty agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -515,6 +516,25 @@ fn desk_holding_causal_claims(claims: Vec<qip_world_model::CausalEdge>) -> Arc<D
     for claim in claims {
         world.claim_causal(claim).unwrap();
     }
+    // One clean claim in the evidence fabric, so the poisoning detector has
+    // something to scan and reports a scan rather than an empty fabric.
+    world
+        .absorb_evidence(
+            qip_world_model::EvidenceRecord::new(
+                "ev-acme-margin".into(),
+                "https://wire.example/acme".into(),
+                now(),
+                now(),
+                "test".into(),
+                "commercial".into(),
+                "ACME reported margin compression".into(),
+                0.9,
+            )
+            .unwrap(),
+            Some(&"d".repeat(64)),
+            now(),
+        )
+        .unwrap();
 
     let mut library = SearchIndex::new();
     library.add(Document::new(
@@ -561,7 +581,7 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    assert_eq!(org.len(), 18);
+    assert_eq!(org.len(), 19);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2207,5 +2227,196 @@ fn the_credit_analyst_abstains_on_a_brief_about_no_instrument() -> Result<()> {
         "a credit view needs an instrument to be about"
     );
     assert!(is_exactly_zero(finding.effective_conviction()));
+    Ok(())
+}
+
+// --- scope coverage: what each specialist alone covers ----------------------
+
+/// The standard organisation with the agent `without` left out, under the
+/// standard roster and the same host settings [`organisation`] uses.
+fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> {
+    let agents: Vec<_> = qip_investment_agents::chief::standard_agents(
+        desk,
+        now(),
+        vec!["web-traffic".to_string()],
+        false,
+    )
+    .into_iter()
+    .filter(|agent| agent.manifest().id != without)
+    .collect();
+    Organisation::new(
+        manifests::roster(now()),
+        agents,
+        AgentHost::new(42).with_language_model(Arc::new(DeterministicModel::new())),
+        now(),
+    )
+}
+
+/// Dispatch `brief` to the standard organisation and to the same organisation
+/// without `agent`, and return both reports' covered scopes.
+fn scopes_with_and_without(
+    desk: Arc<Desk>,
+    brief: &AgentBrief,
+    agent: &str,
+) -> Result<(BTreeSet<Scope>, BTreeSet<Scope>)> {
+    let mut whole = organisation(desk.clone())?;
+    let mut less = organisation_without(desk, agent)?;
+    assert_eq!(
+        less.len() + 1,
+        whole.len(),
+        "premise: exactly one agent, {agent}, is left out"
+    );
+    let with = whole.dispatch(brief, now(), &lineage()).covered_scopes();
+    let without = less.dispatch(brief, now(), &lineage()).covered_scopes();
+    Ok((with, without))
+}
+
+fn fact_value(finding: &qip_agents::finding::AgentFinding, label: &str) -> Option<f64> {
+    finding
+        .facts
+        .iter()
+        .find(|fact| fact.label == label)
+        .map(|fact| fact.value)
+}
+
+/// R12-REASON-3014. The microstructure analyst times the queue at each touch
+/// from the tape, and nobody else does: without it the organisation has no
+/// view of queue dynamics at all. The figure is checked against the fixture,
+/// not merely for presence — a 5,000-unit touch against a daily bar of one
+/// million units is 432 seconds of tape — so a depletion computed from the
+/// wrong level or the wrong interval fails here.
+#[test]
+fn removing_the_microstructure_analyst_drops_queue_dynamics_from_coverage() -> Result<()> {
+    let desk = populated_desk();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::MICROSTRUCTURE)
+        .expect("premise: the microstructure analyst reported on ACME");
+    for label in ["bid_queue_depletion_secs", "ask_queue_depletion_secs"] {
+        let seconds = fact_value(finding, label).expect(label);
+        assert!(
+            (seconds - 432.0).abs() < 1e-6,
+            "{label} is {seconds}, not 5000 units at 1,000,000 units a day"
+        );
+    }
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::MICROSTRUCTURE)?;
+    assert!(with.contains(&Scope::QueueDynamics), "{with:?}");
+    assert!(!without.contains(&Scope::QueueDynamics), "{without:?}");
+    Ok(())
+}
+
+/// R12-REASON-3023, the poisoning half. The detector is constructed in the
+/// standard organisation, scans the fabric the desk holds, and is the only
+/// agent that covers source poisoning. Its finding is ambiguous rather than
+/// negative even when it finds a campaign — see `poisoning.rs` — and here,
+/// over one clean claim, it reports a scan that found nothing, which is
+/// still coverage: a fabric was examined.
+#[test]
+fn removing_the_poisoning_detector_drops_source_poisoning_from_coverage() -> Result<()> {
+    let desk = populated_desk();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::POISONING)
+        .expect("premise: the standard organisation runs the poisoning detector");
+    assert_eq!(fact_value(finding, "claims_scanned"), Some(1.0));
+    assert_eq!(fact_value(finding, "poisoning_findings"), Some(0.0));
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::POISONING)?;
+    assert!(with.contains(&Scope::SourcePoisoning), "{with:?}");
+    assert!(!without.contains(&Scope::SourcePoisoning), "{without:?}");
+    Ok(())
+}
+
+#[test]
+fn an_agent_outside_the_roster_does_not_assemble() {
+    // The roster without the poisoning detector, and the agents with it: the
+    // detector's manifest would never have been reviewed.
+    let roster = qip_agents::governance::Roster::from_manifests(
+        manifests::roster(now())
+            .iter()
+            .filter(|manifest| manifest.id != ids::POISONING)
+            .cloned()
+            .collect(),
+    );
+    let agents =
+        qip_investment_agents::chief::standard_agents(populated_desk(), now(), Vec::new(), false);
+    assert!(
+        agents.iter().any(|a| a.manifest().id == ids::POISONING),
+        "premise: the standard agents include the detector"
+    );
+    let error = Organisation::new(roster, agents, AgentHost::new(1), now()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("agent poisoning-detector is not on the roster"),
+        "{}",
+        error.message()
+    );
+}
+
+/// R12-RISK-3021. The risk control forecasts the book's tail, generates a
+/// stress day and recommends what to shed, and nothing else on the desk
+/// covers any of the three. The book is at 3x against a 2x leverage ceiling,
+/// so the recommendation is exactly a third of gross; the stress day is
+/// 3 x 20% / sqrt(252) x 3. A fact present with the wrong number fails here
+/// as surely as a missing one.
+#[test]
+fn removing_the_risk_control_drops_forecast_stress_and_recommendation_from_coverage() -> Result<()>
+{
+    let state = RiskState {
+        equity: dec!("10000000"),
+        cash: dec!("10000000"),
+        gross_exposure: dec!("30000000"),
+        volatility: 0.20,
+        value_at_risk: BTreeMap::from([("0.95".to_string(), 0.03), ("0.99".to_string(), 0.05)]),
+        expected_shortfall: BTreeMap::from([("0.99".to_string(), 0.07)]),
+        ..RiskState::default()
+    };
+    let limits = LimitSet::new("t").with(Limit::new(
+        "leverage",
+        LimitKind::MaxLeverage { limit: 2.0 },
+    ));
+    let desk = desk_with_risk(state, limits);
+
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the standard organisation runs the risk control");
+    let expected = [
+        ("forecast_value_at_risk", 0.05),
+        ("forecast_expected_shortfall", 0.07),
+        ("stress_loss_3sd_day", 3.0 * 0.20 / 252.0_f64.sqrt() * 3.0),
+        ("recommended_gross_reduction", 10_000_000.0),
+    ];
+    for (label, value) in expected {
+        let got = fact_value(finding, label).expect(label);
+        assert!(
+            (got - value).abs() < 1e-6,
+            "{label} is {got}, expected {value}"
+        );
+    }
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::RISK)?;
+    for scope in [
+        Scope::RiskForecast,
+        Scope::StressScenario,
+        Scope::RiskRecommendation,
+    ] {
+        assert!(with.contains(&scope), "{scope:?} not covered: {with:?}");
+        assert!(
+            !without.contains(&scope),
+            "{scope:?} covered without: {without:?}"
+        );
+    }
     Ok(())
 }

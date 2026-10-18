@@ -14,7 +14,9 @@
 //! as anything asked whether the node was alive.
 
 use crate::mesh::MeshHealth;
+use qip_observability::critical_paths;
 use qip_observability::metrics::{Labels, Metrics, names};
+use qip_peer_link::boundary::PeerStatus;
 use qip_transport::breaker::BreakerState;
 use std::sync::Arc;
 
@@ -51,14 +53,66 @@ pub fn requested_path(request: &[u8]) -> Option<&str> {
 /// the health body: this node has one probe answer and always did, and adding
 /// a scrape route must not turn an unrecognised path into a 404 an
 /// orchestrator has never had to handle before.
+///
+/// A scrape also evaluates the node's critical paths
+/// ([`critical_paths::EDGE_NODE_SERVICE`]) against the registry it is about
+/// to render, so the objective gauges it serves are those of the series in
+/// the same exposition. Here, on the health thread, rather than in the
+/// decision loop's turn: an evaluation walks the whole registry, and the
+/// decision thread may not wait on it.
 pub fn respond(request: &[u8], metrics: &Metrics, health_body: &str) -> (&'static str, String) {
     if requested_path(request) == Some("/metrics") {
+        let statuses = critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service == critical_paths::EDGE_NODE_SERVICE
+        });
+        critical_paths::record(metrics, &statuses);
         return (
             "text/plain; version=0.0.4; charset=utf-8",
             metrics.snapshot().to_prometheus(),
         );
     }
     ("application/json", health_body.to_string())
+}
+
+/// The peer link's measured latency (MESH-007), written into the registry
+/// the scrape serves.
+///
+/// A gauge of the shortest fresh round trip across peers, in milliseconds,
+/// and absent while no peer has a fresh sample: a link that has measured
+/// nothing must not chart as a peer at zero distance. `cell` and `region`
+/// are the only labels, fixed for the process; there is no per-peer label
+/// because the figure is the nearest peer's.
+#[derive(Debug)]
+pub struct PeerSeries {
+    metrics: Arc<Metrics>,
+    base: Labels,
+}
+
+impl PeerSeries {
+    pub fn new(metrics: Arc<Metrics>, cell: &str, region: &str) -> Self {
+        let mut base = Labels::new();
+        base.insert("cell".to_string(), cell.to_string());
+        base.insert("region".to_string(), region.to_string());
+        metrics.describe(
+            names::EDGE_PEER_ROUND_TRIP_MS,
+            "the shortest fresh peer clock round trip in milliseconds, net of the peer's holding time",
+        );
+        Self { metrics, base }
+    }
+
+    /// Record what the link last measured. `clock_round_trip_ns` is read
+    /// only while `clocks_measured` says a sample exists; the nanosecond
+    /// count crosses to `f64` milliseconds here, where the statistic lives.
+    pub fn observe(&self, status: &PeerStatus) {
+        if status.clocks_measured == 0 {
+            return;
+        }
+        self.metrics.gauge(
+            names::EDGE_PEER_ROUND_TRIP_MS,
+            self.base.clone(),
+            status.clock_round_trip_ns as f64 / 1_000_000.0,
+        );
+    }
 }
 
 /// The mesh link's counters, rendered as deltas.

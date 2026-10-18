@@ -40,6 +40,9 @@ use crate::attestation::ATTESTATION_PATH_VARIABLE;
 use crate::config::{DeepBrainConfig, HostedLanguageModel, LANGUAGE_MODEL_VARIABLE};
 use qip_agents::tools::{ToolKind, ToolPermission, ToolRegistry};
 use qip_ai::language::{DeterministicModel, FallbackChain, LanguageModel};
+/// The reply tally lives beside the port in `qip-ai`, so wrapping the hosted
+/// adapter adds no implementation of `LanguageModel` outside ADR 0117's list.
+pub use qip_ai::language::{ReplyCounts, ReplyTally};
 use qip_core::error::{Error, Result};
 use qip_reasoning_engine::providers::huggingface::{
     DEFAULT_DEADLINE, DEFAULT_MAX_BODY_BYTES, HF_TOKEN_VARIABLE, HuggingFaceConfig,
@@ -57,6 +60,11 @@ pub struct AssembledModel {
     /// hosted endpoint where one was named, and the scope it holds. Empty
     /// when no provider was asked for.
     pub tools: ToolRegistry,
+    /// The hosted adapter's replies, counted where it answers
+    /// (R12-EXPAND-6040). `None` unless the adapter is installed: the
+    /// deterministic model cannot hallucinate, and a rate over its replies
+    /// would dilute the one that can.
+    pub replies: Option<ReplyTally>,
 }
 
 /// The three outcomes, kept apart because an operator reading the banner has
@@ -198,6 +206,7 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             chain: Arc::new(FallbackChain::new(vec![deterministic])),
             hosted: HostedDecision::NotRequested,
             tools: ToolRegistry::new(),
+            replies: None,
         });
     };
 
@@ -225,6 +234,7 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             chain: Arc::new(FallbackChain::new(vec![deterministic])),
             hosted: HostedDecision::Withheld(withheld),
             tools,
+            replies: None,
         }),
         Ok(met) => {
             tools.promote(&hosted.model, ToolPermission::LeaveSandbox, &met.attested)?;
@@ -239,10 +249,15 @@ pub fn assemble(config: &DeepBrainConfig) -> Result<AssembledModel> {
             // configuration resolved, because the adapter is the one place
             // that decides what an absent credential means.
             let adapter = hosted_adapter(&tools, adapter_config, hosted)?;
+            let replies = ReplyTally::new();
             Ok(AssembledModel {
-                chain: Arc::new(FallbackChain::new(vec![Arc::new(adapter), deterministic])),
+                chain: Arc::new(FallbackChain::new(vec![
+                    replies.wrap(Arc::new(adapter)),
+                    deterministic,
+                ])),
                 hosted: HostedDecision::Installed(summary),
                 tools,
+                replies: Some(replies),
             })
         }
     }

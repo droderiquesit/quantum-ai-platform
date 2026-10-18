@@ -141,6 +141,90 @@ impl Contract for ModelVoteFields {
     }
 }
 
+// ---- ForecastConsensus -------------------------------------------------
+
+/// One voter's share of a [`ForecastConsensus`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsensusWeight {
+    pub model: String,
+    /// Its share of the consensus, in `[0, 1]`; the shares sum to one.
+    pub weight: Decimal,
+}
+
+/// The consensus a tournament formed from its [`ModelVote`]s and the weight
+/// each voter carried in it (R12-MODEL-9031).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForecastConsensusFields {
+    pub schema_version: u32,
+    /// The proposition voted on, as the votes name it.
+    pub proposition: String,
+    pub regime: String,
+    /// The consensus probability of the proposition.
+    pub probability_bp: u32,
+    /// Every voter's share, by distinct model name.
+    pub weights: Vec<ConsensusWeight>,
+    /// Whether the shares were earned by reputation. `false` only where no
+    /// voter had earned any, and the shares are then equal — stated, so an
+    /// equal split cannot pass for an earned one.
+    pub reputation_weighted: bool,
+    pub formed_at: Timestamp,
+}
+
+/// The §24.9 consensus beside the votes. Built only through
+/// [`Validated::new`].
+pub type ForecastConsensus = Validated<ForecastConsensusFields>;
+
+/// How far the shares may sum from one: they are rounded from statistics, and
+/// a tolerance this tight still refuses a share that was dropped.
+const CONSENSUS_SUM_TOLERANCE: Decimal = Decimal::from_raw(1_000);
+
+impl Contract for ForecastConsensusFields {
+    const NAME: &'static str = "ForecastConsensus";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Refuses blank names, a probability above one, no voters, a voter
+    /// named twice, a negative share or one above one, shares that do not sum
+    /// to one, and unequal shares claimed as unearned.
+    fn check(&self) -> Result<()> {
+        let c = Self::NAME;
+        named(c, "proposition", &self.proposition)?;
+        named(c, "regime", &self.regime)?;
+        basis_points(c, "probability_bp", self.probability_bp)?;
+        listed(c, "weights", &self.weights)?;
+        let mut seen = BTreeSet::new();
+        let mut sum = Decimal::ZERO;
+        for w in &self.weights {
+            named(c, "weights.model", &w.model)?;
+            non_negative(c, "weights.weight", w.weight)?;
+            if w.weight > Decimal::ONE {
+                return refuse(c, format!("gives {} a share above one", w.model));
+            }
+            if !seen.insert(w.model.as_str()) {
+                return refuse(c, format!("names {} twice", w.model));
+            }
+            sum += w.weight;
+        }
+        if (sum - Decimal::ONE).abs() > CONSENSUS_SUM_TOLERANCE {
+            return refuse(c, format!("has shares summing to {sum}, not one"));
+        }
+        if !self.reputation_weighted
+            && self
+                .weights
+                .windows(2)
+                .any(|pair| pair[0].weight != pair[1].weight)
+        {
+            return refuse(c, "claims unearned shares that are not equal");
+        }
+        Ok(())
+    }
+}
+
 // ---- ComputePlan -------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -215,3 +215,45 @@ run "a_journal_device_carrying_shell_syntax_is_refused" {
 
   expect_failures = [var.qip_storage_journal_device]
 }
+
+# FABRIC-8097: the journal every acknowledgement fsyncs to is sized for
+# throughput, not only for capacity. Before this run the disk declared a type
+# and a size and nothing else, so its IOPS and throughput were whatever Google
+# derived from 100 GB. Positional for the reason the journal-disk run gives.
+run "the_journal_disk_is_provisioned_for_iops_and_throughput" {
+  command = plan
+
+  variables {
+    journal_provisioned_iops             = 6000
+    journal_provisioned_throughput_mibps = 400
+  }
+
+  assert {
+    condition = (
+      google_compute_instance_template.event_fabric_broker[0].disk[1].device_name == "qip-journal"
+      && google_compute_instance_template.event_fabric_broker[0].disk[1].provisioned_iops == 6000
+      && google_compute_instance_template.event_fabric_broker[0].disk[1].provisioned_throughput == 400
+    )
+    error_message = "The journal disk does not carry the IOPS and throughput the module was given."
+  }
+}
+
+run "a_journal_throughput_outside_the_hyperdisk_range_is_refused" {
+  command = plan
+
+  variables {
+    journal_provisioned_throughput_mibps = 100
+  }
+
+  expect_failures = [var.journal_provisioned_throughput_mibps]
+}
+
+run "provisioned_journal_performance_on_a_persistent_disk_type_is_refused" {
+  command = plan
+
+  variables {
+    disk_type = "pd-balanced"
+  }
+
+  expect_failures = [var.disk_type]
+}

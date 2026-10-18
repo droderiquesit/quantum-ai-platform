@@ -47,6 +47,7 @@ fn request(rate_window: u64) -> Request {
             prohibited_side_effects: Some(vec![]),
             prohibited_methods: Some(vec![]),
             stop_conditions: Some(vec!["spread widens".into()]),
+            rollback_conditions: Some(vec!["restore the prior quote width".into()]),
         }
         .build()
         .unwrap(),

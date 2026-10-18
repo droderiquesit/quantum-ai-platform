@@ -7,9 +7,9 @@
 //! gap in it: the test below holds the present state (no manifest in the
 //! workspace declares a broker client of either family) and states what a
 //! bridge would be allowed, so the first one to appear is judged by this
-//! file rather than argued into the tree. `qip-streaming`'s `PubSubTransport`
-//! is a port that returns `Unavailable`, and this test is what keeps it from
-//! quietly acquiring a client.
+//! file rather than argued into the tree. `qip-streaming` once carried a
+//! refusing Pub/Sub port and a `PubSub` transport kind; both are gone, and
+//! `qip_streaming_source_names_no_pub_sub_transport` keeps them gone.
 //!
 //! What it deliberately does not check: Terraform. `modules/secrets` owns a
 //! Pub/Sub topic for secret rotation, which is a Google-managed notification
@@ -259,4 +259,52 @@ fn the_scan_refuses_a_client_outside_the_bridge_and_a_dependency_on_it() {
         "[package]\nname = \"qip-streaming\"\n[dependencies]\n# Pub/Sub lives elsewhere\nserde.workspace = true\n",
     );
     assert!(violations(&[prose]).is_empty());
+}
+
+/// FABRIC-001/1028/8009/10070: `qip-streaming` names no Pub/Sub transport.
+///
+/// A crate-manifest scan cannot see this: the old `TransportKind::PubSub` and
+/// `PubSubTransport` needed no client crate to exist, and while they existed a
+/// deployment could state a managed-broker path between ingestion and the
+/// centre in configuration. The scan reads every source file and refuses the
+/// identifier `PubSub` (which also covers `PubSubBinding`/`PubSubTransport`).
+///
+/// Mutation: append `pub struct PubSubBinding;` to qip-streaming's
+/// `registry.rs` — fails naming that file.
+#[test]
+fn qip_streaming_source_names_no_pub_sub_transport() {
+    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in fs::read_dir(dir).expect("qip-streaming src is readable") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                rust_files(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let src = backend().join("crates/services/qip-streaming/src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    // Premise: the walk reached the crate, including the registry the kind
+    // lived in, so an empty finding is about the source and not the walk.
+    assert!(
+        files.iter().any(|f| f.ends_with("registry.rs")),
+        "the walk did not find qip-streaming's registry.rs under {}",
+        src.display()
+    );
+    assert!(
+        !src.join("pubsub.rs").exists(),
+        "qip-streaming/src/pubsub.rs exists again"
+    );
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|f| fs::read_to_string(f).unwrap().contains("PubSub"))
+        .map(|f| f.display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "qip-streaming names a Pub/Sub transport again; §19.1 puts no managed broker on an \
+         internal path: {offenders:?}"
+    );
 }

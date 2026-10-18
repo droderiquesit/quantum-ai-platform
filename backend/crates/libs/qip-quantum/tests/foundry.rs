@@ -8,6 +8,7 @@ fn complete() -> FamilyDeclaration {
         classical_baseline: Some("annealing".into()),
         objective: Some("variance".into()),
         promotion_threshold: Some(0.01),
+        encoding: Some("PortfolioProblem::to_qubo".into()),
     }
 }
 
@@ -139,4 +140,34 @@ fn a_job_of_each_eligible_class_is_admitted_and_anything_else_is_refused_naming_
         "{}",
         sync.message()
     );
+}
+
+/// R12-QUANT-1076: a family is admitted only with an encoding, refused by
+/// name without one, and the platform's portfolio family declares the QUBO
+/// encoder. A blank string is no more an encoding than a missing one.
+#[test]
+fn a_family_without_an_encoding_is_refused_by_name() -> Result<()> {
+    let mut f = Foundry::new();
+    for missing in [None, Some("  ".to_string())] {
+        let d = FamilyDeclaration {
+            encoding: missing.clone(),
+            ..complete()
+        };
+        let e = f.register(FamilyKind::PortfolioAllocation, &d).unwrap_err();
+        assert!(
+            e.message().contains("without an encoding"),
+            "{missing:?}: {}",
+            e.message()
+        );
+    }
+    assert!(f.status(FamilyKind::PortfolioAllocation).is_none());
+
+    match Foundry::platform()?.status(FamilyKind::PortfolioAllocation) {
+        Some(FamilyStatus::Registered(family)) => assert_eq!(
+            family.encoding(),
+            qip_quantum::foundry::PORTFOLIO_ALLOCATION_ENCODING
+        ),
+        other => panic!("portfolio allocation must be registered: {other:?}"),
+    }
+    Ok(())
 }

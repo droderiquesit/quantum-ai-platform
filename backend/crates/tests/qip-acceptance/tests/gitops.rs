@@ -3241,6 +3241,125 @@ impl TerraformNetworks {
     }
 }
 
+/// The plain switches of a catalogue entry: each `var.x == null ? {} : {` arm
+/// of its `env` merge whose every line is `QIP_Y = var.x`, as `(x, QIP_Y)`. An
+/// arm that transforms the value — the deep brain's connector `join`s a list
+/// and carries a second key — is left out, because its rendering is not the
+/// tfvars value and comparing the two would assert a coincidence.
+fn catalogue_plain_switches(body: &str) -> Vec<(String, String)> {
+    /// The arm being read: its root variable, the keys it renders from that
+    /// variable unchanged, and whether every line so far has been one.
+    struct Arm {
+        variable: String,
+        keys: Vec<(String, String)>,
+        plain: bool,
+    }
+    let mut switches = Vec::new();
+    let mut arm: Option<Arm> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(condition) = trimmed.strip_suffix("== null ? {} : {") {
+            let variable = condition.trim().strip_prefix("var.").map(str::to_string);
+            arm = variable.map(|variable| Arm {
+                variable,
+                keys: Vec::new(),
+                plain: true,
+            });
+            continue;
+        }
+        let Some(Arm {
+            variable,
+            keys,
+            plain,
+        }) = arm.as_mut()
+        else {
+            continue;
+        };
+        if trimmed == "}," {
+            if *plain && !keys.is_empty() {
+                switches.append(keys);
+            }
+            arm = None;
+            continue;
+        }
+        match trimmed.split_once('=') {
+            Some((key, value))
+                if key.trim().starts_with("QIP_") && value.trim() == format!("var.{variable}") =>
+            {
+                keys.push((variable.clone(), key.trim().to_string()));
+            }
+            _ => *plain = false,
+        }
+    }
+    switches
+}
+
+/// A switch an environment commits in its tfvars reaches the service, and one
+/// it leaves null does not.
+///
+/// The parity walk above skips every conditional variable on purpose — an
+/// environment that leaves the root variable null renders none of them — and
+/// in skipping them it stopped checking them at all. A switch set in
+/// `environments/dev/terraform.tfvars` and never written into
+/// `gitops/envs/dev/` passed every suite here: Terraform plans the value,
+/// Argo CD applies the manifest, and the running binary reads its own
+/// default, so the tfvars line reads as configuration the process never
+/// received. The converse is the same lie the other way: a manifest carrying
+/// a switch its tfvars leaves null runs a value no reviewed variable set.
+#[test]
+fn every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value() {
+    let mut committed = 0usize;
+    let mut withheld = 0usize;
+    for environment in environment_directories() {
+        for (key, entry, service, _) in run_services(&environment) {
+            let Some(entry) = entry else { continue };
+            let describe = service.describe();
+            let env = container_env(workload_container(&service, &key));
+            for (variable, name) in catalogue_plain_switches(&entry) {
+                let set = tfvars_value(&environment, &variable).filter(|value| value != "null");
+                let rendered = env
+                    .iter()
+                    .find(|(entry_name, _, _)| *entry_name == name)
+                    .map(|(_, value, _)| value.clone());
+                match set {
+                    Some(value) => {
+                        committed += 1;
+                        assert_eq!(
+                            rendered,
+                            Some(Some(value.clone())),
+                            "{environment}'s tfvars set `{variable} = \"{value}\"`, which the \
+                             catalogue renders as {name}, and {describe} does not carry \
+                             {name}={value}; the binary would run its own default under a \
+                             tfvars line that says otherwise"
+                        );
+                    }
+                    None => {
+                        withheld += 1;
+                        assert!(
+                            rendered.is_none(),
+                            "{describe} sets {name}, and {environment}'s tfvars leave \
+                             `{variable}` null; the value runs without a reviewed variable \
+                             behind it"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Both halves have a case, or the walk proved nothing: no committed switch
+    // means the arm parse found nothing to compare, and no withheld one means
+    // the absence half never ran.
+    assert!(
+        committed > 0,
+        "no environment commits a plain catalogue switch; the arm parse has drifted from \
+         catalogue.tf's shape"
+    );
+    assert!(
+        withheld > 0,
+        "every plain switch is committed in every environment; the absence half never ran"
+    );
+}
+
 /// Every RunService's network interface names the VPC network Terraform
 /// created its subnetwork on.
 ///
@@ -7433,5 +7552,202 @@ fn every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_enviro
     assert!(
         mapped,
         "{KARGO}/README.md does not map the blueprint's integration environment to `test`"
+    );
+}
+
+// --- R12-CICD-10203: no hand-copied model files, no undocumented configuration --
+
+/// Model-weight file extensions. A weight file committed to the tree is a
+/// model deployed by `git add`, outside the registry that records who trained
+/// it, on what, and whether it beat its baseline.
+const MODEL_WEIGHT_EXTENSIONS: [&str; 4] = ["onnx", "pt", "safetensors", "gguf"];
+
+/// Paths under which a weight file would be declared, not hand-copied. Empty
+/// today: the platform commits no weights, and a registry path is added here,
+/// with the ADR that creates it, in the same change that puts a file there.
+const DECLARED_MODEL_REGISTRY_PATHS: [&str; 0] = [];
+
+fn undeclared_model_weights<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
+    paths
+        .filter(|path| {
+            std::path::Path::new(path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    MODEL_WEIGHT_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+                })
+        })
+        .filter(|path| {
+            !DECLARED_MODEL_REGISTRY_PATHS
+                .iter()
+                .any(|registry| path.starts_with(registry))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every file under the repository that is not build output or a dependency
+/// cache, relative to the root with `/` separators.
+fn tracked_looking_files() -> Vec<String> {
+    let root = repository_root();
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !matches!(name.as_str(), ".git" | "target" | "node_modules" | ".next") {
+                    stack.push(path);
+                }
+            } else if let Ok(relative) = path.strip_prefix(&root) {
+                found.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn no_model_weights_are_committed_outside_a_declared_registry_path() {
+    // R12-CICD-10203: "no hand-copied model files". Nothing in the tree held
+    // that: a `.onnx` dropped next to a service would deploy with the image
+    // and appear in no model record.
+    let files = tracked_looking_files();
+    assert!(
+        files.len() > 1000,
+        "only {} files were walked; the scan reached too little of the tree to mean anything",
+        files.len()
+    );
+    assert!(files.iter().any(|path| path == "backend/Cargo.toml"));
+    assert_eq!(
+        undeclared_model_weights(files.iter().map(String::as_str)),
+        Vec::<String>::new(),
+        "a model weight file is committed outside a declared registry path"
+    );
+
+    // The detector sees each extension, in either case, and ignores a near
+    // miss, so the empty result above is a finding and not a blind filter.
+    let fixture = [
+        "services/a/model.onnx",
+        "services/a/model.PT",
+        "x/weights.safetensors",
+        "x/llm.gguf",
+        "x/model.onnx.md",
+        "x/notes-about-onnx.txt",
+    ];
+    assert_eq!(
+        undeclared_model_weights(fixture.into_iter()),
+        vec![
+            "services/a/model.onnx".to_string(),
+            "services/a/model.PT".to_string(),
+            "x/weights.safetensors".to_string(),
+            "x/llm.gguf".to_string(),
+        ]
+    );
+}
+
+/// The `QIP_*` variables a workload manifest source sets: `NAME = value`
+/// map keys and `env_file_variable = "NAME"` in `catalogue.tf`, and
+/// `NAME=value` lines in the execution node's startup template. A heredoc
+/// delimiter or a name in a comment is not a variable and is not matched.
+fn configured_variables(text: &str) -> BTreeSet<String> {
+    let is_name = |word: &str| {
+        word.starts_with("QIP_")
+            && word
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    };
+    let mut names = BTreeSet::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            if is_name(key) {
+                names.insert(key.to_string());
+            }
+            if key == "env_file_variable" {
+                let value = value.trim().trim_matches('"');
+                if is_name(value) {
+                    names.insert(value.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn undocumented_variables(configured: &BTreeSet<String>, docs: &str) -> Vec<String> {
+    let documented: BTreeSet<&str> = docs
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .collect();
+    configured
+        .iter()
+        .filter(|name| !documented.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn every_environment_variable_a_workload_reads_is_documented() {
+    // R12-CICD-10203: "no undocumented emergency configuration". A variable
+    // that Terraform sets and no page names is configuration an operator
+    // learns about from an incident. Before docs/ops/runbooks/environment-variables.md
+    // most of the execution node's and the signer's variables were in that
+    // state, among them the fencing lease and node role, which decide whether
+    // a second primary can exist.
+    let mut configured = BTreeSet::new();
+    for path in [
+        "infrastructure/terraform/catalogue.tf",
+        "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl",
+    ] {
+        configured.extend(configured_variables(&qip_acceptance::read(path)));
+    }
+    assert!(
+        configured.len() > 40,
+        "only {} variables were found; the scan no longer reads the manifests",
+        configured.len()
+    );
+    for known in ["QIP_DEPLOYMENT", "QIP_FENCING_LEASE", "QIP_TLS_MODE"] {
+        assert!(
+            configured.contains(known),
+            "the scan missed a known variable"
+        );
+    }
+    assert!(
+        !configured.contains("QIP_EGRESS_BOOTSTRAP_EOF"),
+        "a heredoc delimiter was read as a variable"
+    );
+
+    let mut docs = String::new();
+    let documents = qip_acceptance::files_with_extension("docs/ops", "md");
+    assert!(documents.len() > 10, "only {} documents", documents.len());
+    for document in documents {
+        docs.push_str(&std::fs::read_to_string(&document).expect("a document is readable"));
+        docs.push('\n');
+    }
+    assert_eq!(
+        undocumented_variables(&configured, &docs),
+        Vec::<String>::new(),
+        "Terraform sets a variable that no page under docs/ops names; add it to \
+         docs/ops/runbooks/environment-variables.md"
+    );
+
+    // The check fails for an undocumented name and passes for a documented
+    // one, on a mutated copy of the manifest text.
+    let mutated = format!(
+        "{}\n          QIP_EMERGENCY_OVERRIDE_UNDOCUMENTED = \"1\"\n",
+        qip_acceptance::read("infrastructure/terraform/catalogue.tf")
+    );
+    assert_eq!(
+        undocumented_variables(&configured_variables(&mutated), &docs),
+        vec!["QIP_EMERGENCY_OVERRIDE_UNDOCUMENTED".to_string()]
     );
 }

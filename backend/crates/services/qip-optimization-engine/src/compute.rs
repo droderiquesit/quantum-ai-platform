@@ -150,11 +150,84 @@ impl Formulation {
     }
 }
 
+/// What shape a task's answer takes, declared by the caller so that the
+/// compiler — not the caller — decides the task's class (R12-QUANT-4048).
+///
+/// Before this the router wrote `TaskClass::CombinatorialOptimisation` into
+/// every spec it compiled, so the class on the journaled record was a
+/// constant asserting a classification nobody had made. Each flag here is a
+/// fact about the answer a caller can check against its own code; the class
+/// follows from them, and a set of facts no single class fits is refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TaskStructure {
+    /// The answer is the choice of variables that minimises a declared
+    /// objective. On its own this is combinatorial optimisation; a graph
+    /// search and a fit may minimise something too, so it is compatible with
+    /// either and contradicts neither.
+    pub minimises_objective: bool,
+    /// The answer is a path, cut or matching in a graph the variables
+    /// describe.
+    pub graph_structured: bool,
+    /// The answer is a value at a future instant.
+    pub predicts_ahead: bool,
+    /// The answer is a set of draws from a distribution rather than a point.
+    pub draws_samples: bool,
+    /// The answer is a similarity between pairs of inputs.
+    pub compares_pairs: bool,
+    /// The answer is the trajectory of a system stepped through time.
+    pub steps_dynamics: bool,
+    /// The answer is an expression rather than a number.
+    pub rewrites_expressions: bool,
+    /// The answer is a set of parameters fitted to data.
+    pub fits_parameters: bool,
+}
+
+impl TaskStructure {
+    /// The one class these facts describe, or a refusal naming why none or
+    /// more than one does. No catch-all: a structure that fits nothing is a
+    /// task the router has no business routing under a guess.
+    pub fn classify(&self) -> Result<TaskClass> {
+        let shapes: Vec<TaskClass> = [
+            (self.graph_structured, TaskClass::GraphSearch),
+            (self.predicts_ahead, TaskClass::Forecasting),
+            (self.draws_samples, TaskClass::Sampling),
+            (self.compares_pairs, TaskClass::KernelMethod),
+            (self.steps_dynamics, TaskClass::Simulation),
+            (self.rewrites_expressions, TaskClass::SymbolicSolving),
+            (self.fits_parameters, TaskClass::ModelTraining),
+        ]
+        .into_iter()
+        .filter_map(|(declared, class)| declared.then_some(class))
+        .collect();
+        match shapes.as_slice() {
+            [] if self.minimises_objective => Ok(TaskClass::CombinatorialOptimisation),
+            [] => Err(Error::invalid(
+                "a task structure declares no shape for its answer, so no class fits it; an \
+                 unclassified task is refused rather than routed under a guess",
+            )),
+            [class] => Ok(*class),
+            several => Err(Error::invalid(format!(
+                "a task structure describes its answer as {} at once; one answer has one \
+                 shape, so the declaration contradicts itself and is refused",
+                several
+                    .iter()
+                    .map(TaskClass::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ))),
+        }
+    }
+}
+
 /// What a caller declares about a task (§11.2 step 2). Every field is an
 /// `Option` so that [`Self::compile`] can refuse the missing one by name.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TaskSpec {
+    /// A class the caller asserts. Optional where `structure` is given, and
+    /// checked against it when both are.
     pub class: Option<TaskClass>,
+    /// The answer's shape, from which [`Self::compile`] infers the class.
+    pub structure: Option<TaskStructure>,
     pub variables: Option<usize>,
     /// Constraint labels. `Some(vec![])` is an unconstrained task, which is a
     /// statement; `None` is a caller that did not say, which is refused.
@@ -200,7 +273,24 @@ fn required<T>(value: Option<T>, name: &str) -> Result<T> {
 impl TaskSpec {
     /// Admit the task or name what is missing.
     pub fn compile(self) -> Result<CompiledTask> {
-        let class = required(self.class, "a task class")?;
+        let class = match (self.class, self.structure) {
+            (declared, Some(structure)) => {
+                let inferred = structure.classify()?;
+                if let Some(declared) = declared
+                    && declared != inferred
+                {
+                    return Err(Error::invalid(format!(
+                        "a task declared as {} has the structure of {}; the compiler classifies \
+                         from the structure, so fix whichever is wrong rather than letting one \
+                         override the other",
+                        declared.as_str(),
+                        inferred.as_str()
+                    )));
+                }
+                inferred
+            }
+            (declared, None) => required(declared, "a task class")?,
+        };
         let variables = required(self.variables, "a variable count")?;
         if variables == 0 {
             return Err(Error::invalid(
@@ -318,6 +408,16 @@ pub struct InformationValue {
     /// it knew in advance whether the substrate would pay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calibration_brier: Option<f64>,
+    /// What the expected gain is worth, in USD micro-units: `expected_gain`
+    /// times the policy's `value_per_unit_gain_micros` (R12-QUANT-4051). The
+    /// dispatch is declined when this is below `cost_micros`, so a job is
+    /// sent only where the improvement it is likely to bring pays for it.
+    #[serde(default)]
+    pub expected_value_micros: u64,
+    /// What the arm had already been billed when the estimate was made, the
+    /// figure the cumulative ceiling is checked against (R12-QUANT-10068).
+    #[serde(default)]
+    pub spent_before_micros: u64,
 }
 
 const fn qpu() -> Substrate {
@@ -347,6 +447,13 @@ pub struct ComputeDecision {
     /// Every candidate as an ensemble feature, not as authority (§11.4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ensemble: Vec<crate::research::EnsembleFeature>,
+    /// What the quantum job this decision submitted was billed, in USD
+    /// micro-units; zero when none was sent. A job is paid for when it is
+    /// sent whether or not its answer is ever read, so this — not a
+    /// measurement folded at harvest — is what the cumulative spend ceiling
+    /// is rebuilt from on replay (R12-QUANT-10068, 9046).
+    #[serde(default)]
+    pub quantum_billed_micros: u64,
     /// The §11.3 research domain the task belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub research_domain: Option<crate::research::ResearchDomain>,

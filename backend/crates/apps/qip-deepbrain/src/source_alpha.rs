@@ -13,8 +13,11 @@
 //! and the engine's own stream printed it:
 //!
 //! - **signal** — the arm's change in price since the previous sample;
-//! - **incumbent** — the own stream's change over the same interval, which is
-//!   what the platform held without the arm;
+//! - **incumbent** — the own stream's change over the same interval, and
+//!   every other arm's change on the same subject over it, which together
+//!   are what the platform held without the arm (R12-DATA-2022). Measured
+//!   against the own stream alone, two connectors duplicating each other
+//!   each looked new, because neither was asked about the other;
 //! - **outcome** — the own stream's change over the *next* interval, which is
 //!   what the arm's signal would have had to anticipate.
 //!
@@ -74,6 +77,24 @@ fn priced(record: &SensedRecord) -> Option<(String, f64)> {
     .filter(|(_, price)| price.is_finite())
 }
 
+/// Another arm's price changes over exactly the senses `senses` names, less
+/// the last interval (the one the outcome leads into), or `None` where that
+/// arm did not print at every one of them. An arm that covers only part of
+/// the window is left out rather than interpolated: a change it never
+/// observed is not information the platform held.
+fn aligned_changes(theirs: &VecDeque<Sample>, senses: &[u64]) -> Option<Vec<f64>> {
+    let prices: BTreeMap<u64, f64> = theirs
+        .iter()
+        .map(|(sense, price, _)| (*sense, *price))
+        .collect();
+    let at: Vec<f64> = senses
+        .iter()
+        .map(|sense| prices.get(sense).copied())
+        .collect::<Option<_>>()?;
+    let changes: Vec<f64> = at.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    Some(changes[..changes.len().saturating_sub(1)].to_vec())
+}
+
 /// One source scored on one subject, or why it could not be.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceScore {
@@ -100,13 +121,21 @@ impl SourceAlphaRound {
     }
 }
 
+/// One aligned sample: the sense it closed, the arm's price, the own
+/// stream's price.
+type Sample = (u64, f64, f64);
+
 /// The desk. See the module documentation.
 #[derive(Clone, Debug, Default)]
 pub struct SourceAlphaDesk {
     every_cycles: u64,
     own: BTreeMap<String, f64>,
     arms: BTreeMap<(String, String), f64>,
-    samples: BTreeMap<(String, String), VecDeque<(f64, f64)>>,
+    /// Per source and subject: the sense the sample closed, the arm's
+    /// price and the own stream's. The sense number is what lines one arm's
+    /// samples up against another's.
+    samples: BTreeMap<(String, String), VecDeque<Sample>>,
+    senses: u64,
     history: SourceAlphaHistory,
 }
 
@@ -141,6 +170,8 @@ impl SourceAlphaDesk {
     /// that went quiet contributes no stale sample; the own stream's last
     /// price stands until it prints again.
     pub fn end_sense(&mut self) {
+        self.senses = self.senses.saturating_add(1);
+        let sense = self.senses;
         for ((source, subject), price) in std::mem::take(&mut self.arms) {
             let Some(own) = self.own.get(&subject).copied() else {
                 continue;
@@ -149,7 +180,7 @@ impl SourceAlphaDesk {
             if window.len() >= WINDOW {
                 window.pop_front();
             }
-            window.push_back((price, own));
+            window.push_back((sense, price, own));
         }
     }
 
@@ -171,22 +202,30 @@ impl SourceAlphaDesk {
                     "{samples} aligned sample(s); a score needs {MIN_SAMPLES}"
                 ))
             } else {
-                let points: Vec<(f64, f64)> = window.iter().copied().collect();
+                let points: Vec<Sample> = window.iter().copied().collect();
                 let changes: Vec<(f64, f64)> = points
                     .windows(2)
-                    .map(|pair| (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1))
+                    .map(|pair| (pair[1].1 - pair[0].1, pair[1].2 - pair[0].2))
                     .collect();
                 let signal: Vec<f64> = changes[..changes.len() - 1]
                     .iter()
                     .map(|change| change.0)
                     .collect();
-                let incumbent: Vec<f64> = changes[..changes.len() - 1]
-                    .iter()
-                    .map(|change| change.1)
-                    .collect();
+                let mut incumbents: Vec<Vec<f64>> = vec![
+                    changes[..changes.len() - 1]
+                        .iter()
+                        .map(|change| change.1)
+                        .collect(),
+                ];
+                let senses: Vec<u64> = points.iter().map(|point| point.0).collect();
+                incumbents.extend(self.samples.iter().filter_map(|((other, on), theirs)| {
+                    (other != source && on == subject)
+                        .then(|| aligned_changes(theirs, &senses))
+                        .flatten()
+                }));
                 let outcome: Vec<f64> = changes[1..].iter().map(|change| change.1).collect();
                 self.history
-                    .score(source, now, &signal, &incumbent, &outcome)
+                    .score_over(source, now, &signal, &incumbents, &outcome)
                     .map_err(|error| error.message().to_string())
             };
             round.scores.push(SourceScore {
@@ -279,6 +318,57 @@ mod tests {
         assert!(gain("duplicate")? < 1e-9, "{round:?}");
         assert!(gain("independent")? > 0.5, "{round:?}");
         assert_eq!(desk.history("duplicate").count(), 1);
+        Ok(())
+    }
+
+    /// R12-DATA-2022. Two connectors that duplicate each other and not the
+    /// own stream: measured against the own stream alone each looked new,
+    /// so the platform would pay for one piece of information twice. Over
+    /// the sources already held, each is the other's incumbent and neither
+    /// earns a gain, while a third, independent arm still does. Mutation:
+    /// drop the `incumbents.extend(..)` of the other arms in `score` — both
+    /// copies score a gain near one and the first assertion fails.
+    #[test]
+    fn two_connectors_duplicating_each_other_both_earn_no_gain_over_the_sources_already_held()
+    -> Result<()> {
+        let own = walk(40, 1);
+        let shared = walk(40, 55);
+        let copy: Vec<f64> = shared.iter().map(|p| 0.5 * p - 7.0).collect();
+        let independent = walk(40, 99);
+        let mut desk = fed(
+            &own,
+            &[
+                ("vendor-a", shared),
+                ("vendor-b", copy),
+                ("vendor-c", independent),
+            ],
+        );
+        let round = desk
+            .maybe_score(1, Timestamp::from_secs(1))
+            .ok_or_else(|| qip_core::error::Error::not_found("no round on the cadence"))?;
+        let gain = |source: &str| -> Result<f64> {
+            round
+                .scores
+                .iter()
+                .find(|score| score.source == source)
+                .and_then(|score| score.outcome.as_ref().ok())
+                .map(|alpha| alpha.incremental_gain)
+                .ok_or_else(|| qip_core::error::Error::not_found(format!("{source} unscored")))
+        };
+        let pairwise = qip_data_finder::source_alpha::incremental_information_gain(
+            &walk(40, 55)
+                .windows(2)
+                .map(|p| p[1] - p[0])
+                .collect::<Vec<_>>(),
+            &own.windows(2).map(|p| p[1] - p[0]).collect::<Vec<_>>(),
+        )?;
+        assert!(
+            pairwise > 0.5,
+            "premise: against the own stream alone the copy looks new ({pairwise})"
+        );
+        assert!(gain("vendor-a")? < 1e-6, "{round:?}");
+        assert!(gain("vendor-b")? < 1e-6, "{round:?}");
+        assert!(gain("vendor-c")? > 0.5, "{round:?}");
         Ok(())
     }
 

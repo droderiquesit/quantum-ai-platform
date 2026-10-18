@@ -7,8 +7,34 @@ output "worker_roles" {
   description = "Every role the worker holds, project-level and bucket-level. The fence of ADR 0102 decision 3: this list is the whole of it."
   value = concat(
     [for m in google_project_iam_member.worker : m.role],
-    [google_storage_bucket_iam_member.worker.role],
+    [
+      google_storage_bucket_iam_member.worker_reads.role,
+      google_storage_bucket_iam_member.worker_writes.role,
+    ],
   )
+}
+
+output "worker_bucket_conditions" {
+  description = "The IAM condition on each of the worker's bucket bindings, read off the resources. The narrowing of ADR 0102's amendment, item 3."
+  value = {
+    reads  = google_storage_bucket_iam_member.worker_reads.condition[0].expression
+    writes = google_storage_bucket_iam_member.worker_writes.condition[0].expression
+  }
+}
+
+output "job_egress" {
+  description = "Read off the Job: ALL_TRAFFIC means every destination is routed through the fleet VPC, whose firewall admits only Google APIs. Null while there is no Job."
+  value       = try(google_cloud_run_v2_job.fleet[0].template[0].template[0].vpc_access[0].egress, null)
+}
+
+output "egress_allowed_ranges" {
+  description = "The destinations the fleet VPC's allow rule admits."
+  value       = google_compute_firewall.allow_google_apis_egress.destination_ranges
+}
+
+output "egress_denied_ranges" {
+  description = "The destinations the fleet VPC's deny rule refuses: everything the allow rule did not admit first."
+  value       = google_compute_firewall.deny_all_egress.destination_ranges
 }
 
 output "bucket_name" {
