@@ -1666,15 +1666,12 @@
   {
     "id": "R12-WORLD-3075",
     "status": "PARTIAL",
-    "current": "qip_world_model::now::NowBrain (now.rs) runs Kalman, particle and robust-median filters per variable across eight scopes. The readings' spread enters measurement variance, so contradiction widens the posterior. Each update emits a BeliefDelta. The kernel's UNDERSTAND stage runs it every cycle (understand_now, backend/crates/runtime/qip-kernel/src/platform.rs:10935, called at :10891). The inputs are bar history (instrument, sector, region, venue, global; liquidity from spreads), portfolio exposure, kill switch and blind spots (system health), macro surprises (economies) and company fundamentals. qip-deepbrain routes the surprises (apps/qip-deepbrain/src/now.rs).",
+    "current": "NowStage::run feeds a central bank's published policy-rate surprise (series POLICY_RATE.*) into policy_rate_surprise in the policy partition and every other macro surprise into the economy's macro_surprise; company, economy, portfolio, infrastructure and market scopes were fed already. The supply-chain domain is still unfed.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10935",
-      "backend/crates/runtime/qip-kernel/src/now_stage.rs:22-29",
-      "backend/crates/services/qip-world-model/tests/now_brain.rs::a_contradictory_pair_of_sources_widens_the_posterior_and_an_agreeing_pair_does_not",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::every_cycle_steps_the_now_brain_and_journals_compact_deltas_citing_manifests",
-      "backend/crates/runtime/qip-kernel/tests/now_lattice.rs::an_estimator_outage_shrinks_the_ensemble_and_the_now_state_still_updates"
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::world_observations POLICY_RATE_SERIES_PREFIX",
+      "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_policy_rate_surprise_moves_the_policy_belief_and_not_the_economys"
     ],
-    "gap": "Supply chains and policy have a domain but no feed (now_stage.rs:27-29 says so), so those latent states are not estimated. Positioning is the platform's own book, not market positioning.",
+    "gap": "Supply-chain latent state has a domain and no feed: RelationshipKind::Supplies edges are asserted only in tests (world.rs, platform.rs fixtures), no connector produces supplier edges, so second_order_exposure over them would measure a graph nobody ingests. Positioning is the platform's own book, not market positioning.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1682,10 +1679,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test",
+    "verification": "cargo test -p qip-kernel --test now_state",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Substantially advanced; the gap narrows to the two unfed domains."
+    "notes": "Round-2 independent audit, 2026-10-11: Substantially advanced; the gap narrows to the two unfed domains. 2026-10-18 lane L06: policy half landed; mutation (policy routing disabled) failed the new test with no policy belief. Kept PARTIAL for the supply-chain scope."
   },
   {
     "id": "R12-WORLD-3076",
@@ -1827,7 +1824,7 @@
       "backend/crates/runtime/qip-kernel/src/now_stage.rs:487-529",
       "qip-world-model/tests/now_brain.rs::a_belief_delta_carries_moments_and_manifests_and_a_raw_payload_is_refused"
     ],
-    "gap": "Cite real manifest entries (connector manifest/source id plus fetch digest) and a resolver from ManifestRef to its source reference, with a test that each delta's citation resolves.",
+    "gap": "Each NOW delta cites a manifest name minted inside the kernel (kernel/bar-history, cycle-N), not a connector manifest entry, and the reference ledger (references.rs DataReferenceRecorded) is keyed by fetch digest and source id, which no NOW reading carries. A resolver that refused an unresolvable citation would refuse every delta today; the readings must first carry the digest of the fetch they came from, through the world model feature store.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1840,7 +1837,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL."
+    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. 2026-10-18 lane L06: not implemented; the closure as graded would refuse every NOW delta. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-WORLD-3082",
@@ -2031,7 +2028,7 @@
       "services/qip-learning-engine/src/tournament.rs::tests::a_thousand_forecasters_forecast_one_question_and_each_is_scored",
       "runtime/qip-kernel/tests/model_tournament.rs::a_hypothesis_opens_a_question_many_forecasters_answer_and_a_later_cycle_scores_each"
     ],
-    "gap": "A production population of thousands of independent specialist and temporary models. The live population is detector classes plus panel analysts (tens), and no temporary forecaster is admitted outside tests.",
+    "gap": "A production population of thousands of independent specialist and temporary models. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -2042,7 +2039,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Up from MISSING. The registry and scoring are real at scale; the population is not."
+    "notes": "Round-2 independent audit, 2026-10-11: Up from MISSING. The registry and scoring are real at scale; the population is not. 2026-10-18 lane L06: not implemented; the grader closure conflates a federation branch with a forecaster. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-3090",
@@ -2056,7 +2053,7 @@
       "services/qip-learning-engine/src/tournament.rs::tests::a_regime_change_predicted_to_break_a_forecaster_reweights_the_ensemble",
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::influence_among"
     ],
-    "gap": "Detectors are not metered, so their cost and latency enter as zero and those factors are unmeasured for them; the aggregate feeds no decision.",
+    "gap": "Detectors are not metered: a detector is an in-cycle deterministic function whose hypothesis is formed at the pass instant (formed_at equals as_of), so a measured latency would be zero or a wall-clock reading the log could not replay, and no compute cost is metered for it. The aggregate still feeds no decision. Needs a replayable meter on the detector run (counted work, not wall time) before cost and latency can enter as measured.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2067,7 +2064,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The information factor can only penalise negative information, never reward positive or penalise zero. a_forecaster_duplicating_another_adds_no_information asserts the information_value score, not the influence weight. The tournament is advisory by its own doc (model_tournament.rs:51-56), so 'influence' moves a recorded aggregate, not a decision. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: The information factor can only penalise negative information, never reward positive or penalise zero. a_forecaster_duplicating_another_adds_no_information asserts the information_value score, not the influence weight. The tournament is advisory by its own doc (model_tournament.rs:51-56), so 'influence' moves a recorded aggregate, not a decision. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; the grader closure (meter elapsed time per detector) would journal a non-replayable figure. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-3091",
@@ -2147,7 +2144,7 @@
       "backend/crates/services/qip-world-model/tests/spawning.rs",
       "backend/crates/services/qip-world-model/tests/federation.rs:370"
     ],
-    "gap": "Production spawning of ephemeral specialists.",
+    "gap": "Production spawning of ephemeral specialists. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2158,7 +2155,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-3095",

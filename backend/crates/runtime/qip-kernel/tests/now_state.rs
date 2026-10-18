@@ -932,3 +932,61 @@ fn a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it
         );
     }
 }
+
+/// Policy had a domain and no feed, and a central bank's published rate was
+/// read into the economy's one `macro_surprise` belief beside inflation and
+/// growth prints, so a rate decision and a CPI print tightened the same
+/// number. A policy-rate series' surprise now moves `policy_rate_surprise` in
+/// the policy partition, and the economy partition holds none of it.
+///
+/// Mutation: drop the `POLICY_RATE_SERIES_PREFIX` test in `world_observations`
+/// — the surprise lands in the economy partition and the first assertion
+/// fails.
+#[test]
+fn a_policy_rate_surprise_moves_the_policy_belief_and_not_the_economys() {
+    let mut platform = platform();
+    let reference = start().saturating_sub(Duration::from_days(20));
+    let ingested = start().saturating_sub(Duration::from_days(1));
+    observe_release(
+        &mut platform,
+        release("US.CPI.YOY", reference, ingested, 3.4, 3.1),
+    );
+    observe_release(
+        &mut platform,
+        release("POLICY_RATE.US.EFFR", reference, ingested, 5.5, 5.25),
+    );
+    platform.run_cycle(start());
+
+    let store = platform.now_brain().brain().store();
+    let policy_key = VariableKey::new(Scope::global(), "policy_rate_surprise").unwrap();
+    let policy = store
+        .get(
+            &PartitionKey::new(Domain::Policy, "global").unwrap(),
+            &policy_key,
+        )
+        .cloned()
+        .expect("the policy-rate surprise reached no policy belief");
+    assert!(
+        policy
+            .manifests
+            .iter()
+            .all(|m| m.source == "POLICY_RATE.US.EFFR"),
+        "the policy belief rests on another series: {:?}",
+        policy.manifests
+    );
+    let economy = macro_belief(&platform).expect("premise: the CPI surprise reached the economy");
+    assert!(
+        economy.manifests.iter().all(|m| m.source == "US.CPI.YOY"),
+        "the policy rate leaked into the economy belief: {:?}",
+        economy.manifests
+    );
+    assert!(
+        store
+            .get(
+                &PartitionKey::new(Domain::Economy, "global").unwrap(),
+                &policy_key
+            )
+            .is_none(),
+        "a policy variable was written to the economy partition"
+    );
+}

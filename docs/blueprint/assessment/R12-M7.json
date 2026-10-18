@@ -4413,7 +4413,7 @@
       "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage"
     ],
-    "gap": "Production admits only the detector and panel analysts; no path spawns specialist or temporary models, so thousands compete only in a library test.",
+    "gap": "Production admits only the detector and panel analysts; no path spawns specialist or temporary models. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4424,7 +4424,7 @@
     "verification": "new acceptance suite",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-TICK-7199",

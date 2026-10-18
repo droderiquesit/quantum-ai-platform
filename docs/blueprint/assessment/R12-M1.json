@@ -4546,7 +4546,7 @@
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model"
     ],
-    "gap": "Truth-loop order is only proven by a test-local pipeline; no global-scout stage, and the kernel cycle does not call the quality/entitlement gate before the world model.",
+    "gap": "Truth-loop order is proven by a test-local pipeline; no global-scout stage. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4557,7 +4557,7 @@
     "verification": "cargo test -p qip-acceptance --test truth_loop",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model. 2026-10-18 lane L06: not implemented; the closure needs ConnectorFeed to return evidence ids with its records, a change in qip-market-ingestion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-TICK-1201",

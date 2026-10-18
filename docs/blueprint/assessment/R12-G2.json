@@ -700,7 +700,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:341-465 EvolutionEngine",
       "backend/crates/services/qip-evolution/tests/evolution.rs"
     ],
-    "gap": "Score against ForecastState; tie challenger promotion to tournament comparison.",
+    "gap": "Score against ForecastState; tie challenger promotion to tournament comparison. The tournament scores forecasters on resolved questions (probabilities and, since ed9e3e8f, quantiles); qip-evolution promotes strategy challengers on their own backtest and lifecycle evidence. No identity joins a strategy challenger to a tournament forecaster, so a promotion gate on a tournament win would have nothing to compare, and ForecastState scoring needs the contract produced by a forecaster first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -711,7 +711,7 @@
     "verification": "cargo test -p qip-evolution",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; no key joins a strategy challenger to a forecaster. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-9031",
