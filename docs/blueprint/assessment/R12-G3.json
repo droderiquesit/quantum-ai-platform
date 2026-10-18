@@ -1002,7 +1002,7 @@
       "infrastructure/terraform/modules/registry/main.tf:33 immutable_tags = true",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4801 the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it"
     ],
-    "gap": "Cross-region replication of critical artifacts.",
+    "gap": "Not built. A second-region replica of the images repository is a new paid resource plus a copy step in deploy.yml (a protected path) so the replica holds the signed digests; moving the existing repository to a multi-region location instead forces its replacement, which would delete the repository holding the signed images. Needs an owner decision on replica versus multi-region, and the deploy.yml step, before a tftest is meaningful.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1013,7 +1013,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading modules/registry/main.tf; status unchanged."
   },
   {
     "id": "R12-SEC-10047",
