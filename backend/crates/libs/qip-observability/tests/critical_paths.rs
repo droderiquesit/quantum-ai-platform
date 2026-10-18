@@ -9,7 +9,7 @@
 use qip_core::Timestamp;
 use qip_observability::Metrics;
 use qip_observability::aiops::{EntityGraph, EntityKey, Signal, SignalClass};
-use qip_observability::critical_paths::{critical_path_slos, evaluate, record};
+use qip_observability::critical_paths::{critical_path_slos, evaluate, record, service_objectives};
 use qip_observability::metrics::{labels, names};
 
 fn status_of<'a>(
@@ -62,12 +62,16 @@ fn recording_writes_observations_for_every_objective_and_a_budget_only_for_a_mea
     let source = Metrics::new("source");
     source.count(names::QUANTUM_JOBS, labels([("outcome", "failed")]));
     let statuses = evaluate(&source.snapshot());
-    assert_eq!(statuses.len(), critical_path_slos().len());
+    // The eight critical paths and the service objectives beside them.
+    assert_eq!(
+        statuses.len(),
+        critical_path_slos().len() + service_objectives().len()
+    );
 
     let sink = Metrics::new("sink");
     record(&sink, &statuses);
     let snapshot = sink.snapshot();
-    for path in critical_path_slos() {
+    for path in critical_path_slos().into_iter().chain(service_objectives()) {
         assert!(
             snapshot
                 .gauge(

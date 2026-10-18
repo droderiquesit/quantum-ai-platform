@@ -19657,6 +19657,10 @@ impl Platform {
         // covered when the pass began, and a candidate this call registers
         // must not erase the reason it was assessed.
         let targets = self.discovery_targets(now)?;
+        // The lead ledger's current ranking, so a source is scored on how far
+        // its facts have led the same fact elsewhere and not only on the age
+        // of the sample it was probed with (R12-DATA-2023).
+        self.data_finder.observe_leads(&self.source_leads.ranking());
         let decisions = self.data_finder.assess(candidates, probe, now)?;
         // Before the catalogue, and raised on failure: see
         // `source_lifecycle` for why a move the log does not hold must not
