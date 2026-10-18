@@ -2311,14 +2311,17 @@
   },
   {
     "id": "R12-RISK-4105",
-    "status": "PARTIAL",
-    "current": "Each DECIDE runs the Hedge Brain (platform.rs:14906 -> run_hedge_brain, :16605-16640), whose ExposureSurvey reads drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail (backend/crates/runtime/qip-kernel/src/hedge.rs:179-230). Greeks are delta only, with gamma and vega reported unmeasured; correlation is one mean pairwise figure.",
+    "status": "COMPLETE",
+    "current": "Each DECIDE runs the Hedge Brain (Platform::run_hedge_brain -> hedge::plan), whose ExposureSurvey reads drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail. Gamma and vega are a measured Some(0.0) when every held position is a catalogued linear instrument (hedge::is_linear: stock, preferred, receipt, ETF, index, future, forward, FX spot/forward, commodity spot/future) and None, named in unmeasured(), when the book holds anything else or an instrument absent from the catalogue. Correlation is reported as the mean and as the strongest held pairs (ExposureSurvey::pair_correlations, at most 16, by absolute value with name tie-break).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/hedge.rs:179-230",
-      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reads_every_listed_axis_and_names_what_it_cannot_measure",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14906"
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::book_option_greeks",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::is_linear",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::correlations",
+      "runtime/qip-kernel/src/hedge.rs::tests::a_linear_book_has_a_measured_zero_gamma_and_vega_and_anything_else_has_none",
+      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reports_each_correlated_pair_and_not_only_their_mean",
+      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reads_every_listed_axis_and_names_what_it_cannot_measure"
     ],
-    "gap": "Measure the book's gamma and vega (and per-pair correlation exposure) rather than reporting them unmeasured.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2326,10 +2329,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib hedge::",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Lane commit efb437af states gamma/vega unmeasured; confirmed."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations that fired: forcing the linear branch off -> the measured-zero assertion fails; admitting Option in is_linear -> the not-known-linear loop fails; replacing the catalogue-type test with true -> the hedge-fund holding reads measured and the test fails; reversing the pair sort and clearing the pairs each fail the pair test; all restored (qip-kernel: 957 passed, 0 failed). Limit stated: the catalogue carries no per-position option sensitivities, so a book that holds an option reports gamma and vega unmeasured, not computed; the committed universe holds only common stock, so every running root measures them as zero."
   },
   {
     "id": "R12-RISK-4106",
