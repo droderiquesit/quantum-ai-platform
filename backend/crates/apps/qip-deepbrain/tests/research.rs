@@ -9,9 +9,10 @@
 
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::config::DeepBrainConfig;
+use qip_deepbrain::evolution::{EvolutionConfig, EvolutionEngine};
 use qip_deepbrain::node::{self, Loops};
 use qip_deepbrain::operations::{CapabilitySwitch, IterationFacts, Operations, quantum_outcome};
-use qip_deepbrain::research::{ResearchConfig, ResearchLoop};
+use qip_deepbrain::research::{ResearchConfig, ResearchLoop, limit_approach_signals};
 use qip_deepbrain::status::NodeStatus;
 use qip_financial::quality::DataQuality;
 use qip_financial::universe::Universe;
@@ -19,11 +20,12 @@ use qip_kernel::platform::SolverRoutingJournal;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
+use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
 use qip_observability::Telemetry;
 use qip_observability::aiops::{Effector, EntityKey, SignalClass};
 use qip_observability::metrics::{labels, names};
 use qip_optimization_engine::QuantumDispatch;
-use qip_risk::limits::LimitSet;
+use qip_risk::limits::{LimitSet, RiskState};
 use qip_storage::{ChainArchive, MemoryKeyValueStore};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::AtomicBool;
@@ -393,6 +395,7 @@ fn facts(at: Timestamp, ms: f64, drifted: &[String]) -> IterationFacts<'_> {
         problems: 0,
         anomalies: Some(2),
         drifted,
+        package_promoted: false,
     }
 }
 
@@ -582,9 +585,312 @@ fn a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_ris
         BTreeSet::from(["adversarial", "forecast", "risk", "sensing"]),
         "the surprise wakes exactly these four"
     );
+    // A wake is work (R12-AMBIENT-3079): each of the four specialists was
+    // handed the surprise as a research question the desk now holds under
+    // its registered brain, not only ticked on a counter. Mutation: restore
+    // the bare `continue` after the counter in `ResearchLoop::sweep_over`
+    // — `wake_items` stays empty and the first assertion fails.
+    let given: BTreeSet<&str> = round.wake_items.keys().copied().collect();
+    assert_eq!(given, woken, "every woken specialist was given an item");
+    for (specialist, question) in &round.wake_items {
+        let entry = loop_
+            .desk()
+            .queue()
+            .entry(question)
+            .unwrap_or_else(|| panic!("the {specialist} specialist's question is queued"));
+        let brain = &loop_.brains()[specialist];
+        assert!(
+            entry
+                .origin()
+                .is_some_and(|gap| gap.signal.evidence.contains(&format!("brain:{}", brain.id))),
+            "the item names the brain that owns it: {entry:?}"
+        );
+    }
     // Read once: a second sweep with no new cycle wakes nothing again.
     let again = loop_
         .sweep(&platform, after, &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(again.now_surprises, 0);
+}
+
+/// The pre-limit sentinel (R12-AMBIENT-3070): a book at 90% of its leverage
+/// limit — inside it, past the conservative set's 85% warning threshold —
+/// raises one risk-review signal naming the limit, and the same book at 10%
+/// raises nothing. Through the sweep, a fresh platform's empty book raises
+/// none while its limits are evaluated, so the quiet case is a measured
+/// quiet and not a sentinel that never ran. Mutation: read `check.breaches`
+/// filtered to `Severity::Breach` instead of `check.warnings()` — the 90%
+/// book raises nothing and the first assertion fails.
+#[test]
+fn a_book_at_ninety_percent_of_a_limit_raises_a_risk_review_and_at_ten_percent_raises_nothing() {
+    let limits = LimitSet::conservative_default();
+    let equity = Decimal::from_int(1_000_000);
+    let book = |gross: f64| RiskState {
+        equity,
+        cash: equity,
+        gross_exposure: Decimal::from_f64(gross).unwrap_or_else(|| panic!("a decimal")),
+        net_exposure: Decimal::ZERO,
+        ..RiskState::default()
+    };
+    // Leverage 1.35 against a limit of 1.5 is 90% in use.
+    let near = limits.check(&book(1_350_000.0));
+    assert!(near.evaluated > 0, "premise: limits were evaluated");
+    assert!(
+        !near.is_blocked(),
+        "premise: 90% of a limit is not a breach"
+    );
+    let mut issued = 0;
+    let raised = limit_approach_signals(&near, start(), Duration::from_hours(1), &mut issued)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let leverage: Vec<_> = raised
+        .iter()
+        .filter(|(signal, _)| signal.subject() == "limit:leverage")
+        .collect();
+    assert_eq!(
+        leverage.len(),
+        1,
+        "one review for the approached limit: {raised:?}"
+    );
+    let (signal, utilisation) = leverage[0];
+    assert!((utilisation - 0.9).abs() < 1e-9, "{utilisation}");
+    assert_eq!(signal.class(), qip_contracts::ambient::SignalClass::Risk);
+    assert_eq!(
+        signal.wake_targets(),
+        &[qip_contracts::ambient::Pathway::RiskReview]
+    );
+    assert_eq!(signal.severity_bp(), 9_000);
+
+    let far = limits.check(&book(150_000.0));
+    let mut issued = 0;
+    let quiet = limit_approach_signals(&far, start(), Duration::from_hours(1), &mut issued)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        quiet.iter().all(|(s, _)| s.subject() != "limit:leverage"),
+        "10% of a limit is not approaching it: {quiet:?}"
+    );
+
+    let platform = platform();
+    assert!(
+        platform
+            .limits()
+            .check(&platform.risk_state_from(platform.risk_figures()))
+            .evaluated
+            > 0
+    );
+    let round = research(BTreeMap::new())
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        round.limit_warnings.is_empty(),
+        "{:?}",
+        round.limit_warnings
+    );
+}
+
+/// The evolution round that ran in a cycle's gap rides on that cycle's
+/// sweep record (R12-EXPAND-1117): where the engine turned, the research
+/// round names the subject it searched; where it did not, the record says
+/// so with `None` rather than a stale trace. Mutation: drop the
+/// `round.evolution = Some(..)` wiring in `node::run_with` — the trace is
+/// never set and the `traced` count stays at zero.
+#[test]
+fn a_sweep_record_carries_the_evolution_round_that_preceded_it() {
+    let manual = Arc::new(ManualClock::new(start()));
+    let clock: Arc<dyn Clock> = manual.clone();
+    let config = PlatformConfig::default();
+    let seed = config.seed;
+    let context = Context::new(clock.clone(), seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    // The synthetic feed is read up to the clock, so the clock is advanced
+    // a minute per cycle below: one bar per minute, and the search has the
+    // two bars it needs within the first cycles. The wall-clock interval is
+    // a millisecond so the loop does not wait between them.
+    let node_config = DeepBrainConfig {
+        cycle_interval: Duration::from_millis(1),
+        max_cycles: Some(12),
+        ..DeepBrainConfig::default()
+    };
+    let environment = SyntheticEnvironment::demo(
+        start(),
+        EnvironmentConfig {
+            seed,
+            step: Duration::from_mins(1),
+            ..EnvironmentConfig::default()
+        },
+    );
+    let mut engine = EvolutionEngine::over_synthetic(
+        EvolutionConfig {
+            every_cycles: 1,
+            minimum_bars: 2,
+            candidates: 2,
+            challengers: 1,
+            ..EvolutionConfig::default()
+        },
+        environment,
+        seed,
+        start(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let roster = qip_deepbrain::roster::clear(start()).unwrap_or_else(|e| panic!("{e}"));
+    let status = Arc::new(Mutex::new(NodeStatus::opening(
+        &roster,
+        &node_config,
+        start(),
+    )));
+    let archive = ChainArchive::open(Arc::new(MemoryKeyValueStore::default()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut research = research(BTreeMap::new());
+    let mut turned = 0;
+    let mut traced = 0;
+    node::run_with(
+        &mut platform,
+        &archive,
+        &node_config,
+        &status,
+        &Arc::new(AtomicBool::new(false)),
+        &clock,
+        0,
+        Some(&mut engine),
+        Loops {
+            desk: None,
+            research: Some(&mut research),
+            operations: None,
+            tick: None,
+            permissions: None,
+            ambient: None,
+            agency: None,
+        },
+        |outcome| {
+            manual.advance(Duration::from_mins(1));
+            let round = outcome
+                .research
+                .as_ref()
+                .unwrap_or_else(|| panic!("research sweeps every cycle"));
+            match &outcome.evolution {
+                Some(summary) => {
+                    turned += 1;
+                    let trace = round
+                        .evolution
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("a turn is on the sweep record"));
+                    assert_eq!(trace.subject, summary.subject);
+                    assert_eq!(trace.proposed, summary.proposed);
+                    assert_eq!(trace.registered, summary.registered);
+                    traced += 1;
+                }
+                None => assert!(round.evolution.is_none(), "no turn, no trace"),
+            }
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        turned >= 1,
+        "premise: the engine turned at least once in twelve cycles"
+    );
+    assert_eq!(traced, turned);
+}
+
+/// R12-OBS-9151: the central plane carries model freshness. The age of the
+/// last promoted model package is absent until one is promoted, grows with
+/// every iteration after, and a newer promotion resets it. A gauge written
+/// only at a promotion would read zero for ever after it, the stalest model
+/// looking the freshest.
+///
+/// Mutation: drop the `self.package_promoted_at = Some(at)` assignment in
+/// `Operations::observe`; the gauge never appears.
+#[test]
+fn a_promoted_model_package_resets_the_freshness_gauge_and_it_ages_between_promotions() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    let age = || {
+        metrics
+            .snapshot()
+            .gauge(names::MODEL_PACKAGE_AGE, &labels([]))
+    };
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let at = |hours: i64| start().saturating_add(Duration::from_hours(hours));
+    let observe = |ops: &mut Operations, at: Timestamp, promoted: bool| {
+        let facts = IterationFacts {
+            package_promoted: promoted,
+            ..facts(at, 10.0, &[])
+        };
+        ops.observe(&platform, &facts)
+            .unwrap_or_else(|e| panic!("{e}"));
+    };
+
+    observe(&mut ops, at(0), false);
+    assert_eq!(age(), None, "no package promoted, no freshness figure");
+
+    observe(&mut ops, at(1), true);
+    assert_eq!(age(), Some(0.0));
+    observe(&mut ops, at(3), false);
+    assert_eq!(age(), Some(7_200.0), "the package ages between promotions");
+
+    observe(&mut ops, at(4), true);
+    assert_eq!(age(), Some(0.0), "a newer promotion resets the age");
+}
+
+/// Launched information requests reach the Scout Fabric (R12-AMBIENT-9033):
+/// scout jobs handed to the discovery desk wait in hand-off order and the
+/// desk's next pass reads each job's entities as discovery targets after
+/// the platform's own, each once, and takes the queue. Mutation: drop the
+/// scout loop in `DiscoveryDesk::maybe_run` — the entities are not targeted
+/// and the assertion fails.
+#[test]
+fn a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass() {
+    let mut platform = platform();
+    let mut desk = qip_deepbrain::discovery::DiscoveryDesk::new(
+        qip_deepbrain::discovery::DiscoveryConfig {
+            every_cycles: 1,
+            ..qip_deepbrain::discovery::DiscoveryConfig::default()
+        },
+        vec![],
+    );
+    let job = |id: &str, rank_bp: u32, entities: &[&str]| qip_deepbrain::research::ScoutRequest {
+        request_id: id.to_string(),
+        question: format!("question {id}"),
+        rank_bp,
+        entities: entities.iter().map(|e| (*e).to_string()).collect(),
+    };
+    let jobs = vec![
+        job("info-b", 6_000, &["venue:XSIM"]),
+        job("info-a", 3_000, &["venue:XSIM", "class:Equity"]),
+    ];
+    desk.hand_off(&jobs);
+    let queued: Vec<_> = desk.scout_queue().cloned().collect();
+    assert_eq!(queued, jobs, "the desk holds the jobs in hand-off order");
+
+    let before: BTreeSet<String> = platform
+        .discovery_targets(start())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .map(|t| t.entity)
+        .collect();
+    assert!(
+        !before.contains("venue:XSIM") && !before.contains("class:Equity"),
+        "premise: the platform does not target them itself: {before:?}"
+    );
+    let pass = desk
+        .maybe_run(&mut platform, 1, start())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .unwrap_or_else(|| panic!("the pass runs on its cadence"));
+    let targeted: Vec<&str> = pass
+        .targets
+        .iter()
+        .map(|t| t.entity.as_str())
+        .filter(|e| e.starts_with("venue:") || e.starts_with("class:"))
+        .collect();
+    assert_eq!(
+        targeted,
+        ["venue:XSIM", "class:Equity"],
+        "each once, in order"
+    );
+    assert_eq!(desk.scout_queue().count(), 0, "the pass took the queue");
 }

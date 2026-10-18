@@ -70,6 +70,74 @@ pub fn incremental_information_gain(candidate: &[f64], incumbent: &[f64]) -> Res
     Ok(1.0 - r * r)
 }
 
+/// A perfect fit's `R²` falls short of one by roundoff only; an incumbent
+/// its predecessors explain past this adds no column worth fitting.
+const COLLINEAR_R_SQUARED: f64 = 1.0 - 1e-9;
+
+/// The share of `candidate`'s variation that none of `incumbents` already
+/// carries, together, in `[0, 1]`: `1 - R²` of `candidate` regressed on all
+/// of them by ordinary least squares (R12-DATA-2022).
+///
+/// The pairwise [`incremental_information_gain`] measures a source against
+/// one series. Measured against the own stream alone, two connectors that
+/// duplicate each other both look new — each is independent of the stream
+/// and neither is asked about the other — and the platform pays twice for
+/// one piece of information. Here every series the platform already holds
+/// is one column, so a duplicate of any of them, or of a combination of
+/// them, scores near zero.
+///
+/// An incumbent the earlier columns already explain is left out rather than
+/// fitted: it carries nothing the fit lacks, and its column would make the
+/// normal equations singular. With one incumbent this equals the pairwise
+/// gain. Refuses a constant candidate, misaligned series and too few
+/// observations for the columns kept, as the pairwise score does.
+pub fn incremental_information_gain_over(
+    candidate: &[f64],
+    incumbents: &[Vec<f64>],
+) -> Result<f64> {
+    let Some((first, rest)) = incumbents.split_first() else {
+        return Err(Error::invalid(
+            "incremental information gain: no incumbent series; a gain over nothing is not a measurement",
+        ));
+    };
+    // The pairwise score checks lengths, finiteness, the minimum count and a
+    // constant candidate; asking it first keeps those refusals word for word.
+    let pairwise = incremental_information_gain(candidate, first)?;
+    let mut kept: Vec<&[f64]> = vec![first.as_slice()];
+    for series in rest {
+        if series.len() != candidate.len() {
+            return Err(Error::invalid(format!(
+                "incremental information gain: an incumbent has {} observations and the \
+                 candidate {}; align them before scoring",
+                series.len(),
+                candidate.len()
+            )));
+        }
+        if series.iter().any(|v| !v.is_finite()) {
+            return Err(Error::invalid(
+                "incremental information gain: a series holds a non-finite value",
+            ));
+        }
+        if r_squared(series, &kept)? < COLLINEAR_R_SQUARED {
+            kept.push(series.as_slice());
+        }
+    }
+    if kept.len() == 1 {
+        return Ok(pairwise);
+    }
+    // R² is in [0, 1] by construction; the clamp removes roundoff only.
+    Ok((1.0 - r_squared(candidate, &kept)?).clamp(0.0, 1.0))
+}
+
+/// `R²` of `y` on the columns, by ordinary least squares with an intercept.
+fn r_squared(y: &[f64], columns: &[&[f64]]) -> Result<f64> {
+    let rows: Vec<Vec<f64>> = (0..y.len())
+        .map(|row| columns.iter().map(|column| column[row]).collect())
+        .collect();
+    let design = qip_numerics::matrix::Matrix::from_rows(&rows)?;
+    Ok(qip_numerics::stats::ols(&design, y)?.r_squared)
+}
+
 /// How well the source's signal anticipated the outcome that followed it, in
 /// `[-1, 1]` (the information coefficient). Negative means the source was
 /// followed by the opposite of what it said, which is worth knowing and is
@@ -107,12 +175,25 @@ impl SourceAlphaHistory {
         incumbent: &[f64],
         outcome: &[f64],
     ) -> Result<SourceAlpha> {
+        self.score_over(source, at, signal, &[incumbent.to_vec()], outcome)
+    }
+
+    /// [`Self::score`] against every series the platform already holds, by
+    /// [`incremental_information_gain_over`].
+    pub fn score_over(
+        &mut self,
+        source: &str,
+        at: Timestamp,
+        signal: &[f64],
+        incumbents: &[Vec<f64>],
+        outcome: &[f64],
+    ) -> Result<SourceAlpha> {
         if source.trim().is_empty() {
             return Err(Error::invalid("a score is recorded against a named source"));
         }
         let score = SourceAlpha {
             at,
-            incremental_gain: incremental_information_gain(signal, incumbent)?,
+            incremental_gain: incremental_information_gain_over(signal, incumbents)?,
             realised_contribution: realised_contribution(signal, outcome)?,
         };
         let series = self.by_source.entry(source.to_string()).or_default();

@@ -228,6 +228,19 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
     }
 }
 
+/// The model references a learning round found past their own drift
+/// threshold. One derivation for both readers — the research sweep, which
+/// raises a gap per model, and the operations timeline — so the two cannot
+/// disagree about which models drifted.
+fn drifted_references(learning: Option<&crate::learning::LearningRound>) -> Vec<String> {
+    learning
+        .iter()
+        .flat_map(|round| round.drift.iter())
+        .filter(|d| d.above_threshold)
+        .map(|d| d.reference.clone())
+        .collect()
+}
+
 /// A monotonic elapsed time as the platform's own [`Duration`].
 ///
 /// Saturating rather than wrapping: a measurement that overflowed would report
@@ -539,6 +552,7 @@ pub fn run_with(
         if let Some(research) = loops.research.as_deref_mut()
             && !shed
         {
+            research.note_drifted_models(drifted_references(outcome.learning.as_ref()));
             let (licensed, eligible) = evolution
                 .as_deref()
                 .and_then(|engine| engine.discovery_desk())
@@ -554,6 +568,33 @@ pub fn run_with(
                 Err(error) => outcome
                     .side_failures
                     .push(format!("research: {}", error.message())),
+            }
+            // Every request the sweep launched goes to the discovery desk as a
+            // scout job, in rank order (R12-AMBIENT-9033); the desk's next
+            // pass looks for evidence on what the sweep paid to ask about.
+            if let (Some(round), Some(desk)) = (
+                outcome.research.as_ref(),
+                evolution
+                    .as_deref_mut()
+                    .and_then(|engine| engine.discovery_desk_mut()),
+            ) {
+                desk.hand_off(&round.scouted);
+            }
+            // The evolution round that preceded this sweep in the same gap
+            // rides on the sweep record (R12-EXPAND-1117), so a reader of the
+            // research round sees the challengers minted and the champion
+            // crowned that its research followed, without opening the
+            // desk's own log.
+            if let (Some(round), Some(evolution)) =
+                (outcome.research.as_mut(), outcome.evolution.as_ref())
+            {
+                round.evolution = Some(crate::research::EvolutionTrace {
+                    subject: evolution.subject.clone(),
+                    proposed: evolution.proposed,
+                    registered: evolution.registered,
+                    challengers_minted: evolution.challenge.as_ref().map_or(0, |c| c.minted),
+                    crowned: evolution.challenge.as_ref().and_then(|c| c.crowned.clone()),
+                });
             }
             if let (Some(round), Some(journal)) =
                 (outcome.research.as_ref(), loops.ambient.as_deref_mut())
@@ -588,13 +629,7 @@ pub fn run_with(
             }
         }
         if let Some(operations) = loops.operations.as_deref_mut() {
-            let drifted: Vec<String> = outcome
-                .learning
-                .iter()
-                .flat_map(|round| round.drift.iter())
-                .filter(|d| d.above_threshold)
-                .map(|d| d.reference.clone())
-                .collect();
+            let drifted = drifted_references(outcome.learning.as_ref());
             let facts = crate::operations::IterationFacts {
                 at: now,
                 cycle: outcome.report.cycle,
@@ -603,6 +638,11 @@ pub fn run_with(
                 problems: outcome.report.problems().len(),
                 anomalies: outcome.research.as_ref().map(|r| r.anomalies),
                 drifted: &drifted,
+                package_promoted: outcome
+                    .learning
+                    .as_ref()
+                    .and_then(|round| round.promotion.as_ref())
+                    .is_some_and(|promotion| promotion.published().is_some()),
             };
             match operations.observe(platform, &facts) {
                 Ok(round) => outcome.operations = Some(round),

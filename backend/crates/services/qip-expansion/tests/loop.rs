@@ -14,8 +14,8 @@ use qip_expansion::curriculum::{Budget, State, TaskKind};
 use qip_expansion::desk::{Admission, CloseReason, DeskConfig, ExpansionDesk, question_for};
 use qip_expansion::detectors::{
     Decline, Origin, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contradictions, coverage, incompetent_specialists, low_confidence, refusal_clusters,
-    repeated_vetoes, split_by_wanting, unexplained_residuals,
+    contradictions, coverage, incompetent_specialists, low_confidence, model_drift,
+    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
 use qip_expansion::plan::{AcquisitionAction, Environment, ResearchPlan, Step};
@@ -141,6 +141,131 @@ fn an_asset_class_with_no_history_is_raised_as_unsupported_and_a_covered_one_is_
     assert!((raised[0].severity - 1.0).abs() < 1e-12);
 }
 
+/// R12-EXPAND-6065: coverage is measured per venue and geography too, not
+/// only per asset class. Two equities share the asset class, so the class is
+/// half covered and above a 0.4 floor; one trades on a venue with no history
+/// at all. The failure prevented: that venue hid inside a class that looked
+/// covered on average, and no work was ever raised for it.
+///
+/// Mutation: in `coverage_universe`, drop the `CoverageDimension::Venue`
+/// row, and the venue gap disappears.
+#[test]
+fn a_venue_with_no_history_becomes_one_coverage_gap_naming_its_dimension() {
+    use qip_core::{Decimal, ObjectId, Timestamp};
+    use qip_expansion::detectors::coverage_universe;
+    use qip_financial::asset_class::InstrumentType;
+    use qip_financial::costs::LiquidityProfile;
+    use qip_financial::object::FinancialObject;
+    use qip_financial::quality::Provenance;
+    use qip_financial::universe::Universe;
+
+    let t0 = Timestamp::from_secs(1_800_000_000);
+    let mut universe = Universe::new();
+    for (id, venue) in [("obj-A", "XNYS"), ("obj-B", "XLON")] {
+        let object = FinancialObject::builder(
+            ObjectId::from_string(id.to_string()),
+            id,
+            InstrumentType::CommonStock,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue(venue)
+        .geography("US")
+        .price(Decimal::from_int(100))
+        .provenance(Provenance::synthetic("test", t0))
+        .build(t0)
+        .unwrap_or_else(|e| panic!("{e}"));
+        universe.insert(object).unwrap_or_else(|e| panic!("{e}"));
+    }
+    let map = coverage_universe(&universe);
+    assert!(
+        map.contains_key("venue:XLON"),
+        "premise: venues are keys: {map:?}"
+    );
+    let covered = set(&["obj-A"]);
+
+    let raised = coverage(&map, &covered, 0.4).unwrap_or_else(|e| panic!("{e}"));
+    let [gap] = raised.as_slice() else {
+        panic!("expected exactly one coverage gap, found {raised:?}");
+    };
+    assert_eq!(
+        gap.observation,
+        "venue `XLON` is unsupported: none of its 1 instrument(s) has history"
+    );
+    assert!(
+        gap.evidence.iter().any(|e| e == "universe:venue:XLON"),
+        "{:?}",
+        gap.evidence
+    );
+    assert_eq!(class_of(gap), GapClass::Data);
+}
+
+/// A key naming a dimension the detector does not measure is refused, not
+/// read as an asset class called `language:en`. Mutation: return
+/// `AssetClass` for an unknown prefix and the refusal disappears.
+#[test]
+fn a_coverage_key_naming_an_unmeasured_dimension_is_refused() {
+    let universe = BTreeMap::from([("language:en".to_string(), set(&["A"]))]);
+    match coverage(&universe, &set(&[]), 0.5) {
+        Err(e) => assert!(e.to_string().contains("`language:en`"), "{e}"),
+        Ok(raised) => panic!("an unmeasured dimension raised {raised:?}"),
+    }
+}
+
+/// R12-EXPAND-6042: a campaign that re-measured its venue leaves a record a
+/// learner can read, not only the counter that it opened. The failure
+/// prevented: the replay's finding went nowhere, and a residual nobody can
+/// weight or trace is noise that looks like signal.
+///
+/// Mutation: in `TickCampaignDetector::conclude`, set `delta_id` to the
+/// cell's name instead of the campaign's id, and the lineage assertion fails.
+#[test]
+fn a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign() {
+    use qip_contracts::microstructure_delta::ResidualKind;
+    use qip_core::Timestamp;
+    use qip_expansion::campaigns::Remeasured;
+
+    let mut detector = TickCampaignDetector::new().unwrap_or_else(|e| panic!("{e}"));
+    let campaign = detector
+        .observe_slippage(Decimal::from_raw(20_000_000), Some("XNYS"), set(&["obj-A"]))
+        .unwrap_or_else(|| panic!("premise: a 2% residual opens a campaign"));
+    let remeasured = |instrument: &str| Remeasured {
+        instrument: instrument.to_string(),
+        modelled: Decimal::from_int(5),
+        observed: Decimal::from_int(7),
+        samples: 40,
+    };
+    let window = (Timestamp::from_secs(1_000), Timestamp::from_secs(2_000));
+
+    let delta = TickCampaignDetector::conclude(
+        &campaign,
+        "cell-newyork-1",
+        "twin-v3",
+        window,
+        vec![remeasured("obj-A")],
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(delta.delta_id, campaign.campaign_id);
+    assert_eq!(delta.venue.as_str(), "XNYS");
+    let [residual] = delta.residuals.as_slice() else {
+        panic!("expected one residual, found {:?}", delta.residuals);
+    };
+    assert_eq!(residual.kind, ResidualKind::Slippage);
+    assert_eq!(residual.error(), Decimal::from_int(2));
+    assert_eq!(residual.samples, 40);
+
+    // A residual for an instrument the campaign never studied is refused.
+    match TickCampaignDetector::conclude(
+        &campaign,
+        "cell-newyork-1",
+        "twin-v3",
+        window,
+        vec![remeasured("obj-Z")],
+    ) {
+        Err(e) => assert!(e.to_string().contains("`obj-Z`"), "{e}"),
+        Ok(d) => panic!("a residual the campaign never measured was attributed to it: {d:?}"),
+    }
+}
+
 // --- failure-, opportunity- and anomaly-driven curriculum -------------------
 
 #[test]
@@ -220,6 +345,7 @@ fn several_subjects_showing_one_symptom_surface_one_investigation_nobody_asked_f
         evidence: vec!["price_move_detector".into()],
         severity: 0.6,
         economic_value: Decimal::ZERO,
+        risk_value: Decimal::ZERO,
     };
     let members: Vec<(String, Observation)> = ["A", "B", "C"]
         .iter()
@@ -248,6 +374,7 @@ fn an_observation_naming_two_lacks_becomes_two_classifiable_observations() {
         evidence: vec!["d".into()],
         severity: 0.5,
         economic_value: Decimal::ZERO,
+        risk_value: Decimal::ZERO,
     };
     assert!(
         classify(&mixed.wanting).is_err(),
@@ -348,9 +475,12 @@ fn a_residual_above_threshold_between_replay_and_live_opens_a_curriculum_item() 
     };
     let question = question_for(&raised);
 
-    // The tool is registered so the admission is decided by the item, not by
-    // a missing tool; that path has its own test below.
-    let mut desk = desk_with(&[("tick-replay", ToolKind::Simulator)]);
+    // The tools are registered so the admission is decided by the item, not
+    // by a missing tool; that path has its own test below.
+    let mut desk = desk_with(&[
+        ("tick-replay", ToolKind::Simulator),
+        ("venue-adapter", ToolKind::VenueAdapter),
+    ]);
     assert!(desk.queue().is_empty(), "premise: an empty desk");
     assert_eq!(
         desk.offer(raised, &set(&[]), &set(&["US"])),
@@ -629,6 +759,7 @@ fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
         evidence: vec!["solver-gap:portfolio-40".into()],
         severity: 0.6,
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     };
     let raised = raise(observation).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
@@ -657,7 +788,10 @@ fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
 fn quantum_research_reaches_capability_only_through_every_environment_and_criterion() {
     let us = set(&["US"]);
     let started = |raised: &qip_expansion::gap::RaisedGap| {
-        let mut desk = desk_with(&[("quantum-backend", ToolKind::QuantumBackend)]);
+        let mut desk = desk_with(&[
+            ("quantum-backend", ToolKind::QuantumBackend),
+            ("classical-solver", ToolKind::Solver),
+        ]);
         let admission = desk.offer(raised.clone(), &set(&[]), &us);
         assert!(
             !matches!(admission, Admission::Refused { .. }),
@@ -720,6 +854,7 @@ fn model_gap(trigger: GapTrigger, observation: &str) -> qip_expansion::gap::Rais
         // Priority multiplies by value per cost, so a zero here zeroes both
         // gaps and the comparison below would be between two zeros.
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     })
     .unwrap_or_else(|e| panic!("{e}"))
 }
@@ -775,4 +910,33 @@ fn a_failure_signal_outranks_an_otherwise_identical_surprise_on_the_desk() {
         "premise: the surprise has a priority to be outranked"
     );
     assert!(priority(&drift) > priority(&surprise));
+}
+
+/// R12-EXPAND-6046: a drifted model raises a `ModelDrift` gap wanting a
+/// model, one per reference however many times the learning round listed it,
+/// and no drift raises none. Without the detector the trigger had no
+/// producer and a retired model's empty slot never reached the curriculum.
+///
+/// Mutation: return one observation per listed reference (no dedup) and the
+/// repeated reference raises two.
+#[test]
+fn a_drifted_model_raises_one_model_drift_gap_per_reference() {
+    assert!(model_drift(&[]).is_empty());
+    let raised = model_drift(&[
+        "m-a@1".to_string(),
+        "m-a@1".to_string(),
+        "m-b@2".to_string(),
+    ]);
+    assert_eq!(raised.len(), 2, "{raised:?}");
+    for (observation, reference) in raised.iter().zip(["m-a@1", "m-b@2"]) {
+        assert_eq!(observation.trigger, GapTrigger::ModelDrift);
+        assert_eq!(observation.wanting, vec![Wanting::Model]);
+        assert_eq!(origin_of(observation), "detector:model_drift");
+        assert!(
+            observation
+                .evidence
+                .iter()
+                .any(|e| *e == format!("model:{reference}"))
+        );
+    }
 }

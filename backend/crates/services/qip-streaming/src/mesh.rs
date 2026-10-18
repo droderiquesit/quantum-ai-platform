@@ -24,9 +24,8 @@
 //!   either end loses whatever was in flight. [`TransportDescriptor::durable`]
 //!   therefore says `false` even though [`TransportDescriptor::path`] says
 //!   `Durable` — the path is which routing class may travel here, not a claim
-//!   about what survives. Claiming a durability it does not have is the mistake
-//!   [`crate::pubsub`] refuses to make in the other direction, and it would be
-//!   the same mistake.
+//!   about what survives. Claiming a durability it does not have would be the
+//!   mistake of advertising a guarantee the transport cannot keep.
 //! * **Delivery is at-least-once.** A publisher that loses an acknowledgement
 //!   cannot tell that apart from a message that never arrived, so it retries and
 //!   the peer sees the message twice. The duplicate is *detectable* by

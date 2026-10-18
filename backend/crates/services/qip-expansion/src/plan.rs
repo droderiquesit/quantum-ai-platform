@@ -60,17 +60,41 @@ impl AcquisitionAction {
     /// resolves it by, and its kind. Whether that tool exists is the
     /// registry's answer, not this table's: a missing one becomes a build
     /// task of its own at admission (EXPAND-068).
+    ///
+    /// This is the primary tool; [`Self::tools`] is every tool the action
+    /// needs, and the primary one is always its first.
     pub const fn tool(self) -> (&'static str, ToolKind) {
+        self.tools()[0]
+    }
+
+    /// Every tool the acquisition needs, primary first.
+    ///
+    /// Two actions need a second tool, and each is the one the platform
+    /// would otherwise never notice it lacks. Formulating for a quantum
+    /// backend needs a classical solver beside it, because a quantum result
+    /// is scored against the classical baseline computed every time
+    /// (ADR 0006) and a formulation with no solver to compute it cannot be
+    /// evaluated at all. Replaying a venue's ticks needs the adapter that
+    /// speaks that venue's feed; a replay simulator with no adapter replays
+    /// nothing. Before this table had a second column, no gap could propose
+    /// a `Solver` or a `VenueAdapter` (R12-EXPAND-6037).
+    pub const fn tools(self) -> &'static [(&'static str, ToolKind)] {
         match self {
-            Self::DiscoverLawfulData => ("source-discovery", ToolKind::Connector),
-            Self::ExtendOntology => ("ontology-editor", ToolKind::Parser),
-            Self::ConstructSimulation => ("stress-simulator", ToolKind::Simulator),
-            Self::GatherEpisodes => ("episode-archive", ToolKind::Connector),
-            Self::SelectModel => ("model-fit", ToolKind::ModelEndpoint),
-            Self::BuildTool => ("tool-builder", ToolKind::CodeRuntime),
-            Self::InstantiateSpecialist => ("specialist-factory", ToolKind::CodeRuntime),
-            Self::ReplayTicks => ("tick-replay", ToolKind::Simulator),
-            Self::FormulateSolver => ("quantum-backend", ToolKind::QuantumBackend),
+            Self::DiscoverLawfulData => &[("source-discovery", ToolKind::Connector)],
+            Self::ExtendOntology => &[("ontology-editor", ToolKind::Parser)],
+            Self::ConstructSimulation => &[("stress-simulator", ToolKind::Simulator)],
+            Self::GatherEpisodes => &[("episode-archive", ToolKind::Connector)],
+            Self::SelectModel => &[("model-fit", ToolKind::ModelEndpoint)],
+            Self::BuildTool => &[("tool-builder", ToolKind::CodeRuntime)],
+            Self::InstantiateSpecialist => &[("specialist-factory", ToolKind::CodeRuntime)],
+            Self::ReplayTicks => &[
+                ("tick-replay", ToolKind::Simulator),
+                ("venue-adapter", ToolKind::VenueAdapter),
+            ],
+            Self::FormulateSolver => &[
+                ("quantum-backend", ToolKind::QuantumBackend),
+                ("classical-solver", ToolKind::Solver),
+            ],
         }
     }
 
@@ -192,12 +216,21 @@ impl ResearchPlan {
     /// Every plan acquires, runs all four environments in order, evaluates
     /// and decides; one whose tool is not registered builds it first.
     pub fn synthesise(goal: &str, class: GapClass, tool_registered: bool) -> Self {
+        Self::synthesise_with(goal, class, |_| tool_registered)
+    }
+
+    /// As [`Self::synthesise`], asking `registered` of each tool the action
+    /// needs, so a plan builds exactly the tools that are missing, in the
+    /// order [`AcquisitionAction::tools`] lists them.
+    pub fn synthesise_with(goal: &str, class: GapClass, registered: impl Fn(&str) -> bool) -> Self {
         let action = AcquisitionAction::for_class(class);
-        let mut steps = Vec::with_capacity(8);
-        if !tool_registered {
-            steps.push(Step::BuildTool {
-                tool: action.tool().0.to_string(),
-            });
+        let mut steps = Vec::with_capacity(9);
+        for (tool, _) in action.tools() {
+            if !registered(tool) {
+                steps.push(Step::BuildTool {
+                    tool: (*tool).to_string(),
+                });
+            }
         }
         steps.push(Step::Acquire { action });
         steps.extend(

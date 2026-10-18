@@ -93,6 +93,10 @@ pub struct SubstrateRecord {
     /// outcome, over the trials that carried a prediction.
     pub brier_sum: f64,
     pub predicted: u32,
+    /// Sum of the predicted win probabilities, and the wins among the same
+    /// trials: together they say which way a poor calibration leans.
+    pub predicted_sum: f64,
+    pub predicted_wins: u32,
 }
 
 impl SubstrateRecord {
@@ -123,6 +127,17 @@ impl SubstrateRecord {
     /// carried a prediction.
     pub fn calibration_brier(&self) -> Option<f64> {
         (self.predicted > 0).then(|| self.brier_sum / f64::from(self.predicted))
+    }
+
+    /// The mean predicted win probability less the realised win share, over
+    /// the trials that carried a prediction: positive when the router
+    /// expected more than the substrate delivered. `None` until a trial
+    /// carried a prediction.
+    pub fn overconfidence(&self) -> Option<f64> {
+        (self.predicted > 0).then(|| {
+            let trials = f64::from(self.predicted);
+            self.predicted_sum / trials - f64::from(self.predicted_wins) / trials
+        })
     }
 }
 
@@ -166,6 +181,10 @@ impl RoutingLearning {
                 let realised = if measurement.beat_baseline { 1.0 } else { 0.0 };
                 record.brier_sum += (predicted - realised).powi(2);
                 record.predicted = record.predicted.saturating_add(1);
+                record.predicted_sum += predicted;
+                if measurement.beat_baseline {
+                    record.predicted_wins = record.predicted_wins.saturating_add(1);
+                }
             }
         }
     }

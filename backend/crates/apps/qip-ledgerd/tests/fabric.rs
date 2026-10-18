@@ -92,6 +92,17 @@ struct Fabric {
 
 impl Fabric {
     fn start() -> Self {
+        Self::start_with(None)
+    }
+
+    /// A broker that reads retained-away segments back from `archive` and
+    /// rolls a segment per batch, so every batch but the last is sealed and
+    /// can be archived and retained away.
+    fn start_archived(archive: Arc<qip_storage::MemoryBlobStore>) -> Self {
+        Self::start_with(Some(archive))
+    }
+
+    fn start_with(archive: Option<Arc<qip_storage::MemoryBlobStore>>) -> Self {
         let unique = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "qip-ledgerd-fabric-{}-{unique}",
@@ -99,9 +110,17 @@ impl Fabric {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        // The archived broker declares the outcomes stream as production
+        // does (`infrastructure/event-fabric/streams.local.json`):
+        // irreplaceable, so its sealed segments are archived.
+        let retention = if archive.is_some() {
+            "irreplaceable"
+        } else {
+            "derived_state"
+        };
         let catalogue = format!(
             r#"{{"streams":[{{"name":"{STREAM}","qos_class":"p1_outcomes","partition_key":"cell",
-                "ordering":"per_partition","retention":"derived_state","replication_factor":1,
+                "ordering":"per_partition","retention":"{retention}","replication_factor":1,
                 "mirroring":"none","overload_policy":"refuse_producer","ack_profile":"archived",
                 "byte_quota_per_producer":67108864,"message_quota_per_producer":1000000,
                 "lag_limit":1000000,"entitlement_dataset":"qip-test","entitlement_usage":"research",
@@ -115,9 +134,20 @@ impl Fabric {
         ))
         .unwrap();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let broker = Arc::new(Broker::open(root.join("broker"), clock.clone()).unwrap());
+        let roll_every_batch = archive.is_some();
+        let mut broker = Broker::open(root.join("broker"), clock.clone()).unwrap();
+        if let Some(store) = archive {
+            broker = broker.with_archive_reader(store);
+        }
+        let broker = Arc::new(broker);
         let segments: SegmentConfigFor = Arc::new(move |policy: &StreamPolicy| {
-            SegmentLogConfig::new(clock.clone()).with_archive_required(policy.archive_required())
+            let config = SegmentLogConfig::new(clock.clone())
+                .with_archive_required(policy.archive_required());
+            if roll_every_batch {
+                config.with_roll_after_bytes(1)
+            } else {
+                config
+            }
         });
         let service =
             Arc::new(Service::new(broker, identities, &catalogue, PARTITIONS, segments).unwrap());
@@ -792,4 +822,430 @@ fn fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close
     }
     ledger.stop();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The observations `name` holds as a histogram, summed over its series.
+fn histogram_count(ledger: &Running, name: &str) -> u64 {
+    ledger
+        .metrics()
+        .snapshot()
+        .series
+        .iter()
+        .filter(|s| s.name == name)
+        .map(|s| match &s.value {
+            MetricValue::Histogram(h) => h.count,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// OBS-9149: the ledger-commit latency series moves because a delivery was
+/// committed through the consumer, once per committed fill — not because a
+/// test called the recorder. The only other test of the series calls
+/// `commit_latency_ms` directly, so deleting the recording site in
+/// `PartitionWorker::apply_until_committed` passed it.
+///
+/// Mutation: delete `self.telemetry.commit_latency_ms(elapsed)` in
+/// `consumer.rs` — the series is never written, the count is zero, and the
+/// equality fails.
+#[test]
+fn every_fill_the_consumer_commits_is_observed_once_on_the_ledger_commit_latency_series() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let first = cell.fill("o-1", 3, "100", true);
+    fabric.produce(0, vec![first]);
+    let second = cell.fill("o-2", 2, "101", true);
+    fabric.produce(0, vec![second]);
+
+    let dir = temp_dir("latency");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("both fills are booked", || {
+        ledger.store().events().unwrap().len() == 2
+    });
+    assert_eq!(
+        histogram_count(&ledger, names::LEDGER_COMMIT_LATENCY_MS),
+        2,
+        "one observation per fill the store committed"
+    );
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// FABRIC-10078: after a restart the broker's group checkpoint and the
+/// store's cursor name the same batch. The store's cursor is what resumes
+/// (the group offset is advisory), so a group that stopped following it
+/// would report a lag the ledger does not have — and a warm consumer that
+/// trusted it would replay or skip.
+///
+/// Mutation: delete the `self.consumer.commit(batch.base_offset)` call in
+/// `PartitionWorker::step` — the group checkpoint never reaches the batch
+/// the store resumed past, and the wait times out.
+#[test]
+fn after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let first = cell.fill("o-1", 10, "100.5", true);
+    fabric.produce(0, vec![first]);
+    let dir = temp_dir("checkpoint");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("the first fill is booked", || {
+        ledger.store().events().unwrap().len() == 1
+    });
+    ledger.stop();
+
+    let second = cell.fill("o-2", 4, "101", true);
+    let third = cell.fill("o-3", 1, "99", true);
+    fabric.produce(0, vec![second]);
+    fabric.produce(0, vec![third]);
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("all three fills are booked", || {
+        ledger.store().events().unwrap().len() == 3
+    });
+    let label = qip_ledgerd::consumer::partition_label(STREAM, 0);
+    let next = ledger.store().resume_offset(&label).unwrap();
+    assert!(next > 0, "premise: the store's cursor moved");
+    let resumed_past = qip_ledgerd::consumer::batch_of(next - 1);
+    assert_eq!(resumed_past, 2, "premise: three batches, the last at 2");
+    wait_until("the group checkpoint names the store's batch", || {
+        fabric
+            .service
+            .broker()
+            .committed_offset(GROUP, STREAM, 0)
+            .unwrap()
+            == Some(resumed_past)
+    });
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A local backend whose commits can be refused, as a lost or unwritable
+/// disk refuses them. Reads keep answering so the test can see the cursor.
+#[derive(Debug)]
+struct Refusable {
+    inner: qip_ledgerd::backend::LocalBackend,
+    refusing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl qip_ledgerd::backend::LedgerBackend for Refusable {
+    fn get(&self, key: &str) -> qip_core::error::Result<Option<serde_json::Value>> {
+        self.inner.get(key)
+    }
+
+    fn scan_prefix(
+        &self,
+        prefix: &str,
+    ) -> qip_core::error::Result<Vec<(String, serde_json::Value)>> {
+        self.inner.scan_prefix(prefix)
+    }
+
+    fn commit(&self, batch: qip_ledgerd::backend::LedgerBatch) -> qip_core::error::Result<()> {
+        if self.refusing.load(Ordering::SeqCst) {
+            return Err(qip_core::error::Error::io(
+                "the ledger's store refuses writes (fixture)",
+            ));
+        }
+        self.inner.commit(batch)
+    }
+
+    fn kind(&self) -> &'static str {
+        "refusable"
+    }
+}
+
+/// One partition worker over `store`, run on its own thread until `stop`.
+fn run_worker(
+    fabric: &Fabric,
+    store: Arc<qip_ledgerd::store::LedgerStore>,
+    metrics: Arc<qip_observability::metrics::Metrics>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    let worker = qip_ledgerd::consumer::PartitionWorker::new(
+        qip_ledgerd::consumer::WorkerConfig {
+            stream: STREAM.to_string(),
+            partition: 0,
+            group: GROUP.to_string(),
+            poll: qip_core::Duration::from_millis(20),
+            clock: Arc::new(SystemClock),
+            sleeper: Arc::new(ThreadSleeper),
+        },
+        (fabric.connect())().unwrap(),
+        store,
+        qip_ledgerd::telemetry::LedgerTelemetry::new(metrics),
+        Arc::default(),
+        stop,
+    )
+    .unwrap();
+    std::thread::spawn(move || worker.run())
+}
+
+/// RES-10128: the writer replays idempotently when its store is restored,
+/// not only when its process restarts. While the store refuses writes under
+/// a running worker nothing is booked and neither the store's cursor nor the
+/// group checkpoint moves past a record it did not apply; once writes are
+/// accepted again the same records are booked once. And a store lost
+/// outright — a fresh, empty one in its place — rebuilds from the retained
+/// stream to the same balances, because the store's cursor, not the group's,
+/// is what resumes.
+///
+/// Mutation: in `PartitionWorker::apply_until_committed`, answer a store
+/// error with `Ok(Disposition::Advanced)` rather than retrying — the worker
+/// skips the refused fills, the group checkpoint moves past them, and the
+/// "group checkpoint holds" assertion fails.
+#[test]
+fn a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let first = cell.fill("o-1", 10, "100.5", true);
+    fabric.produce(0, vec![first]);
+    let second = cell.fill("o-2", 4, "101", true);
+    fabric.produce(0, vec![second]);
+    let clean = refold(&[("o-1", 10, "100.5"), ("o-2", 4, "101")], "cell-a");
+    let label = qip_ledgerd::consumer::partition_label(STREAM, 0);
+
+    let dir = temp_dir("refusing");
+    std::fs::create_dir_all(&dir).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let metrics = Arc::new(qip_observability::metrics::Metrics::new("qip-ledgerd"));
+    let store = Arc::new(
+        qip_ledgerd::store::LedgerStore::with_backend(
+            Box::new(Refusable {
+                inner: qip_ledgerd::backend::LocalBackend::open(
+                    &dir,
+                    qip_storage::EngineConfig::new(clock.clone()),
+                )
+                .unwrap(),
+                refusing: refusing.clone(),
+            }),
+            qip_ledgerd::telemetry::LedgerTelemetry::new(metrics.clone()),
+        )
+        .unwrap(),
+    );
+    refusing.store(true, Ordering::SeqCst);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = run_worker(&fabric, store.clone(), metrics.clone(), stop.clone());
+
+    let retries = || {
+        metrics
+            .snapshot()
+            .series
+            .iter()
+            .filter(|s| s.name == names::LEDGER_STORE_RETRIES)
+            .map(|s| match &s.value {
+                MetricValue::Counter(v) => *v,
+                _ => 0,
+            })
+            .sum::<u64>()
+    };
+    wait_until("the worker has been refused at least twice", || {
+        retries() >= 2
+    });
+    assert!(store.events().unwrap().is_empty(), "nothing booked");
+    assert_eq!(store.resume_offset(&label).unwrap(), 0, "the cursor holds");
+    assert_eq!(
+        fabric
+            .service
+            .broker()
+            .committed_offset(GROUP, STREAM, 0)
+            .unwrap(),
+        None,
+        "the group checkpoint holds"
+    );
+
+    refusing.store(false, Ordering::SeqCst);
+    wait_until("both fills are booked once writes are accepted", || {
+        store.events().unwrap().len() == 2
+    });
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert_eq!(store.events().unwrap().len(), 2, "each fill once");
+    assert_eq!(store.balances().unwrap(), clean);
+    stop.store(true, Ordering::SeqCst);
+    worker.join().unwrap();
+
+    // The store is lost: a fresh one, at a fresh directory, under the same
+    // consumer group whose checkpoint is past every fill.
+    let lost = temp_dir("lost");
+    std::fs::create_dir_all(&lost).unwrap();
+    let fresh = Arc::new(
+        qip_ledgerd::store::LedgerStore::open(
+            &lost,
+            qip_storage::EngineConfig::new(clock),
+            qip_ledgerd::telemetry::LedgerTelemetry::new(metrics.clone()),
+        )
+        .unwrap(),
+    );
+    assert_eq!(fresh.resume_offset(&label).unwrap(), 0, "premise: empty");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = run_worker(&fabric, fresh.clone(), metrics, stop.clone());
+    wait_until("the fresh store rebuilds both fills", || {
+        fresh.events().unwrap().len() == 2
+    });
+    assert_eq!(fresh.balances().unwrap(), clean);
+    stop.store(true, Ordering::SeqCst);
+    worker.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&lost);
+}
+
+/// OBS-7126: the ledger evaluates its own commit objective. The only
+/// production evaluator was the deep brain's, against a registry that never
+/// holds the ledger's commit latency, so `ledger-commit` read unmeasured
+/// wherever it was evaluated. A ledger that commits fills now reports the
+/// objective measured over exactly the commits it observed.
+///
+/// Mutation: delete `self.telemetry.evaluate_objectives()` in
+/// `PartitionWorker::step` — no status is recorded and the wait for the
+/// `ledger-commit` observations gauge times out. Mutation: drop the
+/// `service == "ledger"` filter in `LedgerTelemetry::evaluate_objectives` —
+/// `decision-latency` is written here as unmeasured and the last assertion
+/// fails.
+#[test]
+fn a_ledger_that_commits_fills_reports_its_commit_objective_measured() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let first = cell.fill("o-1", 3, "100", true);
+    fabric.produce(0, vec![first]);
+    let second = cell.fill("o-2", 2, "101", true);
+    fabric.produce(0, vec![second]);
+
+    let dir = temp_dir("objective");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("both fills are booked", || {
+        ledger.store().events().unwrap().len() == 2
+    });
+    let gauge = |name: &str| -> Option<f64> {
+        ledger
+            .metrics()
+            .snapshot()
+            .series
+            .iter()
+            .find(|s| {
+                s.name == name
+                    && s.labels.get("objective").map(String::as_str) == Some("ledger-commit")
+            })
+            .map(|s| match &s.value {
+                MetricValue::Gauge(v) => *v,
+                _ => f64::NAN,
+            })
+    };
+    wait_until("the objective has seen both commits", || {
+        gauge(names::SLO_OBSERVATIONS) == Some(2.0)
+    });
+    let consumed = gauge(names::SLO_BUDGET_CONSUMED).expect("a measured objective");
+    assert!(consumed.is_finite() && consumed >= 0.0, "{consumed}");
+    // Only the ledger's own objectives: a path another process measures
+    // is never written here as unmeasured.
+    let others = ledger
+        .metrics()
+        .snapshot()
+        .series
+        .iter()
+        .filter(|s| {
+            s.name == names::SLO_OBSERVATIONS
+                && s.labels.get("objective").map(String::as_str) == Some("decision-latency")
+        })
+        .count();
+    assert_eq!(others, 0);
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RES-9175: a derived store is rehydrated from immutable objects. Once the
+/// broker has archived the sealed segments of the outcomes stream and
+/// retained them away, a ledger started on an empty directory books the
+/// whole history — every batch but the hot one served from the archive — to
+/// exactly the balances the original store holds.
+///
+/// It also holds the worker's handling of a group that is ahead of its
+/// store: before the fix this test exposed, a rebuilding ledger committed
+/// each replayed batch backwards, the broker refused the rewind, and the
+/// consumer's circuit opened on every batch — 24 batches took 53 seconds.
+/// The group's checkpoint is never moved back.
+///
+/// Mutation: in `ArchiveReader`-backed `Broker::read_batch`, answer
+/// `Ok(None)` for a retained-away offset instead of hydrating — the fresh
+/// ledger books nothing and the wait times out. Mutation: never set
+/// `commit_deferred` in `PartitionWorker::commit_group` — every replayed
+/// batch is refused, the rebuild takes about 53 seconds, and the bound
+/// assertion fails.
+#[test]
+fn a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments() {
+    let archive = Arc::new(qip_storage::MemoryBlobStore::new());
+    let mut fabric = Fabric::start_archived(archive.clone());
+    let mut cell = Journal::new("cell-a");
+    // Enough one-fill batches that the log's minimum segment size seals
+    // several segments.
+    let orders: Vec<String> = (1..=24).map(|n| format!("o-{n}")).collect();
+    let prices = ["100.5", "101", "99", "98.25"];
+    let fills: Vec<(&str, u64, &str)> = orders
+        .iter()
+        .enumerate()
+        .map(|(n, order)| (order.as_str(), 1 + n as u64 % 5, prices[n % prices.len()]))
+        .collect();
+    for (order, quantity, price) in &fills {
+        let fill = cell.fill(order, *quantity, price, true);
+        fabric.produce(0, vec![fill]);
+    }
+
+    let original_dir = temp_dir("original");
+    let original = start_ledger(&original_dir, &fabric);
+    wait_until("the original store books every fill", || {
+        original.store().events().unwrap().len() == fills.len()
+    });
+    let original_balances = original.store().balances().unwrap();
+    original.stop();
+    assert_eq!(original_balances, refold(&fills, "cell-a"), "premise");
+
+    let broker = fabric.service.broker();
+    let archived = broker
+        .archive_sealed(
+            &qip_storage::segment::archive::Archiver::new(archive.clone()).with_manifest_index(),
+        )
+        .unwrap();
+    assert!(
+        archived >= 2,
+        "premise: the sealed segments archived, got {archived}"
+    );
+    let deleted = broker.retain_hot(1).unwrap();
+    assert!(
+        deleted >= 2,
+        "premise: local history retained away, got {deleted}"
+    );
+
+    let rebuilt_dir = temp_dir("rehydrated");
+    let rebuilt = start_ledger(&rebuilt_dir, &fabric);
+    // The group already committed past every batch this store replays. A
+    // worker that commits each one backwards is refused, and the transport's
+    // circuit opens on every refusal: 24 batches took 53 seconds. Caught-up
+    // deferral takes one refusal, so the rebuild is bounded well inside the
+    // wait.
+    let started = Instant::now();
+    wait_until("the fresh store books every fill", || {
+        rebuilt.store().events().unwrap().len() == fills.len()
+    });
+    let took = started.elapsed();
+    assert!(
+        took < StdDuration::from_secs(20),
+        "the rebuild was throttled by refused commits: {took:?}"
+    );
+    wait_until("the caught-up worker commits the last batch", || {
+        rebuilt
+            .statuses()
+            .get(&0)
+            .is_some_and(|s| s.last_error.is_none())
+    });
+    assert_eq!(
+        fabric
+            .service
+            .broker()
+            .committed_offset(GROUP, STREAM, 0)
+            .unwrap(),
+        Some(fills.len() as u64 - 1),
+        "the group checkpoint was not moved back"
+    );
+    assert_eq!(rebuilt.store().balances().unwrap(), original_balances);
+    assert!(rebuilt.store().parked().unwrap().is_empty());
+    rebuilt.stop();
+    let _ = std::fs::remove_dir_all(&original_dir);
+    let _ = std::fs::remove_dir_all(&rebuilt_dir);
 }

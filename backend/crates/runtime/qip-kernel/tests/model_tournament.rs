@@ -43,6 +43,7 @@ use qip_training::job::TrainingSpec;
 use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
 use qip_training::serve::InTreeProvider;
 use serde::de::DeserializeOwned;
+use std::collections::BTreeSet;
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -348,6 +349,56 @@ fn a_hypothesis_opens_a_question_many_forecasters_answer_and_a_later_cycle_score
     Ok(())
 }
 
+/// R12-MODEL-6018: every forecaster on a question states quantiles over the
+/// realised move, so the scorecard a later cycle writes measures each one's
+/// quantile accuracy, not only its direction. Until 2026-10-18 the stage
+/// submitted `quantiles: None` for the detector and every analyst alike, and
+/// `Scorecard::quantile_loss` read "no forecast here stated quantiles" for
+/// every forecaster the platform had ever scored.
+///
+/// Mutation: submit `quantiles: None` for the detector in
+/// `TournamentStage::observe_reasoning` — the detector's quantile loss reads
+/// unmeasured and the assertion naming it fails.
+#[test]
+fn every_forecaster_a_cycle_scored_has_its_quantile_loss_measured() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found(format!("no question opened:\n{}", first.summarise())))?;
+    let forecasters: Vec<String> = question.forecasts().keys().cloned().collect();
+    assert!(
+        forecasters.iter().any(|f| f.starts_with("detector:"))
+            && forecasters.iter().any(|f| f.starts_with("analyst:")),
+        "premise: a detector and an analyst both forecast: {forecasters:?}"
+    );
+    let resolves_at = question.spec().resolves_at;
+    platform.observe(vec![bar("AAA", resolves_at, 150.0, 165.0)]);
+    platform.run_cycle(resolves_at.saturating_add(Duration::from_days(2)));
+
+    for forecaster in &forecasters {
+        let cards = platform.model_tournament().scorecards(forecaster);
+        assert!(!cards.is_empty(), "premise: {forecaster} was scored");
+        for card in cards {
+            let loss = card.quantile_loss.value().unwrap_or_else(|| {
+                panic!(
+                    "{forecaster}'s quantile accuracy was not tracked: {:?}",
+                    card.quantile_loss
+                )
+            });
+            assert!(
+                loss.is_finite() && loss >= 0.0,
+                "{forecaster}'s pinball loss is {loss}"
+            );
+        }
+    }
+    Ok(())
+}
+
 // --- W3.6: the society blocks a promotion ------------------------------------
 
 const DESK: &str = "tournament-tests/model-desk";
@@ -397,6 +448,154 @@ fn teacher(name: &str) -> Result<TrainedTeacher> {
     )
     .with_holdout(0.25);
     LocalTrainer::new().fit(&spec, &data, start())
+}
+
+/// R12-CONTRACT-6112: once a forecaster has been scored, every question it
+/// answers afterwards journals one §24.9 `ModelVote` for it — model and
+/// version, the probability it stated, the regime, its score history and
+/// what the vote cost — and a forecaster with no history yet casts none.
+/// `ModelVoteFields` appeared nowhere outside `qip-contracts` until
+/// 2026-10-18: the contract existed and nothing in any binary built one.
+///
+/// Mutation: stop recording resolved scores in `TournamentStage::learn` —
+/// no entrant ever has standing, the third cycle journals no vote, and the
+/// assertion naming the forecasters fails.
+#[test]
+fn a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found("premise: a question opened"))?;
+    let forecasters: BTreeSet<String> = question.forecasts().keys().cloned().collect();
+    let resolves_at = question.spec().resolves_at;
+    let first = records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?;
+    assert!(
+        first.iter().all(|review| review.votes.is_empty()),
+        "premise: nobody has standing before anything resolved"
+    );
+    assert!(
+        first.iter().flat_map(|r| r.voteless.iter()).count() >= forecasters.len(),
+        "premise: every unscored entrant is named voteless"
+    );
+
+    // Resolve, then let a later cycle open a fresh question.
+    platform.observe(vec![bar("AAA", resolves_at, 150.0, 165.0)]);
+    let resolved_at = resolves_at.saturating_add(Duration::from_days(2));
+    platform.run_cycle(resolved_at);
+    let later = resolved_at.saturating_add(Duration::from_days(1));
+    platform.observe(vec![bar("AAA", later, 165.0, 160.0)]);
+    platform.run_cycle(later.saturating_add(Duration::from_hours(1)));
+
+    let votes: Vec<qip_contracts::control::ModelVote> =
+        records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?
+            .into_iter()
+            .flat_map(|review| review.votes)
+            .collect();
+    let voters: BTreeSet<String> = votes.iter().map(|vote| vote.model.clone()).collect();
+    assert!(
+        forecasters.iter().any(|f| voters.contains(f)),
+        "no forecaster scored in cycle two voted afterwards: scored {forecasters:?}, voted {voters:?}"
+    );
+    for vote in &votes {
+        assert!(
+            forecasters.contains(&vote.model),
+            "{} voted without ever having been scored",
+            vote.model
+        );
+        assert!(!vote.score_history.is_empty());
+        assert!(
+            vote.score_history
+                .iter()
+                .all(|point| point.at <= vote.cast_at)
+        );
+        let round_trip: qip_contracts::control::ModelVote = serde_json::from_str(
+            &serde_json::to_string(vote).map_err(|e| Error::invalid(e.to_string()))?,
+        )
+        .map_err(|e| Error::invalid(e.to_string()))?;
+        assert_eq!(
+            &round_trip, vote,
+            "the journaled vote does not decode as the contract"
+        );
+    }
+    Ok(())
+}
+
+/// R12-TICK-2091: a distillate whose card was trained on licensed data is
+/// named in the `trained_models` slot only for a location its licence
+/// permits. `ModelCard::authorise_location` was called for the opportunity
+/// map alone, so a promoted model trained under a London-only licence was
+/// named to every cell the centre served. The licence now rides on the
+/// journaled promotion, read off the card, and the manifest withholds it
+/// elsewhere — including from a cell whose location was never declared.
+///
+/// Mutation: drop the licence check in `Platform::model_manifest_for` — the
+/// manifest for `us-east4` names the distillate and the refusal assertion
+/// fails.
+#[test]
+fn a_manifest_for_a_region_the_card_does_not_permit_is_refused() -> Result<()> {
+    use std::collections::BTreeSet;
+    let teacher = teacher("bar-linear-licensed")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let student =
+        qip_strategy::model::DistilledModel::linear("bar-linear-licensed", 0.1, vec![0.5, -0.25])?;
+    let mut platform = platform_serving()?;
+    let mut registry = ModelRegistry::new();
+    let registration = register_fit(
+        &mut registry,
+        &teacher,
+        &SkillPolicy::default(),
+        "tournament-tests",
+        start(),
+    )?;
+    assert!(
+        registration.passed,
+        "premise: the fit cleared the skill bar"
+    );
+    let card = registry
+        .get_mut(&registration.reference)
+        .ok_or_else(|| Error::not_found("the card"))?;
+    *card = card.clone().with_data_entitlements(
+        BTreeSet::from(["vendor-ticks-uk".to_string()]),
+        BTreeSet::from(["europe-west2".to_string()]),
+    )?;
+    platform.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
+    let promotion = platform
+        .model_promotions()
+        .values()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found("premise: the promotion was recorded"))?;
+    assert_eq!(
+        promotion.permitted_locations,
+        Some(BTreeSet::from(["europe-west2".to_string()])),
+        "the licence was not carried onto the journaled promotion"
+    );
+
+    let permitted = platform.model_manifest_for(Some("europe-west2"))?;
+    assert!(
+        permitted
+            .manifest()
+            .models
+            .contains_key("bar-linear-licensed"),
+        "premise: the permitted location is told about the distillate: {}",
+        permitted.describe()
+    );
+    let refused = platform
+        .model_manifest_for(Some("us-east4"))
+        .expect_err("a manifest for a location the licence refuses named the distillate");
+    assert!(
+        matches!(refused, Error::Denied(_)),
+        "refused for another reason: {refused:?}"
+    );
+    platform
+        .model_manifest()
+        .expect_err("a cell with no declared location was named a licensed distillate");
+    Ok(())
 }
 
 /// R12-MODEL-7201: a model whose only evaluation has lapsed passes the

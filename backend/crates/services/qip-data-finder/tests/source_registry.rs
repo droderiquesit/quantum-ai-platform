@@ -189,3 +189,35 @@ fn a_source_lacking_any_one_of_the_five_is_refused_and_a_complete_one_is_stored_
     );
     Ok(())
 }
+
+/// R12-COVERAGE-7170: the Source Registry is versioned. A re-assessment that
+/// registers a held source again replaced its record with no trace that it
+/// had; now a later replacement is the next version, one at the same
+/// instant keeps the version, and one older than the record it would replace
+/// is refused. Mutation: accepting an older registration lets the replayed
+/// pass overwrite version 2.
+#[test]
+fn a_re_registration_raises_the_source_version_and_a_stale_one_is_refused() -> Result<()> {
+    let licence = licensed_for(&[Usage::Derive])?;
+    let mut finder = DataFinder::new(FinderConfig::new(AGENT, Usage::Derive, "market-data", 7)?);
+    let mut probe = probe_for(URL, "example.com", permissive_robots());
+    let fresh = || candidate("versioned", URL, licence.clone(), &["EU0001"]);
+
+    let first = finder.assess(vec![fresh()?], &mut probe, now())?;
+    // Premise: the source registers, as its first version.
+    assert!(first[0].is_registered(), "{:?}", first[0].outcome());
+    assert_eq!(finder.registered("versioned").map(|r| r.version()), Some(1));
+
+    let later = now().saturating_add(Duration::from_hours(1));
+    let second = finder.assess(vec![fresh()?], &mut probe, later)?;
+    assert!(second[0].is_registered(), "{:?}", second[0].outcome());
+    assert_eq!(finder.registered("versioned").map(|r| r.version()), Some(2));
+
+    let again = finder.assess(vec![fresh()?], &mut probe, later)?;
+    assert!(again[0].is_registered(), "{:?}", again[0].outcome());
+    assert_eq!(finder.registered("versioned").map(|r| r.version()), Some(2));
+
+    assert!(finder.assess(vec![fresh()?], &mut probe, now()).is_err());
+    assert_eq!(finder.registered("versioned").map(|r| r.version()), Some(2));
+    Ok(())
+}

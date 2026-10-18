@@ -57,6 +57,8 @@
 //! created.
 
 use qip_agents::finding::FindingStatus;
+use qip_contracts::control::{ModelVote, ModelVoteFields, ScorePoint};
+use qip_contracts::validated::Contract;
 use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
@@ -158,6 +160,15 @@ pub struct TournamentReview {
     pub compute: BTreeMap<String, BTreeMap<String, u64>>,
     /// Scorecards for every forecaster scored this cycle.
     pub scorecards: Vec<Scorecard>,
+    /// One §24.9 contract vote per entrant whose forecast the tournament
+    /// admitted this cycle and which has a score history to stand on
+    /// (R12-CONTRACT-6112).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub votes: Vec<ModelVote>,
+    /// Entrants whose forecast was admitted but who cast no vote, with the
+    /// reason — no score history yet, or a vote the contract refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voteless: Vec<String>,
 }
 
 /// What every tournament record's idempotency key starts with.
@@ -261,6 +272,50 @@ pub struct TournamentStage {
     /// model-risk reading.
     last_regime: Option<String>,
     review: TournamentReview,
+    /// Each forecaster's Brier score at every resolution, oldest first and
+    /// bounded by [`SCORE_HISTORY`]: the history a [`ModelVote`] stands on.
+    scores: BTreeMap<String, Vec<ScorePoint>>,
+}
+
+/// How many past scores a forecaster's vote carries. Bounded, because the
+/// history rides on every vote journaled and a working set that grows with
+/// the life of the process is the retention this platform refuses.
+pub const SCORE_HISTORY: usize = 32;
+
+/// One entrant's contract vote, or the reason it has none. The version is
+/// the manifest digest an analyst ran under, or the kernel's own version for
+/// a detector, so a vote names the code that produced it; the cost is the
+/// run's metered spend, refused rather than defaulted when it is not money.
+fn model_vote(
+    forecaster: &str,
+    version: &str,
+    proposition: &str,
+    probability_bp: u32,
+    regime: &str,
+    history: Option<&Vec<ScorePoint>>,
+    cost_micros: f64,
+    now: Timestamp,
+) -> Result<ModelVote> {
+    let score_history = history.cloned().unwrap_or_default();
+    // The statistics-to-money crossing for a vote: spend is metered in
+    // millionths of the account currency.
+    let compute_cost = Decimal::from_f64(cost_micros / 1_000_000.0).ok_or_else(|| {
+        qip_core::error::Error::invalid(format!(
+            "{forecaster}'s compute cost of {cost_micros} micros is not an amount; no vote is \
+             cast on a cost nobody can bill"
+        ))
+    })?;
+    ModelVote::new(ModelVoteFields {
+        schema_version: ModelVoteFields::SCHEMA_VERSION,
+        model: forecaster.to_string(),
+        version: version.to_string(),
+        proposition: proposition.to_string(),
+        probability_bp,
+        regime: regime.to_string(),
+        score_history,
+        compute_cost,
+        cast_at: now,
+    })
 }
 
 fn returns(closes: &[f64]) -> Vec<f64> {
@@ -294,6 +349,46 @@ fn tail_threshold(returns: &[f64]) -> Option<f64> {
         .filter(|t| *t > 0.0)
 }
 
+/// The quantiles every forecast on a question states over the realised move,
+/// in basis points — the value a question resolves with.
+pub const MOVE_QUANTILES: [f64; 3] = [0.1, 0.5, 0.9];
+
+/// The standard normal's 90th percentile: the spread [`MOVE_QUANTILES`] sit
+/// at either side of the centre, in units of the subject's deviation.
+const Z_90: f64 = 1.281_551_565_545;
+
+/// A forecaster's distribution over the realised move, so its quantile
+/// accuracy is scored beside its direction (R12-MODEL-6018).
+///
+/// The centre is the mean of the two-point move the claim states — up its
+/// `expected_move_bps` with the forecaster's own `p_up`, down by the same with
+/// the rest — so a forecaster that leans harder on the claim is centred
+/// further along it, and one that disagrees is centred against it. The spread
+/// is the subject's own one-period return deviation; it is not scaled to the
+/// horizon, so it understates a multi-bar horizon's spread, which the pinball
+/// loss then charges every forecaster for alike rather than favouring one.
+///
+/// `None` — no quantiles, and the forecast scored on direction alone — when
+/// the claim states no finite, non-zero move (the platform reads zero where
+/// no prediction carried a claim) or the subject has no measurable deviation:
+/// a distribution invented without either would be scored as if someone had
+/// stated it.
+fn move_quantiles(p_up: f64, expected_move_bps: f64, returns: &[f64]) -> Option<Vec<(f64, f64)>> {
+    let magnitude = expected_move_bps.abs();
+    if !(magnitude.is_finite() && magnitude > 0.0 && p_up.is_finite()) {
+        return None;
+    }
+    let spread = deviation(returns)
+        .map(|sd| sd * 10_000.0)
+        .filter(|sd| sd.is_finite() && *sd > 0.0)?;
+    let centre = (2.0 * p_up.clamp(0.0, 1.0) - 1.0) * magnitude;
+    Some(vec![
+        (MOVE_QUANTILES[0], centre - Z_90 * spread),
+        (MOVE_QUANTILES[1], centre),
+        (MOVE_QUANTILES[2], centre + Z_90 * spread),
+    ])
+}
+
 fn up_bp(probability: f64) -> u32 {
     // In range by construction (a probability), so the rounded value fits.
     (probability * 10_000.0).round() as u32
@@ -306,6 +401,30 @@ fn binary(up: u32) -> BTreeMap<String, u32> {
 impl TournamentStage {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Append one Brier score to `forecaster`'s history at `now`. Two
+    /// resolutions at one instant are merged into their mean, because the
+    /// contract wants the history strictly increasing in time and two points
+    /// at one instant are one observation of the forecaster's skill.
+    fn record_score(&mut self, forecaster: &str, brier: Option<f64>, now: Timestamp) {
+        let Some(score) = brier
+            .filter(|b| b.is_finite() && *b >= 0.0)
+            .and_then(Decimal::from_f64)
+        else {
+            return;
+        };
+        let history = self.scores.entry(forecaster.to_string()).or_default();
+        match history.last_mut() {
+            Some(last) if last.at == now => {
+                last.score = (last.score + score) / Decimal::from(2);
+            }
+            _ => history.push(ScorePoint { at: now, score }),
+        }
+        if history.len() > SCORE_HISTORY {
+            let excess = history.len() - SCORE_HISTORY;
+            history.drain(..excess);
+        }
     }
 
     pub fn tournament(&self) -> &Tournament {
@@ -364,6 +483,12 @@ impl TournamentStage {
         self.last_regime = Some(observation.regime.clone());
         let band = LatticeHorizon::of(hypothesis.horizon);
         let mut entries: Vec<TournamentForecast> = Vec::new();
+        // The version each entrant's vote names, by forecaster id.
+        let mut versions: BTreeMap<String, String> = BTreeMap::new();
+        versions.insert(
+            format!("detector:{}", hypothesis.class),
+            format!("qip-kernel-{}", env!("CARGO_PKG_VERSION")),
+        );
         let confidence = hypothesis.effective_confidence().clamp(0.0, 1.0);
         let detector_up = if sign > 0.0 {
             confidence
@@ -376,7 +501,7 @@ impl TournamentStage {
             target: target.clone(),
             issued_at: now,
             probabilities_bp: Some(binary(up_bp(detector_up))),
-            quantiles: None,
+            quantiles: move_quantiles(detector_up, observation.expected_move_bps, &rets),
             cost: 0.0,
             latency: Duration::from_nanos(0),
         });
@@ -398,13 +523,19 @@ impl TournamentStage {
                 .runs
                 .iter()
                 .find(|run| run.run_id == finding.run_id);
+            if let Some(run) = run {
+                versions.insert(
+                    format!("analyst:{}", finding.agent_id),
+                    format!("manifest-{}", run.manifest_digest),
+                );
+            }
             entries.push(TournamentForecast {
                 forecaster: format!("analyst:{}", finding.agent_id),
                 forecast_id: format!("{question}/analyst:{}", finding.agent_id),
                 target: target.clone(),
                 issued_at: now,
                 probabilities_bp: Some(binary(up_bp(p_up))),
-                quantiles: None,
+                quantiles: move_quantiles(p_up, observation.expected_move_bps, &rets),
                 cost: run.map_or(0.0, |run| run.spend.cost_micros as f64),
                 latency: run.map_or(Duration::from_nanos(0), |run| run.duration()),
             });
@@ -412,6 +543,7 @@ impl TournamentStage {
         let mut forecasts = BTreeMap::new();
         for entry in entries {
             let id = entry.forecaster.clone();
+            let cost = entry.cost;
             let up = entry
                 .probabilities_bp
                 .as_ref()
@@ -429,6 +561,31 @@ impl TournamentStage {
             let submitted = admitted.and_then(|()| self.tournament.submit(&question, entry, now));
             match submitted {
                 Ok(()) => {
+                    match (self.scores.get(&id), versions.get(&id)) {
+                        (None, _) => self.review.voteless.push(format!(
+                            "{question}/{id}: no score history yet, so no standing to vote"
+                        )),
+                        (_, None) => self.review.voteless.push(format!(
+                            "{question}/{id}: the run it forecast from is not on the report, so \
+                             no version to vote under"
+                        )),
+                        (history, Some(version)) => match model_vote(
+                            &id,
+                            version,
+                            &format!("{target} = {UP}"),
+                            up,
+                            &observation.regime,
+                            history,
+                            cost,
+                            now,
+                        ) {
+                            Ok(vote) => self.review.votes.push(vote),
+                            Err(error) => self
+                                .review
+                                .voteless
+                                .push(format!("{question}/{id}: {}", error.message())),
+                        },
+                    }
                     forecasts.insert(id, up);
                 }
                 Err(error) => self
@@ -666,6 +823,9 @@ impl TournamentStage {
                     self.pending.remove(&id);
                     match resolved {
                         Ok(resolved) => {
+                            for score in &resolved.scores {
+                                self.record_score(&score.forecaster, score.brier, now);
+                            }
                             scored.extend(resolved.scores.iter().map(|s| s.forecaster.clone()));
                             regimes.insert(resolved.regime.clone());
                             self.review.resolved.push(resolved);
@@ -786,6 +946,45 @@ mod tests {
             "premise: the short window has a deviation to read"
         );
         assert_eq!(tail_threshold(short), None, "nine returns state no tail");
+    }
+
+    /// R12-CONTRACT-6112: a vote whose cost is not an amount is refused,
+    /// not cast at zero — a free vote would win the cost factor it never
+    /// paid — and a forecaster with no history has no standing. Mutation:
+    /// default an unrepresentable cost to zero in `model_vote` and the first
+    /// assertion fails.
+    #[test]
+    fn a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused() {
+        let at = Timestamp::from_secs(1_760_000_000);
+        let history = vec![ScorePoint {
+            at,
+            score: Decimal::from_f64(0.2).unwrap(),
+        }];
+        let vote = |history: Option<&Vec<ScorePoint>>, cost: f64| {
+            model_vote(
+                "analyst:a",
+                "manifest-x",
+                "AAA = up",
+                6_000,
+                "calm",
+                history,
+                cost,
+                at,
+            )
+        };
+        assert!(
+            vote(Some(&history), 2_500.0).is_ok(),
+            "premise: a billable vote is cast"
+        );
+        assert!(
+            vote(Some(&history), f64::NAN).is_err(),
+            "a vote with no cost was cast"
+        );
+        assert!(vote(Some(&history), f64::INFINITY).is_err());
+        assert!(
+            vote(None, 2_500.0).is_err(),
+            "a vote with no history was cast"
+        );
     }
 
     #[test]

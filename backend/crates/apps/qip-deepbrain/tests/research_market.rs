@@ -17,12 +17,14 @@ use qip_contracts::reflex_package::{
 };
 use qip_core::error::{Error, Result};
 use qip_core::{Context, Duration, Timestamp};
-use qip_deepbrain::research::{FillObservation, ResearchConfig, ResearchLoop};
+use qip_deepbrain::research::{FillObservation, META_MARGINAL_VALUE, ResearchConfig, ResearchLoop};
 use qip_expansion::desk::CloseReason;
+use qip_expansion::meta::{ReputationKey, Standing};
 use qip_financial::universe::Universe;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::Telemetry;
+use qip_observability::metrics::labels;
 use qip_risk::limits::LimitSet;
 use qip_storage::{BlobStore, MemoryBlobStore};
 use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
@@ -295,5 +297,177 @@ fn research_that_realises_nothing_is_retired_by_the_market_and_stays_retired() {
             .acquisitions()
             .all(|a| a.outcome.as_str() == "not_executable"),
         "premise: nothing could be carried out for a coverage gap"
+    );
+}
+
+/// Reputation is kept by domain, horizon and regime (R12-AMBIENT-3111): a
+/// window measured under the regime the platform classified informs that
+/// cell, and leaves every other regime's cell — and the pooled
+/// `research/all` cell this replaced — uninformed. Mutation: restore the
+/// `"research", "all"` literals in `run_market` and `measure_last_round`
+/// — the platform-regime cell is `Uninformed` and the first assertion
+/// fails.
+#[test]
+fn a_measured_window_in_one_regime_leaves_another_regimes_cell_uninformed() {
+    let platform = platform();
+    let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+    let first = research
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    let question = first
+        .desk
+        .started
+        .iter()
+        .find(|q| q.contains(VENUE))
+        .cloned()
+        .unwrap_or_else(|| panic!("premise: the residual gap started: {first:?}"));
+    let domain = research
+        .desk()
+        .queue()
+        .entry(&question)
+        .and_then(|e| e.origin())
+        .and_then(|gap| gap.signal.affected_domains.first().cloned())
+        .unwrap_or_else(|| panic!("the item names a domain"));
+    let later = t0().saturating_add(Duration::from_mins(10));
+    let second = research
+        .sweep_over(&platform, &fills(2), &[], later, &set(&[]), &set(&["US"]))
+        .unwrap();
+    assert_eq!(
+        second.measured, 1,
+        "premise: one window measured: {second:?}"
+    );
+
+    let regime = platform.regime_context(&domain);
+    assert!(
+        !regime.is_empty(),
+        "premise: the platform classifies a regime"
+    );
+    let book = research.meta().reputation();
+    let measured = ReputationKey::new(&domain, "hour", &regime).unwrap();
+    assert!(
+        matches!(book.standing(&measured), Standing::Informed(_)),
+        "the cell the window was measured in is informed: {measured:?}"
+    );
+    let other_regime = if regime == "crisis/extreme" {
+        "quiet/normal"
+    } else {
+        "crisis/extreme"
+    };
+    let other = ReputationKey::new(&domain, "hour", other_regime).unwrap();
+    assert_eq!(book.standing(&other), Standing::Uninformed);
+    let pooled = ReputationKey::new(&domain, "research", "all").unwrap();
+    assert_eq!(book.standing(&pooled), Standing::Uninformed);
+}
+
+/// The marginal value on the gauge is what the latest window added
+/// (R12-AMBIENT-3112, 10189): a window whose two new residuals narrowed
+/// the bias estimate realises something, and the next window, which gathered
+/// nothing and narrowed nothing, records zero marginal value on
+/// `qip_meta_marginal_value_bp` — not the average of the two. Mutation:
+/// delete the `metrics.gauge(META_MARGINAL_VALUE, ..)` write in
+/// `measure_last_round` — the gauge is absent and the first read fails.
+#[test]
+fn a_second_unit_that_realises_nothing_records_zero_marginal_value() {
+    let platform = platform();
+    let metrics = platform.telemetry().metrics.clone();
+    // A fill-bias item is a `Model` gap, so its work kind on the gauge is `model`.
+    let gauge = || {
+        metrics
+            .snapshot()
+            .gauge(META_MARGINAL_VALUE, &labels([("kind", "model")]))
+    };
+    let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+    let first = research
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    assert!(
+        first.desk.started.iter().any(|q| q.contains(VENUE)),
+        "premise: the residual gap started: {first:?}"
+    );
+    assert_eq!(gauge(), None, "premise: nothing measured yet");
+
+    let second = research
+        .sweep_over(
+            &platform,
+            &fills(2),
+            &[],
+            t0().saturating_add(Duration::from_mins(10)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap();
+    assert_eq!(second.measured, 1, "{second:?}");
+    let narrowed = gauge().unwrap_or_else(|| panic!("the first window is on the gauge"));
+    assert!(
+        narrowed > 0.0,
+        "premise: two new residuals narrowed the estimate: {narrowed}"
+    );
+
+    let third = research
+        .sweep_over(
+            &platform,
+            &fills(2),
+            &[],
+            t0().saturating_add(Duration::from_mins(20)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap();
+    assert_eq!(third.measured, 1, "{third:?}");
+    assert_eq!(
+        gauge(),
+        Some(0.0),
+        "a window that narrowed nothing added nothing"
+    );
+}
+
+/// Each research agent is bounded by its stated compute budget on the
+/// deployed market (R12-AMBIENT-9034): the fill-bias item a sweep grants
+/// with no agent budget is declined `over_agent_budget` once its agent —
+/// the reputation cell the bid is weighted by — is stated a budget of zero,
+/// and nothing starts. The budget is read from the variable `main.rs`
+/// passes, so the parse is on the path too. Mutation: call `allocate` in
+/// `run_market` — the zero-budget agent is granted and the test fails.
+#[test]
+fn a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing() {
+    let platform = platform();
+    let mut probe = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).unwrap();
+    let granted = probe
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    let question = granted
+        .desk
+        .started
+        .iter()
+        .find(|q| q.contains(VENUE))
+        .cloned()
+        .unwrap_or_else(|| panic!("premise: unbounded, the item is granted: {granted:?}"));
+    let domain = probe
+        .desk()
+        .queue()
+        .entry(&question)
+        .and_then(|e| e.origin())
+        .and_then(|gap| gap.signal.affected_domains.first().cloned())
+        .unwrap();
+    let regime = platform.regime_context(&domain);
+    let raw = format!("{domain}/hour/{regime}=0");
+    let config = ResearchConfig::from_lookup(&|name: &str| {
+        (name == qip_deepbrain::research::AGENT_BUDGETS_VARIABLE).then(|| raw.clone())
+    })
+    .unwrap();
+    assert_eq!(config.agent_budgets.len(), 1, "premise: the budget parsed");
+    let mut bounded = ResearchLoop::new(config, BTreeMap::new()).unwrap();
+    let round = bounded
+        .sweep_over(&platform, &fills(0), &[], t0(), &set(&[]), &set(&["US"]))
+        .unwrap();
+    assert_eq!(
+        round.declined.get("over_agent_budget"),
+        Some(&1),
+        "{round:?}"
+    );
+    assert!(round.desk.started.is_empty(), "{round:?}");
+    assert!(
+        qip_deepbrain::research::parse_agent_budgets("market/hour=1").is_err(),
+        "a key without a regime is refused"
     );
 }
