@@ -1186,3 +1186,94 @@ fn a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_va
     assert_eq!(all.criteria().net_value_bp(), 0);
     assert!(all.should_halt(at(1), 1));
 }
+
+/// Mutation: restore `self.deferred.pop_front()` in `AttentionRouter::route`'s
+/// window drain — the earlier, lower-value signal is activated first.
+#[test]
+fn a_higher_value_deferred_signal_is_activated_before_an_earlier_lower_one() {
+    let mut router = AttentionRouter::new(policy(1, 8));
+    let valued = |id: usize, severity: u32, economic: Option<u32>, secs: i64| {
+        let built = signal(id, SignalClass::Surprise, severity, secs);
+        match economic {
+            Some(bp) => built.with_economic_value_bp(bp).expect("within the scale"),
+            None => built,
+        }
+    };
+    // Window one: the first signal takes the whole budget and the rest are
+    // held in arrival order. Values (severity x economic value): 2 is 4.1M,
+    // 3 is 60M, 4 is 4.5M, 5 and 6 tie at 32M and 5 arrived first.
+    let arrivals = [
+        valued(1, 9_000, None, 0),
+        valued(2, 4_100, Some(1_000), 1),
+        valued(3, 6_000, Some(10_000), 2),
+        valued(4, 9_000, Some(500), 3),
+        valued(5, 4_000, Some(8_000), 4),
+        valued(6, 8_000, Some(4_000), 5),
+    ];
+    let mut activated: Vec<String> = Vec::new();
+    for s in &arrivals {
+        for event in router
+            .route(s, at(s.detected_at().as_secs()))
+            .expect("routes")
+        {
+            if event.disposition == Disposition::Activated {
+                activated.push(event.signal_id.clone());
+            }
+        }
+    }
+    assert_eq!(
+        activated,
+        ["sig-1"],
+        "premise: only the first signal fit the window"
+    );
+    assert_eq!(
+        router.deferred_len(),
+        5,
+        "premise: the other five are held, so the drain has a choice to make"
+    );
+
+    // Each later window admits one held signal. A signal below materiality
+    // opens the window without taking a slot of its own.
+    for window in 1..=5_i64 {
+        let tick = signal(
+            100 + window as usize,
+            SignalClass::Surprise,
+            100,
+            window * WINDOW_SECS,
+        );
+        for event in router
+            .route(&tick, at(window * WINDOW_SECS))
+            .expect("routes")
+        {
+            if event.disposition == Disposition::Activated {
+                activated.push(event.signal_id.clone());
+            }
+        }
+    }
+    assert_eq!(
+        activated,
+        ["sig-1", "sig-3", "sig-5", "sig-6", "sig-4", "sig-2"],
+        "held signals must drain by severity x economic value, the older first among equals"
+    );
+    assert_eq!(router.deferred_len(), 0);
+}
+
+#[test]
+fn an_economic_value_is_refused_above_the_scale_and_an_unstated_one_does_not_change_the_encoding() {
+    let plain = signal(1, SignalClass::Surprise, 5_000, 0);
+    assert_eq!(plain.economic_value_bp(), 10_000);
+    assert!(plain.clone().with_economic_value_bp(10_001).is_err());
+    let text = serde_json::to_string(&plain).expect("encodes");
+    assert!(
+        !text.contains("economic_value_bp"),
+        "an unstated value must not change the encoding of a recorded signal"
+    );
+    let stated = plain
+        .with_economic_value_bp(2_500)
+        .expect("within the scale");
+    let text = serde_json::to_string(&stated).expect("encodes");
+    assert!(text.contains("\"economic_value_bp\":2500"));
+    let back: AmbientSignal = serde_json::from_str(&text).expect("decodes");
+    assert_eq!(back, stated);
+    assert_eq!(stated.attention_value(), 5_000 * 2_500);
+}

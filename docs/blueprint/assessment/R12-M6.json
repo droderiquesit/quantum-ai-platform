@@ -2828,7 +2828,7 @@
       "backend/crates/libs/qip-contracts/src/action.rs:648 unit test: capital intent refused at operational authority",
       "backend/crates/libs/qip-contracts/src/action.rs:668 admitted at capital authority"
     ],
-    "gap": "Bind AuthorityLevel to an approval carrying an Attested presence from an enrolled WebAuthn key (ADR 0121) and integrate.",
+    "gap": "Three parts, none present. (1) qip-api has no Presence::Attested: auth.rs Presence has the single Unattested variant, Principal::presence always answers it and authentication_instant refuses, so nothing can mint an attested presence; ADR 0120 (accepted 2026-10-11) specifies it as an ECDSA P-256 WebAuthn assertion over a request-bound challenge from a POST /operator-challenges route, enrolled public keys baked into the image, none of which is built (ring is admitted by ADR 0110, no verification code uses it). (2) qip_contracts::action::check_authority has no caller outside its own unit tests, so changing it to take an Approval would gate nothing on a running path. (3) A qip-contracts Approval type cannot be minted only by qip-api (a public constructor can be called by anyone); the structural guarantee needs the attestation type to be unconstructible outside the verifier, i.e. defined beside the WebAuthn verifier and passed into the contract as an opaque token. Build order: the verifier and challenge route in qip-api first, then an attestation token in qip-contracts, then a Capital-class caller of check_authority.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2839,7 +2839,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "2026-10-18 L12: no code changed. The triage closure presumed Presence::Attested at auth.rs:130 exists; it does not. Closing this row is an M-size build behind ADR 0120, not the S the triage assumed."
   },
   {
     "id": "R12-GOV-6126",

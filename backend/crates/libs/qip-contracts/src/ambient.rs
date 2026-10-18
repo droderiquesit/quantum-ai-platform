@@ -85,6 +85,24 @@ pub struct AmbientSignal {
     wake_targets: Vec<Pathway>,
     evidence_ids: Vec<String>,
     expiry: Timestamp,
+    /// What acting on the signal is worth, in basis points of the scale. Not
+    /// stated (the full scale) unless a producer states it with
+    /// [`AmbientSignal::with_economic_value_bp`]; omitted from the encoding
+    /// when not stated, so a signal recorded before the field existed
+    /// decodes, and re-encodes, unchanged.
+    #[serde(
+        default = "unstated_economic_value_bp",
+        skip_serializing_if = "is_unstated_economic_value_bp"
+    )]
+    economic_value_bp: u32,
+}
+
+fn unstated_economic_value_bp() -> u32 {
+    MAX_SEVERITY_BP
+}
+
+fn is_unstated_economic_value_bp(bp: &u32) -> bool {
+    *bp == MAX_SEVERITY_BP
 }
 
 /// The CONTRACT-025 fields a detector states about what it saw, beyond the
@@ -214,7 +232,37 @@ impl AmbientSignal {
             wake_targets,
             evidence_ids,
             expiry,
+            economic_value_bp: MAX_SEVERITY_BP,
         })
+    }
+
+    /// State what acting on this signal is worth, in basis points of the
+    /// scale. Refused above the scale rather than clamped, like severity.
+    ///
+    /// [`AttentionRouter`] admits held signals by `severity × economic value`,
+    /// so a signal whose producer knows nothing of its worth ranks on
+    /// severity alone (the unstated value is the full scale) instead of
+    /// ranking last on a zero nobody computed.
+    pub fn with_economic_value_bp(mut self, economic_value_bp: u32) -> Result<Self> {
+        if economic_value_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(format!(
+                "economic value {economic_value_bp} bp exceeds {MAX_SEVERITY_BP}; scale it, it is not clamped"
+            )));
+        }
+        self.economic_value_bp = economic_value_bp;
+        Ok(self)
+    }
+
+    /// What acting on the signal is worth, in basis points; the full scale
+    /// when the producer stated nothing.
+    pub fn economic_value_bp(&self) -> u32 {
+        self.economic_value_bp
+    }
+
+    /// The figure [`AttentionRouter`] admits held signals by:
+    /// `severity × economic value`, exact in `u64`.
+    pub fn attention_value(&self) -> u64 {
+        u64::from(self.severity_bp) * u64::from(self.economic_value_bp)
     }
     pub fn id(&self) -> &str {
         &self.id
@@ -450,7 +498,9 @@ impl AttentionRouter {
 
     /// Route one signal at `now`. Returns every event this call produced: the
     /// activations of signals deferred earlier (a new window drains the hold
-    /// queue first, oldest first, so a storm cannot starve what it displaced)
+    /// queue first, highest `severity × economic value` first and the oldest
+    /// among equals, so a storm cannot starve what it displaced and the
+    /// window goes to what is worth most)
     /// and then this signal's own. A signal below materiality produces none —
     /// below the bar is not an activation and not a loss.
     ///
@@ -472,7 +522,25 @@ impl AttentionRouter {
                 self.window_start = Some(now);
                 self.used = 0;
                 while self.used < self.policy.budget_per_window {
-                    let Some(held) = self.deferred.pop_front() else {
+                    // The most valuable held signal first, the oldest among
+                    // equals. First-in-first-out spent a scarce window on
+                    // whatever arrived earliest, so a minor signal held since
+                    // the storm began went ahead of a material one that
+                    // arrived last.
+                    let Some(best) = self
+                        .deferred
+                        .iter()
+                        .enumerate()
+                        .max_by(|(ai, a), (bi, b)| {
+                            a.attention_value()
+                                .cmp(&b.attention_value())
+                                .then_with(|| bi.cmp(ai))
+                        })
+                        .map(|(index, _)| index)
+                    else {
+                        break;
+                    };
+                    let Some(held) = self.deferred.remove(best) else {
                         break;
                     };
                     // A held signal that went stale while it waited wakes
