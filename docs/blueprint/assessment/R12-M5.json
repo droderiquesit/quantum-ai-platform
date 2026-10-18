@@ -646,14 +646,16 @@
   },
   {
     "id": "R12-REFLEX-5029",
-    "status": "PARTIAL",
-    "current": "Cell::work (backend/crates/edge/qip-edge/src/cell.rs:4084) does no I/O; node main loop runs the pass after a mesh exchange whose failure is reported not fatal (backend/crates/apps/qip-edge-node/src/main.rs:939-959). Tested: backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342 and degraded.rs:245.",
+    "status": "COMPLETE",
+    "current": "Cell::work does no I/O; the node's Scheduler::apply_mesh drains MeshLink::take_inbound through try_recv off the link's own thread, so a slow or dead centre cannot hold a pass. With the centre unreachable the node works the same passes, sends the same orders and refuses the same, and a cell cut off from everything keeps placing paper orders inside its envelope and journals that it is degraded. The check is met.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:4084 Cell::work",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245"
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::work",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:633 apply_mesh",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:681 take_inbound is a try_recv",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:350 a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:253 a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded"
     ],
-    "gap": "The mesh exchange runs synchronously on the same thread before each pass (main.rs:939), so a slow (not dead) peer delays the pass by up to the transport timeout; no deployment (execution_nodes = {}).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -661,10 +663,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test reasoning_outage --test degraded",
+    "verification": "cargo test -p qip-edge-node --test reasoning_outage; cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (a synchronous mesh exchange before each pass) predated Scheduler::apply_mesh and the off-thread link. No mutation run by this lane. Not deployed, so deployable stays false."
   },
   {
     "id": "R12-REFLEX-5030",
@@ -882,14 +884,15 @@
   },
   {
     "id": "R12-REFLEX-5039",
-    "status": "PARTIAL",
-    "current": "qip_feature_dag::engine::FeatureEngine dirty-marking (backend/crates/edge/qip-feature-dag/src/engine.rs:1), constructed in backend/crates/apps/qip-edge-node/src/main.rs:414 and registered per strategy subject.",
+    "status": "COMPLETE",
+    "current": "FeatureEngine::ingest marks dirty only the features whose reads intersect the message's reads, transitively; evaluating twice with no new messages recomputes nothing and a print cannot dirty a feature that reads only the top of book, both asserted on FeatureEngine::dirty_count. The engine is constructed on the node's default path. The check (one message recomputes only dependants; marking everything dirty fails the recompute-count test) is met.",
     "evidence": [
-      "backend/crates/edge/qip-feature-dag/src/engine.rs:1 incremental evaluation",
+      "backend/crates/edge/qip-feature-dag/src/engine.rs:107 ingest marks dirty by read intersection; :237 dirty_count",
       "backend/crates/apps/qip-edge-node/src/main.rs:414 FeatureEngine::new",
-      "backend/crates/apps/qip-edge-node/tests/features.rs"
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:183 evaluating_twice_with_no_new_messages_recomputes_nothing",
+      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:273 a_print_cannot_dirty_a_feature_that_only_reads_the_top_of_book"
     ],
-    "gap": "No stated per-message cost bound or test asserting a bound; window sizes bounded only by definitions.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -897,10 +900,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-feature-dag; a cost-bound test",
+    "verification": "cargo test -p qip-feature-dag --test feature_dag",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: dropping the read-intersection filter in ingest (every candidate of the subject marked dirty) fails the test at feature_dag.rs:286."
   },
   {
     "id": "R12-REFLEX-5040",
@@ -1685,11 +1688,14 @@
   {
     "id": "R12-EXEC-5074",
     "status": "PARTIAL",
-    "current": "CorrelatedExposure input (backend/crates/services/qip-execution-engine/src/quoting.rs:351) validated and applied in quote sizing; kernel quote loop prices only.",
+    "current": "CorrelatedExposure (hedge-netted, correlation-weighted) is an input to quote sizing: the side that adds to held correlated exposure is cut in proportion to the limit used and the offsetting side keeps full size, asserted and mutation-proven in qip-execution-engine. The kernel's per-instrument quote loop passes `correlated: None` (quote_loop.rs:407, 'No portfolio correlation view is wired into this per-instrument loop yet'), so on the running path no portfolio exposure reaches the sizing.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/quoting.rs:351"
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:338-352 CorrelatedExposure input",
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:803 the adding side is cut",
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:1234 the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not",
+      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:407 correlated: None"
     ],
-    "gap": "Quotes not executed; hedges not an input.",
+    "gap": "The kernel quote loop reads no portfolio exposure (quote_loop.rs:407 passes correlated: None), so hedges and correlated exposure affect quote size only when a caller supplies them; the unit check is met but the statement does not hold on the default path until the loop derives a CorrelatedExposure from the portfolio's positions and hedges.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1697,10 +1703,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-execution-engine quoting",
+    "verification": "cargo test -p qip-execution-engine --lib the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->PARTIAL. Mutation: matching on `None` instead of `inputs.correlated` fails the unit test at quoting.rs:1247. The triage's claim that the input is reached from quote_loop::review is wrong: review prices and reviews, and the only construction of QuoteInputs in the kernel passes None."
   },
   {
     "id": "R12-EXEC-5075",

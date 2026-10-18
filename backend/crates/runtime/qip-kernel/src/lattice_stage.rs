@@ -40,10 +40,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use qip_contracts::forecast::Forecast;
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
+use qip_world_model::causal::CausalGraph;
 use qip_world_model::lattice::{
-    Calibrator, Inconsistency, Lane, LatticeHorizon, Population, Question, Resolution, ScoreRecord,
-    Scorecard, TargetInput, WeightUpdate, constrain, issue, route,
+    Calibrator, CatalystExpectation, ForecastContext, Inconsistency, Lane, LatticeHorizon,
+    MAX_REGIMES, Population, Question, Resolution, ScoreRecord, Scorecard, StructuralClaim,
+    TargetInput, WeightUpdate, constrain, issue, route,
 };
+use qip_world_model::now::WorldReading;
 use serde::{Deserialize, Serialize};
 
 /// Instruments forecast per pass: surprised ones first, then identifier
@@ -70,6 +73,95 @@ pub const LATTICE_WEIGHTS_FROZEN: &str = "qip_lattice_weights_frozen";
 
 /// What the record's idempotency key starts with.
 pub const IDEMPOTENCY_PREFIX: &str = "lattice:";
+
+/// The domain every instrument close is asked in, which the reputation
+/// cache is keyed by beside the row and the model (WORLD-9022).
+pub const LATTICE_DOMAIN: &str = "markets";
+
+/// How long a macro surprise is read as a pending catalyst for the hours-days
+/// row after it became knowable (WORLD-3086): two days, the row's horizon
+/// plus one, so a release the cycle learned of this morning widens tomorrow's
+/// forecast and one from last week does not.
+pub const CATALYST_WINDOW: Duration = Duration::from_days(2);
+
+/// The share of a macro surprise (a fraction of the consensus expectation)
+/// expected to pass through to an instrument's close, as an absolute move.
+/// One fifth: the hours-days row is widened by the reaction, not moved by it,
+/// and a figure larger than the surprise would claim the market reprices by
+/// more than the release missed. Capped at [`MAX_CATALYST_MOVE`].
+pub const MACRO_PASS_THROUGH: f64 = 0.2;
+
+/// The largest expected absolute reaction a catalyst may carry, as a
+/// fraction of the level. A surprise past this is a data error or a crisis,
+/// and either way a wider row than this is not a forecast.
+pub const MAX_CATALYST_MOVE: f64 = 0.10;
+
+/// What the pass cannot read from the bars: the signals the row specialists
+/// consume, set by the composition root before each pass from the world
+/// model ([`signals_from_world`]) and cleared by the pass that read them, so
+/// a signal is never read twice as if it were fresh.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LatticeSignals {
+    /// Order-flow imbalance per subject, `[-1, 1]`, buy-positive
+    /// (WORLD-3085). Nothing in the kernel yet absorbs a
+    /// `qip_world_model::order_flow::FlowObservation`, so this is empty on
+    /// every production path today; the seam exists so the flow member
+    /// reads flow the day something feeds it.
+    pub flow_imbalance: BTreeMap<String, f64>,
+    /// A catalyst pending for every subject: a macro surprise that became
+    /// knowable inside [`CATALYST_WINDOW`], the largest if several.
+    pub pending_catalyst: Option<CatalystExpectation>,
+    /// Live causal claims bearing on each subject (WORLD-3088).
+    pub structural_claims: BTreeMap<String, Vec<StructuralClaim>>,
+}
+
+/// Read the row specialists' signals from the world model as it is known at
+/// `now`: every live, unretired causal claim into each subject for the
+/// structural member, and the latest macro surprise inside
+/// [`CATALYST_WINDOW`] as the pending catalyst for the event member. Point in
+/// time on both: a claim retired by `now` is absent, and a surprise not yet
+/// knowable at `now` is absent, so a replay at an earlier instant sees what
+/// was known then.
+pub fn signals_from_world(
+    causal: &CausalGraph,
+    macro_surprises: &[WorldReading],
+    subjects: &[String],
+    now: Timestamp,
+) -> LatticeSignals {
+    let mut structural_claims = BTreeMap::new();
+    for subject in subjects {
+        let claims: Vec<StructuralClaim> = causal
+            .incoming(subject, now)
+            .into_iter()
+            .map(|edge| StructuralClaim {
+                cause: edge.cause.clone(),
+                mechanism: edge.mechanism.as_str().to_string(),
+                transmission: edge.signed_transmission(),
+                lag: edge.lag,
+            })
+            .collect();
+        if !claims.is_empty() {
+            structural_claims.insert(subject.clone(), claims);
+        }
+    }
+    let since = now.saturating_sub(CATALYST_WINDOW);
+    let pending_catalyst = macro_surprises
+        .iter()
+        .filter(|r| r.available_at <= now && r.available_at >= since && r.value.is_finite())
+        .map(|r| CatalystExpectation {
+            source: format!("{}/{}", r.feature, r.subject),
+            expected_abs_move: (r.value.abs() * MACRO_PASS_THROUGH).min(MAX_CATALYST_MOVE),
+        })
+        .fold(None, |best: Option<CatalystExpectation>, c| match best {
+            Some(b) if b.expected_abs_move >= c.expected_abs_move => Some(b),
+            _ => Some(c),
+        });
+    LatticeSignals {
+        flow_imbalance: BTreeMap::new(),
+        pending_catalyst,
+        structural_claims,
+    }
+}
 
 /// One instrument as the pass reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +196,7 @@ struct Pending {
     p_up: f64,
     reference: f64,
     regime: String,
+    domain: String,
 }
 
 /// The pass, as the log keeps it.
@@ -176,6 +269,17 @@ pub struct LatticeStage {
     strategic_available: bool,
     backlog: BTreeSet<(String, LatticeHorizon)>,
     calibrator_available: bool,
+    signals: LatticeSignals,
+    /// Per subject, per regime label: the sum and count of the bar returns
+    /// observed under that label, from which the regime-path member reads
+    /// the drift the regime has shown (WORLD-3087). Learned here, on the
+    /// default path, from the closes every pass already carries. Bounded:
+    /// subjects are forgotten with their forecast slots, and a subject holds
+    /// at most [`MAX_REGIMES`] labels.
+    regime_returns: BTreeMap<String, BTreeMap<String, (f64, u64)>>,
+    /// The close each subject's regime return was last taken through, so a
+    /// bar is counted once however many passes see it.
+    regime_seen: BTreeMap<String, Timestamp>,
 }
 
 impl LatticeStage {
@@ -188,7 +292,59 @@ impl LatticeStage {
             strategic_available: true,
             backlog: BTreeSet::new(),
             calibrator_available: true,
+            signals: LatticeSignals::default(),
+            regime_returns: BTreeMap::new(),
+            regime_seen: BTreeMap::new(),
         })
+    }
+
+    /// Hand the next pass the signals it cannot read from bars. Read once by
+    /// the next [`Self::run`] and then cleared.
+    pub fn set_signals(&mut self, signals: LatticeSignals) {
+        self.signals = signals;
+    }
+
+    /// The drift per bar, as a return, each regime label has shown for
+    /// `subject`, for a reader checking what the regime-path member read.
+    pub fn regime_drifts(&self, subject: &str) -> BTreeMap<String, f64> {
+        self.regime_returns
+            .get(subject)
+            .map(|by_regime| {
+                by_regime
+                    .iter()
+                    .filter(|(_, (_, n))| *n > 0)
+                    .map(|(regime, (sum, n))| (regime.clone(), sum / *n as f64))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Count the newest bar return of `target` under its regime label, once.
+    fn learn_regime_return(&mut self, target: &LatticeTarget) {
+        let Some(&[(_, previous), (at, latest)]) = target.closes.last_chunk::<2>() else {
+            return;
+        };
+        if !(previous > 0.0 && latest.is_finite()) {
+            return;
+        }
+        if self
+            .regime_seen
+            .get(&target.subject)
+            .is_some_and(|seen| *seen >= at)
+        {
+            return;
+        }
+        self.regime_seen.insert(target.subject.clone(), at);
+        let by_regime = self
+            .regime_returns
+            .entry(target.subject.clone())
+            .or_default();
+        if !by_regime.contains_key(&target.regime) && by_regime.len() >= MAX_REGIMES {
+            return;
+        }
+        let entry = by_regime.entry(target.regime.clone()).or_insert((0.0, 0));
+        entry.0 += (latest - previous) / previous;
+        entry.1 += 1;
     }
 
     pub fn calibrator(&self) -> &Calibrator {
@@ -257,6 +413,7 @@ impl LatticeStage {
                 Some((observed_at, outcome)) => {
                     let resolution = Resolution {
                         forecast_id: id.clone(),
+                        domain: p.domain.clone(),
                         horizon: p.horizon,
                         regime: p.regime.clone(),
                         model_means: p.model_means.clone(),
@@ -307,11 +464,14 @@ impl LatticeStage {
         let mut woken = Vec::new();
         let mut fallbacks = 0;
         let mut inconsistencies = Vec::new();
+        let signals = std::mem::take(&mut self.signals);
         for target in order {
             let surprised = inputs.surprised.contains(&target.subject);
-            let Some(input) = target_input(target) else {
+            self.learn_regime_return(target);
+            let Some(mut input) = target_input(target) else {
                 continue;
             };
+            input.context = self.context_for(target, &signals, &input);
             let mut chain: Vec<Forecast> = Vec::new();
             for horizon in LatticeHorizon::ALL {
                 if horizon.lane() != Lane::Central {
@@ -331,7 +491,7 @@ impl LatticeStage {
                 self.backlog.remove(&slot);
                 let question = Question {
                     target: input.target.clone(),
-                    domain: "markets".to_string(),
+                    domain: LATTICE_DOMAIN.to_string(),
                     horizon,
                 };
                 let reputation = self.calibrator.weights();
@@ -372,6 +532,7 @@ impl LatticeStage {
                                 p_up: made.p_up,
                                 reference: made.reference,
                                 regime: target.regime.clone(),
+                                domain: question.domain.clone(),
                             },
                         );
                         if surprised {
@@ -402,6 +563,11 @@ impl LatticeStage {
         let present: BTreeSet<&str> = by_subject.keys().copied().collect();
         self.current
             .retain(|(s, _), exp| *exp > now || present.contains(s.as_str()));
+        let slotted: BTreeSet<&str> = self.current.keys().map(|(s, _)| s.as_str()).collect();
+        self.regime_returns
+            .retain(|s, _| present.contains(s.as_str()) || slotted.contains(s.as_str()));
+        self.regime_seen
+            .retain(|s, _| present.contains(s.as_str()) || slotted.contains(s.as_str()));
 
         LatticeReview {
             cycle: inputs.cycle,
@@ -427,6 +593,47 @@ impl LatticeStage {
     }
 }
 
+impl LatticeStage {
+    /// What the row specialists read for `target`: the regime drifts this
+    /// stage has learned (as a drift per day in the target's units), and the
+    /// flow, catalyst and claims the composition root handed the pass.
+    fn context_for(
+        &self,
+        target: &LatticeTarget,
+        signals: &LatticeSignals,
+        input: &TargetInput,
+    ) -> ForecastContext {
+        let bar_days = bar_days(target).unwrap_or(1.0);
+        let regime_drifts = self
+            .regime_drifts(&target.subject)
+            .into_iter()
+            .map(|(regime, per_bar)| (regime, per_bar * input.level / bar_days))
+            .collect();
+        ForecastContext {
+            flow_imbalance: signals.flow_imbalance.get(&target.subject).copied(),
+            pending_catalyst: signals.pending_catalyst.clone(),
+            regime: Some(target.regime.clone()),
+            regime_drifts,
+            structural_claims: signals
+                .structural_claims
+                .get(&target.subject)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The mean spacing of a target's closes in days, or `None` where there are
+/// not two closes or they do not advance.
+fn bar_days(t: &LatticeTarget) -> Option<f64> {
+    let (first, last) = (t.closes.first()?.0, t.closes.last()?.0);
+    if t.closes.len() < 2 {
+        return None;
+    }
+    let bar_days = last.since(first).as_days_f64() / (t.closes.len() - 1) as f64;
+    (bar_days.is_finite() && bar_days > 0.0).then_some(bar_days)
+}
+
 /// The forecast inputs for one target, or `None` where its history is too
 /// thin to state a variance. The NOW Brain's latent return, where promoted,
 /// supplies the drift and the uncertainty about the level — the higher-level
@@ -447,12 +654,7 @@ fn target_input(t: &LatticeTarget) -> Option<TargetInput> {
     if returns.len() < LATTICE_MIN_RETURNS {
         return None;
     }
-    let first = t.closes.first()?.0;
-    let span_days = last_at.since(first).as_days_f64();
-    let bar_days = span_days / (t.closes.len() - 1) as f64;
-    if !(bar_days.is_finite() && bar_days > 0.0) {
-        return None;
-    }
+    let bar_days = bar_days(t)?;
     let n = returns.len() as f64;
     let mean = returns.iter().sum::<f64>() / n;
     let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
@@ -474,5 +676,6 @@ fn target_input(t: &LatticeTarget) -> Option<TargetInput> {
             t.subject,
             last_at
         )],
+        context: ForecastContext::default(),
     })
 }

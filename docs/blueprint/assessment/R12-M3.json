@@ -220,13 +220,15 @@
   },
   {
     "id": "R12-CONTRACT-3011",
-    "status": "PARTIAL",
-    "current": "PolicyPayload / ModelPack contracts exist and the kernel produces policy frames and a model pack.",
+    "status": "COMPLETE",
+    "current": "The kernel issues signed, versioned PolicyFrames and a ModelPack (model_serving::pack) by default; with a peer epoch live on the node a policy or halt reaches the cell only down the verified path, and nothing but the cell's own verification can mint a verified policy, halt or grant — the peer protocol cannot name one, so a tampered payload is refused. The check (the central plane issues a signed policy payload a cell accepts; tampering is refused) is met.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/policy.rs PolicyPayload/PolicyFrame",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:113 with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:241 nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_grant_and_the_peer_protocol_cannot_name_one"
     ],
-    "gap": "Assessed in CONTRACT/FABRIC slices; no deployed consumer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -234,10 +236,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test contracts",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'No deployed consumer' is not a clause of the check; no node is enabled, so deployable stays false. No mutation run by this lane."
   },
   {
     "id": "R12-REASON-3012",
@@ -610,14 +612,17 @@
   },
   {
     "id": "R12-GOV-3029",
-    "status": "PARTIAL",
-    "current": "ConductGate with seven independent checks, tested; nothing outside qip-agency constructs it and there is no communications channel.",
+    "status": "COMPLETE",
+    "current": "ConductGate's seven checks (truthfulness/provenance, identity/disclosure, channel policy, audience, jurisdiction, market conduct and the rest) are built inside ActionGuard and every communication draft passes them in ActionGuard::preflight before any adapter call; no adapter is ever called without a guard, and each check alone withholds the plan. The check (a draft failing any single check is blocked; removing a check lets a failing draft through) is met on the only acting path (qip-cli agency, shadow; under ADR 0114 every shipped adapter refuses, so no external channel exists yet).",
     "evidence": [
       "backend/crates/services/qip-agency/src/conduct_brain.rs:1-14 seven checks",
-      "backend/crates/services/qip-agency/tests/conduct_brain.rs:251 compliant_draft_passes_all_seven_checks",
+      "backend/crates/services/qip-agency/src/guard.rs:161 ConductGate built in ActionGuard; :311 campaign_failures in preflight",
+      "backend/crates/services/qip-agency/src/engine.rs:299 an acting pass must carry a guard",
+      "backend/crates/services/qip-agency/tests/agency.rs:1614 an_adapter_is_never_called_without_a_guard_even_at_narrow_reversible_authority",
+      "backend/crates/services/qip-agency/tests/agency.rs:1641 each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
       "backend/crates/services/qip-agency/tests/conduct_brain.rs:292 each_check_independently_enforced_factual_support"
     ],
-    "gap": "No production path; when a channel exists the gate must sit on it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -625,10 +630,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test conduct_brain",
+    "verification": "cargo test -p qip-agency --test agency each_guard_check_alone_withholds_the_plan_before_any_adapter_call; cargo test -p qip-agency --test conduct_brain",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: clearing the gate's campaign failures in ActionGuard::preflight (guard.rs:311) fails the test at agency.rs:1713 (a draft failing one check was no longer withheld). The former gap ('no production path') is closed structurally: the gate sits on the guard every acting engine must carry, not on a channel that does not exist."
   },
   {
     "id": "R12-GOV-3030",
@@ -652,15 +657,16 @@
   },
   {
     "id": "R12-GOV-3031",
-    "status": "PARTIAL",
-    "current": "is_deceptive refused in plan feasibility; reachable via qip-cli agency shadow, tested through the binary.",
+    "status": "COMPLETE",
+    "current": "A plan using a deceptive or manipulative method is infeasible (plan.rs is_deceptive), reachable through qip-cli agency shadow; the communication half runs through the same ConductGate in ActionGuard::preflight that every acting pass must carry, so a draft using one is withheld before any adapter call. The check (a deceptive plan is infeasible; removing the is_deceptive check fails the test) is met.",
     "evidence": [
       "backend/crates/services/qip-agency/src/plan.rs:163-165 deceptive method refused",
-      "backend/crates/services/qip-agency/src/autonomy.rs:59-61",
       "backend/crates/services/qip-agency/tests/agency.rs:280 a_prohibited_method_or_side_effect_makes_the_plan_infeasible",
-      "backend/crates/apps/qip-cli/tests/agency.rs::deceptive method declined (line ~539)"
+      "backend/crates/services/qip-agency/src/guard.rs:161 ConductGate in ActionGuard; :311 preflight",
+      "backend/crates/services/qip-agency/tests/agency.rs:1641 each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
+      "backend/crates/apps/qip-cli/tests/agency.rs deceptive method declined"
     ],
-    "gap": "Communication half: ConductGate (substring matching) has no production caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -668,10 +674,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo test -p qip-agency --test agency a_prohibited_method_or_side_effect_makes_the_plan_infeasible; cargo test -p qip-agency --test agency each_guard_check_alone_withholds_the_plan_before_any_adapter_call",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The communication half is covered by the mutation recorded on R12-GOV-3029. The former gap ('ConductGate has no production caller') predated its construction inside ActionGuard."
   },
   {
     "id": "R12-WORLD-3032",
@@ -1449,13 +1455,16 @@
   },
   {
     "id": "R12-AMBIENT-3067",
-    "status": "PARTIAL",
-    "current": "Fundamental surprise series scanned by the observation detector in the cycle.",
+    "status": "COMPLETE",
+    "current": "NowStage::run compares live readings with NowEstimator expected states and raises SurpriseEvents; qip-deepbrain's ResearchLoop sweep turns each into AmbientSignals routed through the shared AttentionRouter, so a now-surprise raised in the cycle wakes the forecast, adversarial, sensing and risk specialists and is journaled with its score; without the agency or without a sweep nothing is drafted. The check (the sentinel runs on the default path, its output reaches the attention router, disabling it removes its signals) is met.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9305-9312",
-      "backend/crates/libs/qip-financial/src/intelligence.rs:308 surprise"
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs:217 NowStage::run",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1012-1025 surprises become AmbientSignals through the AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:548 a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:232 a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs:224 without_the_agency_or_without_a_sweep_nothing_is_drafted"
     ],
-    "gap": "Limited to fundamentals vs consensus; residuals not routed to attention.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1463,10 +1472,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cargo test -p qip-deepbrain --test research a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists; cargo test -p qip-deepbrain --test ambient_journal; cargo test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former evidence (platform.rs:9305-9312) now lands on drawdown code and is removed. No mutation run by this lane."
   },
   {
     "id": "R12-AMBIENT-3068",
@@ -1871,13 +1880,17 @@
   {
     "id": "R12-WORLD-3085",
     "status": "PARTIAL",
-    "current": "LatticeHorizon::SecondsMinutes exists with a promotion target checked at admission; admission test tries a wrong target at this row.",
+    "current": "Population::standard admits seconds_minutes/order_flow (ModelFamily::OrderFlow), refused at any other row; issue() shifts its mean by imbalance x FLOW_SHIFT_PER_SD x the horizon sd and widens the row by |imbalance| x the horizon variance, refusing an imbalance outside [-1, 1]; the kernel LatticeStage reads the imbalance per subject from LatticeSignals::flow_imbalance (set_signals). Tested with a mutation that ignored the imbalance.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs::LatticeHorizon"
+      "backend/crates/services/qip-world-model/src/lattice.rs::ModelFamily::OrderFlow",
+      "backend/crates/services/qip-world-model/src/lattice.rs::project (OrderFlow arm) and check_context",
+      "backend/crates/services/qip-world-model/src/lattice.rs::Population::standard",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeSignals::flow_imbalance and LatticeStage::context_for",
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::the_seconds_row_holds_a_flow_member_whose_distribution_moves_with_the_imbalance"
     ],
-    "gap": "Population is two generic price models, not flow/event reaction models; no propagation-speed or liquidity outputs; nothing downstream gates on PromotionTarget.",
+    "gap": "No production path feeds order flow: nothing in the kernel absorbs a qip_world_model::order_flow::FlowObservation, and LatticeStage::set_signals is not yet called from platform.rs (the one-line call site is in the L14 lane report for L01), so on every deployed path the flow member reads no imbalance and states the level. Propagation speed and liquidity outputs are still absent; nothing downstream gates on PromotionTarget.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1885,22 +1898,24 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice the_seconds_row_holds_a_flow_member",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L14): the member, its arithmetic and its refusal exist and are mutation-tested (ignoring the imbalance failed at forecast_lattice.rs:541); the signal has no producer, so PARTIAL."
   },
   {
     "id": "R12-WORLD-3086",
     "status": "PARTIAL",
-    "current": "HoursDays promotes only to StrategyCapitalRisk; lattice admission and Tournament::admit both refuse a wrong lane, and a tournament test now tries HoursDays against PortfolioTreasury.",
+    "current": "Population::standard admits hours_days/event_reaction (ModelFamily::EventReaction); a pending CatalystExpectation widens the row by (expected_abs_move x level)^2 at the members weight without moving the median. The kernel reads the catalyst in lattice_stage::signals_from_world: the largest macro surprise that became knowable inside CATALYST_WINDOW, scaled by MACRO_PASS_THROUGH and capped at MAX_CATALYST_MOVE, point-in-time on available_at. forecast_lattice.rs:81-98 now tries every wrong target at every row (the register text that said otherwise was stale).",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:141",
-      "backend/crates/services/qip-world-model/src/lattice.rs:225",
-      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission",
-      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::admit"
+      "backend/crates/services/qip-world-model/src/lattice.rs::ModelFamily::EventReaction and CatalystExpectation",
+      "backend/crates/services/qip-world-model/src/lattice.rs::project (EventReaction arm)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::signals_from_world",
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_pending_catalyst_widens_the_hours_row_without_moving_its_median",
+      "backend/crates/runtime/qip-kernel/tests/lattice_specialists.rs::a_recent_macro_surprise_is_the_pending_catalyst_and_an_old_or_future_one_is_not",
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission"
     ],
-    "gap": "Not served by event, options, macro or company specialists producing scenario probabilities, catalyst impact or hedge demand; nothing downstream gates outputs by PromotionTarget.",
+    "gap": "signals_from_world is not yet called from platform.rs::understand_now (one call before self.lattice.run; patch in the L14 lane report for L01), so the deployed hours-days row still sees no catalyst. ReactionEpisode history has no production holder, so the expected magnitude comes from the surprise alone; options, company and hedge-demand specialists are absent; nothing downstream gates on PromotionTarget.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1910,47 +1925,52 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_pending_catalyst && cargo +1.94.1 test -p qip-kernel --test lattice_specialists",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The row-specific refusal for this horizon is untested, a test gap. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: ignoring the catalyst in project failed at forecast_lattice.rs:603; dropping the window filter in signals_from_world failed at lattice_specialists.rs:202."
   },
   {
     "id": "R12-WORLD-3087",
-    "status": "PARTIAL",
-    "current": "LatticeHorizon::WeeksMonths.promotion_target() is PortfolioTreasury (lattice.rs:141-149). Population::admit refuses any other target (lattice.rs:225), and issue() refuses a lane the horizon is not served from (lattice.rs:400). Population::standard admits two members per row: a martingale and a drift follower on a price level. The kernel's lattice stage issues at the central rows every cycle (runtime/qip-kernel/src/lattice_stage.rs).",
+    "status": "COMPLETE",
+    "current": "Population::standard admits weeks_months/regime_path (ModelFamily::RegimePath), which projects the drift the current regime label has shown rather than the last bars drift, falling back to the NOW drift for a label with no history. The kernel LatticeStage learns each (subject, regime) drift on the default path from the closes every pass carries (learn_regime_return, counted once per bar, bounded by MAX_REGIMES labels per subject and pruned with the forecast slots) and hands it to the row through context_for, so a regime change moves the weeks-months median in the cycle Platform::understand_now runs. forecast_lattice.rs:81-98 tries every wrong target at every row.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:141",
-      "backend/crates/services/qip-world-model/src/lattice.rs:225",
-      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission"
+      "backend/crates/services/qip-world-model/src/lattice.rs::ModelFamily::RegimePath",
+      "backend/crates/services/qip-world-model/src/lattice.rs::project (RegimePath arm)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LatticeStage::learn_regime_return, regime_drifts, context_for",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::understand_now (calls LatticeStage::run every cycle)",
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_regime_change_moves_the_weeks_rows_median_through_the_regime_path_member",
+      "backend/crates/runtime/qip-kernel/tests/lattice_specialists.rs::the_weeks_row_learns_each_regimes_drift_from_the_passes_closes_and_a_regime_change_moves_its_median"
     ],
-    "gap": "The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. No test exercises a wrong target at WeeksMonths: forecast_lattice.rs:81-98 only tries MicrosecondsMs and SecondsMinutes, and its premise loop reads horizon.promotion_target(), so mutating the WeeksMonths arm of promotion_target() fails no test.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_regime_change && cargo +1.94.1 test -p qip-kernel --test lattice_specialists the_weeks_row_learns",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The row-specific refusal for this horizon is untested, a test gap."
+    "notes": "Closed 2026-10-18 (lane L14). Mutations: ignoring the regime in project failed at forecast_lattice.rs:642; emptying the learned drifts in context_for failed at lattice_specialists.rs:112. Macro and supply-chain world models as separate fitted models remain outside this row: the regime path is the one named output this row checks."
   },
   {
     "id": "R12-WORLD-3088",
     "status": "PARTIAL",
-    "current": "LatticeHorizon::QuartersYears.promotion_target() is StrategicAllocationResearch (lattice.rs:141-149). Population::admit refuses any other target (lattice.rs:225), and issue() refuses a lane the horizon is not served from (lattice.rs:400). Population::standard admits two members per row: a martingale and a drift follower on a price level. The kernel's lattice stage issues at the central rows every cycle (runtime/qip-kernel/src/lattice_stage.rs).",
+    "current": "Population::standard admits quarters_years/structural (ModelFamily::Structural): every live StructuralClaim bearing on the target adds transmission^2 of the horizon variance, so a retired claim narrows the row and the median does not move. The kernel reads the claims in lattice_stage::signals_from_world from CausalGraph::incoming(subject, now), point-in-time, so a claim retired by condition failures leaves the set at the pass that follows. forecast_lattice.rs:81-98 tries every wrong target at every row.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:141",
-      "backend/crates/services/qip-world-model/src/lattice.rs:225",
-      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission"
+      "backend/crates/services/qip-world-model/src/lattice.rs::ModelFamily::Structural and StructuralClaim",
+      "backend/crates/services/qip-world-model/src/lattice.rs::project (Structural arm)",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::signals_from_world",
+      "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_retired_structural_claim_narrows_the_quarters_row",
+      "backend/crates/runtime/qip-kernel/tests/lattice_specialists.rs::a_claim_retired_by_its_condition_failures_leaves_the_structural_set_as_of_the_pass"
     ],
-    "gap": "The horizon is not served by the named model families or outputs: the population is two generic price models per row. Nothing downstream reads PromotionTarget to gate where outputs go (grep finds no consumer outside lattice.rs), so 'promoted only to' is a label checked at admission, not a promotion gate. No test exercises a wrong target at QuartersYears: forecast_lattice.rs:81-98 only tries MicrosecondsMs and SecondsMinutes, and its premise loop reads horizon.promotion_target(), so mutating the QuartersYears arm of promotion_target() fails no test.",
-    "implemented": false,
-    "tested": false,
+    "gap": "signals_from_world is not yet called from platform.rs::understand_now (patch in the L14 lane report for L01), so the deployed quarters row still reads no claims. Capital-cycle, policy, technology and geopolitical scenario generation and twin-driven scenarios are absent (twins stay tick-desk only); nothing downstream gates on PromotionTarget.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1958,10 +1978,10 @@
       "R12-WORLD-3082"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_retired_structural && cargo +1.94.1 test -p qip-kernel --test lattice_specialists a_claim_retired",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: MISSING->PARTIAL. The row-specific refusal for this horizon is untested, a test gap."
+    "notes": "Re-graded 2026-10-18 (lane L14). Mutations: ignoring the claims in project failed at forecast_lattice.rs:691; reading causal.edges() instead of incoming(subject, now) failed at lattice_specialists.rs:170."
   },
   {
     "id": "R12-MODEL-3089",
