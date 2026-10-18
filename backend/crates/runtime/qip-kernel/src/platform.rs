@@ -15945,7 +15945,13 @@ impl Platform {
         let tester =
             StressTester::new(costs.commission_bps + costs.half_spread_bps + costs.tax_bps);
         let scenarios = standard_library();
-        let results = match tester.apply_all(&scenarios, &exposures, equity.to_f64(), now) {
+        // R12-RISK-3103: beside the library, one event joining two entries'
+        // factor sets that no entry holds together. Only the loss tolerance
+        // and the survival kernel read it, so it can narrow, never widen;
+        // the adversarial sequence below stays bounded by the library proper.
+        let mut applied = scenarios.clone();
+        applied.extend(crate::tail::composed_scenario(&scenarios));
+        let results = match tester.apply_all(&applied, &exposures, equity.to_f64(), now) {
             Ok(results) => results,
             Err(error) => {
                 problems.push(format!("stress test refused: {}", error.message()));

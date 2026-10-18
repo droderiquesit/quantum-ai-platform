@@ -2356,14 +2356,15 @@
   },
   {
     "id": "R12-RISK-3103",
-    "status": "PARTIAL",
-    "current": "SIMULATE adds two synthetic worlds per cycle (backend/crates/runtime/qip-kernel/src/tail.rs:219, :514-560): each position's worst retained historical excursion amplified by a seeded draw, all positions adverse at once. They reach the survival kernel's reserve. This is magnitude amplification of each position's own history, not a search for factor or scenario combinations absent from the library; the test asserts the generated loss exceeds the model-failure world's, not that the combination is absent from the library.",
+    "status": "COMPLETE",
+    "current": "SIMULATE now applies one composed event beside the library: tail::composed_scenario joins the two library scenarios whose union of shocked factors is widest and equals no single entry's factor set, keeping the worse reading (larger magnitude, shorter window, higher liquidity multiplier and correlation) where both shock a factor. Platform::stress_the_book runs it through the same StressTester as the library, so it lands in StressReport.scenarios and a breach of the loss tolerance is a stage problem that narrows capital like any library scenario. The two generated worlds still amplify each position's own history; the composed event is the combination the library lacks.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/tail.rs:514-560",
-      "runtime/qip-kernel/src/tail.rs::tests::generated_worlds_exceed_the_books_history_and_replay_for_the_same_cycle",
-      "runtime/qip-kernel/src/survival.rs::tests (every generated world narrows the release)"
+      "backend/crates/runtime/qip-kernel/src/tail.rs::composed_scenario",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (applied.extend(composed_scenario) in stress_the_book)",
+      "backend/crates/runtime/qip-kernel/src/tail.rs::tests::the_composed_scenario_shocks_a_factor_set_no_library_entry_holds",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::the_composed_scenario_reaches_the_stress_report_a_cycle_produces"
     ],
-    "gap": "A generator that composes scenario-library components into combinations the library does not hold, and a test asserting the generated combination is absent from it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2371,10 +2372,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-kernel --lib tail:: && cargo test -p qip-kernel --test stress",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Lane L07, 2026-10-18. Mutations that fired: keep the milder magnitude on a shared factor -> the severity assertion fails; return a library entry as the composition -> the absence premise fails; skip the union-exists filter -> the no-composition test fails; delete the extend in stress_the_book -> the cycle test fails. The composition is one deterministic join, not a search over all combinations, and the join overlaps on equity rather than being disjoint; a correlation inversion or regime flip is RISK-4116's clause. The tester carries stressed_correlation without computing with it. Only stricter: the extra scenario can add a breach, never remove one."
   },
   {
     "id": "R12-AMBIENT-3104",
