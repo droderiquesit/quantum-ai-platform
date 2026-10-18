@@ -498,9 +498,9 @@ use qip_agency::autonomy::{ActionPolicy, Authority, WIDEN_AUTHORITY};
 use qip_agency::causal::{Direction, Objective, Scenario, StructuralLink, StructuralModelDecl};
 use qip_agency::conduct_brain::{CommunicationDraft, ConductPolicy, Disclosure, EvidenceCitation};
 use qip_agency::engine::{
-    Adapter, Decision, EdgeDecl, Execution, Gated, LearningOutcome, LeverEvidence, ORDER, Outcome,
-    ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn, learn_shadowed,
-    run, run_with, widen,
+    Adapter, Alternative, Decision, EdgeDecl, Execution, Gated, LearningOutcome, LeverEvidence,
+    ORDER, Outcome, ProposalDraft, Request, Stage, StageLog, VariableDecl, decide, execute, learn,
+    learn_shadowed, run, run_with, widen,
 };
 use qip_agency::generate::StructuralDecl;
 use qip_agency::guard::{ActionGuard, ApprovalDecl, GuardDecl};
@@ -1589,6 +1589,89 @@ fn the_learned_policy_selects_an_action_where_it_measurably_worked_and_no_action
     assert!(memory.recommend("calm", 0).is_err());
 }
 
+// ---- R12-RES-7110: a withheld plan is kept, and a truthful alternative sought ----
+
+/// The desk's request with a second public step, `announcer`, beside the
+/// `quoter`. `announcement` is what the announcer says.
+fn two_voice_request(announcement: &str) -> Request {
+    let mut r = request();
+    r.tool_edges.push(EdgeDecl {
+        variable: "quote_size".into(),
+        edge: edge("announcer", 10, "quote", &[]),
+    });
+    r.proposals[0].root = PlanNode::Sequence(vec![step("quoter", 10), step("announcer", 5)]);
+    let guards = r.guards.as_mut().unwrap();
+    guards.tools.push(ToolRegistration {
+        max_actions_per_window: 10,
+        budget_units: 1_000,
+        ..tool("announcer")
+    });
+    let mut said = quote_draft();
+    said.id = "announce-1".into();
+    said.content = announcement.into();
+    guards.communications.insert("announcer".to_string(), said);
+    r
+}
+
+#[test]
+fn a_withheld_plan_is_kept_with_its_reasons_and_the_alternative_is_the_plan_without_the_step_that_lied()
+ {
+    let policy = narrow();
+    let honest = "Announce 5 lots on venue-a at the published spread";
+    let mut adapter = Counting::default();
+    let clear = run(two_voice_request(honest), Some(&policy), &mut adapter).unwrap();
+    assert!(
+        matches!(&clear.outcome, Outcome::Executed(steps) if steps.len() == 2),
+        "premise: with an honest announcement both steps are sent: {:?}",
+        clear.outcome
+    );
+    assert!(
+        clear.blocked.is_none(),
+        "premise: nothing withheld, nothing kept"
+    );
+
+    let mut adapter = Counting::default();
+    let report = run(
+        two_voice_request("Announcing a guaranteed fill on venue-a"),
+        Some(&policy),
+        &mut adapter,
+    )
+    .unwrap();
+    assert!(
+        matches!(report.outcome, Outcome::Stopped(_)),
+        "{:?}",
+        report.outcome
+    );
+    assert!(adapter.calls.is_empty(), "the lie reached no adapter");
+    let blocked = report.blocked.expect("the withheld plan is retained");
+    let tools = |steps: &[Step]| steps.iter().map(|s| s.tool.clone()).collect::<Vec<_>>();
+    assert_eq!(tools(&blocked.steps), ["quoter", "announcer"]);
+    assert_eq!(tools(&blocked.offending), ["announcer"]);
+    assert!(
+        blocked.reason.contains("no_false_claims"),
+        "{}",
+        blocked.reason
+    );
+    match &blocked.alternative {
+        Alternative::Reduced(steps) => assert_eq!(tools(steps), ["quoter"]),
+        other => panic!("the quoter alone clears, so it is the alternative: {other:?}"),
+    }
+
+    // Every step lying leaves nothing to propose but the baseline.
+    let mut all = two_voice_request("Announcing a guaranteed fill on venue-a");
+    all.guards
+        .as_mut()
+        .unwrap()
+        .communications
+        .get_mut("quoter")
+        .unwrap()
+        .content = "Quote 20 lots: a guaranteed fill on venue-a".into();
+    let report = run(all, Some(&policy), &mut Counting::default()).unwrap();
+    let blocked = report.blocked.expect("retained");
+    assert_eq!(blocked.offending.len(), 2);
+    assert!(matches!(blocked.alternative, Alternative::NoAction(_)));
+}
+
 // ---- R12-AGENCY-6108: for whom, and with what delay -------------------------
 
 #[test]
@@ -2295,7 +2378,7 @@ fn with_structural_model(mut request: Request) -> Request {
         },
         // Every tool a test registers on `quote_size` moves it alike, so a
         // test about a second tool is not a test about its actuation.
-        actuation: ["quoter", "quoter2", "quoter-2", "delist"]
+        actuation: ["quoter", "quoter2", "quoter-2", "delist", "announcer"]
             .into_iter()
             .map(|tool| (tool.to_string(), 10.0))
             .collect(),

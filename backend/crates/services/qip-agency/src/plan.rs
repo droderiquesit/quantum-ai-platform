@@ -34,6 +34,19 @@ pub struct Step {
     pub exposure: Decimal,
 }
 
+/// R12-RES-7110: `steps` with every step in `offending` removed, in the
+/// original order. A plan the guard withheld is not repaired by editing the
+/// words of its drafts; the truthful alternative is the same plan without the
+/// step that could not be said truthfully, and the caller asks the guard
+/// again whether what remains clears.
+pub fn without_steps(steps: &[Step], offending: &[Step]) -> Vec<Step> {
+    steps
+        .iter()
+        .filter(|step| !offending.contains(step))
+        .cloned()
+        .collect()
+}
+
 /// A plan's structure (AGENCY-016).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
