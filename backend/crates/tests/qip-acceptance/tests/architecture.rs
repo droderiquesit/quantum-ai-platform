@@ -3834,3 +3834,137 @@ fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
     assert!(reachable.contains("qip-compliance"));
     assert!(reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"));
 }
+
+/// Every direct dependency one service crate declares on another, as Cargo
+/// resolved it on 2026-10-18. Thirteen edges, each a domain engine reading a
+/// *type* another engine publishes; none of them is a service reaching into
+/// another's mutable state. A new edge is a decision, so it is added here in
+/// the same change that adds it, with a reviewer reading why.
+const SERVICE_TO_SERVICE_EDGES: [(&str, &str); 13] = [
+    ("qip-brokers", "qip-execution-engine"),
+    ("qip-capital-fabric", "qip-capital"),
+    ("qip-data-finder", "qip-market-ingestion"),
+    ("qip-data-finder", "qip-mesh"),
+    ("qip-evolution", "qip-lifecycle"),
+    ("qip-evolution", "qip-simulation-engine"),
+    ("qip-execution-engine", "qip-risk-engine"),
+    ("qip-lifecycle", "qip-simulation-engine"),
+    ("qip-portfolio-engine", "qip-optimization-engine"),
+    ("qip-reasoning-engine", "qip-world-model"),
+    ("qip-twin", "qip-learning-engine"),
+    ("qip-twin", "qip-simulation-engine"),
+    ("qip-world-model", "qip-entity-resolution"),
+];
+
+#[test]
+fn service_crates_depend_on_each_other_only_along_the_edges_this_suite_names() {
+    // R12-CONTRACT-9013. The blueprint wants a service that reads another's
+    // state directly to fail the architecture suite. The platform composes
+    // its services in one in-process `Platform` (qip-kernel) instead of
+    // exchanging Fabric contracts, so the seam that keeps a service out of
+    // another's state is the dependency graph: a service owns its domain and
+    // exposes it through types, and the only place two services meet is the
+    // kernel. `a_library_never_depends_on_a_service_or_an_application` pins
+    // the other direction; nothing pinned this one, so a `qip-risk-engine`
+    // that grew an edge to `qip-brokers` would have compiled, passed every
+    // solver and authority test, and quietly made the risk check depend on
+    // the venue-side ledger it is meant to veto before.
+    let services = crates_under("backend/crates/services");
+    assert!(
+        !services.is_empty(),
+        "no service crate was found, so a service-to-service edge cannot be seen"
+    );
+    let graph = dependency_graph();
+    let mut observed: BTreeSet<(String, String)> = BTreeSet::new();
+    for service in &services {
+        let direct = graph
+            .get(service)
+            .unwrap_or_else(|| panic!("{service} is a service crate absent from the graph"));
+        for dependency in direct.iter().filter(|name| services.contains(*name)) {
+            observed.insert((service.clone(), dependency.clone()));
+        }
+    }
+    let pinned: BTreeSet<(String, String)> = SERVICE_TO_SERVICE_EDGES
+        .iter()
+        .map(|(from, to)| (from.to_string(), to.to_string()))
+        .collect();
+    for (from, to) in &pinned {
+        assert!(
+            services.contains(from) && services.contains(to),
+            "the pinned edge {from} -> {to} names a crate that is not a service, so it permits \
+             nothing and hides a rename"
+        );
+    }
+    assert_eq!(
+        observed.difference(&pinned).collect::<Vec<_>>(),
+        Vec::<&(String, String)>::new(),
+        "a service gained a dependency on another service that SERVICE_TO_SERVICE_EDGES does not \
+         name; compose the two in qip-kernel, or add the edge with the reason"
+    );
+    assert_eq!(
+        pinned.difference(&observed).collect::<Vec<_>>(),
+        Vec::<&(String, String)>::new(),
+        "SERVICE_TO_SERVICE_EDGES names an edge that no longer exists; remove it so the list \
+         keeps meaning what it says"
+    );
+}
+
+#[test]
+fn the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd() {
+    // R12-GCP-8105. The ledger's durable write is `LedgerBackend::commit` of
+    // one `LedgerBatch` (balances, chain tail and consumer offset together,
+    // ADR 0100 §4). If a second crate named either, it would hold a second way
+    // to move the ledger of record that the idempotent, chain-checked consumer
+    // never sees. Scope, stated: this proves the *durable ledger of record* has
+    // one writer. It does not prove the kernel's in-process `TrackedCapital`
+    // or the cells' `UserLedger` are not written elsewhere; those are the
+    // working copies `multiple_independent_stores_claim_ledger_authority_...`
+    // documents, and the row stays PARTIAL until they read from the ledger.
+    let root = repository_root();
+    let mut naming: BTreeSet<String> = BTreeSet::new();
+    let mut scanned = 0usize;
+    for path in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("the file is under the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let parts: Vec<&str> = relative.split('/').collect();
+        // backend/crates/<group>/<crate>/src/...: tests and benches of any
+        // crate are not shipped code and may build fixtures.
+        if parts.len() < 6 || parts[4] != "src" {
+            continue;
+        }
+        scanned += 1;
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+        let production = qip_acceptance::production_text(&text);
+        let names = |token: &str| {
+            production
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|word| word == token)
+        };
+        if names("LedgerBackend") || names("LedgerBatch") {
+            naming.insert(parts[3].to_string());
+        }
+    }
+    assert!(scanned > 200, "only {scanned} source files were scanned");
+    assert_eq!(
+        naming,
+        BTreeSet::from(["qip-ledgerd".to_string()]),
+        "the ledger of record's write seam must be named by qip-ledgerd alone"
+    );
+    // Nothing links the ledger daemon: a library that could call its store
+    // from another process image would not need to name the seam at all.
+    let graph = dependency_graph();
+    assert!(graph.contains_key("qip-ledgerd"));
+    let dependents: BTreeSet<&String> = graph
+        .iter()
+        .filter(|(_, deps)| deps.contains("qip-ledgerd"))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        dependents.is_empty(),
+        "a crate links qip-ledgerd: {dependents:?}"
+    );
+}

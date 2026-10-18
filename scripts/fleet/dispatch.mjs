@@ -1,6 +1,12 @@
 /**
  * The fleet dispatcher (ADR 0102), for the owner's desktop.
  *
+ *   node scripts/fleet/dispatch.mjs goal --from <finding-or-gap.json> > packets/00.json
+ *
+ * turns one aiops finding or one assessment gap into the packet a dispatch
+ * then judges (`goalFromInput`); it prints the packet and the commands that
+ * check its answer, and starts nothing.
+ *
  *   node scripts/fleet/dispatch.mjs --packets <dir> --run <id> \
  *     --project <project-id> --region <region> --bucket <fleet-bucket> \
  *     --daily-usd-ceiling 25 --slot-usd-cap 0.5 [--execute]
@@ -48,10 +54,91 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { GCP_PROJECT_ID } from "../model-gateway.mjs";
-import { BUCKET_NAME, PRICES, RUN_ID, assess, bucketStore, ceilingRefusal, dayTotalMicroUsd, usd, usdToMicro } from "./worker.mjs";
+import { BUCKET_NAME, PRICES, RUN_ID, assess, bucketStore, ceilingRefusal, dayTotalMicroUsd, reservedPath, usd, usdToMicro, validatePacket } from "./worker.mjs";
 
 /** The owner's ceiling on tasks at once (ADR 0102 decision 1), held here as tasks per dispatch. */
 export const MAX_TASKS = 40;
+
+/** The cheapest priced tier: a goal's first packet is an inventory, and a lead escalates from it. */
+const GOAL_MODEL = "google/gemini-2.5-flash-lite";
+
+/** A packet id is lower-case and at most 63 characters; anything else in a source id becomes a hyphen. */
+const slug = (text) => String(text).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 52);
+
+/** `path:12-40 trailing words` to `path`, and only when what is left looks like a repo-relative path. */
+const evidencePath = (entry) => {
+  const path = String(entry).split(/\s/)[0].replace(/:[0-9]+(-[0-9]+)?$/, "");
+  return /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(path) && path.includes("/") ? path : undefined;
+};
+
+/**
+ * An incident or an Intelligence Expansion gap as a scoped engineering goal:
+ * `{ packet, acceptanceCommands }`, or `{ problems }` and no packet at all.
+ *
+ * Two inputs and no third. `{ kind: "aiops", series, window_start,
+ * window_end, score }` is an `Anomaly` of `qip-observability`'s aiops
+ * detector; `{ kind: "assessment-gap", row }` is a row of
+ * `docs/blueprint/assessment/*.json`. Anything else is refused by name,
+ * because a goal built from an input nobody defined is a guess about what
+ * the fleet should spend money on.
+ *
+ * The packet is a `scout` finding-only task (`paths` empty): a trigger
+ * produces the inventory a lead decides on, never an edit. Its acceptance
+ * text carries the commands a person re-runs to check the answer, and the
+ * packet is judged by the worker's own `validatePacket`, so a goal the
+ * dispatcher would refuse is refused here with the same words. Evidence
+ * paths under reserved source (policy section 4 gate 6) are left out of
+ * `source_paths` and named in the context, not sent.
+ */
+export function goalFromInput(input, { model = GOAL_MODEL } = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return { problems: ["the input is not a JSON object"] };
+  }
+  let id;
+  let task;
+  let context;
+  let acceptanceCommands;
+  let evidence = [];
+  if (input.kind === "aiops") {
+    const missing = ["series", "window_start", "window_end", "score"].filter((field) => input[field] === undefined || input[field] === "");
+    if (missing.length > 0) return { problems: [`an aiops finding needs ${missing.join(", ")}`] };
+    id = `aiops-${slug(input.series)}`;
+    task = `Find what changed in the platform's own series '${input.series}' between ${input.window_start} and ${input.window_end}, where the detector scored a level shift of ${input.score} noise scales. Name the recording site of the series and the commits or code paths that could move it.`;
+    context = `Incident from the aiops detector (OBS-003): series ${input.series}, window ${input.window_start} to ${input.window_end}, score ${input.score}.`;
+    acceptanceCommands = [`grep -rn '${input.series}' backend/crates --include=*.rs`, `git log --oneline -S '${input.series}'`];
+  } else if (input.kind === "assessment-gap") {
+    const row = input.row;
+    const bad = row === null || typeof row !== "object" || typeof row.id !== "string" || typeof row.gap !== "string" || row.gap.trim() === "";
+    if (bad) return { problems: ["an assessment gap needs a row with an id and a non-empty gap"] };
+    if (row.status === "COMPLETE") return { problems: [`${row.id} is COMPLETE; it has no gap to dispatch`] };
+    id = `gap-${slug(row.id)}`;
+    task = `Inventory what closes this register gap and what in the tree already does part of it: ${row.gap}`;
+    context = `Assessment row ${row.id} (${row.status ?? "unstated status"}): ${row.current ?? "no current text"}. Gap: ${row.gap}`;
+    acceptanceCommands = typeof row.verification === "string" && row.verification.trim() !== "" ? [row.verification] : [];
+    evidence = Array.isArray(row.evidence) ? row.evidence : [];
+  } else {
+    return { problems: [`input kind '${input.kind}' is not one of aiops, assessment-gap`] };
+  }
+  const found = evidence.map(evidencePath).filter((path) => path !== undefined);
+  const sources = [...new Set(found)].filter((path) => reservedPath(path) === null);
+  const withheld = found.filter((path) => reservedPath(path) !== null);
+  const packet = {
+    packet_id: id,
+    role: "scout",
+    model,
+    why_this_tier: "an inventory a grep can check, so the cheapest tier; the lead decides what to do with it",
+    task,
+    context: withheld.length > 0 ? `${context} Evidence under reserved source stays with the lead and is not sent: ${[...new Set(withheld)].join(", ")}.` : context,
+    acceptance: `Findings only, each with a file:line. The lead re-runs: ${acceptanceCommands.length > 0 ? acceptanceCommands.join("; ") : "no command was supplied, so the lead names one before acting"}`,
+    escalate_if: "the answer needs a change to a reserved source path or a credential",
+    paths: [],
+    source_paths: sources,
+    max_input_tokens: 4000,
+    max_output_tokens: 1000,
+  };
+  const problems = validatePacket(packet);
+  return problems.length > 0 ? { problems } : { packet, acceptanceCommands };
+}
 
 const REGION = /^[a-z]+-[a-z]+[0-9]$/;
 
@@ -177,6 +264,28 @@ function runCommand(command, { capture = false } = {}) {
   });
 }
 
+/** `goal --from <file>`: the packet for one trigger, or every reason there is none. */
+function goal({ argv, say, refuse, read = (file) => readFileSync(file, "utf8") }) {
+  let from;
+  try {
+    ({ values: { from } } = parseArgs({ args: argv, options: { from: { type: "string" } } }));
+  } catch (cause) {
+    return refuse([String(cause.message)]);
+  }
+  if (typeof from !== "string" || from === "") return refuse(["--from is missing; it must name a JSON file holding an aiops finding or an assessment gap"]);
+  let input;
+  try {
+    input = JSON.parse(read(from));
+  } catch (cause) {
+    return refuse([`${from} could not be read as JSON: ${cause.message}`]);
+  }
+  const made = goalFromInput(input);
+  if (made.problems) return refuse(made.problems);
+  say(JSON.stringify(made.packet, null, 2));
+  for (const command of made.acceptanceCommands) say(`# acceptance: ${command}`);
+  return 0;
+}
+
 /** The command line, end to end. Returns the process exit code. */
 export async function dispatch({
   argv,
@@ -191,6 +300,7 @@ export async function dispatch({
     log("nothing was uploaded and nothing was started.");
     return 1;
   };
+  if (argv[0] === "goal") return goal({ argv: argv.slice(1), say, refuse });
   const settings = settingsFrom(argv);
   if (settings.problems.length > 0) return refuse(settings.problems);
 

@@ -616,3 +616,182 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
     assert_eq!(back, derivation);
     Ok(())
 }
+
+/// The one journaled derivation of the fixture every replay test reads, and
+/// the platform whose causal graph re-runs its intervention.
+fn journaled_derivation() -> Result<(Platform, symbolic_stage::SymbolicDerivation)> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let mut derivations = symbolic_stage::replay(&platform)?;
+    assert_eq!(derivations.len(), 1, "one derivation per formed hypothesis");
+    let derivation = derivations.remove(0);
+    // Premise: the intact record passes the checker every corruption below
+    // is put through, so a refusal is the corruption's doing.
+    symbolic_stage::verify(&derivation, platform.world().causal())?;
+    Ok((platform, derivation))
+}
+
+/// Refused, and refused for the part that was corrupted: the message names
+/// that part, so a checker refusing the record for some other reason does
+/// not pass for one that catches this corruption.
+fn assert_refused_for(
+    platform: &Platform,
+    corrupted: &symbolic_stage::SymbolicDerivation,
+    part: &str,
+) {
+    let refusal = symbolic_stage::verify(corrupted, platform.world().causal())
+        .expect_err("a corrupted derivation was accepted as reproducible");
+    let expected = format!("the {part} is not reproducible");
+    assert!(
+        refusal.message().ends_with(&expected),
+        "refused, but not for the {part}: {}",
+        refusal.message()
+    );
+}
+
+#[test]
+fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay()
+-> Result<()> {
+    // R12-REASON-1133. The failure this guards: replay re-checked only the
+    // rule verdict, so a journaled ordering could say anything — an anomaly
+    // placed after the hypothesis it gave rise to replayed as a proof.
+    let (platform, derivation) = journaled_derivation()?;
+    assert!(
+        derivation.temporal.inputs.is_some(),
+        "the record keeps the instants its timeline was built from"
+    );
+    assert_eq!(
+        derivation.temporal.anomaly_to_hypothesis,
+        qip_reasoning_engine::temporal::Order::Before
+    );
+    let mut corrupted = derivation.clone();
+    corrupted.temporal.anomaly_to_hypothesis = qip_reasoning_engine::temporal::Order::After;
+    assert_refused_for(&platform, &corrupted, "temporal derivation");
+    let mut moved = derivation;
+    if let Some(inputs) = moved.temporal.inputs.as_mut() {
+        inputs.formed_at = inputs.formed_at.saturating_add(Duration::from_secs(1));
+    }
+    assert_refused_for(&platform, &moved, "temporal derivation");
+    Ok(())
+}
+
+#[test]
+fn a_journaled_posterior_that_the_recorded_network_does_not_yield_is_refused_on_replay()
+-> Result<()> {
+    // R12-REASON-1134: the posterior was journaled and never recomputed, so
+    // an edited probability replayed as the network's own conclusion.
+    let (platform, derivation) = journaled_derivation()?;
+    let mut corrupted = derivation.clone();
+    let symbolic_stage::Step::Derived(posterior) = &mut corrupted.posterior else {
+        panic!(
+            "premise: the posterior was derived: {:?}",
+            derivation.posterior
+        );
+    };
+    let first = posterior
+        .values_mut()
+        .next()
+        .expect("premise: the posterior names at least one state");
+    *first = (*first + 0.25) % 1.0;
+    assert_refused_for(&platform, &corrupted, "posterior");
+    Ok(())
+}
+
+#[test]
+fn a_journaled_acting_answer_the_recorded_verdict_does_not_solve_to_is_refused_on_replay()
+-> Result<()> {
+    // R12-REASON-1136: the constraint answer was journaled and never
+    // re-solved, so a record could say acting was satisfiable for a
+    // hypothesis the rule pack held ineligible.
+    let (platform, derivation) = journaled_derivation()?;
+    assert!(
+        derivation.acting.derived().is_some(),
+        "premise: {:?}",
+        derivation.acting
+    );
+    let mut corrupted = derivation;
+    corrupted.acting = symbolic_stage::Step::Refused("edited".into());
+    assert_refused_for(&platform, &corrupted, "constraint derivation");
+    Ok(())
+}
+
+#[test]
+fn a_journaled_intervention_the_causal_graph_does_not_reach_at_its_instant_is_refused_on_replay()
+-> Result<()> {
+    // R12-REASON-1132: the intervention was journaled and replay never
+    // re-ran it, so what the record said an intervention on the subject
+    // reaches was taken on trust.
+    let (platform, derivation) = journaled_derivation()?;
+    let symbolic_stage::Step::Derived(summary) = &derivation.intervention else {
+        panic!(
+            "premise: the intervention ran: {:?}",
+            derivation.intervention
+        );
+    };
+    let mut corrupted = derivation.clone();
+    if let symbolic_stage::Step::Derived(edited) = &mut corrupted.intervention {
+        edited.paths = summary.paths + 1;
+    }
+    assert_refused_for(&platform, &corrupted, "intervention");
+    let mut reached = derivation;
+    if let symbolic_stage::Step::Derived(edited) = &mut reached.intervention {
+        edited
+            .affected
+            .insert("an instrument nothing reaches".into());
+    }
+    assert_refused_for(&platform, &reached, "intervention");
+    Ok(())
+}
+
+#[test]
+fn a_derivation_records_its_violated_assumptions_and_uncertainty_and_replay_refuses_either_edited()
+-> Result<()> {
+    // R12-REASON-3062. The failure this guards: a derivation said what it
+    // concluded and never what failed beneath the conclusion or how
+    // undecided it was, so a reader could not tell a confident record from
+    // a coin flip, or a clean one from one whose acting was blocked.
+    let (platform, derivation) = journaled_derivation()?;
+    let posterior = derivation
+        .posterior
+        .derived()
+        .expect("premise: the posterior was derived");
+    assert_eq!(posterior.len(), 2, "premise: claim_holds is binary");
+    let uncertainty = derivation
+        .uncertainty
+        .expect("a derived posterior carries its spread");
+    assert!(
+        uncertainty > 0.0 && uncertainty < 1.0,
+        "a posterior strictly between certain and even: {uncertainty}"
+    );
+    // The acting conflict, when there is one, is named constraint by
+    // constraint; a satisfiable answer contributes nothing.
+    match derivation.acting.derived() {
+        Some(qip_reasoning_engine::constraint::Answer::Unsatisfiable { conflict }) => {
+            for id in conflict {
+                let token = format!("constraint: {id}");
+                assert!(
+                    derivation.violated_assumptions.contains(&token),
+                    "{token} missing from {:?}",
+                    derivation.violated_assumptions
+                );
+            }
+        }
+        Some(_) => assert!(
+            !derivation
+                .violated_assumptions
+                .iter()
+                .any(|v| v.starts_with("constraint: ")),
+            "{:?}",
+            derivation.violated_assumptions
+        ),
+        None => panic!("premise: acting was solved: {:?}", derivation.acting),
+    }
+    let mut hidden = derivation.clone();
+    hidden.violated_assumptions = vec!["constraint: an-edit".into()];
+    assert_refused_for(&platform, &hidden, "violated-assumptions list");
+    let mut steadied = derivation;
+    steadied.uncertainty = Some(0.0);
+    assert_refused_for(&platform, &steadied, "uncertainty");
+    Ok(())
+}
