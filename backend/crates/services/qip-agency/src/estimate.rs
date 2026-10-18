@@ -25,14 +25,17 @@
 
 use crate::attribution::{EffectAttribution, Identification};
 use crate::causal::StructuralModel;
-use qip_core::Error;
+use qip_core::{Error, sha256_hex};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Which method produced an estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EstimatorKind {
     RandomisedExperiment,
+    /// A hold-out whose assignment this module drew ([`Experiment`]).
+    HoldOutExperiment,
     DifferenceInDifferences,
     SyntheticControl,
     InstrumentalVariable,
@@ -127,6 +130,138 @@ pub fn randomised_experiment(treated: &[f64], control: &[f64]) -> Result<Estimat
         standard_error: Some((vt / treated.len() as f64 + vc / control.len() as f64).sqrt()),
         observations: treated.len() + control.len(),
     })
+}
+
+/// R12-COVERAGE-7188: a randomised hold-out across units (cells, venues or
+/// time windows) whose assignment is drawn here, from a seed, and not
+/// chosen by whoever supplies the outcomes.
+///
+/// The failure prevented is an experiment that earns its label from its
+/// author. [`randomised_experiment`] takes two groups and trusts that they
+/// were randomised; an operator who put the units that did well in the
+/// treated group gets `Identification::Experiment` for a selection effect.
+/// Here the split is a pure function of the seed and the unit names: units
+/// are ranked by the SHA-256 of `seed`, a newline and the unit, and the
+/// first `held_out` are the control. Anyone holding the seed and the unit
+/// list recomputes who was held out, and the outcomes are refused unless
+/// they cover exactly those units, so the analysis cannot drop an
+/// inconvenient one. The seed must be committed (journaled) before any
+/// outcome exists; that ordering is the caller's, and nothing here can
+/// prove it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Experiment {
+    treated: BTreeSet<String>,
+    control: BTreeSet<String>,
+}
+
+impl Experiment {
+    /// Draw the hold-out. `hold_out_bps` is the share of units held out, in
+    /// basis points `1..=9999`; at least two units must land on each side,
+    /// because a group of one has no variance to compare with. Refused, not
+    /// rounded to fit, when they cannot.
+    pub fn design(seed: &str, units: &[String], hold_out_bps: u32) -> Result<Self, Error> {
+        if seed.trim().is_empty() {
+            return Err(Error::invalid(
+                "an experiment needs a seed committed before its outcomes exist; got a blank one",
+            ));
+        }
+        if !(1..=9_999).contains(&hold_out_bps) {
+            return Err(Error::invalid(format!(
+                "hold_out_bps {hold_out_bps} is outside 1..=9999; a hold-out of none or of all \
+                 is not an experiment"
+            )));
+        }
+        let mut distinct = BTreeSet::new();
+        for unit in units {
+            if unit.trim().is_empty() || !distinct.insert(unit.as_str()) {
+                return Err(Error::invalid(format!(
+                    "experiment unit `{unit}` is blank or listed twice; units are distinct"
+                )));
+            }
+        }
+        let held_out = units.len() * hold_out_bps as usize / 10_000;
+        if held_out < 2 || units.len() - held_out < 2 {
+            return Err(Error::invalid(format!(
+                "{} unit(s) held out {hold_out_bps} bps leaves {held_out} in control and {} \
+                 treated; each side needs at least two",
+                units.len(),
+                units.len().saturating_sub(held_out)
+            )));
+        }
+        let mut ranked: Vec<(String, &str)> = distinct
+            .into_iter()
+            .map(|unit| (sha256_hex(format!("{seed}\n{unit}").as_bytes()), unit))
+            .collect();
+        ranked.sort();
+        let control = ranked
+            .iter()
+            .take(held_out)
+            .map(|(_, unit)| (*unit).to_string())
+            .collect();
+        let treated = ranked
+            .iter()
+            .skip(held_out)
+            .map(|(_, unit)| (*unit).to_string())
+            .collect();
+        Ok(Self { treated, control })
+    }
+
+    pub fn treated(&self) -> &BTreeSet<String> {
+        &self.treated
+    }
+
+    pub fn control(&self) -> &BTreeSet<String> {
+        &self.control
+    }
+
+    /// The effect of treatment on `outcomes`, one figure per unit. Refused
+    /// unless the outcomes cover exactly the designed units: a missing one
+    /// is a unit dropped after the fact, an extra one was never assigned.
+    pub fn analyse(&self, outcomes: &BTreeMap<String, f64>) -> Result<Estimate, Error> {
+        if let Some(unit) = outcomes
+            .keys()
+            .find(|u| !self.treated.contains(*u) && !self.control.contains(*u))
+        {
+            return Err(Error::denied(format!(
+                "outcome for `{unit}`, which the design never assigned"
+            )));
+        }
+        let group = |units: &BTreeSet<String>| -> Result<Vec<f64>, Error> {
+            units
+                .iter()
+                .map(|unit| {
+                    outcomes.get(unit).copied().ok_or_else(|| {
+                        Error::denied(format!(
+                            "no outcome for `{unit}`, which the design assigned; a unit is not \
+                             dropped after the fact"
+                        ))
+                    })
+                })
+                .collect()
+        };
+        let treated = group(&self.treated)?;
+        let control = group(&self.control)?;
+        let mut estimate = randomised_experiment(&treated, &control)?;
+        estimate.kind = EstimatorKind::HoldOutExperiment;
+        Ok(estimate)
+    }
+
+    /// [`Self::analyse`] at each horizon (seconds after the intervention),
+    /// every figure identified by the same assignment.
+    pub fn analyse_horizons(
+        &self,
+        horizons: &BTreeMap<u64, BTreeMap<String, f64>>,
+    ) -> Result<BTreeMap<u64, Estimate>, Error> {
+        if horizons.is_empty() {
+            return Err(Error::invalid(
+                "an experiment is analysed at one horizon or more",
+            ));
+        }
+        horizons
+            .iter()
+            .map(|(horizon, outcomes)| Ok((*horizon, self.analyse(outcomes)?)))
+            .collect()
+    }
 }
 
 /// Difference-in-differences: the treated group's change less the control
@@ -354,6 +489,14 @@ pub fn correlation(x: &[f64], y: &[f64]) -> Result<Estimate, Error> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum EstimateInput {
+    /// A hold-out drawn here from `seed` ([`Experiment`]); the operator
+    /// supplies the units and their outcomes, never the assignment.
+    HoldOutExperiment {
+        seed: String,
+        units: Vec<String>,
+        hold_out_bps: u32,
+        outcomes: BTreeMap<String, f64>,
+    },
     RandomisedExperiment {
         treated: Vec<f64>,
         control: Vec<f64>,
@@ -385,6 +528,12 @@ impl EstimateInput {
     /// Run the estimator the input names.
     pub fn estimate(&self) -> Result<Estimate, Error> {
         match self {
+            Self::HoldOutExperiment {
+                seed,
+                units,
+                hold_out_bps,
+                outcomes,
+            } => Experiment::design(seed, units, *hold_out_bps)?.analyse(outcomes),
             Self::RandomisedExperiment { treated, control } => {
                 randomised_experiment(treated, control)
             }

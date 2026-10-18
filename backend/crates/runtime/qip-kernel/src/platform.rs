@@ -808,6 +808,11 @@ pub struct Platform {
     /// assembly like `asset_classes`; the release loop asks it which
     /// permission an order needs.
     derivative_types: BTreeMap<String, InstrumentType>,
+    /// The smallest tradable unit of every instrument — lot size times
+    /// contract multiplier — taken from the universe at assembly like
+    /// `asset_classes`. What the symbolic rule pack prices one lot with
+    /// (R12-REASON-3057).
+    lot_units: BTreeMap<String, Decimal>,
     /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
     /// so every derivative order is refused until a composition root grants.
     derivative_permissions: DerivativePermissions,
@@ -815,6 +820,12 @@ pub struct Platform {
     /// `None` refuses every derivative, because a grant with nobody to read
     /// it against must not admit anything.
     derivative_desk: Option<(String, Jurisdiction)>,
+    /// The jurisdictions this platform is licensed to execute in, read by
+    /// [`Platform::executable_scope`]. `None` applies no licence gate: the
+    /// determination is compliance's and a composition root states it through
+    /// [`Platform::license_jurisdictions`]. Once stated, an instrument whose
+    /// governing jurisdictions are not all in it is shadow, never executable.
+    licensed_jurisdictions: Option<BTreeSet<Jurisdiction>>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -4792,6 +4803,15 @@ impl Platform {
         // platform holds no record of is refused at the door every desk order
         // passes, not risk-checked against a book with no figures for it.
         let known_instruments: Vec<String> = asset_classes.keys().cloned().collect();
+        let lot_units: BTreeMap<String, Decimal> = universe
+            .iter()
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    object.lot_size * object.contract_multiplier,
+                )
+            })
+            .collect();
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -5291,8 +5311,10 @@ impl Platform {
             inherited_through,
             asset_classes,
             derivative_types,
+            lot_units,
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
+            licensed_jurisdictions: None,
             asset_class_registry,
             breadth: crate::breadth::BreadthPlane::default(),
             exposure_axes,
@@ -13732,6 +13754,51 @@ impl Platform {
     /// reference and returns a clause and a problem, so the derivation has no
     /// path back into the thesis, its conviction or any order: that is what
     /// keeps it advisory by construction rather than by convention.
+    /// What one lot of `subject` leaves of the position budget and of cash,
+    /// in whole currency units, for the symbolic rule pack (REASON-3057).
+    ///
+    /// Each is `None` where its inputs are unreadable — no lot on record, no
+    /// price yet, no position cap among the limits — so the pack is given a
+    /// fact only when there is one. The budget is equity times the tightest
+    /// `MaxPositionWeight`; the whole-unit floor makes the figure a strict
+    /// answer to "does one lot fit", never a rounding in the lot's favour.
+    fn lot_headrooms(&self, subject: &str) -> (Option<i64>, Option<i64>) {
+        let Some(unit) = self.lot_units.get(subject) else {
+            return (None, None);
+        };
+        let Some(price) = self
+            .price_history
+            .get(subject)
+            .and_then(|closes| closes.last())
+            .and_then(|close| Decimal::from_f64(*close))
+        else {
+            return (None, None);
+        };
+        let lot_notional = *unit * price;
+        let whole = |amount: Decimal| {
+            // Floored, so a headroom of minus one hundredth is minus one and
+            // still reads as a shortfall.
+            let floored = amount.to_f64().floor();
+            (floored.is_finite() && floored.abs() < 9.0e15).then_some(floored as i64)
+        };
+        let cap = self
+            .monitor
+            .limits()
+            .limits
+            .iter()
+            .filter_map(|limit| match limit.kind {
+                qip_risk::limits::LimitKind::MaxPositionWeight { limit } => Some(limit),
+                _ => None,
+            })
+            .fold(None, |tightest: Option<f64>, limit| {
+                Some(tightest.map_or(limit, |t| t.min(limit)))
+            });
+        let lot_headroom = cap
+            .and_then(Decimal::from_f64)
+            .and_then(|weight| whole(self.capital.equity() * weight - lot_notional));
+        (lot_headroom, whole(self.capital.cash - lot_notional))
+    }
+
     fn reason_symbolically(
         &mut self,
         opportunity: &Opportunity,
@@ -13756,6 +13823,7 @@ impl Platform {
                     .map(|latest| (id.clone(), *latest))
             })
             .collect();
+        let (lot_headroom, cash_headroom) = self.lot_headrooms(subject.as_str());
         let input = SymbolicInput {
             cycle: self.cycle,
             hypothesis_id: hypothesis.hypothesis_id.as_str().to_string(),
@@ -13796,6 +13864,8 @@ impl Platform {
                 .asset_classes
                 .get(subject.as_str())
                 .map(|class| class.as_str().to_string()),
+            lot_headroom,
+            cash_headroom,
         };
         let derivation = {
             let world = self.world.read();
@@ -19202,6 +19272,18 @@ impl Platform {
                 None
             }
         }
+    }
+
+    /// State the jurisdictions this platform is licensed to execute in.
+    /// Replaces any earlier statement whole; an empty set licenses nothing,
+    /// so every instrument becomes research-only until a jurisdiction is named.
+    pub fn license_jurisdictions(&mut self, jurisdictions: impl IntoIterator<Item = Jurisdiction>) {
+        self.licensed_jurisdictions = Some(jurisdictions.into_iter().collect());
+    }
+
+    /// The licence stated through [`Self::license_jurisdictions`], if any.
+    pub(crate) fn licensed_jurisdictions(&self) -> Option<&BTreeSet<Jurisdiction>> {
+        self.licensed_jurisdictions.as_ref()
     }
 
     /// Grant the derivative permissions this platform trades under, for
