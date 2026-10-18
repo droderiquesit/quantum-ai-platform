@@ -2116,6 +2116,18 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS",
+        "Unset, no research agent holds a budget of its own and the market \
+         bounds every agent by the per-resource budgets, as it did before the \
+         variable existed. A value names reputation cells \
+         (domain/horizon/regime) whose regime is the platform's runtime \
+         classification, so a deployment value written before an operator \
+         has watched which cells the market actually bids in would bound \
+         cells that never appear and miss the ones that do. A malformed \
+         entry or a cell named twice is refused at start-up.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_TICK_LAKE_RETENTION",
         "Unset, no connector arm captures into the tick lake. A value is a \
          reading of a vendor's retention terms per licensing class, and \
