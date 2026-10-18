@@ -683,7 +683,7 @@
       "backend/crates/edge/qip-edge/tests/policy_rollback.rs:63",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:159"
     ],
-    "gap": "Cell consumption of belief_priors and opportunity_definitions; signing is symmetric HMAC (ADR 0043 lists asymmetric signing as an open gap); no deployment.",
+    "gap": "Cell consumption of belief_priors and opportunity_definitions: no rule says how a prior changes a cell's scored confidence or which detector an opportunity id names. ADR 0088 records that no cell reads the values, forbids sizing on a belief's mean and leaves 'whether a cell ever reads a distribution' as a separate decision; ADR 0133 says a cell reads a centre input 'as a model input, exactly as it reads belief_priors' without defining that input. Signing is symmetric HMAC (ADR 0043 lists asymmetric signing as an open gap); no deployment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -694,7 +694,7 @@
     "verification": "cargo test -p qip-edge --test policy_rollback --test model_manifest --test feasibility",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. Writing the blend of a prior into a conviction, or an id-to-detector admission rule, here would invent arithmetic ADR 0005 says is never assigned and an interface the ADR leaves to an owner decision. What is missing is that decision, not the plumbing."
   },
   {
     "id": "R12-REFLEX-5031",
@@ -968,7 +968,7 @@
       "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:313",
       "backend/crates/apps/qip-edge-node/src/main.rs:620"
     ],
-    "gap": "Discovery outside the whitelist and distributed opportunities (peer mesh).",
+    "gap": "Discovery outside the whitelist cannot be built from what the cell holds: a book is named by its instrument id and the cell has no market reference saying which instruments a market converts between (WhitelistedConversion.from/to come only from the signed whitelist), so a graph over every venue book has no edges to search. The installer already reports each tradable side with no edge (Installation::InstalledWithGaps, MESH-023). Closing it needs a signed market reference (market -> from/to instruments) in the policy payload, and an ADR if it widens what the centre permits; distributed scanning stays with the peer mesh switch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -979,7 +979,7 @@
     "verification": "cargo test -p qip-edge-node --test arbitrage",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure (run qip_arbitrage::search over the full venue graph) presumes a full graph; the whitelist is the only source of conversions and the module doc states a cycle is never built from a book alone because that would trade a conversion nobody permitted."
   },
   {
     "id": "R12-REFLEX-5043",

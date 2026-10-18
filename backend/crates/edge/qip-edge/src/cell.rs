@@ -417,6 +417,27 @@ pub const GATE_SIGNAL_CONVICTION: &str = "signal_conviction";
 /// constant for the same cardinality reason as [`GATE_JOURNAL_PRESSURE`].
 pub const GATE_SILENT_FEED: &str = "silent_feed";
 
+/// The gate an order is refused under while its venue's feed stamps messages
+/// ahead of the cell's own clock by more than [`CellConfig::max_clock_skew`],
+/// and the gate the arbitrage desk's cross-venue cycles pause under while any
+/// venue does.
+///
+/// A message cannot have happened after this cell captured it, so a venue time
+/// in the future is a clock fault on one side or the other, and the cell
+/// cannot say which from one venue. It refuses either way: a price whose
+/// timestamp cannot be placed against the cell's own clock cannot be ordered
+/// against another venue's, and an order that depends on that order is a
+/// guess. A constant for the same cardinality reason as
+/// [`GATE_SILENT_FEED`].
+pub const GATE_CLOCK_SKEW: &str = "clock_skew";
+
+/// How far ahead of the cell's clock a venue may stamp a message before the
+/// cell stops trading it. A house default and not a calibrated figure: it is
+/// wide enough that a venue's ordinary clock error does not trip it and
+/// narrow enough that a clock running seconds out does. A deployment states
+/// its own through [`CellConfig::max_clock_skew`].
+pub const DEFAULT_MAX_CLOCK_SKEW: Duration = Duration::from_millis(500);
+
 /// The gate an order is refused under while its venue is quarantined for
 /// rejecting orders ([`CellConfig::with_venue_health`]).
 ///
@@ -474,6 +495,11 @@ pub struct CellConfig {
     pub venues: Vec<VenueId>,
     /// How long a book may go unrefreshed before its prices stop counting.
     pub max_staleness: Duration,
+    /// How far ahead of this cell's clock a venue may stamp a message
+    /// before orders to that venue are refused under [`GATE_CLOCK_SKEW`].
+    /// Validated positive at [`Cell::new`]: a bound of zero refuses every
+    /// venue whose clock leads by a nanosecond.
+    pub max_clock_skew: Duration,
     /// The runtime node budget a strategy may not exceed.
     pub strategy_budget: usize,
     /// What the cell knows about executing at each venue, keyed by venue id
@@ -641,6 +667,7 @@ impl CellConfig {
             region: region.into(),
             venues: Vec::new(),
             max_staleness: Duration::from_secs(5),
+            max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
             strategy_budget: 4_096,
             feasibility: BTreeMap::new(),
             settlement: BTreeMap::new(),
@@ -792,6 +819,13 @@ impl CellConfig {
                 "a cross-source tolerance of {} can never judge two sources; state a fraction \
                  above zero and below one",
                 self.cross_source_tolerance
+            )));
+        }
+        if self.max_clock_skew <= Duration::ZERO {
+            return Err(Error::invalid(format!(
+                "a clock-skew tolerance of {} ms refuses every venue whose clock leads this \
+                 cell's by any amount; state a positive bound",
+                self.max_clock_skew.as_millis()
             )));
         }
         if self.cell_id.trim().is_empty() {
@@ -1589,6 +1623,12 @@ pub struct Cell {
     /// judge a book — presence, staleness, a usable mid — are the ones that
     /// apply to it.
     feed_heard: BTreeMap<VenueId, Timestamp>,
+    /// The largest lead, per venue, its last batch stamped ahead of this
+    /// cell's clock (zero when it stamped none ahead). A venue is skewed
+    /// while its entry exceeds [`CellConfig::max_clock_skew`]; one with no
+    /// entry has never been measured, which the clock row reads as unknown
+    /// and not as healthy.
+    clock_lead: BTreeMap<VenueId, Duration>,
     /// The venues currently journaled as silent, and the instant each was
     /// last heard — so the incident is recorded once, not once per pass, and
     /// the reconciliation entry can name where the blind interval began.
@@ -1726,6 +1766,7 @@ impl Cell {
             outlook: RegionOutlook::AllLit,
             resume: None,
             feed_heard: BTreeMap::new(),
+            clock_lead: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
             feed_loss_handled: BTreeSet::new(),
             venue_health,
@@ -2806,10 +2847,72 @@ impl Cell {
     ///   the mesh link's own circuit lives in the node — and it narrows
     ///   nothing, by [`qip_contracts::degradation::FABRIC_MULTIPLIER`].
     ///
-    /// Custody and clock are not recorded: a cell has no reading of either,
-    /// and a row without a reading would be a number nobody computed.
+    /// Three more dependency rows are recorded from what the cell measures
+    /// itself, each only once it has measured something:
+    ///
+    /// * [`Capability::Clock`] from the lead each venue's last batch showed
+    ///   over the cell's clock: fresh while every measured venue is within
+    ///   [`CellConfig::max_clock_skew`], stale while some are not, and
+    ///   unavailable while all are. The pass compounds this row's multiplier
+    ///   into its size and the arbitrage desk pauses on it
+    ///   ([`DegradationState::pauses_cross_venue_ordering`]).
+    /// * [`Capability::Feed`] from how many of the venues the cell has heard
+    ///   at all have gone silent past [`CellConfig::max_staleness`].
+    /// * [`Capability::VenueSession`] from how many of the configured
+    ///   venues the venue-health record has quarantined, when the cell holds
+    ///   one.
+    ///
+    /// Custody is not recorded: a cell has no reading of it, and a row
+    /// without a reading would be a number nobody computed.
     pub fn narrowing(&self, now: Timestamp) -> DegradationState {
-        Self::narrowing_of(self.policy.as_ref(), self.journal_pressure, now)
+        let mut state = Self::narrowing_of(self.policy.as_ref(), self.journal_pressure, now);
+        let share = |lost: usize, total: usize| {
+            if lost == 0 {
+                Freshness::Fresh
+            } else if lost < total {
+                Freshness::Stale
+            } else {
+                Freshness::Unavailable
+            }
+        };
+        if !self.clock_lead.is_empty() {
+            let skewed = self
+                .clock_lead
+                .keys()
+                .filter(|venue| self.clock_skewed(venue))
+                .count();
+            state.observe(Capability::Clock, share(skewed, self.clock_lead.len()));
+        }
+        if !self.feed_heard.is_empty() {
+            let silent = self
+                .feed_heard
+                .values()
+                .filter(|heard| {
+                    now.since(**heard).as_nanos() > self.config.max_staleness.as_nanos()
+                })
+                .count();
+            state.observe(Capability::Feed, share(silent, self.feed_heard.len()));
+        }
+        if let Some(health) = self.venue_health.as_ref()
+            && !self.config.venues.is_empty()
+        {
+            let quarantined = self
+                .config
+                .venues
+                .iter()
+                .filter(|venue| {
+                    matches!(
+                        health.assess(venue, Duration::ZERO, now).verdict,
+                        HealthVerdict::Quarantined { .. }
+                    )
+                })
+                .count();
+            state.observe(
+                Capability::VenueSession,
+                share(quarantined, self.config.venues.len()),
+            );
+        }
+        state
     }
 
     /// [`Self::narrowing`] over its inputs, so construction can state the
@@ -3842,6 +3945,7 @@ impl Cell {
             (decoded, skipped)
         };
         let count = decoded.len();
+        self.observe_clock_lead(&feed.venue, &decoded, now);
         self.journal.record(
             Decision::Ingested {
                 feed: format!("{}/{}", feed.venue.as_str(), feed.feed),
@@ -3903,6 +4007,47 @@ impl Cell {
         );
     }
 
+    /// Measure how far ahead of this cell's clock `venue` stamped the batch
+    /// just decoded, and journal the transition into or out of skew.
+    ///
+    /// A batch carrying no message says nothing about the venue's clock and
+    /// leaves the last reading standing; a batch that does replaces it, so a
+    /// venue whose clock was corrected is trusted again by the first batch
+    /// that shows it.
+    fn observe_clock_lead(&mut self, venue: &VenueId, decoded: &[MarketMessage], now: Timestamp) {
+        let Some(lead) = decoded
+            .iter()
+            .map(|message| message.venue_time.since(message.capture_time))
+            .max()
+        else {
+            return;
+        };
+        let lead = lead.max(Duration::ZERO);
+        let limit = self.config.max_clock_skew;
+        let was_skewed = self.clock_lead.get(venue).is_some_and(|held| *held > limit);
+        let skewed = lead > limit;
+        self.clock_lead.insert(venue.clone(), lead);
+        if skewed != was_skewed {
+            self.journal.record(
+                Decision::ClockSkew {
+                    venue: venue.as_str().to_string(),
+                    skewed,
+                    skew_ms: lead.as_millis(),
+                    limit_ms: limit.as_millis(),
+                },
+                now,
+            );
+        }
+    }
+
+    /// Whether any venue's last batch stamped messages ahead of this cell's
+    /// clock by more than the bound.
+    fn clock_skewed(&self, venue: &VenueId) -> bool {
+        self.clock_lead
+            .get(venue)
+            .is_some_and(|lead| *lead > self.config.max_clock_skew)
+    }
+
     /// Why no new order may go to `venue` right now, if its feed is silent
     /// or it is quarantined: the gate to refuse under and the reason.
     ///
@@ -3913,6 +4058,25 @@ impl Cell {
     /// [`Self::review_venues`] has journaled the incident is refused all the
     /// same.
     fn venue_withheld(&self, venue: &VenueId, now: Timestamp) -> Option<(&'static str, String)> {
+        if self.clock_skewed(venue) {
+            let lead = self
+                .clock_lead
+                .get(venue)
+                .copied()
+                .unwrap_or(Duration::ZERO);
+            return Some((
+                GATE_CLOCK_SKEW,
+                format!(
+                    "the feed for {} stamped messages {} ms ahead of this cell's clock, past \
+                     the {} ms tolerated; one of the two clocks is wrong and nothing is sent \
+                     against a price that cannot be placed in time until a batch shows the \
+                     venue's time at or behind the cell's",
+                    venue.as_str(),
+                    lead.as_millis(),
+                    self.config.max_clock_skew.as_millis()
+                ),
+            ));
+        }
         if let Some(heard) = self.feed_heard.get(venue) {
             let age = now.since(*heard);
             if age.as_nanos() > self.config.max_staleness.as_nanos() {
@@ -4728,9 +4892,17 @@ impl Cell {
         // replacing it: both narrow, and a pass is sized by the stricter
         // product. A product that cannot be represented narrows to nothing,
         // the same asymmetry the table keeps.
+        // And the clock: a venue time that cannot be placed against this
+        // cell's own clock widens the uncertainty on every price it quoted,
+        // which §6.2 answers with a smaller size. Only this dependency row is
+        // compounded here — the ledger is already the journal wire's, and the
+        // feed and session rows act per venue through their own gates.
         let multiplier = narrowing
             .sizing_multiplier()
             .checked_mul(self.journal_sizing_multiplier())
+            .and_then(|size| {
+                size.checked_mul(narrowing.dependency_row_multiplier(Capability::Clock))
+            })
             .unwrap_or(Decimal::ZERO);
         // Freshness is a function of `now`, so this is the instant it becomes
         // known and the only instant at which the recorded value is what the
@@ -7762,6 +7934,20 @@ impl Cell {
                 report,
                 "degradation_pause",
                 "the arbitrage desk pauses while its capability is degraded",
+                now,
+            );
+            return Ok(Vec::new());
+        }
+        // A cycle is a claim about the order two venues' prices stood in at
+        // one instant. With a venue's clock unplaceable against this cell's,
+        // that order is unknown, so the desk opens no cycle: it is the
+        // strategy class the clock row of §6.2 exists to switch off.
+        if narrowing.pauses_cross_venue_ordering() {
+            self.refuse(
+                report,
+                GATE_CLOCK_SKEW,
+                "the arbitrage desk pauses while a venue's clock cannot be placed against this \
+                 cell's: a cycle depends on the order two venues' prices stood in",
                 now,
             );
             return Ok(Vec::new());

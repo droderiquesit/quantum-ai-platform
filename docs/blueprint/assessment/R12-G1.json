@@ -578,13 +578,15 @@
   {
     "id": "R12-RES-8026",
     "status": "PARTIAL",
-    "current": "Cell::narrowing computes a DegradationState over policy-fed capabilities (beliefs, causal, etc.) with sizing multipliers; ingestion and counterfactual_scoring are not measured by the cell.",
+    "current": "Cell::narrowing now records, beside the payload-fed rows, the dependency rows a cell can measure: Ledger (journal wire), Fabric (derived from what the policy carries), Feed (venues heard vs silent past max_staleness), VenueSession (venues quarantined by venue health) and Clock (venue time vs capture time). Capability::dependencies() has six rows, each with a declared stale and unavailable multiplier (FEED_/SESSION_STALE one because the per-venue gates already act, unavailable zero), and a contract test enumerates that every dependency has one. Ingestion stays per-book: the stale_book gate refuses a book the cell knows is wrong.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:2543 narrowing",
-      "backend/crates/edge/qip-edge/src/telemetry.rs:700 narrowing gauge",
+      "backend/crates/libs/qip-contracts/src/degradation.rs Capability::Feed, Capability::VenueSession, dependency_row_multiplier",
+      "backend/crates/edge/qip-edge/src/cell.rs:2867 narrowing",
+      "backend/crates/libs/qip-contracts/tests/degradation_dependencies.rs every_dependency_declares_what_its_loss_does_to_size",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs a_cell_whose_feed_goes_silent_reads_its_feed_row_stale_then_unavailable; a_cell_reads_its_venue_session_row_from_how_many_venues_are_quarantined",
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
     ],
-    "gap": "Envelopes for every dependency (feed, venue session, fabric, ingestion), enumerated and tested.",
+    "gap": "Ingestion has no table row in the cell (book staleness is judged per book, deliberately stricter), and the Feed, VenueSession and Clock rows are not charted: telemetry.rs publishes only the three policy-fed capabilities, and publishing more changes a documented series count (.claude/rules/domains/observability.md, a protected path).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -592,10 +594,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded",
+    "verification": "cargo test -p qip-contracts --test degradation_dependencies; cargo test -p qip-edge --test venue_failure; cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: Feed and VenueSession rows added and derived by the cell; PARTIAL kept for ingestion and charting. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
   },
   {
     "id": "R12-FABRIC-8027",

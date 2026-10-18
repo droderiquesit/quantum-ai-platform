@@ -2237,12 +2237,14 @@
   {
     "id": "R12-RISK-4101",
     "status": "PARTIAL",
-    "current": "Edge halts on journal pressure, awaiting reconciliation and polled halt flag; kill switch; reconciliation breaks halt a cell. Clock and credential failure not modelled as risk.",
+    "current": "Edge halts on journal pressure, awaiting reconciliation and polled halt flag; kill switch; reconciliation breaks halt a cell. Clock is now a risk signal: Cell::on_bytes measures how far each venue's batch stamps messages ahead of the cell's capture time, journals the transition (Decision::ClockSkew), withholds a venue past CellConfig::max_clock_skew under GATE_CLOCK_SKEW, and the pass sizes down by the clock row. Credential and deployment failures are still not modelled as risk.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:299,334",
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:330 KillSwitch"
+      "backend/crates/edge/qip-edge/src/cell.rs:432 GATE_CLOCK_SKEW; :4017 observe_clock_lead measures each batch's venue time against capture time; :4045 clock_skewed; :4068 venue_withheld refuses a skewed venue; :2867 Cell::narrowing observes Clock, Feed and VenueSession; :7945 scan_cycles pauses the desk",
+      "backend/crates/libs/qip-contracts/src/degradation.rs:895 pauses_cross_venue_ordering",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1516 a_venue_stamping_its_messages_ahead_of_the_cell_gets_no_order_until_a_batch_shows_it_level_again; :1597 a_cell_with_one_skewed_venue_reads_its_clock_stale_and_pauses_cross_venue_ordering; :1673 a_pass_sizes_down_by_the_clock_row_once_any_venue_is_skewed",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells"
     ],
-    "gap": "Clock, credential and deployment risk signals.",
+    "gap": "Credential and deployment risk signals: no halt source in qip-edge-node main.rs for a venue credential nearing expiry or a deployed commit that disagrees with the one the centre published. The clock half measures venue time against the cell's capture time, so a cell whose own clock is wrong and every venue's agree is not seen (the peer mesh's clock probe measures that, and is not wired into this row).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2250,10 +2252,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-edge --test venue_failure --test arbitrage",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: clock half closed on the default path, PARTIAL kept for credential and deployment. Mutations (each fired): skewed := false fails the venue test; pauses_cross_venue_ordering := false fails the desk test; not observing the Clock row fails the desk test; dropping the clock multiplier from the pass fails the sizing test; not observing the Feed row and counting Degraded for Quarantined each fail their row tests."
   },
   {
     "id": "R12-RISK-4102",

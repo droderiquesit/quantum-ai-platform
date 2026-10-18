@@ -91,6 +91,14 @@ pub enum Capability {
     /// The event fabric. Its loss narrows nothing by itself: see
     /// [`FABRIC_MULTIPLIER`].
     Fabric,
+    /// The venues' market-data feeds, as a cell hears them: a row a cell
+    /// derives from how many of its venues it has heard within its
+    /// staleness bound. A *dependency* row: see [`FEED_STALE_MULTIPLIER`].
+    Feed,
+    /// The order sessions to the venues, as a cell's venue health reads
+    /// them: the share of its venues not quarantined for rejecting orders.
+    /// A *dependency* row: see [`SESSION_STALE_MULTIPLIER`].
+    VenueSession,
 }
 
 impl Capability {
@@ -106,6 +114,8 @@ impl Capability {
             Self::Custody => "custody",
             Self::Clock => "clock",
             Self::Fabric => "fabric",
+            Self::Feed => "feed",
+            Self::VenueSession => "venue_session",
         }
     }
 
@@ -125,21 +135,34 @@ impl Capability {
         ]
     }
 
-    /// The four infrastructure dependencies of the v12 failure table. A row
+    /// The infrastructure dependencies: the four of the v12 failure table and
+    /// the two a reflex cell derives from what it hears and sends. A row
     /// narrows only once a plane has observed it: [`Self::freshness`] still
     /// reads unavailable for an unobserved one, but
     /// [`DegradationState::dependency_multiplier`] compounds only what a
     /// plane measured, because an unmeasured plane scaling its size by a
     /// number nobody computed is the failure this module rejects elsewhere.
-    pub const fn dependencies() -> [Self; 4] {
-        [Self::Ledger, Self::Custody, Self::Clock, Self::Fabric]
+    pub const fn dependencies() -> [Self; 6] {
+        [
+            Self::Ledger,
+            Self::Custody,
+            Self::Clock,
+            Self::Fabric,
+            Self::Feed,
+            Self::VenueSession,
+        ]
     }
 
     /// Whether this is one of [`Self::dependencies`].
     pub const fn is_dependency(&self) -> bool {
         matches!(
             self,
-            Self::Ledger | Self::Custody | Self::Clock | Self::Fabric
+            Self::Ledger
+                | Self::Custody
+                | Self::Clock
+                | Self::Fabric
+                | Self::Feed
+                | Self::VenueSession
         )
     }
 
@@ -329,6 +352,30 @@ const CLOCK_UNAVAILABLE_MULTIPLIER: (i128, u32) = (50, 2);
 /// stop every cell at once, which is the correlation the regional split
 /// exists to remove.
 pub const FABRIC_MULTIPLIER: (i128, u32) = (1, 0);
+
+/// Some, not all, of a cell's venue feeds have gone silent: **one**, on
+/// purpose. The cell already refuses every order bound for a silent venue
+/// (`silent_feed`) and routes the rest to the venues still heard, which is
+/// the narrowing that fits a partial loss. Scaling the size of the orders
+/// that remain as well would charge the same fact twice and shrink trades
+/// at a venue whose feed is fine.
+pub const FEED_STALE_MULTIPLIER: (i128, u32) = (1, 0);
+
+/// Every venue feed a cell has is silent: **zero**. There is no book to price
+/// against and no venue left to route to, so no size is the only size that
+/// does not trade on prices from before the silence. Zero here changes
+/// nothing a per-venue gate has not already refused; it states the total case
+/// in the table so that an operator reading the table sees a cell that is
+/// blind rather than one that is merely quiet.
+pub const FEED_UNAVAILABLE_MULTIPLIER: (i128, u32) = (0, 0);
+
+/// Some, not all, of a cell's venues are quarantined for rejecting orders:
+/// **one**, for the reason [`FEED_STALE_MULTIPLIER`] gives. The quarantine
+/// already withdraws the venue from routing.
+pub const SESSION_STALE_MULTIPLIER: (i128, u32) = (1, 0);
+
+/// Every venue is quarantined: **zero**. No order can be placed anywhere.
+pub const SESSION_UNAVAILABLE_MULTIPLIER: (i128, u32) = (0, 0);
 
 /// How old the self-model's newest graded outcome may be before the row is
 /// stale.
@@ -836,6 +883,20 @@ impl DegradationState {
         }
     }
 
+    /// Whether strategies that need precise cross-venue ordering pause: the
+    /// clock a plane has *observed* is less than fresh.
+    ///
+    /// Only an observed row counts. [`Self::freshness`] reads an unobserved
+    /// clock as unavailable, and a plane that has measured nothing pausing
+    /// every ordering-sensitive strategy on a number nobody computed is the
+    /// failure [`Capability::dependencies`] explains for the sizing side.
+    /// §6.2's "Clock synchronization degraded" row: temporal uncertainty
+    /// widens, and what depends on cross-venue order is disabled.
+    pub fn pauses_cross_venue_ordering(&self) -> bool {
+        self.observed(Capability::Clock)
+            .is_some_and(|freshness| !freshness.is_fresh())
+    }
+
     /// The multiplier applied to position size under the current degradation.
     ///
     /// `Decimal` and never `f64`: this scales a position, so it is money
@@ -943,33 +1004,53 @@ impl DegradationState {
     pub fn dependency_multiplier(&self) -> Decimal {
         let mut multiplier = Decimal::from_int(1);
         for capability in Capability::dependencies() {
-            let Some(freshness) = self.freshness.get(&capability).copied() else {
-                continue;
-            };
-            let constant = match (capability, freshness) {
-                (_, Freshness::Fresh) => continue,
-                (Capability::Ledger, Freshness::Stale) => LEDGER_STALE_MULTIPLIER,
-                (Capability::Ledger, Freshness::Unavailable) => LEDGER_UNAVAILABLE_MULTIPLIER,
-                (Capability::Custody, Freshness::Stale) => CUSTODY_STALE_MULTIPLIER,
-                (Capability::Custody, Freshness::Unavailable) => CUSTODY_UNAVAILABLE_MULTIPLIER,
-                (Capability::Clock, Freshness::Stale) => CLOCK_STALE_MULTIPLIER,
-                (Capability::Clock, Freshness::Unavailable) => CLOCK_UNAVAILABLE_MULTIPLIER,
-                (Capability::Fabric, _) => FABRIC_MULTIPLIER,
-                // A cognitive row is not a dependency; `dependencies()` never
-                // yields one. Written out so a new variant must be placed.
-                (
-                    Capability::Ingestion
-                    | Capability::CausalGraph
-                    | Capability::EpisodicMemory
-                    | Capability::BeliefState
-                    | Capability::CounterfactualScoring
-                    | Capability::SelfModel,
-                    _,
-                ) => continue,
-            };
-            multiplier = Self::scaled(constant, multiplier);
+            multiplier = Self::scaled(self.dependency_row_constant(capability), multiplier);
         }
         multiplier
+    }
+
+    /// One dependency row's multiplier; one for a row nobody observed or one
+    /// that reads fresh.
+    ///
+    /// Exposed so a plane that compounds a single row — the edge cell
+    /// compounds the clock and leaves the ledger to its journal wire — does
+    /// not restate the table.
+    pub fn dependency_row_multiplier(&self, capability: Capability) -> Decimal {
+        Self::scaled(
+            self.dependency_row_constant(capability),
+            Decimal::from_int(1),
+        )
+    }
+
+    fn dependency_row_constant(&self, capability: Capability) -> (i128, u32) {
+        let Some(freshness) = self.freshness.get(&capability).copied() else {
+            return (1, 0);
+        };
+        match (capability, freshness) {
+            (_, Freshness::Fresh) => (1, 0),
+            (Capability::Ledger, Freshness::Stale) => LEDGER_STALE_MULTIPLIER,
+            (Capability::Ledger, Freshness::Unavailable) => LEDGER_UNAVAILABLE_MULTIPLIER,
+            (Capability::Custody, Freshness::Stale) => CUSTODY_STALE_MULTIPLIER,
+            (Capability::Custody, Freshness::Unavailable) => CUSTODY_UNAVAILABLE_MULTIPLIER,
+            (Capability::Clock, Freshness::Stale) => CLOCK_STALE_MULTIPLIER,
+            (Capability::Clock, Freshness::Unavailable) => CLOCK_UNAVAILABLE_MULTIPLIER,
+            (Capability::Fabric, _) => FABRIC_MULTIPLIER,
+            (Capability::Feed, Freshness::Stale) => FEED_STALE_MULTIPLIER,
+            (Capability::Feed, Freshness::Unavailable) => FEED_UNAVAILABLE_MULTIPLIER,
+            (Capability::VenueSession, Freshness::Stale) => SESSION_STALE_MULTIPLIER,
+            (Capability::VenueSession, Freshness::Unavailable) => SESSION_UNAVAILABLE_MULTIPLIER,
+            // A cognitive row is not a dependency; `dependencies()` never
+            // yields one. Written out so a new variant must be placed.
+            (
+                Capability::Ingestion
+                | Capability::CausalGraph
+                | Capability::EpisodicMemory
+                | Capability::BeliefState
+                | Capability::CounterfactualScoring
+                | Capability::SelfModel,
+                _,
+            ) => (1, 0),
+        }
     }
 
     /// What a plane has said about one capability, or `None` if it has said
