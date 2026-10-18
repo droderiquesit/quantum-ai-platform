@@ -275,16 +275,10 @@ fn dataset_name(subject: &ObjectId) -> String {
     format!("{DATASET_PREFIX}{}", subject.as_str())
 }
 
-/// The instrument a card was fitted on, as the card itself records it.
-///
-/// `None` when the card names no bar dataset at all, and `None` again when it
-/// names two different subjects — refusing rather than picking the first,
-/// because a model fitted across two instruments has no single window its
-/// drift could honestly be measured against, and guessing one is precisely the
-/// failure this function exists to stop.
 /// Write what a fit was validated on onto its card: the regime the round
 /// classified, and the range each feature took in the rows it was fitted and
 /// judged on (the holdout tail is validation evidence too).
+///
 /// Both are read by `ModelRegistry::ineligible_in_regime`, so a standing model
 /// is flagged in a regime it was never scored in and on inputs it would have
 /// to extrapolate to answer.
@@ -313,6 +307,13 @@ fn stamp_provenance(card: &mut ModelCard, provenance: &Option<(String, String)>)
     }
 }
 
+/// The instrument a card was fitted on, as the card itself records it.
+///
+/// `None` when the card names no bar dataset at all, and `None` again when it
+/// names two different subjects — refusing rather than picking the first,
+/// because a model fitted across two instruments has no single window its
+/// drift could honestly be measured against, and guessing one is precisely the
+/// failure this function exists to stop.
 fn card_subject(card: &ModelCard) -> Option<&str> {
     let mut found: Option<&str> = None;
     for dataset in &card.training_datasets {
