@@ -1190,7 +1190,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8958"
     ],
-    "gap": "Source-score and curriculum updates; cell episodes.",
+    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1203,7 +1203,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural."
   },
   {
     "id": "R12-EXPAND-6055",
