@@ -1273,13 +1273,17 @@
   {
     "id": "R12-TICK-2055",
     "status": "PARTIAL",
-    "current": "Lake segments are checksummed and sealed with manifests; overwrite is refused by a get-then-put check, which does not prevent a concurrent overwrite; Cloud Storage disabled.",
+    "current": "Lake segments are checksummed and sealed with manifests. Since 2026-10-18 the seal is BlobStore::put_if_absent, atomic with its own check in every adapter (a lock in MemoryBlobStore, a hard link in FileBlobStore, ifGenerationMatch=0 with 412 read as 'already there' in CloudStorageBlobStore; the trait default refuses), so a concurrent writer that passed the get-then-put check is refused; the raw bytes are written after the seal, by the winner only. Cloud Storage remains disabled.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/lake.rs:231 get(&key) is_some -> denied; :246 put",
+      "backend/crates/libs/qip-storage/src/lake.rs:314 the conditional seal in Lake::write_segment",
+      "backend/crates/libs/qip-storage/src/fsio.rs:106 create_atomic",
+      "backend/crates/libs/qip-storage/tests/lake.rs:240 two_writers_racing_one_segment_id_seal_exactly_one",
+      "backend/crates/libs/qip-storage/tests/lake.rs a_file_store_creates_an_object_once_and_leaves_an_existing_one_untouched",
+      "backend/crates/libs/qip-storage/tests/gcp.rs:1089 a_cloud_storage_put_if_absent_asks_for_generation_zero_and_reads_412_as_already_there",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:458 LakeSink writes applied market events",
       "infrastructure/environments/dev/terraform.tfvars:280 enable_cloud_storage = false (same in test/stage/prod)"
     ],
-    "gap": "Conditional (if-absent) write; durable store enabled.",
+    "gap": "Durable store enabled: enable_cloud_storage is false in every environment, an owner switch.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1287,10 +1291,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-storage --test lake",
+    "verification": "cargo test -p qip-storage --test lake --test gcp --test outcome_lake",
     "work_item": "",
     "size": "M",
-    "notes": "lake.rs's own doc states the ifGenerationMatch gap. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Edge writer added; race and durability gaps remain."
+    "notes": "2026-10-18 lane L23: mutations fired - sealing with put reported as created ('both writers sealed one segment id'); file create published by write_atomic's rename (the second create reported true); ifGenerationMatch dropped ('the create was not conditional'); 412 read as created. outcome_lake's Faulty store now refuses on put_if_absent as on put, since the seal moved to that seam."
   },
   {
     "id": "R12-TICK-2056",

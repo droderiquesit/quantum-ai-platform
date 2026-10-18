@@ -309,6 +309,52 @@ impl CloudStorageBlobStore {
     ///
     /// See the type documentation: the set refused here is
     /// [`crate::FileBlobStore`]'s, plus what would break the request itself.
+    /// One `uploadType=media` request; `Ok(false)` only for a conditional
+    /// upload Cloud Storage refused because the object already exists.
+    fn upload(&self, key: &str, bytes: Vec<u8>, if_absent: bool) -> Result<bool> {
+        if !self.is_available() {
+            return Err(self.unavailable());
+        }
+        self.validate_key(key)?;
+        if bytes.len() > self.config.max_object_bytes {
+            return Err(Error::guard(format!(
+                "the object is {} bytes and this store uploads at most {} in one request: there \
+                 is no resumable upload here, so a larger object is refused rather than started \
+                 and abandoned",
+                bytes.len(),
+                self.config.max_object_bytes
+            )));
+        }
+        let path = format!(
+            "/upload/storage/v1/b/{}/o?uploadType=media&name={}{}",
+            percent_encode(&self.config.bucket),
+            percent_encode(&self.scoped(key)),
+            if if_absent {
+                "&ifGenerationMatch=0"
+            } else {
+                ""
+            }
+        );
+        let request = self
+            .config
+            .access
+            .request(Method::Post, &path)?
+            .with_header("content-type", &self.config.content_type)
+            .with_body(bytes);
+        let response = self.client.send(&request).map_err(Error::from)?;
+        if if_absent && response.status == 412 {
+            return Ok(false);
+        }
+        if !response.is_success() {
+            return Err(status_refusal(
+                &self.service(),
+                response.status,
+                &response.body_excerpt(),
+            ));
+        }
+        Ok(true)
+    }
+
     fn validate_key(&self, key: &str) -> Result<()> {
         if key.is_empty() {
             return Err(Error::invalid(
@@ -391,39 +437,15 @@ impl BlobStore for CloudStorageBlobStore {
     /// `uploadType=media` rather than `multipart`: the port carries no metadata
     /// to send alongside the bytes, so the simpler form is the honest one.
     fn put(&self, key: &str, bytes: Vec<u8>) -> Result<()> {
-        if !self.is_available() {
-            return Err(self.unavailable());
-        }
-        self.validate_key(key)?;
-        if bytes.len() > self.config.max_object_bytes {
-            return Err(Error::guard(format!(
-                "the object is {} bytes and this store uploads at most {} in one request: there \
-                 is no resumable upload here, so a larger object is refused rather than started \
-                 and abandoned",
-                bytes.len(),
-                self.config.max_object_bytes
-            )));
-        }
-        let path = format!(
-            "/upload/storage/v1/b/{}/o?uploadType=media&name={}",
-            percent_encode(&self.config.bucket),
-            percent_encode(&self.scoped(key))
-        );
-        let request = self
-            .config
-            .access
-            .request(Method::Post, &path)?
-            .with_header("content-type", &self.config.content_type)
-            .with_body(bytes);
-        let response = self.client.send(&request).map_err(Error::from)?;
-        if !response.is_success() {
-            return Err(status_refusal(
-                &self.service(),
-                response.status,
-                &response.body_excerpt(),
-            ));
-        }
-        Ok(())
+        self.upload(key, bytes, false).map(|_| ())
+    }
+
+    /// `ifGenerationMatch=0`: Cloud Storage creates the object only if no
+    /// live generation exists, and answers 412 otherwise — the check and the
+    /// write are one request, so two writers racing on one name cannot both
+    /// create it.
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        self.upload(key, bytes, true)
     }
 
     /// Download the whole object, or report that there is none.
