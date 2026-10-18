@@ -990,3 +990,93 @@ fn the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_unty
     assert_refused_for(&platform, &corrupted, "subject typing");
     Ok(())
 }
+
+/// R12-QUANT-4040. The symbolic reasoner's constraint encoder produced a QUBO
+/// for the quantum path's solver port and nothing ever ran a quantum solver on
+/// one, so "the constraint problem is compared to classical solvers" was a
+/// sentence about a type signature.
+///
+/// The problem here is a selection the encoder admits - four 0/1 variables
+/// and one linear equality - and not `symbolic_stage::acting()`'s, which the
+/// encoder correctly refuses: its eligibility and halt facts are Boolean
+/// domains and its guards are conditions, not linear equalities. The quantum
+/// entrant is the in-tree statevector simulator behind `ProviderSolver`, the
+/// baseline is exhaustive search, and the decoded quantum answer must equal
+/// the symbolic engine's own proven minimiser.
+///
+/// Mutation: drop the penalty term for the equality in `Problem::to_qubo`
+/// (skip the `(sum - bound)^2` block) - the QUBO's minimum selects nothing or
+/// everything, the decode refuses it as violating the constraint, and the
+/// assertion that the quantum entrant decodes fails.
+#[test]
+fn the_constraint_encoders_qubo_is_solved_by_a_quantum_entrant_and_decodes_to_the_symbolic_optimum()
+-> Result<()> {
+    use qip_quantum::benchmark::SolverBenchmark;
+    use qip_quantum::provider::SimulatedProvider;
+    use qip_quantum::qaoa::QaoaSettings;
+    use qip_quantum::solver::{ClassicalSolver, ProviderSolver, SolverKind};
+    use qip_reasoning_engine::constraint::{Constraint, Form, Problem, Variable};
+    use qip_reasoning_engine::rules::{Op, Value};
+    use std::sync::Arc;
+
+    let bits = ["a", "b", "c", "d"];
+    let problem = Problem {
+        variables: bits
+            .iter()
+            .map(|name| Variable {
+                name: (*name).to_string(),
+                domain: vec![Value::Int(0), Value::Int(1)],
+            })
+            .collect(),
+        constraints: vec![Constraint {
+            id: "choose-exactly-two".into(),
+            form: Form::Linear {
+                terms: bits.iter().map(|name| (1, (*name).to_string())).collect(),
+                op: Op::Eq,
+                bound: 2,
+            },
+        }],
+    };
+    let objective: Vec<(i64, String)> = [3, 1, 4, 2]
+        .iter()
+        .zip(bits)
+        .map(|(cost, name)| (*cost, name.to_string()))
+        .collect();
+
+    let optimum = problem
+        .minimise(&objective)?
+        .expect("the selection has a solution");
+    assert_eq!(
+        optimum.objective, 3,
+        "premise: the cheapest two of 3, 1, 4, 2 cost 1 + 2"
+    );
+
+    let qubo = problem.to_qubo(&objective)?;
+    let report = SolverBenchmark::new(ClassicalSolver::exhaustive(20))
+        .with_solver(Arc::new(ProviderSolver::new(
+            Arc::new(SimulatedProvider::new(7)),
+            QaoaSettings {
+                layers: 2,
+                optimiser_iterations: 80,
+                shots: 0,
+            },
+        )))
+        .with_repeats(1)
+        .run(&qubo)?;
+
+    let quantum = report
+        .entrants
+        .iter()
+        .find(|record| record.kind == SolverKind::Quantum)
+        .expect("a quantum entrant ran on the constraint QUBO");
+    let solution = quantum
+        .usable_solution()
+        .expect("the quantum entrant produced a validated answer");
+    let decoded = problem.decode(&objective, solution.assignment())?;
+    assert_eq!(
+        decoded.objective, optimum.objective,
+        "the quantum answer decodes to a feasible assignment, but not the proven optimum"
+    );
+    assert_eq!(decoded.assignment, optimum.assignment);
+    Ok(())
+}
