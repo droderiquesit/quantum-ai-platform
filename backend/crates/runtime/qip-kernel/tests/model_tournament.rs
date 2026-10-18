@@ -525,6 +525,77 @@ fn a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after(
     Ok(())
 }
 
+/// R12-MODEL-9031: each question the tournament opens journals a
+/// `ForecastConsensus` beside the votes, with the share every forecaster held
+/// in it; before anyone has earned standing the shares are equal and the
+/// record says so, and once review promotes a forecaster the consensus is
+/// stated as reputation-weighted. That the earned shares are not an equal
+/// split is proven where they are computed, in `qip-learning-engine`'s
+/// `an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts`.
+///
+/// Mutation: journal every consensus as unearned in
+/// `TournamentStage::observe_reasoning` — no reputation-weighted consensus
+/// appears after the promotion and the final assertion fails.
+#[test]
+fn a_consensus_is_journaled_for_every_question_and_turns_earned_once_a_forecaster_is_promoted()
+-> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let first = records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?;
+    let unearned = first
+        .iter()
+        .flat_map(|review| review.consensus.iter())
+        .next()
+        .ok_or_else(|| Error::not_found("the first question formed no consensus"))?;
+    assert!(
+        !unearned.reputation_weighted,
+        "nobody had earned a share before anything resolved: {unearned:?}"
+    );
+
+    // Resolve question after question on a falling tape until review has the
+    // resolved sample a promotion needs.
+    let mut close = 150.0;
+    for _ in 0..24 {
+        let Some(due) = platform
+            .model_tournament()
+            .open_questions()
+            .map(|q| q.spec().resolves_at)
+            .max()
+        else {
+            break;
+        };
+        let next = close * 0.98;
+        platform.observe(vec![bar("AAA", due, close, next)]);
+        close = next;
+        platform.run_cycle(due.saturating_add(Duration::from_days(2)));
+    }
+    let reviews = records::<TournamentReview>(&platform, TOURNAMENT_ORIGIN)?;
+    let promoted_in = reviews
+        .iter()
+        .find(|review| review.promotions.iter().any(|p| p.promoted))
+        .map(|review| review.cycle)
+        .ok_or_else(|| Error::not_found("premise: review promoted a forecaster"))?;
+    for review in &reviews {
+        assert_eq!(
+            review.consensus.len(),
+            review.opened.len(),
+            "cycle {} opened a question that formed no consensus: {:?}",
+            review.cycle,
+            review.refused
+        );
+    }
+    assert!(
+        reviews
+            .iter()
+            .filter(|review| review.cycle > promoted_in)
+            .flat_map(|review| review.consensus.iter())
+            .any(|consensus| consensus.reputation_weighted),
+        "no consensus after the promotion in cycle {promoted_in} was weighted by reputation"
+    );
+    Ok(())
+}
+
 /// R12-TICK-2091: a distillate whose card was trained on licensed data is
 /// named in the `trained_models` slot only for a location its licence
 /// permits. `ModelCard::authorise_location` was called for the opportunity
