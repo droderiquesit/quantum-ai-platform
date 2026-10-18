@@ -984,6 +984,10 @@ pub mod names {
     /// The uplink circuit to the centre, by `state`: `1` on the state it is
     /// in and `0` on the others.
     pub const EDGE_MESH_CIRCUIT: &str = "qip_edge_mesh_circuit";
+    /// The shortest fresh peer clock round trip, in milliseconds, across
+    /// the cell's peer links (MESH-007): the measured latency to the nearest
+    /// peer. Absent, not zero, while no peer has a fresh sample.
+    pub const EDGE_PEER_ROUND_TRIP_MS: &str = "qip_edge_peer_round_trip_ms";
 
     pub const KILL_SWITCH_TRIPPED: &str = "qip_kill_switch_tripped";
     pub const LIVE_FILLS: &str = "qip_live_fills_total";
@@ -1407,4 +1411,9 @@ pub mod names {
     /// Promoted model packages, by whether the artifact the promotion names
     /// was written where serving reads it (`written`, `failed`).
     pub const MODEL_PACKAGES: &str = "qip_model_packages_total";
+    /// Seconds since the deep brain last promoted a model package: the
+    /// central plane's model freshness, beside the edge's capability
+    /// freshness. Absent, not zero, until a first package is promoted —
+    /// a zero would read as a model promoted this instant.
+    pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
 }

@@ -283,8 +283,9 @@ fn a_registration_produces_the_mesh_catalogue_entry_rather_than_a_second_catalog
 }
 
 /// R12-DATA-2020: the catalogue owner is a named operator, never the
-/// process's own name. The kernel's configured default is `qip-platform`,
-/// and an entry owned by it names nobody anyone can ask about the source.
+/// process's own name. The kernel's configured default was `qip-platform`
+/// until 2026-10-18, and an entry owned by it names nobody anyone can ask
+/// about the source.
 #[test]
 fn a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused() -> Result<()>
 {

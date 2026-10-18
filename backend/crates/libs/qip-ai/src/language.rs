@@ -580,3 +580,125 @@ impl LanguageModel for FallbackChain {
         ))
     }
 }
+
+/// How a hosted model's replies went since the research sweep last read them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReplyCounts {
+    /// Replies that answered, and answered in the shape asked for.
+    pub served: u64,
+    /// Calls the provider refused or failed: an error, a timeout, a denial.
+    pub refused: u64,
+    /// Replies that came back and did not hold: no structured output where a
+    /// schema was asked for, output the schema rejects, or a number the
+    /// guard forbids — the measurable face of a hallucination.
+    pub malformed: u64,
+}
+
+impl ReplyCounts {
+    pub const fn total(&self) -> u64 {
+        self.served
+            .saturating_add(self.refused)
+            .saturating_add(self.malformed)
+    }
+
+    pub const fn failed(&self) -> u64 {
+        self.refused.saturating_add(self.malformed)
+    }
+}
+
+/// A shared tally of one model's replies. The chain falls through a failed
+/// hosted call to the templates, which is the right thing for the reasoning
+/// and the wrong thing for the record: without a count, a provider refusing
+/// every second request reads exactly like one that never fails.
+#[derive(Clone, Debug, Default)]
+pub struct ReplyTally {
+    counts: std::sync::Arc<std::sync::Mutex<ReplyCounts>>,
+}
+
+impl ReplyTally {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `model`, counted into this tally on every call.
+    pub fn wrap(
+        &self,
+        model: std::sync::Arc<dyn LanguageModel>,
+    ) -> std::sync::Arc<dyn LanguageModel> {
+        std::sync::Arc::new(CountedModel {
+            model,
+            tally: self.clone(),
+        })
+    }
+
+    /// The counts so far, and a fresh window, once at least `min` replies
+    /// have been counted; `None` and nothing reset below that, so a quiet
+    /// model accumulates a sample instead of being judged on two calls.
+    pub fn take_at_least(&self, min: u64) -> Option<ReplyCounts> {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (counts.total() >= min).then(|| std::mem::take(&mut *counts))
+    }
+
+    fn record(&self, outcome: fn(&mut ReplyCounts)) {
+        outcome(
+            &mut self
+                .counts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
+#[derive(Debug)]
+struct CountedModel {
+    model: std::sync::Arc<dyn LanguageModel>,
+    tally: ReplyTally,
+}
+
+impl LanguageModel for CountedModel {
+    fn name(&self) -> &str {
+        self.model.name()
+    }
+
+    fn is_available(&self) -> bool {
+        self.model.is_available()
+    }
+
+    /// The reply passes through unchanged; only the count is added, so the
+    /// chain's fall-through and every caller's own validation behave as
+    /// they did before the tally existed.
+    fn complete(&self, request: &ModelRequest, now: Timestamp) -> Result<Completion> {
+        let reply = self.model.complete(request, now);
+        match &reply {
+            Ok(completion) if holds_its_shape(request, completion) => {
+                self.tally.record(|c| c.served = c.served.saturating_add(1));
+            }
+            Ok(_) => self
+                .tally
+                .record(|c| c.malformed = c.malformed.saturating_add(1)),
+            Err(error) if matches!(error.code(), "schema" | "guard") => {
+                self.tally
+                    .record(|c| c.malformed = c.malformed.saturating_add(1));
+            }
+            Err(_) => self
+                .tally
+                .record(|c| c.refused = c.refused.saturating_add(1)),
+        }
+        reply
+    }
+}
+
+/// Whether a reply is what the request asked for: anything, when no schema
+/// was asked for; otherwise structured output the schema and the numeric
+/// guard both accept, the same checks `complete_structured` applies.
+fn holds_its_shape(request: &ModelRequest, completion: &Completion) -> bool {
+    let Some(schema) = &request.schema else {
+        return true;
+    };
+    completion.structured.as_ref().is_some_and(|structured| {
+        schema.validate(structured).is_ok() && NumericGuard::enforce(structured).is_ok()
+    })
+}

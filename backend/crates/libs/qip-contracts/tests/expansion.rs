@@ -47,7 +47,8 @@ fn attribution() -> Value {
 fn gap() -> Value {
     json!({
         "observation": "surprise on CPI", "affected_domains": ["macro"], "evidence": ["ev-1"],
-        "severity": 0.7, "economic_value": "500", "gap_class": "causal"
+        "severity": 0.7, "economic_value": "500", "risk_value": "120",
+        "gap_class": "causal"
     })
 }
 
@@ -320,5 +321,116 @@ fn an_unidentified_effect_recorded_with_any_identifiability_above_zero_is_refuse
     assert!(
         decode(v).validate().is_err(),
         "a blank strategy is no strategy"
+    );
+}
+
+/// CONTRACT-7081, CONTRACT-7085, CONTRACT-7084: a record that decodes must
+/// encode back to the same document, field for field. A field dropped by a
+/// `skip_serializing_if`, renamed on one side, or narrowed to an `Option`
+/// that serialises as absent survives every refusal test above — they only
+/// ever decode — and the record a replay reads back would silently differ
+/// from the one the desk wrote.
+#[test]
+fn every_decoded_record_encodes_back_to_the_same_document_field_for_field() {
+    type RoundTrip = fn(&[u8]) -> Value;
+    let encoders: Vec<(&str, Value, RoundTrip)> = vec![
+        ("goal", goal(), |b| {
+            serde_json::to_value(GoalSpec::decode(b).expect("goal decodes")).expect("e")
+        }),
+        ("plan", plan(), |b| {
+            serde_json::to_value(InterventionPlan::decode(b).expect("plan decodes")).expect("e")
+        }),
+        ("gap", gap(), |b| {
+            serde_json::to_value(GapSignal::decode(b).expect("gap decodes")).expect("e")
+        }),
+        ("item", item(), |b| {
+            serde_json::to_value(CurriculumItem::decode(b).expect("item decodes")).expect("e")
+        }),
+    ];
+    for (name, valid, round_trip) in encoders {
+        let fields = valid.as_object().expect("object");
+        assert!(
+            fields.len() >= 6,
+            "{name} premise: the fixture lists its fields"
+        );
+        let back = round_trip(&serde_json::to_vec(&valid).expect("encodes"));
+        let back = back.as_object().expect("encodes as an object");
+        let sent: BTreeSet<&String> = fields.keys().collect();
+        let got: BTreeSet<&String> = back.keys().collect();
+        assert_eq!(sent, got, "{name}: the field set changed on the way back");
+        for (key, value) in fields {
+            assert_eq!(
+                &back[key], value,
+                "{name}.{key} did not survive the round trip"
+            );
+        }
+        // Byte-identical once re-encoded: the second trip changes nothing.
+        let again = round_trip(&serde_json::to_vec(back).expect("encodes"));
+        assert_eq!(
+            serde_json::to_vec(&again).expect("e"),
+            serde_json::to_vec(back).expect("e"),
+            "{name}: a second round trip changed the bytes"
+        );
+    }
+}
+
+/// CONTRACT-7081: the plan's refusal must say which field is missing. A
+/// refusal that only says "not an InterventionPlan" is a refusal the planner
+/// cannot act on, and the decoder is where the twelve fields are the
+/// contract.
+#[test]
+fn a_plan_missing_any_one_of_its_twelve_fields_is_refused_naming_that_field() {
+    let valid = plan();
+    let keys: Vec<String> = valid.as_object().expect("object").keys().cloned().collect();
+    assert_eq!(
+        keys.len(),
+        12,
+        "premise: the plan fixture carries all twelve fields"
+    );
+    assert!(
+        InterventionPlan::decode(&serde_json::to_vec(&valid).expect("e")).is_ok(),
+        "premise: the complete plan decodes"
+    );
+    for key in keys {
+        let mut v = valid.clone();
+        v.as_object_mut().expect("object").remove(&key);
+        let err = InterventionPlan::decode(&serde_json::to_vec(&v).expect("e"))
+            .expect_err(&format!("plan without {key} was accepted"));
+        let named = format!("`{key}`");
+        assert!(
+            err.to_string().contains(&named),
+            "plan without {key}: refusal did not name the field: {err}"
+        );
+    }
+}
+
+/// CONTRACT-7084: a gap states what closing it would earn and what leaving
+/// it open exposes the book to, as two figures. One figure ranked a liquidity
+/// hole worth nothing to close as harmless to leave.
+#[test]
+fn a_gap_carries_a_risk_value_distinct_from_its_economic_value_and_refuses_a_negative_one() {
+    let g: GapSignal = GapSignal::decode(&serde_json::to_vec(&gap()).expect("e")).expect("decodes");
+    assert_eq!(g.economic_value.to_string(), "500");
+    assert_eq!(g.risk_value.to_string(), "120");
+    assert_ne!(
+        g.economic_value, g.risk_value,
+        "premise: the fixture tells them apart"
+    );
+
+    let mut v = gap();
+    v["risk_value"] = json!("-1");
+    let err = GapSignal::decode(&serde_json::to_vec(&v).expect("e")).expect_err("negative risk");
+    assert!(err.to_string().contains("GapSignal.risk_value"), "{err}");
+
+    let mut v = gap();
+    v.as_object_mut().expect("object").remove("risk_value");
+    let err = GapSignal::decode(&serde_json::to_vec(&v).expect("e")).expect_err("missing risk");
+    assert!(err.to_string().contains("`risk_value`"), "{err}");
+
+    let mut v = gap();
+    v["risk_value"] = json!("0");
+    assert!(
+        GapSignal::decode(&serde_json::to_vec(&v).expect("e")).is_ok(),
+        "a stated zero exposure is admitted"
     );
 }
