@@ -228,6 +228,7 @@ impl JsonFrameDecoder {
                     Some("open") | Some("trading") => VenueStatus::Open,
                     Some("auction") => VenueStatus::Auction,
                     Some("halted") | Some("paused") => VenueStatus::Halted,
+                    Some("circuit_breaker") => VenueStatus::CircuitBreaker,
                     Some("closed") => VenueStatus::Closed,
                     other => {
                         self.skip(
