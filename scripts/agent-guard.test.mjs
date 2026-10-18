@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gatherRange, ghApi, globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeRange, judgeSandboxWorkflow, loadLanes, main, matchesAny } from "./agent-guard.mjs";
+import { gatherRange, ghApi, globToRegExp, isAgentCommit, judgeChange, judgeDispatch, judgeRange, judgeSandboxWorkflow, loadLanes, main, matchesAny, pathsOf } from "./agent-guard.mjs";
 
 const POLICY = JSON.parse(readFileSync(new URL("./agent-policy.json", import.meta.url), "utf8"));
 const HEAD = "a".repeat(40);
@@ -116,6 +116,139 @@ test("the autonomy ceiling's validation file is protected", () => {
     files: ["infrastructure/terraform/variables.tf"], commits: [agentCommit("cloud-platform-engineer")], reviews: [],
   });
   assert.equal(refusals.length, 1);
+});
+
+// ADR 0124 §1. A new decision record and the index row that lists it are the
+// agent's to write without a person: each records a decision, and a gate
+// reads them only to hold their form. Mutation: delete
+// self_reviewable_protected_paths from the policy, or drop the status check
+// in isSelfReviewable.
+test("an agent's new decision record and its index row pass the boundary unreviewed", () => {
+  const files = ["docs/adr/0124-an-example.md", "docs/adr/README.md"];
+  // Premise: both are protected, so only the exemption admits them.
+  for (const f of files) assert.ok(matchesAny(f, POLICY.protected_paths.globs), f);
+  const base = { policy: POLICY, permissions: PERMS, headRef: "claude/notes", headSha: HEAD, files, commits: [agentCommit()], reviews: [] };
+  const statuses = new Map([["docs/adr/0124-an-example.md", "added"], ["docs/adr/README.md", "modified"]]);
+  assert.deepEqual(judgeChange({ ...base, statuses }).refusals, []);
+  // The same record edited rather than added is an accepted decision rewritten: a person decides.
+  const edited = new Map([["docs/adr/0124-an-example.md", "modified"], ["docs/adr/README.md", "modified"]]);
+  const { refusals } = judgeChange({ ...base, statuses: edited });
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /docs\/adr\/0124-an-example\.md/);
+  assert.doesNotMatch(refusals[0], /README\.md/, "the refusal names only the path that needs a person");
+});
+
+// The exemption is exactly two globs, and every protected glob still refuses
+// an agent's change under every status. Mutation: add any protected path to
+// either list, or widen a glob to "docs/adr/**" or ".claude/rules/**".
+test("the self-reviewable set is pinned and every other protected glob still needs a person", () => {
+  assert.deepEqual(POLICY.self_reviewable_protected_paths.globs, ["docs/adr/README.md"]);
+  assert.deepEqual(POLICY.self_reviewable_protected_paths.added_only_globs, ["docs/adr/0*.md"]);
+  // One concrete path per protected glob, derived from the glob itself, so a
+  // glob added later is covered without anyone remembering to add a case.
+  const example = (glob) => glob.replace(/\*\*/g, "x/y.txt").replace(/\*/g, "x");
+  for (const glob of POLICY.protected_paths.globs) {
+    const f = example(glob);
+    assert.ok(matchesAny(f, [glob]), `${f} is an example of ${glob}`);
+    for (const status of ["added", "modified", "removed", "renamed"]) {
+      const { refusals } = judgeChange({
+        policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+        files: [f, "docs/adr/README.md"], commits: [agentCommit()], reviews: [],
+        statuses: new Map([[f, status], ["docs/adr/README.md", "modified"]]),
+      });
+      assert.equal(refusals.length, 1, `${f} ${status}`);
+      assert.ok(refusals[0].includes(f), `${f} is named`);
+    }
+  }
+  // And the rules that bind agents, by name, since a derived example need
+  // not land on them: a top-level file, an architecture rule, a domain note.
+  for (const f of [".claude/rules/01-security-and-safety.md", ".claude/rules/architecture/00-boundaries.md", ".claude/rules/domains/risk-and-execution.md", "CLAUDE.md"]) {
+    const { refusals } = judgeChange({
+      policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+      files: [f], commits: [agentCommit()], reviews: [], statuses: new Map([[f, "modified"]]),
+    });
+    assert.equal(refusals.length, 1, f);
+  }
+});
+
+// A removed index, a renamed or copied record, and a record whose status is
+// unknown all fall to the rule that needs a person. Mutation: exempt the
+// index under every status, or treat `renamed` as `added`.
+test("the index removed, a record renamed or copied, and a path with no status still need a person", () => {
+  const judge = (files, statuses) => judgeChange({
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+    files, commits: [agentCommit()], reviews: [], statuses,
+  }).refusals;
+  assert.equal(judge(["docs/adr/README.md"], new Map([["docs/adr/README.md", "removed"]])).length, 1, "index removed");
+  assert.equal(judge(["docs/adr/0124-an-example.md"], new Map([["docs/adr/0124-an-example.md", "renamed"]])).length, 1, "record renamed");
+  assert.equal(judge(["docs/adr/0124-an-example.md"], new Map([["docs/adr/0124-an-example.md", "copied"]])).length, 1, "record copied");
+  assert.equal(judge(["docs/adr/0124-an-example.md"], new Map()).length, 1, "no status");
+  assert.equal(judge(["docs/adr/0124-an-example.md"], undefined).length, 1, "no statuses at all");
+});
+
+// A policy without the block is the policy before ADR 0124. Mutation:
+// default the block when it is absent.
+test("a policy with no self-reviewable block protects every protected path", () => {
+  const { self_reviewable_protected_paths: _, ...older } = POLICY;
+  const { refusals } = judgeChange({
+    policy: older, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+    files: ["docs/adr/README.md"], commits: [agentCommit()], reviews: [], statuses: new Map([["docs/adr/README.md", "modified"]]),
+  });
+  assert.equal(refusals.length, 1);
+});
+
+// A rename names the path it left as well as the one it took, so a protected
+// file cannot leave its rule by being moved under a self-reviewable name.
+// The route was open before ADR 0124 (only `filename` was judged) and is
+// closed with it. Mutation: drop `previous_filename` from pathsOf.
+test("a protected file renamed into a decision record is judged on the path it left", () => {
+  const moved = { filename: "docs/adr/0125-moved.md", status: "renamed", previous_filename: "infrastructure/terraform/variables.tf" };
+  const { paths, status } = pathsOf(moved);
+  assert.deepEqual(paths, ["docs/adr/0125-moved.md", "infrastructure/terraform/variables.tf"]);
+  assert.equal(status, "renamed");
+  assert.deepEqual(pathsOf("a/b.rs"), { paths: ["a/b.rs"], status: undefined });
+  const { refusals } = judgeChange({
+    policy: POLICY, permissions: PERMS, headRef: "claude/x", headSha: HEAD,
+    files: paths, commits: [agentCommit()], reviews: [], statuses: new Map([[moved.filename, status]]),
+  });
+  assert.equal(refusals.length, 1);
+  assert.ok(refusals[0].includes("infrastructure/terraform/variables.tf"), "the path it left is named");
+});
+
+// ADR 0124 §1 on the deploy gate's range: an entry carries each file's
+// status, and one gathered without the field exempts nothing. Mutation:
+// default `statuses` to `added` for every file in judgeRange.
+test("a range entry's statuses admit a new decision record and their absence does not", () => {
+  const entry = { sha: "c".repeat(40), ...agentCommit(), files: ["docs/adr/0124-an-example.md"], pr: null };
+  assert.deepEqual(judgeRange({ policy: POLICY, entries: [{ ...entry, statuses: { "docs/adr/0124-an-example.md": "added" } }] }).refusals, []);
+  assert.equal(judgeRange({ policy: POLICY, entries: [{ ...entry, statuses: { "docs/adr/0124-an-example.md": "modified" } }] }).refusals.length, 1);
+  assert.equal(judgeRange({ policy: POLICY, entries: [entry] }).refusals.length, 1);
+});
+
+// gatherRange carries the statuses and the renamed-from paths it read from
+// GitHub, so the range gate judges what the pull-request gate judges.
+// Mutation: map `files` to `filename` alone, or drop `statuses`.
+test("gatherRange carries each file's status and the path a rename left", () => {
+  const sha = "d".repeat(40);
+  const base = "e".repeat(40);
+  const api = (path) => {
+    if (path.startsWith("repos/o/r/compare/")) return [{ total_commits: 1, commits: [{ sha, ...agentCommit() }] }];
+    if (path === `repos/o/r/commits/${sha}`) {
+      return [{ files: [
+        { filename: "docs/adr/0125-moved.md", status: "renamed", previous_filename: "infrastructure/terraform/variables.tf" },
+        { filename: "docs/adr/0126-new.md", status: "added" },
+      ] }];
+    }
+    if (path === `repos/o/r/commits/${sha}/pulls`) return [];
+    throw new Error(`unexpected ${path}`);
+  };
+  const [entry] = gatherRange({ api, repository: "o/r", base, head: sha });
+  assert.deepEqual(entry.files, ["docs/adr/0125-moved.md", "infrastructure/terraform/variables.tf", "docs/adr/0126-new.md"]);
+  assert.deepEqual(entry.statuses, { "docs/adr/0125-moved.md": "renamed", "docs/adr/0126-new.md": "added" });
+  const { refusals } = judgeRange({ policy: POLICY, entries: [entry] });
+  assert.equal(refusals.length, 1);
+  assert.ok(refusals[0].includes("infrastructure/terraform/variables.tf"));
+  assert.ok(!refusals[0].includes("0126-new.md"), "the added record is not what needs a person");
 });
 
 // Outside the protected paths a change with no marker is a person's, and
@@ -349,6 +482,36 @@ test("the command refuses a protected agent change and admits it once approved",
     assert.equal(main(mdArgs(approved), quiet), 0, "protected, inside the role, approved");
     assert.equal(main(["dispatch", "--policy", policy, "--actor", "claude-bot", "--workflow", "deploy.yml"], quiet), 1);
     assert.equal(main(["dispatch", "--policy", policy, "--actor", "dana", "--workflow", "deploy.yml"], quiet), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ADR 0124 §1 at the command line: the status GitHub returns on each file is
+// what tells a new record from an edit. Mutation: ignore `status` when the
+// command builds `added`.
+test("the command admits an agent's new decision record and refuses the same record edited, renamed or bare", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-guard-"));
+  try {
+    const write = (name, value) => {
+      writeFileSync(join(dir, name), JSON.stringify(value));
+      return join(dir, name);
+    };
+    const policy = new URL("./agent-policy.json", import.meta.url).pathname;
+    // No role on the commit, so only the protection decides the verdict.
+    const commits = write("commits.json", [agentCommit()]);
+    const none = write("none.json", []);
+    const perms = write("perms.json", PERMS);
+    const quiet = { out: () => {}, err: () => {} };
+    const run = (files) => main(["change", "--policy", policy, "--head-ref", "claude/x", "--head-sha", HEAD, "--files", files, "--commits", commits, "--reviews", none, "--permissions", perms], quiet);
+    const added = write("added.json", [{ filename: "docs/adr/0124-an-example.md", status: "added" }, { filename: "docs/adr/README.md", status: "modified" }]);
+    assert.equal(run(added), 0, "a new record and its index row");
+    const edited = write("edited.json", [{ filename: "docs/adr/0124-an-example.md", status: "modified" }]);
+    assert.equal(run(edited), 1, "an accepted record rewritten");
+    const renamed = write("renamed.json", [{ filename: "docs/adr/0125-moved.md", status: "renamed", previous_filename: ".claude/rules/01-security-and-safety.md" }]);
+    assert.equal(run(renamed), 1, "a rule file moved under a record's name is judged on the path it left");
+    const bare = write("bare.json", ["docs/adr/0124-an-example.md"]);
+    assert.equal(run(bare), 1, "a bare path carries no status");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
