@@ -1737,12 +1737,14 @@
   {
     "id": "R12-TICK-2074",
     "status": "PARTIAL",
-    "current": "DelayedFeed, Latency and LatencySpike conditions are monotonically adverse; tapes release by known_at. Not driven by measured latency.",
+    "current": "Data-arrival delay is driven by measurement on the default path: the kernel's capacity probe runs behind Platform::calibrated_feed_delay, the largest mean of the publication delays the real sources have shown, as a DelayedFeed condition. The simulator can now calibrate both conditions from samples: MarketCondition::latency_from_measured centres the uniform latency band on the measured median (half-width the nearer of its distances to p10 and p90) and delayed_feed_from_measured takes the median; both refuse an empty or negative sample set. Decision latency is still not driven by measurement anywhere, because nothing measures it: SimulatedBroker stamps a configured acknowledgement latency and venue_measurement refuses it as untimed.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:151-157",
-      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs"
+      "backend/crates/services/qip-simulation-engine/src/conditions.rs MarketCondition::latency_from_measured, delayed_feed_from_measured",
+      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs conditions_calibrated_from_measured_samples_reproduce_the_sample_median",
+      "backend/crates/runtime/qip-kernel/src/platform.rs calibrated_feed_delay and the capacity probe's DelayedFeed",
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency"
     ],
-    "gap": "Calibrate arrival/decision latency from captured telemetry.",
+    "gap": "No binary measures decision-to-arrival latency (the paper venue stamps a declared latency, which venue_measurement refuses as untimed), so latency_from_measured has no production sample set to calibrate from; closing needs a timed acknowledgement path and a caller passing its samples into the replay or capacity probe.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1753,7 +1755,7 @@
     "verification": "cargo test -p qip-simulation-engine --test market_conditions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay)."
   },
   {
     "id": "R12-TICK-2075",

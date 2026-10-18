@@ -2472,13 +2472,15 @@
   },
   {
     "id": "R12-REASON-8111",
-    "status": "PARTIAL",
-    "current": "qip-reasoning-engine/qip-quantum exist in-process; edge crates are structurally barred from reaching solvers.",
+    "status": "COMPLETE",
+    "current": "The deep brain's GitOps manifest declares 4 vCPU, 8Gi, CPU always allocated (cpuIdle false) and a floor of one instance in dev, test, stage and prod; the catalogue entry that renders it agrees. The register text 'no cpu variable in modules/cloudrun' was stale: the Cloud Run module no longer takes one, the manifest carries the limits.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver",
-      "backend/crates/services/qip-reasoning-engine/src"
+      "backend/crates/services/qip-reasoning-engine/src",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml resources.limits",
+      "backend/crates/tests/qip-acceptance/tests/compute_allocation.rs"
     ],
-    "gap": "Custom Rust solvers on the deep brain's Cloud Run capacity satisfy the requirement's 'custom Rust' arm (ADR 0114 Amendment 1); no-hot-path is structural. Needs the deep brain's CPU allocation for solver work declared and an inspection test. Z3/OR-Tools are not admitted.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2486,10 +2488,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection of catalogue.tf and the binary's composition",
+    "verification": "cd backend && cargo test -p qip-acceptance --test compute_allocation",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). The no-hot-path half is met structurally."
+    "notes": "2026-10-18. Mutations on the committed stage manifest, each restored: cpu 4 to 1 and cpuIdle false to true failed the test naming the environment. The no-hot-path half is the structural one in architecture.rs. Z3 and OR-Tools stay not admitted."
   },
   {
     "id": "R12-DATA-8112",
