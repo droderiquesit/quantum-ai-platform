@@ -600,7 +600,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, AMBIENT_ATTENTION",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): it emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only.",
+    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): the router emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only. Closing needs a decision, not a registration: either the router becomes an Organisation agent (it has no Desk input; it reads a research sweep) or coverage::Scope gains an ambient scope evidenced by findings qip-deepbrain composes from the sweep. The second changes the organisation test that asserts every Scope is covered by the standard organisation on a populated desk, so it needs an ADR. The grader's proposal to register a BrainSpec in now.rs::specialist_registry is already done (brains.rs holds ambient/attention).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -611,7 +611,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04: registry entry and the scope-drop test added (mutation: giving a NOW specialist the attention-routing domain keeps the scope after removal and the test fails). Kept PARTIAL: rostering it as an Organisation agent needs an Agent impl producing Findings."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-AGENCY-3028",
@@ -622,7 +622,7 @@
       "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, CAUSAL_AGENCY",
       "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it.",
+    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it. Same decision as R12-AMBIENT-3027: an Organisation agent has a Desk to read and the ambient agency reads a research sweep, so either the agency is wrapped as an agent whose finding is composed from AgencyRound (goal, candidates, gate verdicts) or coverage::Scope gains an ambient scope; the second changes the every-Scope-is-covered organisation test and needs an ADR. The BrainSpec registration the grader proposed already exists (brains.rs, ambient/causal-agency).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -633,7 +633,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": "Narrowed 2026-10-18 by lane L04 (registry entry and scope-drop test). Kept PARTIAL for the same reason as R12-AMBIENT-3027."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed."
   },
   {
     "id": "R12-GOV-3029",
@@ -1357,23 +1357,26 @@
   },
   {
     "id": "R12-REASON-3061",
-    "status": "PARTIAL",
-    "current": "qip-agency plans tools/actions from a goal (CLI shadow only); no research-plan synthesis from goals and constraints is reached in the cycle.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop::plan_sweep compiles each sweep's started items into a qip_agency InterventionPlan (research_plan.rs): a Research GoalSpec with the sweep's compute budget and a zero risk envelope, an affordance graph of the registered tools, the planner identity holding only the research authority. The proven plan is carried on ResearchRound::plan and journaled as AmbientRecord::SweepPlan beside the sweep's signals; a plan over budget is an error recorded in plan_refused, not a trimmed plan.",
     "evidence": [
-      "backend/crates/apps/qip-cli/src/agency.rs:48 shadow-only engine run"
+      "backend/crates/apps/qip-deepbrain/src/research_plan.rs compile",
+      "backend/crates/apps/qip-deepbrain/src/research.rs plan_sweep",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs AmbientRecord::SweepPlan",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs a_sweep_compiles_its_started_items_into_a_deterministic_cited_journaled_plan"
     ],
-    "gap": "Research/experiment plan synthesis integrated.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-deepbrain --test research_market -- a_sweep_compiles",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Mutations: dropping the `round.plan = plan` assignment and filtering the journal append each fail the test. The plan is a record of the sweep's choice, not an executor: nothing runs from it. Tool edges are priced at the dearest declared cost of a kind sharing the tool, so the plan can only over-state, never under-state, what the budget is held to."
   },
   {
     "id": "R12-REASON-3062",
@@ -1446,26 +1449,26 @@
   },
   {
     "id": "R12-AMBIENT-3065",
-    "status": "PARTIAL",
-    "current": "The production sweep routes every gap through AttentionRouter (materiality 1000 bp, 256 activations/hour); a 300-signal storm activates 256 and journals 44 as Deferred/Shed; below-materiality signals wake nothing.",
+    "status": "COMPLETE",
+    "current": "SignalClass::Capital routes to Pathway::CapitalPreparation in RoutingPolicy::standard; ResearchLoop::sweep_over raises one Capital signal per movement in Platform::pre_position and, on activation, dispatches by pathway: a capital signal is filed as an advisory and recorded in ResearchRound::capital_advice instead of being offered to the desk as a gap.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (only consumer outside crate is an acceptance test)",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:112",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:148 a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:41"
+      "backend/crates/libs/qip-contracts/src/ambient.rs SignalClass::Capital, RoutingPolicy::standard",
+      "backend/crates/apps/qip-deepbrain/src/research.rs capital_signal, CapitalAdvice, the CapitalPreparation dispatch in sweep_over",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_capital_signal_is_routed_to_capital_preparation_and_no_other_class_is",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off"
     ],
-    "gap": "Pathway::CapitalPreparation is unreachable (no class routes to it); RiskReview and ReflexModelUpdate are labels, since admit treats every pathway the same.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cargo test -p qip-contracts --test ambient; cargo test -p qip-deepbrain --test research -- a_recommended",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Mutations: routing Capital to ResearchTask fails both tests; disabling the CapitalPreparation dispatch arm leaves capital_advice empty and fails the deepbrain test. RiskReview and ReflexModelUpdate still go through admit as research gaps; only the capital pathway has its own dispatch, because only it has a recipient other than the research desk."
   },
   {
     "id": "R12-AMBIENT-3066",
@@ -1600,14 +1603,12 @@
   {
     "id": "R12-AMBIENT-3072",
     "status": "PARTIAL",
-    "current": "DECIDE plans pre-positioning every cycle and LEARN scores it (pre_positioning.rs:1-42; platform.rs plan_pre_positioning/score_pre_positioning ~14890, ~15585), reached from every binary that runs the cycle. Demand history is fed only from fills, as DemandKind::Cash (platform.rs:17462-17473). Pathway::CapitalPreparation exists (qip-contracts/src/ambient.rs:51) but nothing raises an AmbientSignal from the pre-positioning plan; its only non-test use is a label string (qip-deepbrain/src/research.rs:327).",
+    "current": "ResearchLoop::sweep_over reads Platform::pre_position each sweep and raises one SignalClass::Capital signal (Pathway::CapitalPreparation) per recommended movement, activated into ResearchRound::capital_advice and an advisory; ResearchConfig::capital_sentinel=false raises none.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:1-42",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17462-17473",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:44-53",
-      "backend/crates/apps/qip-deepbrain/src/research.rs:327"
+      "backend/crates/apps/qip-deepbrain/src/research.rs capital_signal",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs a_recommended_movement_is_a_capital_preparation_signal_dispatched_as_advice_and_absent_when_the_sentinel_is_off"
     ],
-    "gap": "Output does not reach the attention router (no CapitalPreparation signal is produced anywhere); collateral, inventory and hedge demand are never observed (only Cash is recorded); no test shows disabling the sentinel removes router signals.",
+    "gap": "Only DemandKind::Cash is recorded where demand history is fed (platform.rs record_capital_demand at the fill site); collateral, inventory and hedge demand are never observed, and no kernel test shows a hedge fill records Hedge demand. Recording Hedge needs the fill to say it is a hedge, which the fill path does not carry.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1618,7 +1619,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Old gap said 'collateral/cash only'; the code now records Cash only from fills. The movement plan is deliberately never executed (pre_positioning.rs:23-35, ADR 0021)."
+    "notes": "The router half is closed (see R12-AMBIENT-3065); the kernel half is not, and is why this stays PARTIAL."
   },
   {
     "id": "R12-AMBIENT-3073",
@@ -2379,7 +2380,7 @@
       "backend/crates/apps/qip-deepbrain/tests/research.rs:171 a_gap_worth_less_than_its_cheapest_observation_launches_no_information_request",
       "backend/crates/apps/qip-deepbrain/src/node.rs:450 maybe_sweep runs in the deep brain run loop"
     ],
-    "gap": "VOI is computed for research gaps, not for major uncertain decisions; urgency is a stated constant (UNMEASURED_URGENCY_BP); the \"launch\" is a record with no acquisition behind it; choice is between two fixed options rather than discriminating sources.",
+    "gap": "VOI is priced for research gaps only. The urgency constant and the launch-only record in this row are closed (urgency_bp from the signal deadline, R12-AMBIENT-3106; launch hands scout jobs, R12-AMBIENT-9033), but DECIDE emits no decision-uncertainty gap: platform.rs reads a proposal's confidence and nothing carries a low-confidence decision, its deadline and its value at stake to the research intake. That needs a new intake type in qip-kernel and a hand-off in node.rs, which is a kernel change this lane does not make.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2390,7 +2391,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a deep-brain caller, but scope is gaps not decisions and nothing is actually acquired."
+    "notes": "Checked 2026-10-18 against research.rs admit (urgency_bp, cheapest_viable) and launch_ranked."
   },
   {
     "id": "R12-DATA-3105",
@@ -2441,12 +2442,13 @@
   {
     "id": "R12-AMBIENT-3107",
     "status": "PARTIAL",
-    "current": "InfoRequest::should_halt now called in deepbrain research sweep at creation and per sweep.",
+    "current": "InfoRequest::record_acquisition shrinks the criteria remaining uncertainty reduction by the acquisition cost (basis points of the decision value, floored), so should_halt compares the marginal net value left after earlier purchases instead of the value fixed at creation. qip-deepbrain research.rs launches each request once and reports its launch rank read before the purchase.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:737 should_halt",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:699 info_request_should_halt_checks_deadline_and_minimum_viable_value"
+      "backend/crates/libs/qip-contracts/src/ambient.rs InfoRequest::record_acquisition / should_halt",
+      "backend/crates/apps/qip-deepbrain/src/research.rs launch_ranked",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_request_viable_at_creation_halts_once_its_acquisitions_have_consumed_its_value"
     ],
-    "gap": "Net value fixed at creation; not recomputed as marginal value after each acquisition.",
+    "gap": "The shrinkage is a proxy by cost, and production never makes a second acquisition against a request: deepbrain launch_ranked records exactly one acquisition and the next sweep completes it, so the marginal halt is proven on the contract but gates nothing on a running path. Closing needs repeated scout rounds against one request and the realised information gain fed back in place of the cost proxy.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2456,10 +2458,10 @@
       "R12-AMBIENT-3104"
     ],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-contracts --test ambient a_request_viable",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 L12: mutation that fired: removing the uncertainty_reduction_bp shrinkage left it at 9000 where the test expects 8100. Kept PARTIAL: contract half only."
   },
   {
     "id": "R12-REASON-3108",
@@ -2518,7 +2520,7 @@
       "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::run_market",
       "backend/crates/services/qip-expansion/src/meta.rs::MetaIntelligence::allocate"
     ],
-    "gap": "Production bids are research-desk items only; models, agents and solvers never bid; TPU budget is zero. Allocation covers questions/simulations/data, not every listed recipient.",
+    "gap": "Only research items bid. A model-retraining, agent or solver bid is accepted by MetaIntelligence::allocate but has no consumer on a grant: the learning desk retrains on its own cadence (learning.rs due) and nothing lets a grant bring a round forward; agent budgets are not reachable from the research loop (see R12-AMBIENT-10094); no pending-QUBO queue exists for solver bids. TPU zero budget is a deployment fact.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2529,7 +2531,7 @@
     "verification": "new test to be written (see gap); cargo test -p <owning crate>",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Checked 2026-10-18. Model bids are the nearest: a drifted model could bid, and a grant could force LearningDesk to run next cycle; not built because a grant that changes nothing would be a label."
   },
   {
     "id": "R12-AMBIENT-3111",

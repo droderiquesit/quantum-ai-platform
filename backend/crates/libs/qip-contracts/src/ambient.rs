@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 /// record compares exactly and a replay cannot drift on rounding.
 pub const MAX_SEVERITY_BP: u32 = 10_000;
 
-/// The four kinds of deviation the Attention Router combines.
+/// The kinds of deviation the Attention Router combines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalClass {
@@ -30,14 +30,20 @@ pub enum SignalClass {
     Opportunity,
     Risk,
     Assumption,
+    /// Capital that will be needed somewhere the platform does not hold it
+    /// (R12-AMBIENT-3065). Its own class because the pathway is chosen by
+    /// class: with only four classes `Pathway::CapitalPreparation` had no
+    /// route and was a label nothing could reach.
+    Capital,
 }
 
 impl SignalClass {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Surprise,
         Self::Opportunity,
         Self::Risk,
         Self::Assumption,
+        Self::Capital,
     ];
 }
 
@@ -364,7 +370,7 @@ impl RoutingPolicy {
     ) -> Result<Self> {
         if let Some(missing) = SignalClass::ALL.iter().find(|c| !routes.contains_key(c)) {
             return Err(Error::invalid(format!(
-                "routing policy names no pathway for {missing:?}; route all four classes"
+                "routing policy names no pathway for {missing:?}; route every class"
             )));
         }
         if materiality_bp > MAX_SEVERITY_BP {
@@ -387,7 +393,8 @@ impl RoutingPolicy {
     }
 
     /// The default routing: surprise to a specialist, opportunity to research,
-    /// risk to a risk review, assumption to a reflex-model update.
+    /// risk to a risk review, assumption to a reflex-model update, capital to
+    /// capital preparation.
     pub fn standard(
         materiality_bp: u32,
         budget_per_window: u32,
@@ -399,6 +406,7 @@ impl RoutingPolicy {
             (SignalClass::Opportunity, Pathway::ResearchTask),
             (SignalClass::Risk, Pathway::RiskReview),
             (SignalClass::Assumption, Pathway::ReflexModelUpdate),
+            (SignalClass::Capital, Pathway::CapitalPreparation),
         ]);
         Self::new(
             materiality_bp,
@@ -819,6 +827,24 @@ impl InfoRequest {
             .ok_or_else(|| {
                 Error::numeric("info request: cumulative cost overflowed; reduce budget")
             })?;
+        // The value left to buy shrinks as it is bought. `criteria` was the
+        // request's value at creation, so leaving it alone made
+        // [`Self::should_halt`] compare the *initial* net value however much
+        // had been spent: a request viable at creation stayed viable for ever
+        // and the "stop when marginal value falls below cost" rule of §9.10
+        // could never fire after the first purchase. Cost is stated in basis
+        // points of the decision value, so an acquisition of `c` leaves
+        // `1 - c` of the remaining uncertainty reduction still worth
+        // reaching for; floored, so a replay shrinks identically, and zero
+        // once an acquisition costs the whole decision value. The shrinkage
+        // is a proxy by cost — the information actually obtained is not fed
+        // back here — and it is the conservative direction: it can only make
+        // a request halt sooner.
+        let kept = u64::from(MAX_SEVERITY_BP.saturating_sub(acquisition_cost_bp));
+        self.criteria.uncertainty_reduction_bp = u32::try_from(
+            u64::from(self.criteria.uncertainty_reduction_bp) * kept / u64::from(MAX_SEVERITY_BP),
+        )
+        .unwrap_or(0);
         self.status = AcquisitionStatus::InProgress;
         Ok(())
     }
@@ -848,7 +874,8 @@ impl InfoRequest {
     }
 
     /// Checks whether acquisition should halt: true if marginal value (next acquisition's
-    /// net value) is below the minimum viable threshold, or if the deadline has been reached.
+    /// net value, over the uncertainty reduction [`Self::record_acquisition`] has left)
+    /// is below the minimum viable threshold, or if the deadline has been reached.
     pub fn should_halt(&self, now: Timestamp, min_viable_value_bp: u32) -> bool {
         if now >= self.deadline {
             return true;

@@ -4049,3 +4049,61 @@ fn no_order_path_crate_can_reach_the_ambient_intake_so_an_ambient_output_cannot_
         "the deep brain no longer links qip-agency, so the ambient road has moved"
     );
 }
+
+/// R12-MODEL-6001: the creator of an idea is never its sole judge. The class
+/// scoreboard that decides which model class is registered in a regime is fed
+/// by `qip_lifecycle::Evaluator`, which scores predictions against targets
+/// and so has nothing to take a generator's own score as; and the evaluator's
+/// source names no trainer type and no fit diagnostic.
+///
+/// Before this the scoreboard read `FitDiagnostics::claims_skill` — a verdict
+/// the trainer computes about its own fit — so a trainer that overstated its
+/// holdout skill would be believed by the only reader that decides what is
+/// registered.
+///
+/// Mutation: call `fit.claims_skill(..)` in `learning.rs`, or name
+/// `FitDiagnostics` in `evaluator.rs`; the matching assertion fails.
+#[test]
+fn the_evaluator_never_reads_the_generators_score_and_the_class_board_is_fed_by_it() {
+    let root = repository_root().join("backend/crates");
+    let evaluator = std::fs::read_to_string(root.join("services/qip-lifecycle/src/evaluator.rs"))
+        .expect("the evaluator source is readable");
+    let code: String = evaluator
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("pub fn judge(&self, predictions: &[f64], targets: &[f64])"),
+        "premise: the evaluator takes predictions and targets and nothing else"
+    );
+    for generator in [
+        "FitDiagnostics",
+        "claims_skill",
+        "skill_verdict",
+        "SkillPolicy",
+        "LocalTrainer",
+        "TrainedTeacher",
+        "qip_training",
+    ] {
+        assert!(
+            !code.contains(generator),
+            "the evaluator names `{generator}`, which belongs to the generator; it may read \
+             predictions and outcomes only"
+        );
+    }
+    let learning =
+        std::fs::read_to_string(root.join("apps/qip-deepbrain/src/learning.rs")).expect("readable");
+    let production = learning
+        .split("\n#[cfg(test)]")
+        .next()
+        .expect("learning.rs has a production half");
+    assert!(
+        production.contains("Evaluator::new("),
+        "the learning desk no longer judges its classes through the evaluator"
+    );
+    assert!(
+        !production.contains("claims_skill("),
+        "the learning desk feeds the class scoreboard from the fit's own claim again"
+    );
+}

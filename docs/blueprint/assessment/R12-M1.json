@@ -1987,7 +1987,7 @@
       "backend/crates/apps/qip-deepbrain/src/language.rs:44 providers",
       "backend/crates/services/qip-training/src/distill.rs:110 FidelityReport"
     ],
-    "gap": "Distil from large-model teachers.",
+    "gap": "The learning desk already distils its own fitted teachers into a linear student on the holdout probe (qip_training::distill::distil, FidelityReport recorded), but no slow-lane large-model teacher exists: language.rs returns completions and structured text, none wrapped as a TrainedTeacher over a probe dataset, and the hosted provider runs only under the language-model variable, so a distillation from it would not run on a default path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1998,7 +1998,7 @@
     "verification": "cargo test -p qip-training",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Checked 2026-10-18 against learning.rs fit and language.rs. A DeterministicModel teacher would run by default but would distil a template, which is not the slow-lane model the row names."
   },
   {
     "id": "R12-REFLEX-1086",
@@ -3989,7 +3989,7 @@
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs:443",
       "backend/crates/services/qip-twin/src/counterfactual.rs"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "The tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant required) and TickDesk::round replays no multi-leg plan: it is handed an empty decision list by maybe_round, and nothing builds a MultiLegPlan from the journal. The saga replay itself is proven in the simulation engine (tests/tick_replay.rs a_three_leg_plan_whose_second_venue_fails_unwinds_the_first_leg_and_charges_the_cost); what is missing is the caller.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4000,7 +4000,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Checked 2026-10-18; register text that the saga was unproven is stale."
   },
   {
     "id": "R12-TICK-1177",

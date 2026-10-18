@@ -663,6 +663,9 @@ pub struct Platform {
     /// The latest DECIDE solve, kept for the next UNDERSTAND to state in the
     /// quantum contract (R12-QUANT-4063).
     pending_routing: Option<(u64, qip_optimization_engine::RoutingDecision)>,
+    /// Production models whose drift stands past their threshold, as the last
+    /// registry read found them (R12-RES-7101). Bounded by the registry.
+    drifted_models: BTreeSet<String>,
     /// Blueprint §8.2's second-order exposure review as the UNDERSTAND stage
     /// left it, held only until the cycle's journal entry is sealed, which
     /// takes it.
@@ -5296,6 +5299,7 @@ impl Platform {
             cycle_horizon_arming: None,
             cycle_solver_routing: None,
             pending_routing: None,
+            drifted_models: BTreeSet::new(),
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
@@ -14454,7 +14458,8 @@ impl Platform {
     ) -> Result<qip_contracts::degradation::DegradationState> {
         use qip_contracts::degradation::{
             BELIEF_HORIZON, BeliefFreshness, CAUSAL_GRAPH_HORIZON, Capability,
-            CausalGraphFreshness, DegradationState, SELF_MODEL_HORIZON, SelfModelFreshness,
+            CausalGraphFreshness, DegradationState, Freshness, SELF_MODEL_HORIZON,
+            SelfModelFreshness,
         };
         let mut state = DegradationState::fully_available();
         let self_model = SelfModelFreshness::assess(
@@ -14463,7 +14468,18 @@ impl Platform {
             SELF_MODEL_HORIZON,
             now,
         )?;
-        state.observe(Capability::SelfModel, self_model.freshness());
+        // A production model past its drift threshold is a component the
+        // platform has just measured as unreliable, which is what this row
+        // is the estimate of. It reads no better than stale however fresh the
+        // outcomes are (R12-RES-7101): a rollback retires the card and
+        // clears the reading, and a rollback that could not run leaves the
+        // sizing narrowed rather than the drift silent.
+        let self_model_freshness = if self.drifted_models.is_empty() {
+            self_model.freshness()
+        } else {
+            self_model.freshness().max(Freshness::Stale)
+        };
+        state.observe(Capability::SelfModel, self_model_freshness);
         let causal = CausalGraphFreshness::assess(
             self.world.read().causal().last_updated(),
             CAUSAL_GRAPH_HORIZON,
@@ -14474,6 +14490,30 @@ impl Platform {
             BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
+    }
+
+    /// Read the model registry for production models that have drifted past
+    /// their threshold, and remember which (R12-RES-7101).
+    ///
+    /// The registry belongs to the process that serves models, not to the
+    /// platform, so the platform only learns of drift when that process says
+    /// so; the deep brain's learning round calls this after it has measured
+    /// drift and rolled back what it could. What is kept is the set of
+    /// references and nothing else: [`Self::central_degradation`] reads
+    /// "any" from it and narrows the self-model row, and a later call with a
+    /// registry whose drifted cards were retired empties the set again.
+    pub fn observe_model_drift(&mut self, registry: &qip_ai::registry::ModelRegistry) {
+        self.drifted_models = registry
+            .iter()
+            .filter(|card| card.stage == qip_ai::registry::ModelStage::Production)
+            .filter(|card| card.drift_score > card.drift_threshold)
+            .map(qip_ai::registry::ModelCard::reference)
+            .collect();
+    }
+
+    /// The production models the last registry read found drifted.
+    pub const fn drifted_models(&self) -> &BTreeSet<String> {
+        &self.drifted_models
     }
 
     /// The credit register derived from the universe at assembly: one profile
@@ -26073,6 +26113,85 @@ mod central_sizing_tests {
         assert!(
             fed_notional > unfed_notional,
             "a fed self-model sized {fed_notional}, not wider than the unfed {unfed_notional}"
+        );
+    }
+
+    #[test]
+    fn a_drifted_production_model_narrows_the_central_multiplier_until_the_registry_stops_naming_it()
+     {
+        // The failure this guards (R12-RES-7101): a production model past its
+        // drift threshold was rolled back or refused a decision, and the
+        // centre went on sizing at the multiplier a healthy panel earned, so
+        // capital was not shrunk by a component the platform had just
+        // measured as unreliable.
+        use qip_ai::registry::{ModelCard, ModelRegistry, ModelStage};
+        use qip_core::ModelId;
+        let mut platform = platform();
+        let resolves_at = start().saturating_add(Duration::from_days(5));
+        feed_self_model(
+            &mut platform,
+            qip_learning_engine::self_model::MINIMUM_SAMPLE,
+            resolves_at,
+        );
+        let at = resolves_at.saturating_add(Duration::from_secs(100));
+        let multiplier = |platform: &Platform| {
+            platform
+                .central_degradation(at)
+                .expect("the table reads")
+                .central_sizing_multiplier()
+        };
+        let healthy = multiplier(&platform);
+        assert_eq!(
+            healthy,
+            dec!("0.375"),
+            "premise: a fed self-model narrows nothing beyond the two unavailable rows"
+        );
+
+        let mut card = ModelCard::new(
+            ModelId::from_string("m-drift"),
+            "drift",
+            "1",
+            "desk",
+            start(),
+        );
+        card.stage = ModelStage::Production;
+        card.drift_threshold = 0.2;
+        card.drift_score = 0.1;
+        let mut registry = ModelRegistry::new();
+        registry.register(card);
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "a model inside its threshold narrowed"
+        );
+
+        registry
+            .record_drift("drift@1", 0.9)
+            .expect("the card is registered");
+        assert!(
+            registry
+                .iter()
+                .any(|card| card.drift_score > card.drift_threshold),
+            "premise: the card has drifted past its threshold"
+        );
+        platform.observe_model_drift(&registry);
+        assert_eq!(platform.drifted_models().len(), 1);
+        assert_eq!(
+            multiplier(&platform),
+            healthy * dec!("0.75"),
+            "a drifted production model did not narrow the self-model row to its stale factor"
+        );
+
+        // Retiring the card — what a rollback does — clears the reading.
+        registry.retire("drift@1", at).expect("the card retires");
+        platform.observe_model_drift(&registry);
+        assert!(platform.drifted_models().is_empty());
+        assert_eq!(
+            multiplier(&platform),
+            healthy,
+            "the narrowing outlived the model"
         );
     }
 

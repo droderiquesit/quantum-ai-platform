@@ -88,6 +88,7 @@
 pub mod band;
 pub mod corridor;
 pub mod demotion;
+pub mod evaluator;
 pub mod evidence;
 pub mod gates;
 pub mod horizon;
@@ -103,6 +104,7 @@ pub use corridor::{
 pub use demotion::{
     DemotionMonitor, DemotionPolicy, DemotionTrigger, LiveObservation, PilotBaseline,
 };
+pub use evaluator::{Evaluator, EvaluatorPolicy, Judgement};
 pub use evidence::{
     CrossValidationRun, EvidencePackage, FeatureTiming, HoldoutEvidence, KillCondition,
     LeakageAudit, PaperEvidence, PilotEvidence, ScaledEvidence, ShadowDecision, ShadowEvidence,
