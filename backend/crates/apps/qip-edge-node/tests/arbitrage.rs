@@ -676,3 +676,62 @@ fn a_whitelist_stating_per_conversion_costs_puts_them_on_the_desks_graph_and_ref
     );
     Ok(())
 }
+
+#[test]
+fn the_installed_desks_graph_places_every_node_in_the_cells_region_and_two_regions_never_share_a_node()
+-> Result<()> {
+    // MESH-5053: a graph node is (asset, venue, representation, settlement
+    // stage, region), and the desk the node installs built every node with
+    // region None, so the same asset at the same venue booked by two
+    // regions' cells was one node, and a merge of their graphs joined them
+    // for free. The installer now places every node in the cell's region,
+    // and main.rs hands it that region.
+    let mut node = assembled();
+    let mut installer = installer().in_region("eu-west");
+    node.cell
+        .apply_policy(policy(1, t(10), true, Some(triangle(VENUE)))?, t(10))?;
+    installer.offer(signed_envelope(DESK)?)?;
+    assert_eq!(
+        installer.install(&mut node.cell, t(12)),
+        Installation::Installed(3),
+        "premise: the desk installs"
+    );
+    let graph = node
+        .cell
+        .arbitrage()
+        .expect("the desk is installed")
+        .graph();
+    assert!(!graph.nodes().is_empty(), "premise: the graph has nodes");
+    assert!(
+        graph
+            .nodes()
+            .iter()
+            .all(|n| n.region.as_deref() == Some("eu-west")),
+        "a node of the installed graph carries no region or another one: {:?}",
+        graph.nodes()
+    );
+
+    let elsewhere = qip_edge_node::arbitrage::graph_from_whitelist_in(
+        &triangle(VENUE),
+        &[VenueId::new(VENUE)],
+        Some("ap-east"),
+    )?;
+    assert_eq!(elsewhere.nodes().len(), graph.nodes().len());
+    assert!(
+        elsewhere
+            .nodes()
+            .iter()
+            .all(|theirs| !graph.nodes().contains(theirs)),
+        "the same asset at the same venue in two regions is one node"
+    );
+
+    let main = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .map_err(|error| qip_core::error::Error::io(format!("main.rs: {error}")))?;
+    assert!(
+        main.contains(".in_region(&config.region)"),
+        "main.rs no longer places the desk's graph in the cell's region"
+    );
+    Ok(())
+}

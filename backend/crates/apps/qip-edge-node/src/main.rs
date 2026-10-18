@@ -826,6 +826,7 @@ fn run() -> Result<()> {
     let installer = config.arbitrage_strategy.clone().map(|strategy| {
         ArbitrageInstaller::new(strategy, config.venues.clone())
             .with_search(config.arbitrage_search)
+            .in_region(&config.region)
     });
     // The plan's installer, always: it holds the grants for strategies the
     // plan will name and deploys them once a fresh, verified payload names
