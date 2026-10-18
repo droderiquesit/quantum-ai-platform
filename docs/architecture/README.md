@@ -2,19 +2,22 @@
 
 ## The shape of the thing
 
-The platform is an organisation, not a program. 19 governed agents with
+The platform is an organisation, not a program. 20 governed agents with
 declared purposes, explicit capability grants, resource budgets, owners and
 expiry dates; a reasoning stage that attacks their conclusions before anyone
 acts on them; two control functions that can say no; and a learning stage that
 scores what actually happened.
 
-Governed is not the same as running. Eighteen of the nineteen are implemented,
+Governed is not the same as running. Nineteen of the twenty are implemented,
 and they are the agents `Organisation::dispatch` sends a brief to. The
-nineteenth is the event-prediction analyst (EVENT-009). Its manifest is on the
+twentieth is the event-prediction analyst (EVENT-009). Its manifest is on the
 roster and is validated with the rest when the organisation is assembled, but
-`Organisation::standard` constructs no agent for it, so it has never produced a
-finding. Count the roster with `manifests::roster`. Count the agents that act
-with the `vec!` in `Organisation::standard`.
+`standard_agents` constructs no agent for it, so it has never produced a
+finding. The reverse — an agent constructed with no manifest on the roster —
+is refused by `Organisation::new`; the poisoning detector ran that way in
+tests until it was rostered. Count the roster with `manifests::roster`. Count
+the agents that act with the `vec!` in `qip_investment_agents::chief::standard_agents`.
+What the agents cover, scope by scope, is `OrganisationReport::covered_scopes`.
 
 Everything below follows from that.
 

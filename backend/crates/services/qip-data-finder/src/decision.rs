@@ -503,6 +503,15 @@ pub struct RegisteredSource {
     /// see that type's constructor.
     #[serde(default)]
     category: Option<SourceCategory>,
+    /// One for a source's first registration, raised by one each time a
+    /// re-assessment replaces it (R12-COVERAGE-7170). A record serialised
+    /// before versions existed reads as its first.
+    #[serde(default = "first_version")]
+    version: u32,
+}
+
+fn first_version() -> u32 {
+    1
 }
 
 impl RegisteredSource {
@@ -524,7 +533,41 @@ impl RegisteredSource {
             registered_at,
             quarantined: None,
             category,
+            version: first_version(),
         }
+    }
+
+    /// This registration as the successor of `held`, the one standing under
+    /// the same identifier. Later than `held`, it is the next version; at the
+    /// same instant it is the same assessment answered again and keeps
+    /// `held`'s version, so a pass re-run on unchanged evidence moves
+    /// nothing. Earlier than `held`, it is refused: a replayed or
+    /// out-of-order assessment would otherwise overwrite the current record
+    /// with an older answer, the failure the ontology registry's version
+    /// rule names.
+    pub(crate) fn succeeding(mut self, held: &RegisteredSource) -> Result<Self> {
+        if self.registered_at < held.registered_at {
+            return Err(Error::invalid(format!(
+                "source `{}` registration at {:?} is older than version {} registered at {:?}; \
+                 a re-registration must not be older than the one it replaces",
+                self.id(),
+                self.registered_at,
+                held.version,
+                held.registered_at
+            )));
+        }
+        self.version = if self.registered_at == held.registered_at {
+            held.version
+        } else {
+            held.version.saturating_add(1)
+        };
+        Ok(self)
+    }
+
+    /// The registration's version: one at first registration, rising by one
+    /// at each re-registration while the source is held.
+    pub fn version(&self) -> u32 {
+        self.version
     }
 
     /// Construct a RegisteredSource for testing.

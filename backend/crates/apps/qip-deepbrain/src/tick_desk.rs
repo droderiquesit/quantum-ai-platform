@@ -50,6 +50,7 @@ use qip_ai::registry::ModelCard;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, ModelId, Timestamp};
 use qip_kernel::fusion::{FusionConfig, MarketTrace, OpportunityMap, TracePoint, fuse};
+use qip_simulation_engine::conditions::MessageBudget;
 use qip_simulation_engine::tick_replay::{
     ExecutionModel, ReplayOrder, ReplayRun, ReplaySession, ReplayTick,
 };
@@ -119,6 +120,12 @@ impl TickDeskConfig {
                 fee_bps: 1.0,
                 impact_bps_at_full_depth: 10.0,
                 limit_ttl: Duration::from_secs(60),
+                // A venue throttle on the replayed flow: a burst beyond it is
+                // refused as the venue would refuse it, never filled.
+                message_budget: Some(MessageBudget {
+                    per_window: 50,
+                    window: Duration::from_secs(1),
+                }),
             },
             measure_codec: None,
         }

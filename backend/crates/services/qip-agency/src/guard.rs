@@ -320,6 +320,13 @@ impl ActionGuard {
         self.registry.revoke(tool)
     }
 
+    /// Restore a revoked tool on `operator`'s authority
+    /// ([`ToolRegistry::reauthorise`]): the only way back from
+    /// [`Self::revoke`].
+    pub fn reauthorise(&mut self, tool: &str, operator: &str) -> Result<(), Error> {
+        self.registry.reauthorise(tool, operator)
+    }
+
     /// Move to a new rate window and execution instant, keeping the current
     /// pass's drafts and grounds. With no pass begun, begins one with none,
     /// which every preflight refuses on its grounds.

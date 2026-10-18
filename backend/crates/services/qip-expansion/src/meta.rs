@@ -375,6 +375,9 @@ pub enum Decline {
     Outbid,
     /// A QPU bid whose classical baseline the CPU budget could not pay.
     NoClassicalBaseline,
+    /// The next unit would take the agent whose record weights the bid past
+    /// the compute budget the plan gave that agent (R12-AMBIENT-9034).
+    OverAgentBudget,
 }
 
 impl Decline {
@@ -385,6 +388,7 @@ impl Decline {
             Self::BelowFloor => "below_floor",
             Self::Outbid => "outbid",
             Self::NoClassicalBaseline => "no_classical_baseline",
+            Self::OverAgentBudget => "over_agent_budget",
         }
     }
 }
@@ -526,13 +530,47 @@ impl MetaIntelligence {
         f64::from(bid.base_value_bp()) * reputation * realisation / f64::from(k + 1)
     }
 
-    /// One market round. See the module doc for the rules.
+    /// One market round. See the module doc for the rules. No agent holds
+    /// a budget of its own; [`Self::allocate_within`] states them.
     pub fn allocate(
         &mut self,
         bids: &[WorkBid],
         budget: &BTreeMap<ComputeResourceType, Decimal>,
         now: Timestamp,
     ) -> Result<AllocationRound> {
+        self.allocate_within(bids, budget, &BTreeMap::new(), now)
+    }
+
+    /// One market round in which each agent named in `agent_budgets` — the
+    /// [`ReputationKey`] whose record weights its bids — may be charged at
+    /// most its stated compute units across every resource, the QPU
+    /// baseline included. A unit that would take an agent past its budget is
+    /// refused, and a bid refused before its first unit is declined
+    /// [`Decline::OverAgentBudget`].
+    ///
+    /// The failure it prevents: one agent with a high reputation outbids
+    /// every other for the whole round, so the per-resource budget bounds
+    /// the platform and nothing bounds the agent. An agent the map does not
+    /// name is bounded by the resource budgets only, as in [`Self::allocate`].
+    pub fn allocate_within(
+        &mut self,
+        bids: &[WorkBid],
+        budget: &BTreeMap<ComputeResourceType, Decimal>,
+        agent_budgets: &BTreeMap<ReputationKey, Decimal>,
+        now: Timestamp,
+    ) -> Result<AllocationRound> {
+        for (agent, amount) in agent_budgets {
+            if amount.is_negative() {
+                return Err(Error::invalid(format!(
+                    "the budget for agent {}/{}/{} is {amount}; state zero to grant it nothing",
+                    agent.domain, agent.horizon, agent.regime
+                )));
+            }
+        }
+        let mut agent_left: BTreeMap<&ReputationKey, f64> = agent_budgets
+            .iter()
+            .map(|(agent, amount)| (agent, to_f64_units(*amount)))
+            .collect();
         if bids.len() > MAX_BIDS {
             return Err(Error::invalid(format!(
                 "{} bids in one round; the market prices at most {MAX_BIDS}, and dropping some \
@@ -663,6 +701,13 @@ impl MetaIntelligence {
             if bid.resource == ComputeResourceType::Qpu && cpu_left < baseline {
                 stopped[i] = Some(Decline::NoClassicalBaseline);
                 continue;
+            }
+            if let Some(left) = agent_left.get_mut(&bid.reputation) {
+                if *left < own + baseline {
+                    stopped[i] = Some(Decline::OverAgentBudget);
+                    continue;
+                }
+                *left -= own + baseline;
             }
             if let Some(left) = remaining.get_mut(&bid.resource) {
                 *left -= own;

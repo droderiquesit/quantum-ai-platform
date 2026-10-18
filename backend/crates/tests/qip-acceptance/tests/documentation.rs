@@ -416,8 +416,8 @@ fn the_documented_agent_count_matches_the_roster() {
     );
 
     // Both forms, and both derived from the roster. The documents disagree
-    // about which to use — the README writes "a nineteen-agent roster" and
-    // the architecture document writes "19 governed agents" — so accepting
+    // about which to use — the README writes "a twenty-agent roster" and
+    // the architecture document writes "20 governed agents" — so accepting
     // either is honest. Accepting a *hardcoded* word was not:
     // it made one of the two assertions independent of the number it was
     // checking.

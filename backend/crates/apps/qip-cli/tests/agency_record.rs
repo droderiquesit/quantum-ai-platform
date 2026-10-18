@@ -97,7 +97,8 @@ fn request(window: u64) -> Value {
             "acting_identity": "desk-agent",
             "prohibited_side_effects": [],
             "prohibited_methods": [],
-            "stop_conditions": ["spread widens"]
+            "stop_conditions": ["spread widens"],
+            "rollback_conditions": ["restore the prior quote width"]
         },
         "targets": ["spread"],
         "variables": [

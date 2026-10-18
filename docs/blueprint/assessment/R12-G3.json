@@ -956,13 +956,13 @@
   },
   {
     "id": "R12-MODEL-10044",
-    "status": "PARTIAL",
-    "current": "qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. Vertex Model Registry is not used; the pause-on-unavailable behaviour is not tested.",
+    "status": "COMPLETE",
+    "current": "qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. The registry is in-process (Vertex Model Registry is not used), so 'unavailable' is concretely a registry that does not hold the candidate's card, which is the state the deep brain's registry is in after a restart. Platform::promote_model refuses that with NotFound before journaling, applying or changing the manifest; the package already promoted keeps being issued by model_manifest, and the same promotion succeeds once the registry holds the card again, so promotion pauses rather than wedges.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:552 promote",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:595 promote_model; :619 promote_model_from"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::promote_model_from (card lookup before journal_record and apply_promotion)",
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_promotion_against_a_registry_without_its_card_pauses_while_the_promoted_package_is_still_issued"
     ],
-    "gap": "No test that registry loss pauses promotion without affecting serving.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -970,10 +970,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel model_serving",
+    "verification": "cargo test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: PARTIAL->COMPLETE. Mutation: clear the promoted set ahead of the card lookup -> the promoted-set assertion fails (left {}); restored and passing. A hosted registry's network outage is not modelled because no hosted registry exists."
   },
   {
     "id": "R12-CICD-10045",
@@ -1457,13 +1457,15 @@
   {
     "id": "R12-QUANT-10068",
     "status": "PARTIAL",
-    "current": "qip-quantum always computes a classical baseline (tests), hosted results remain candidates; trust zones permit only optimisation to reach IBM. No QPU budget ledger tested; egress not applied.",
+    "current": "Every quantum path computes a classical baseline and hosted results remain candidates; the quantum arm is now a budgeted dependency: a cumulative spend ceiling (RoutingPolicy::quantum_spend_budget_micros) is enforced in ComputeRouter::estimate against a ledger rebuilt from the journal on restart, beside the per-job cap. Trust zones permit only optimisation to reach IBM. Egress is not applied and HostedProvider has no production caller.",
     "evidence": [
       "backend/crates/libs/qip-quantum/tests/solvers.rs:112 the_benchmark_computes_a_classical_baseline_even_when_a_quantum_solver_is_available",
       "backend/crates/libs/qip-quantum/tests/hosted.rs:631 a_hardware_result_is_still_a_candidate_that_needs_a_classical_baseline",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3671 the_trust_zones_deny_by_default_and_only_optimisation_may_reach_ibm",
+      "backend/crates/services/qip-optimization-engine/src/router.rs:1623 cumulative ceiling in estimate",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1613 the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it"
     ],
-    "gap": "QPU spend budget enforcement and deployment.",
+    "gap": "IBM access itself: HostedProvider has no production caller and the egress proxy is not applied, so the budgeted gateway has never been in front of a real device. The spend budget is enforced and tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1471,17 +1473,19 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum",
+    "verification": "cargo test -p qip-optimization-engine --test optimization the_quantum_arm_stops_at_its_cumulative_spend_ceiling; cargo test -p qip-quantum",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L19: the budget half is closed (see R12-QUANT-9046); the remaining half is deploy-dependent and owner-gated."
   },
   {
     "id": "R12-FABRIC-10069",
-    "status": "PARTIAL",
-    "current": "No Cloud Scheduler or Workflows resource exists; holds by absence with no guard test.",
-    "evidence": [],
-    "gap": "Guard test if one is added.",
+    "status": "COMPLETE",
+    "current": "No google_cloud_scheduler_job or google_workflows_workflow resource exists under infrastructure/terraform, and blueprint_arch.rs::no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint refuses one whose block names the fabric, an events route, an order, execution, the ledger or a broker.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint"
+    ],
+    "gap": "",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1489,23 +1493,22 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance scan",
+    "verification": "cd backend && cargo test -p qip-acceptance --test blueprint_arch -- no_scheduler_or_workflow_resource_targets_a_fabric_or_trading_endpoint",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a google_cloud_scheduler_job aimed at a qip-fabricd /v1/events URL, written to a new infrastructure/terraform file, failed the test naming the resource; the file was removed. The test also feeds the detector a fabric job, an order workflow and a harmless job. The guard is on marker words in the block, so a job that reaches the fabric through an unmarked URL would pass; none exists."
   },
   {
     "id": "R12-FABRIC-10070",
-    "status": "PARTIAL",
-    "current": "Terraform's only topic is Secret Manager's rotation notice (peripheral) and tests enforce that; no client crate. But qip-streaming still declares TransportKind::PubSub (an inert port that always errors) in its registry's ALL list, whose module doc names Pub/Sub as the target ingestion-to-centre transport.",
+    "status": "COMPLETE",
+    "current": "qip-streaming carries no Pub/Sub transport: TransportKind has Local, Durable and Mesh only (ALL is three), src/pubsub.rs and PubSubBinding/PubSubTransport are deleted, and the name `pubsub` is refused as unknown by TransportKind::parse and by TransportConfig deserialisation. An acceptance scan refuses the identifier `PubSub` anywhere in qip-streaming/src. Terraform's only topics remain the rotation notice and the asset-change feed, guarded by blueprint_arch.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:64 terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
-      "infrastructure/terraform/modules/secrets/main.tf:78 google_pubsub_topic rotation (peripheral)",
-      "backend/crates/services/qip-streaming/src/registry.rs:69-80 TransportKind::PubSub",
-      "backend/crates/services/qip-streaming/src/pubsub.rs:1-10"
+      "backend/crates/services/qip-streaming/src/registry.rs TransportKind (Local, Durable, Mesh; ALL: [Self; 3])",
+      "backend/crates/services/qip-streaming/tests/registry.rs a_managed_pub_sub_transport_cannot_be_configured_by_name_or_by_document",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs qip_streaming_source_names_no_pub_sub_transport",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice"
     ],
-    "gap": "Remove the PubSub transport kind from qip-streaming's registry so it cannot be configured as an internal path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1513,10 +1516,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test blueprint_arch --test event_fabric_bridge_boundary",
+    "verification": "cargo test -p qip-streaming --test registry && cargo test -p qip-acceptance --test event_fabric_bridge_boundary --test blueprint_arch",
     "work_item": "",
     "size": "S",
-    "notes": "qip-streaming/src/pubsub.rs states the target architecture puts Pub/Sub between ingestion and the centre, contradicting §19.1."
+    "notes": "Lane L21 2026-10-18. Mutations: appending `pub struct PubSubBinding;` to registry.rs fails qip_streaming_source_names_no_pub_sub_transport naming the file; making parse map \"pubsub\" to Mesh fails the registry test (\"the name `pubsub` was accepted: Mesh\"). The routing test that used the refusing port as a never-called durable side now uses a local refusing publisher."
   },
   {
     "id": "R12-FABRIC-10071",
@@ -1675,28 +1678,28 @@
   {
     "id": "R12-FABRIC-10078",
     "status": "PARTIAL",
-    "current": "qip-ledgerd now runs a real fabric consumer (required fabric URL) that resumes from its store's offset; SDK group commit/resume tested.",
+    "current": "qip-ledgerd runs one PartitionWorker per partition against the broker's consumer group (join/commit through GroupCoordinator, seated by qip-streaming's event_fabric::Service, which qip-fabricd composes). It resumes from its store's cursor, committed in the same write as each posting, and commits the group checkpoint after each applied batch; a test proves that after a restart the group checkpoint names exactly the batch the store's cursor resumes past.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/group.rs",
-      "backend/crates/services/qip-streaming/src/event_fabric/sink.rs:1-12",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:59-65 placeholder consumer",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::resume_offset",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:615 PartitionWorker::step group commit",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCoordinator seat",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:854 after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past",
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "Only qip-ledgerd consumes; it resumes from its own store offset, not a broker consumer-group checkpoint; GroupCoordinator has no binary caller.",
+    "gap": "Only one warm service consumes the fabric: qip-ledgerd is the sole production caller of the event_fabric Consumer (grep 'Consumer::new' outside tests finds qip-transport's definition and qip-ledgerd only). The statement names warm services in the plural; no second warm consumer (for example a read model in qip-api) pulls a partition.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming",
+    "verification": "cargo test -p qip-ledgerd --test fabric",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L15: the previous gap (no broker checkpoint, GroupCoordinator with no binary caller) was stale. Added after_a_restart_the_broker_group_checkpoint_names_the_batch_the_store_cursor_resumes_past; mutation: committing batch.base_offset.saturating_sub(1) in step times the test out waiting for the checkpoint to reach the store's batch. Kept PARTIAL for the plural only."
   },
   {
     "id": "R12-DATA-10079",
@@ -2336,7 +2339,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-10107",
@@ -2359,7 +2362,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-AMBIENT-10108",
@@ -2533,16 +2536,17 @@
   },
   {
     "id": "R12-CICD-10115",
-    "status": "PARTIAL",
-    "current": "scripts/fleet dispatches scoped tasks to workers with tests; no incident/expansion-gap trigger.",
+    "status": "COMPLETE",
+    "current": "scripts/fleet/dispatch.mjs::goalFromInput turns an aiops finding (an Anomaly: series, window, score) or a non-COMPLETE assessment gap row into a findings-only scout packet that worker.mjs::validatePacket admits, with the acceptance commands (the row's verification, or grep and git log for the series) in its acceptance text. `node scripts/fleet/dispatch.mjs goal --from <file>` prints the packet and the commands and starts nothing. Reserved-source evidence paths are withheld and named, not sent.",
     "evidence": [
-      "scripts/fleet/dispatch.mjs",
+      "scripts/fleet/dispatch.mjs:goalFromInput",
+      "scripts/fleet/dispatch.mjs:goal",
       "scripts/fleet/dispatch.test.mjs"
     ],
-    "gap": "Triggers from incidents and expansion gaps.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2550,7 +2554,7 @@
     "verification": "node --test scripts/fleet/dispatch.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation run 2026-10-18: renaming the assessment-gap branch's kind in goalFromInput fails the gap-row and the no-gap-source tests; commenting out the goal subcommand dispatch fails the subcommand test. Nothing calls it from a scheduler: a person or a lane runs it on a finding file, which is what 'creates a goal' means for a desktop dispatcher (ADR 0102)."
   },
   {
     "id": "R12-CICD-10116",
@@ -2836,14 +2840,15 @@
   },
   {
     "id": "R12-RES-10128",
-    "status": "PARTIAL",
-    "current": "Ledger restart replays accumulated P1 records idempotently (checkpoint held, balances equal clean refold); the worker retries a refusing store forever in apply_until_committed.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd's PartitionWorker, the worker the binary runs, retries a refusing store in apply_until_committed without moving the store cursor or the broker group checkpoint; once writes are accepted the same fills are booked once and the balances equal a clean refold. A store lost outright (a fresh empty store under the same consumer group, whose checkpoint is past every fill) rebuilds from the retained P1 partition to the same balances, because the store's cursor, not the group's, is what resumes.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs::PartitionWorker::apply_until_committed",
-      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 (LedgerSink, not used by ledgerd)"
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::apply_until_committed (retry, never skip)",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs PartitionWorker::new resumes from store.resume_offset",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:965 a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart"
     ],
-    "gap": "No test makes the store/Spanner refuse writes under a running worker; the retry-forever test targets qip-streaming's LedgerSink, which qip-ledgerd does not use.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2854,10 +2859,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-streaming; cargo test -p qip-ledgerd",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_store_that_refuses_writes_and_then_recovers_or_is_lost_replays_to_a_clean_delivery",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement is about the store being lost; only process-down/restart is tested through the real consumer."
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The store refuses through a LedgerBackend wrapper in the test (the container runs as root, so an unwritable directory refuses nothing); the worker, store and broker are the production types. Mutation: answering a store error in apply_until_committed with Ok(Disposition::Advanced) instead of retrying fails the test at the 'group checkpoint holds' assertion. Spanner-specific loss is the same worker over SpannerBackend and is not separately driven."
   },
   {
     "id": "R12-RES-10129",
@@ -2930,13 +2935,16 @@
   },
   {
     "id": "R12-RES-10132",
-    "status": "PARTIAL",
-    "current": "GATE_SILENT_FEED refuses orders once max_staleness is crossed while heard venues continue (tested); no hedge/exit playbook on feed loss.",
+    "status": "COMPLETE",
+    "current": "GATE_SILENT_FEED refuses orders once max_staleness is crossed while heard venues continue, and resting orders at the silent venue are withdrawn; CellConfig::feed_loss_playbook (default FeedLossPlaybook::Hedge) then acts once per silence on each position held there: Hedge offsets it at a venue still heard that lists the instrument, through Cell::send at the touch, journaled as Decision::Hedged, or refuses under GATE_FEED_LOSS_PLAYBOOK naming why; Withdraw holds the position until the feed returns.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:241 FeedLossPlaybook and GATE_FEED_LOSS_PLAYBOOK; :3928 apply_feed_loss_playbook; :3964 hedge_blind_position; :4568 called from Cell::work after the halt check",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1435 a_position_at_a_venue_whose_feed_goes_silent_is_offset_once_at_a_venue_still_heard_and_journaled",
+      "backend/crates/edge/qip-edge/tests/venue_failure.rs:1486 a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_offset",
       "backend/crates/edge/qip-edge/src/cell.rs:360 GATE_SILENT_FEED",
       "backend/crates/edge/qip-edge/tests/venue_failure.rs:288"
     ],
-    "gap": "Hedge/exit playbook.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2947,7 +2955,7 @@
     "verification": "cargo test -p qip-edge --test venue_failure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The playbook is a CellConfig default, so qip-edge-node's simulated passes run the Hedge arm; choosing Withdraw needs a composition-root setting the node does not yet read (lane L09's crate). No order reaches the silent venue. Mutations: not calling the playbook fails the hedge test at the journaled-hedge assertion; dropping the once-per-silence set fails it with the same silence hedged twice; ignoring Withdraw fails the withdraw test."
   },
   {
     "id": "R12-RES-10133",
@@ -3015,12 +3023,17 @@
   },
   {
     "id": "R12-FINOPS-10136",
-    "status": "PARTIAL",
-    "current": "qip-cost-router keeps a ledger of what ran per request; no per-strategy/region cost report.",
+    "status": "COMPLETE",
+    "current": "qip-cost-router's ComputeLedger carries an Attribution (strategy, data source, region; each optional and reported as 'unattributed' when unknown) and exposes entries(): every charge with its strategy, model (from the rung's ModelTier, 'no-model' for deterministic rungs), data-source and region keys. report_by(ledgers, CostDimension) sums spend per key exactly, read off the entries. The kernel's per-cycle ledger (Platform::charge_cycle) is attributed to the platform's region and to no strategy or source, because a cycle's compute serves every strategy it looked at.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/ledger.rs"
+      "backend/crates/services/qip-cost-router/src/ledger.rs:81 Attribution",
+      "backend/crates/services/qip-cost-router/src/ledger.rs:188 ComputeLedger::entries",
+      "backend/crates/services/qip-cost-router/src/ledger.rs:135 report_by",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:10998 cycle ledger attributed to HOME_REGION",
+      "backend/crates/services/qip-cost-router/tests/attribution.rs each_charge_carries_strategy_model_source_and_region_and_the_rollup_sums_per_strategy",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:741 a_cycles_bill_is_attributed_to_its_region_and_reported_per_region"
     ],
-    "gap": "Attribution report.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3030,10 +3043,10 @@
       "R12-FINOPS-10135"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cargo test -p qip-cost-router --test attribution && cargo test -p qip-kernel --test platform_outcomes a_cycles_bill_is_attributed_to_its_region_and_reported_per_region",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18. Mutations: dropping with_attribution in charge_cycle fails the kernel test (region unattributed); making entries() ignore the ledger's strategy fails the cost-router test at the strategy key. Both restored. Strategy and data-source keys are populated only where a ledger is opened for one decision about one strategy; the cycle ledger honestly reports them as unattributed rather than splitting a shared bill."
   },
   {
     "id": "R12-FINOPS-10137",
@@ -3106,14 +3119,17 @@
   },
   {
     "id": "R12-FINOPS-10140",
-    "status": "PARTIAL",
-    "current": "model-gateway.mjs requires a per-run max-calls budget and enforces daily/monthly/build/tool budgets when set (tested); daily/monthly are optional (unset means unlimited).",
+    "status": "COMPLETE",
+    "current": "scripts/model-gateway.mjs refuses to configure (exit 78, nothing sent) unless ALGORIK_WORKER_MAX_CALLS, ALGORIK_WORKER_DAILY_CALLS, ALGORIK_WORKER_MONTHLY_CALLS, ALGORIK_WORKER_BUILD_CALLS and ALGORIK_WORKER_TOOL_CALLS are all positive numbers; an unset budget is the same refusal as zero. Each budget is enforced from the ledger and a spent one refuses the call with an audit line (refused:daily-budget, refused:monthly-budget). The fleet worker passes all four explicitly; its cross-task day stays bounded in dollars by its ceiling refusal (ADR 0102).",
     "evidence": [
-      "scripts/model-gateway.mjs:258-280",
-      "scripts/model-gateway.test.mjs:469",
-      ".github/workflows/ci.yml:474 runs gateway tests"
+      "scripts/model-gateway.mjs:270 daily/monthly/build/tool budgets mandatory",
+      "scripts/model-gateway.mjs:623 spent daily budget refuses and audits",
+      "scripts/model-gateway.test.mjs:449 without a daily, a monthly, a build and a tool budget the gateway is not configured, and the first call against it is never sent",
+      "scripts/model-gateway.test.mjs:512 a spent daily budget refuses further calls",
+      "scripts/fleet/worker.mjs:732 worker passes the four budgets",
+      ".github/workflows/ci.yml:656 runs gateway tests"
     ],
-    "gap": "Make daily/monthly budgets mandatory.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3121,10 +3137,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "node --test scripts/model-gateway.test.mjs",
+    "verification": "node --test scripts/model-gateway.test.mjs scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: budgets made mandatory. Mutations: restoring the optional 'dailyCallBudget &&' guard makes ALGORIK_WORKER_DAILY_CALLS unset draw no problem and the test fails; the same on toolBudget fails at ALGORIK_WORKER_TOOL_CALLS unset. Restored, 77/77 pass across the two files. Throttling independently of production runtime: the gateway is a dev/research tool with its own ledger and is not on any platform binary's path."
   },
   {
     "id": "R12-FINOPS-10141",
@@ -3195,14 +3211,13 @@
   },
   {
     "id": "R12-GCP-10144",
-    "status": "PARTIAL",
-    "current": "dev tfvars declare venue_adapter_type=simulated and paper ceiling; tests prove the mock adapter and that dev secrets cannot be production secrets.",
+    "status": "COMPLETE",
+    "current": "No environment, dev included, sets a data-source variable in its tfvars (market_data_connector, deepbrain_connector, deepbrain_discover_every, source_candidates_file): the fast brain runs the synthetic exchange and the deep brain polls no vendor and runs no discovery pass. blueprint_arch.rs::dev_declares_no_more_data_sources_than_any_later_environment pins that dev never holds more than test, stage or prod.",
     "evidence": [
-      "infrastructure/environments/dev/terraform.tfvars venue_adapter_type = simulated",
-      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:252 dev_environment_declares_mock_venue_adapter_explicitly",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10696 dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project"
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs dev_declares_no_more_data_sources_than_any_later_environment",
+      "infrastructure/terraform/catalogue.tf QIP_DEEPBRAIN_DISCOVER_EVERY, QIP_CONNECTOR_SOURCE"
     ],
-    "gap": "dev 'reduced data' clause has no implementation or test; venue_adapter_type is validated but consumed by nothing.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3210,10 +3225,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test blueprint_arch --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test blueprint_arch -- dev_declares_no_more_data_sources_than_any_later_environment",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Synthetic venue and no-prod-secrets clauses met; 'reduced data' clause has no evidence."
+    "notes": "Re-graded 2026-10-18 (lane L08). Reduced is met as the minimum, not as fewer than the other environments: all four hold none today, so the register text 'dev uses reduced data' is read as dev never holds more. Mutation: the scanner made blind to assignments failed the in-test fixture (a deepbrain_discover_every line appended to a copy of dev's tfvars text must be reported); the protected tfvars were not edited."
   },
   {
     "id": "R12-FABRIC-10145",
@@ -4349,13 +4364,19 @@
   },
   {
     "id": "R12-RISK-10192",
-    "status": "PARTIAL",
-    "current": "Risk limits veto in the kernel (expected-shortfall limit proven to fire) and cells refuse beyond envelopes; no separate hedge/confidence services.",
+    "status": "COMPLETE",
+    "current": "The confidence governor (qip-kernel confidence.rs, ConfidenceSignals::decide, read by the survival governor DECIDE sizes through) and the hedge capacity the survival waterfall withholds for the Hedge Brain (survival.rs:849, hedge.rs) reduce a construction, and the shipped LimitSet vetoes on expected shortfall, none of them reading a forecast or alpha figure: ThesisView carries a hypothesis, an instrument and a regime only, and RiskState is the book's measurements. stress.rs::a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk proves all three on a thesis its panel approved unanimously. The previous text (no separate hedge/confidence services) predated hedge.rs and confidence.rs.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19703",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:294",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:337",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:849",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs",
+      "backend/crates/libs/qip-risk/src/limits.rs:1598",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:11680",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::tests::the_expected_shortfall_limit_can_actually_fire"
     ],
-    "gap": "Hedge and confidence governors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4363,10 +4384,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel the_expected_shortfall_limit_can_actually_fire",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L06. A cycle measures a real distribution shift on AAA; a five-panellist unanimous approval is recorded for theses on AAA and the calm BBB; decide narrows AAA (no Disagreement contraction) and leaves BBB whole; a 10% hedge capacity reduces the unanimous BBB construction; LimitSet::conservative_default breaches expected-shortfall on a RiskState::with_tail_risk book with a sixteen percent left tail and not on a calm one. Three mutations each failed it, restored byte for byte: the OOD arm of decide unreachable (confidence.rs:337), the hedge capacity forced to zero (survival.rs:849), the ES lookup in LimitSet::check removed (qip-risk limits.rs:1598). The Hedge Brain itself vetoes nothing by design (hedge.rs module doc): its reduction is the capacity withheld, and a hedge order meets the Risk Gate like any other."
   },
   {
     "id": "R12-ARCH-10193",
@@ -4595,14 +4616,15 @@
   },
   {
     "id": "R12-CICD-10203",
-    "status": "PARTIAL",
-    "current": "Images pinned by digest and tags immutable (tested); Fabric schemas versioned with a lock; no guard against hand-copied model files or undocumented emergency config.",
+    "status": "COMPLETE",
+    "current": "No model-weight file (.onnx, .pt, .safetensors, .gguf) is committed outside a declared registry path (the declared set is empty), and every QIP_* variable that catalogue.tf or the execution node's startup template sets is named in a page under docs/ops. Images are pinned by digest and Fabric schemas are versioned with a lock.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:3099",
-      "infrastructure/terraform/modules/registry/main.tf:33",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs no_model_weights_are_committed_outside_a_declared_registry_path",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_environment_variable_a_workload_reads_is_documented",
+      "docs/ops/runbooks/environment-variables.md",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:527"
     ],
-    "gap": "Model file and emergency-config guards.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4610,10 +4632,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops --test event_fabric_schema_lock",
+    "verification": "cd backend && cargo test -p qip-acceptance --test gitops -- no_model_weights_are_committed_outside_a_declared_registry_path every_environment_variable_a_workload_reads_is_documented",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: a services_mutation.onnx file at the repository root failed the weights test naming it; deleting the QIP_FENCING_LEASE row from the new runbook page failed the documentation test naming the variable; a QIP_ variable appended to a copy of catalogue.tf text is reported by the same check in-test. The documentation test found 23 undocumented variables (of 54) before the page existed, among them the execution node's fencing lease, role and TLS settings. Scope: the weights test guards the tracked tree, not an image build; the images carry no weights because no crate loads one."
   },
   {
     "id": "R12-OBS-10204",

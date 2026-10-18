@@ -486,16 +486,19 @@ fn fabric_080_a_fetch_is_paced_by_the_credit_the_receiver_granted_at_both_ends()
 /// the wiring end to end — the disk's name and the device path the script
 /// mounts — because either half alone is the `/dev/sdb` failure again.
 ///
-/// **One gap remains, asserted rather than described:** `disk_type` carries
-/// no validation, so `pd-standard` or a local-SSD type would be accepted.
-/// Closing it makes this test fail, and it should then assert the fix.
+/// **The last gap closed with FABRIC-8097 (lane L22, 2026-10-18).** This
+/// test pinned `disk_type` carrying no validation, so `pd-standard` or a
+/// local-SSD type would have been accepted. The journal's IOPS and throughput
+/// are now provisioned, which only a Hyperdisk accepts, and `disk_type`
+/// refuses anything but a `hyperdisk-*` type; the pin became the assertion.
 ///
 /// Mutation: add a `disk { type = "SCRATCH" ... }` block to the template — the
 /// disk-count and scratch assertions fire. Change the `disk_type` default to
 /// `pd-balanced` — the default assertion fires. Set the journal disk's
 /// `auto_delete = true` — the persistence assertion fires. Point
 /// `qip_storage_journal_device` back at `/dev/sdb` — the wiring assertion
-/// fires.
+/// fires. Delete the `disk_type` hyperdisk validation, or the journal's
+/// `provisioned_iops` line — the refusal or the provisioning assertion fires.
 #[test]
 fn fabric_085_the_broker_template_journals_on_one_persistent_hyperdisk_and_declares_no_local_ssd() {
     let main = broker_module("main.tf");
@@ -564,11 +567,25 @@ fn fabric_085_the_broker_template_journals_on_one_persistent_hyperdisk_and_decla
             .any(|line| norm(line) == "default = \"hyperdisk-balanced\""),
         "{disk_type:#?}"
     );
-    // GAP: nothing refuses a non-Hyperdisk type.
+    // The journal's IOPS and throughput are provisioned (FABRIC-8097), which
+    // only a Hyperdisk accepts, so a persistent-disk type is refused at plan
+    // rather than at apply. This pinned the absence of that refusal until it
+    // landed.
     assert!(
-        !disk_type.iter().any(|line| norm(line) == "validation {"),
-        "disk_type gained a validation — FABRIC-085 may be closing; assert it here"
+        disk_type
+            .iter()
+            .any(|line| norm(line) == "condition = startswith(var.disk_type, \"hyperdisk-\")"),
+        "nothing refuses a non-Hyperdisk disk_type: {disk_type:#?}"
     );
+    for want in [
+        "provisioned_iops = var.journal_provisioned_iops",
+        "provisioned_throughput = var.journal_provisioned_throughput_mibps",
+    ] {
+        assert!(
+            has(journal, want),
+            "the journal disk does not carry `{want}`: {journal:#?}"
+        );
+    }
 }
 
 /// FABRIC-090, the half that exists: a sealed segment is archived under the

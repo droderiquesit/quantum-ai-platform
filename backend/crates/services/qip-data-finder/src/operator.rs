@@ -1,9 +1,11 @@
 //! The named operator a catalogue entry is accountable to (R12-DATA-2020).
 //!
 //! A registered source reaches the mesh catalogue with an owner, and the
-//! kernel fills that owner from a configuration default of `qip-platform` —
-//! the process's own name (`qip-kernel/src/config.rs`, `default_owner`, as of
-//! 2026-10-11). "Whoever ran the process" is not a name anybody can be asked
+//! kernel filled that owner from a configuration default of `qip-platform` —
+//! the process's own name (`qip-kernel/src/config.rs`, `default_owner`, from
+//! 2026-10-11 until 2026-10-18, when the default became `research-desk`
+//! because the kernel's refusal of it broke every default composition).
+//! "Whoever ran the process" is not a name anybody can be asked
 //! about six months later, which is the reason the configuration field exists
 //! at all; the default defeats it. Moving the kernel onto this type is the
 //! kernel lane's change, because it makes a deployment with no configured

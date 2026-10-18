@@ -941,6 +941,29 @@ impl Tournament {
         Ok(Self::pooled(open, &weights))
     }
 
+    /// The weight each forecaster on an open question carries in
+    /// [`Self::aggregate`], and whether any of it was earned — `false` where
+    /// no forecaster had earned influence and every one weighs equally
+    /// (R12-MODEL-9031: the consensus record states which).
+    pub fn aggregate_weights(
+        &self,
+        question: &str,
+        regime: &str,
+    ) -> Result<(BTreeMap<String, f64>, bool)> {
+        let open = self
+            .questions
+            .get(question)
+            .ok_or_else(|| Error::not_found(format!("no open question {question}")))?;
+        let weights = self.question_weights(open, regime, None);
+        let earned = self
+            .influence_among(weights.keys().map(String::as_str), regime)
+            .values()
+            .map(|w| w.weight)
+            .sum::<f64>()
+            > 0.0;
+        Ok((weights, earned))
+    }
+
     fn question_weights(
         &self,
         open: &Question,
@@ -1874,6 +1897,49 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-9031: once forecasters have earned influence, the weights
+    /// the aggregate pools by — which the kernel journals as the
+    /// `ForecastConsensus` shares — differ by record, and the aggregate is
+    /// not the equal-weight mean of the forecasts. Mutation: return weight one
+    /// for every forecaster from `aggregate_weights` and the weights come out
+    /// equal.
+    #[test]
+    fn an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts() -> Result<()> {
+        let mut t = Tournament::new();
+        t.admit(spec("sharp"), at(0))?;
+        t.admit(spec("dull"), at(0))?;
+        rounds(
+            &mut t,
+            "quiet",
+            0,
+            12,
+            &[("sharp", 8_000), ("dull", 2_000)],
+            "up",
+            60.0,
+        )?;
+        activate_all(&mut t);
+        t.open(question("next", "quiet", 40), at(40))?;
+        t.submit("next", forecast("sharp", "next", 8_000, 40), at(40))?;
+        t.submit("next", forecast("dull", "next", 3_000, 40), at(40))?;
+
+        let (weights, earned) = t.aggregate_weights("next", "quiet")?;
+        assert!(earned, "premise: the record earned influence");
+        let weight = |name: &str| weights.get(name).copied().unwrap_or(f64::NAN);
+        assert!(
+            weight("sharp") > weight("dull"),
+            "the forecaster with the better record carries no more weight: {weights:?}"
+        );
+        let up = t
+            .aggregate("next", "quiet")?
+            .and_then(|p| p.get("up").copied())
+            .unwrap_or(f64::NAN);
+        assert!(
+            (up - 0.55).abs() > 1e-3,
+            "the aggregate {up} is the equal-weight mean"
+        );
+        Ok(())
+    }
+
     /// Mark every forecaster active, so influence weighs each on the record
     /// it has rather than on whether review happened to promote it.
     fn activate_all(t: &mut Tournament) {
@@ -2055,6 +2121,73 @@ mod tests {
         assert!(influence["poor"].calibration < influence["good"].calibration);
         let compute = t.compute_allocation("trending", 1_000)?;
         assert!(compute["good"] > compute["poor"], "compute {:?}", compute);
+        Ok(())
+    }
+
+    /// R12-MODEL-3093: with every factor but the market share tied, the
+    /// aggregate weighs each forecaster by exactly its reputation share — its
+    /// settled synthetic-credit balance over the total among those weighed.
+    /// The weight is influence and the share is its first factor; this pins
+    /// that the other five reduce nothing when they agree. Mutation:
+    /// normalising by forecaster count instead of the product (or dropping
+    /// `market_share` from the product) fails both the weight and the pooled
+    /// probability.
+    #[test]
+    fn with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares() -> Result<()>
+    {
+        let mut t = Tournament::new();
+        for name in ["sharp", "blunt"] {
+            t.admit(spec(name), at(0))?;
+        }
+        activate_all(&mut t);
+        // Scored history moves the market, nothing else: the settlement is
+        // the market's own, so neither forecaster carries a score that would
+        // separate calibration, information, cost or latency.
+        t.market.settle(
+            &[("sharp".to_string(), 0.8), ("blunt".to_string(), 0.3)],
+            0.55,
+        )?;
+        t.open(question("q", "quiet", 0), at(0))?;
+        t.submit("q", forecast("sharp", "q", 7_000, 0), at(0))?;
+        t.submit("q", forecast("blunt", "q", 4_000, 0), at(0))?;
+
+        let shares = t.market.shares(["sharp", "blunt"]);
+        // Premise: settlement separated the shares, and the other factors tie.
+        assert!(shares["sharp"] > shares["blunt"], "shares {shares:?}");
+        let influence = t.influence("quiet");
+        for w in influence.values() {
+            assert_eq!(
+                (w.calibration, w.information, w.cost, w.latency),
+                (1.0, 1.0, 1.0, 1.0),
+                "{w:?}"
+            );
+        }
+        assert!(
+            (influence["sharp"].regime_survival - influence["blunt"].regime_survival).abs() < 1e-12
+        );
+
+        let open = t
+            .question("q")
+            .cloned()
+            .ok_or_else(|| Error::not_found("q"))?;
+        let weights = t.question_weights(&open, "quiet", None);
+        for name in ["sharp", "blunt"] {
+            assert!(
+                (weights[name] - shares[name]).abs() < 1e-12,
+                "{name}: weight {} share {}",
+                weights[name],
+                shares[name]
+            );
+        }
+        let pooled = t
+            .aggregate("q", "quiet")?
+            .ok_or_else(|| Error::invalid("no aggregate"))?;
+        let expected = shares["sharp"] * 0.7 + shares["blunt"] * 0.4;
+        assert!(
+            (pooled["up"] - expected).abs() < 1e-12,
+            "pooled {} expected {expected}",
+            pooled["up"]
+        );
         Ok(())
     }
 
