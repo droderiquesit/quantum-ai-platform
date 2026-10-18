@@ -1887,3 +1887,22 @@ fn a_group_commit_through_the_served_broker_moves_the_partition_lag_series() {
         "a caught-up commit charts zero:\n{exposition}"
     );
 }
+
+/// FABRIC-8074: the broker's protocol listener runs under the capped server
+/// limits — sixty-four live connections, sixteen of them handshaking — with
+/// only the body ceiling changed. The 503 past the cap is driven at the
+/// transport's `Server` itself
+/// (`qip-transport/tests/server_connection_cap.rs`), because no data-plane
+/// route holds a connection long enough to fill sixty-four.
+///
+/// Mutation: set `max_concurrent: 4096` in `data_plane_limits` — the cap
+/// assertion fails.
+#[test]
+fn the_broker_data_plane_runs_under_the_capped_server_limits() {
+    let limits = qip_fabricd::data_plane_limits();
+    let defaults = qip_transport::server::ServerLimits::default();
+    assert_eq!(limits.max_concurrent, 64, "the connection cap");
+    assert_eq!(limits.max_concurrent, defaults.max_concurrent);
+    assert_eq!(limits.max_handshaking, defaults.max_handshaking);
+    assert_eq!(limits.max_body, qip_fabricd::MAXIMUM_REQUEST_BYTES);
+}
