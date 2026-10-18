@@ -3722,23 +3722,24 @@
   },
   {
     "id": "R12-COVERAGE-7166",
-    "status": "PARTIAL",
-    "current": "Remediator library only.",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain/src/operations.rs runs the entity graph, timeline and runbook-only Remediator every cycle with CapabilitySwitch as its Effector; a level shift in iteration time opens an incident, the runbook step flips the node's own research switch and nothing else, and a runbook naming a foreign target is audited as failed with nothing flipped.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs:56 EntityGraph, :212 build_timeline, :235 Runbook, :341-372 Remediator, :409 release_gate"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs CapabilitySwitch, Operations::observe",
+      "backend/crates/tests/qip-acceptance/tests/aiops_remediation.rs"
     ],
-    "gap": "Wiring to effectors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test aiops_remediation",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Mutation: `if false && !CAPABILITIES.contains(&target)` in CapabilitySwitch::apply fails a_runbook_that_names_a_foreign_target_is_audited_as_failed_and_flips_nothing. The register text 'Remediator library only' was stale."
   },
   {
     "id": "R12-COVERAGE-7167",

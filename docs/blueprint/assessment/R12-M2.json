@@ -1696,14 +1696,14 @@
   },
   {
     "id": "R12-TICK-2072",
-    "status": "PARTIAL",
-    "current": "TrainingCadence::authorise is the only constructor of AuthorisedUpdate and refuses structural change at fast cadences; TrainedTeacher::apply takes only an AuthorisedUpdate. Drift is not routed to the expansion curriculum.",
+    "status": "COMPLETE",
+    "current": "The learning round's drifted models reach the research sweep (node.rs drifted_references -> ResearchLoop::note_drifted_models -> model_drift observations) as one ModelDrift gap per model, which ExpansionDesk::offer queues as a validated curriculum item naming the model; learning runs every 8 cycles by default.",
     "evidence": [
-      "backend/crates/services/qip-training/src/cadence.rs:268 authorise",
-      "backend/crates/runtime/qip-kernel/tests/models.rs:20 cadence tests",
-      "backend/crates/services/qip-expansion/src/curriculum.rs (no drift input)"
+      "backend/crates/apps/qip-deepbrain/src/node.rs drifted_references",
+      "backend/crates/apps/qip-deepbrain/src/research.rs note_drifted_models, sweep_over model_drift",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_drifted_model_opens_a_curriculum_task_and_an_undrifted_one_does_not"
     ],
-    "gap": "Route drift findings into Curriculum Engine tasks.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1713,10 +1713,10 @@
       "R12-TICK-2071"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test models",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows -- a_drifted",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Mutation: replacing the `observations.extend(model_drift(..))` line in sweep_over with a bare take of drifted_models fails the new test and a_drifted_model_raises_exactly_one_model_drift_gap. The closure named learning.rs opening the task; the route through the sweep already existed and is the one the default cycle runs."
   },
   {
     "id": "R12-TICK-2073",

@@ -1875,24 +1875,25 @@
   },
   {
     "id": "R12-CICD-9081",
-    "status": "PARTIAL",
-    "current": "aiops remediation records an audit trail before acting through Effector; no production Effector; config changes go through GitOps.",
+    "status": "COMPLETE",
+    "current": "Remediator::journalled writes the authorising audit record to an AuditSink before Effector::apply and the outcome record after; qip-deepbrain main.rs builds Operations::journalled over a RemediationJournal (hash-chained EventLog beside the platform log), and an action whose record cannot be journalled is refused and not applied.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs",
-      "backend/crates/libs/qip-observability/tests/aiops.rs"
+      "backend/crates/libs/qip-observability/src/aiops.rs Remediator::journalled, AuditSink",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs RemediationJournal",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied"
     ],
-    "gap": "Production Effector with durable (event-log) audit.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-observability --test aiops",
+    "verification": "cargo test -p qip-deepbrain --test research -- journal",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation: dropping the `return Err(Error::denied(why))` after a failed journal write fails the refusal test (effector ran). The journal is as durable as the platform event log it sits beside: in memory where that is."
   },
   {
     "id": "R12-CICD-9082",
