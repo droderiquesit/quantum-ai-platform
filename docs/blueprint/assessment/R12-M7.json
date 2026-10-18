@@ -2526,12 +2526,14 @@
   {
     "id": "R12-RES-7113",
     "status": "PARTIAL",
-    "current": "Spool pressure gauge reads narrow before exhausted and the cell is built with the journal wire; no fabric quorum exists, and nothing tests that control changes stop on fabric loss.",
+    "current": "Spool pressure narrows sizing before exhausted and the cell is built with the journal wire. Since 2026-10-18 new control changes stop on fabric loss: while the outbox gauge reads exhausted (full, unwritable, stale or fenced), DecisionLoop::apply_mesh holds each poll's capital and policy in a bounded queue (backend/crates/apps/qip-edge-node/src/scheduler.rs held_control, MAX_INBOUND_CAPACITY; past it the worker waits on its own thread and nothing is dropped), applies the poll's halts at once through MeshInbound::apply_halts (src/mesh.rs), counts each hold on qip_edge_event_fabric_control_refused_total{reason=\"fabric_exhausted\"}, and applies the held remainder in arrival order once the gauge reads anything but exhausted. The cell continues from its cached signed policy and local journal meanwhile.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:449 with_journal_trimmed_on_ship().with_journal_wire()",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs:65 spool_pressure_reads_narrow_before_exhausted_and_a_fenced_producer_reads_exhausted"
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs apply_mesh 'let frozen' and held_control",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs MeshInbound::apply_halts, MeshWorker::take_inbound_at_most",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_centre_publishes_while_the_fabric_is_fenced_is_held_and_not_applied",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs::spool_pressure_reads_narrow_before_exhausted_and_a_fenced_producer_reads_exhausted"
     ],
-    "gap": "Control-change freeze on fabric loss; quorum (none exists).",
+    "gap": "No fabric quorum exists to lose (the managed log is not deployed), so the trigger is the node's own spool reading exhausted, not a quorum signal. The release path (held control applied once pressure clears) and a mesh halt applied under a fence have no test: a fence never clears by design and the rig has no drain to bring an over-budget spool back. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2541,10 +2543,10 @@
       "R12-FABRIC-7058"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test journal_pressure",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_policy_the_centre_publishes_while_the_fabric_is_fenced; cargo test -p qip-edge-node --test event_fabric_pressure",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Spool now wired into the binary; quorum-loss behaviour unprovable."
+    "notes": "Re-graded 2026-10-18 by lane L09: control-change freeze implemented on the default loop path and proven for policy. Mutation: making 'frozen' always false applied sequence 2 under the fence and failed the test with 'the cell applied a policy the fenced fabric could not journal'; restored byte for byte. Kept PARTIAL: quorum, release-path test."
   },
   {
     "id": "R12-RES-7114",
