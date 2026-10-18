@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 427 | 28.1% |
+| Blueprint completion (COMPLETE) | 428 | 28.2% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1222 | 80.5% |
 | Integrated (reached from a composition root) | 854 | 56.3% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 427 |
-| PARTIAL | 944 |
+| COMPLETE | 428 |
+| PARTIAL | 943 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -42,7 +42,7 @@ register (ADR 0099), and there is no second one.
 | [EVID](#evid) | 25 | 2 | 23 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 15 | 79 | 3 | 0 | 0 | 93 | 82 | 1 |
 | [WORLD](#world) | 69 | 24 | 40 | 5 | 0 | 0 | 62 | 57 | 1 |
-| [REASON](#reason) | 41 | 12 | 27 | 2 | 0 | 0 | 39 | 39 | 0 |
+| [REASON](#reason) | 41 | 13 | 26 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 19 | 27 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 34 | 28 | 0 | 7 | 0 | 63 | 61 | 0 |
 | [MODEL](#model) | 81 | 20 | 57 | 3 | 1 | 0 | 76 | 71 | 0 |
@@ -851,7 +851,7 @@ register (ADR 0099), and there is no second one.
 
 | Requirement | Blueprint target | Current implementation | Status | Gap | Dependency | Priority | Verification | Work item |
 |---|---|---|---|---|---|---|---|---|
-| R12-REASON-8111 | Symbolic reasoners/solvers with no hot-path dependency | qip-reasoning-engine/qip-quantum exist in-process; edge crates are structurally barred from reaching solvers. | PARTIAL | Custom Rust solvers on the deep brain's Cloud Run capacity satisfy the requirement's 'custom Rust' arm (ADR 0114 Amendment 1); no-hot-path is structural. Needs the deep brain's CPU allocation for solver work declared and an inspection test. Z3/OR-Tools are not admitted. |  | P2 | inspection of catalogue.tf and the binary's composition |  |
+| R12-REASON-8111 | Symbolic reasoners/solvers with no hot-path dependency | The deep brain's GitOps manifest declares 4 vCPU, 8Gi, CPU always allocated (cpuIdle false) and a floor of one instance in dev, test, stage and prod; the catalogue entry that renders it agrees. The register text 'no cpu variable in modules/cloudrun' was stale: the Cloud Run module no longer takes one, the manifest carries the limits. | COMPLETE |  |  | P2 | cd backend && cargo test -p qip-acceptance --test compute_allocation |  |
 | R12-REASON-9005 | Symbolic reasoners produce machine-checkable proofs or constraints | Each formed hypothesis carries a SymbolicDerivation; symbolic_stage::verify is an in-tree checker that re-derives the rule verdict, timeline, posterior, acting answer, intervention, violated assumptions and uncertainty from the record and refuses at the first part that does not reproduce; corrupting any of them fails verification (five tests). | PARTIAL | The checker runs only in tests: no binary or operator surface calls symbolic_stage::replay/verify on a journal, and reasoning does not run on separately provisioned compute (ADR 0002's refusal of an external solver stands). |  | P2 | cargo test -p qip-kernel --test symbolic_federation |  |
 | R12-REASON-9032 | Adversarial/Verifier Society attacks leading forecasts | RedTeam deterministically attacks every hypothesis in the kernel's REASON stage, with severity aggregation and contradiction detection; it targets hypotheses rather than forecasts and there are no ChallengeRequest/VerificationResult contracts. | PARTIAL | Apply to forecasts; typed challenge contracts. |  | P2 | cargo test -p qip-reasoning-engine |  |
 | R12-REASON-10099 | Cognitive compiler distills signed Reflex packages | DistilledModelContract in the policy contract and qip-training distill.rs; no signed OCI output. | PARTIAL | Signed package output and Reflex consumption. | R12-MODEL-10084 | P3 | cargo test -p qip-training |  |
@@ -1561,7 +1561,7 @@ register (ADR 0099), and there is no second one.
 | R12-GCP-10014 | Private Service Connect for managed APIs, never on the hot path | modules/connectivity has a PSC global address and forwarding rule gated by enable_private_service_connect (off). | PARTIAL | Gated off everywhere. |  | P2 | terraform plan with enable_private_service_connect=true |  |
 | R12-GCP-10015 | Private Google Access on every subnet | All subnets set private_ip_google_access and an acceptance test walks every subnet. | COMPLETE |  |  | P1 | cargo test -p qip-acceptance --test infrastructure every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access |  |
 | R12-GCP-10030 | Regional GKE Standard hosts warm services, solvers, agents and sinks | Warm binaries run as Cloud Run services (Config Connector RunService manifests); the only GKE cluster is a private Autopilot GitOps control plane in dev, and an acceptance test refuses any Kubernetes workload running a trading binary. | BLOCKED | Regional GKE Standard for warm services, solvers, agents and sinks is refused; each capability is placed per ADR 0114 Amendment 1. |  | P1 | n/a while ADR 0024 stands |  |
-| R12-GCP-10032 | Cloud Run only where cold-start and latency fit the SLO | Cloud Run catalogue holds the warm binaries; workloads that run the cycle are pinned to one warm instance (tested). No SLO-to-cold-start check. | PARTIAL | No per-service latency SLO tied to instance floor; dev runs no workload. |  | P1 | cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance |  |
+| R12-GCP-10032 | Cloud Run only where cold-start and latency fit the SLO | Cloud Run catalogue holds the warm binaries; workloads that run the cycle are pinned to one warm instance (tested). No SLO-to-cold-start check. | PARTIAL | The closure cannot be built as written: modules/cloudrun has no min_instances input to put a validation on, because the service is a Config Connector manifest (ADR 0036) and min and max instances live in infrastructure/gitops/envs/*/*.yaml and in catalogue.tf. What holds today: infrastructure.rs::every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance pins both brains to a floor of one with a written justification. Missing: a declared latency or cold-start bound per workload, and a rule that a workload with a zero floor says it tolerates a cold start. Building that is a new catalogue field consumed by nothing but the test. |  | P1 | cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance |  |
 | R12-GCP-10060 | Connectivity Tests verify network reachability | No connectivity test resources. | MISSING | Declare tests. |  | P2 | terraform plan |  |
 | R12-GCP-10143 | Six environments: dev, integration, replay, paper, staging, prod | The blueprint's environments map onto the six-link Kargo chain: integration is test (its own project, tfvars and control plane), replay and paper are gate stages with no environment that record freight into gates/<stage>/freight.yaml, stage and prod are themselves. infrastructure/gitops/kargo/README.md states the mapping; gitops.rs::every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage proves every Stage is exactly one of the two kinds, with its tfvars and envs overlay or its freight record and README sentence. | COMPLETE |  |  | P1 | cd backend && cargo test -p qip-acceptance --test gitops -- every_blueprint_stage_maps_to_an_environment_directory_or_a_documented_environment_less_stage |  |
 | R12-GCP-10144 | dev uses mock venues and no production secrets | No environment, dev included, sets a data-source variable in its tfvars (market_data_connector, deepbrain_connector, deepbrain_discover_every, source_candidates_file): the fast brain runs the synthetic exchange and the deep brain polls no vendor and runs no discovery pass. blueprint_arch.rs::dev_declares_no_more_data_sources_than_any_later_environment pins that dev never holds more than test, stage or prod. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-acceptance --test blueprint_arch -- dev_declares_no_more_data_sources_than_any_later_environment |  |

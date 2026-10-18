@@ -699,7 +699,7 @@
       "infrastructure/terraform/catalogue.tf Cloud Run catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6357 every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance"
     ],
-    "gap": "No per-service latency SLO tied to instance floor; dev runs no workload.",
+    "gap": "The closure cannot be built as written: modules/cloudrun has no min_instances input to put a validation on, because the service is a Config Connector manifest (ADR 0036) and min and max instances live in infrastructure/gitops/envs/*/*.yaml and in catalogue.tf. What holds today: infrastructure.rs::every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance pins both brains to a floor of one with a written justification. Missing: a declared latency or cold-start bound per workload, and a rule that a workload with a zero floor says it tolerates a cold start. Building that is a new catalogue field consumed by nothing but the test.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -710,7 +710,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure every_workload_that_runs_the_cycle_over_the_journal_is_pinned_to_one_warm_instance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module; status unchanged."
   },
   {
     "id": "R12-DATA-10033",
