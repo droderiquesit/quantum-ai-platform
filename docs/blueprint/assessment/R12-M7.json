@@ -916,13 +916,15 @@
   {
     "id": "R12-FABRIC-7042",
     "status": "PARTIAL",
-    "current": "qip-cli event-fabric grant/isolate/release and inspect exist; broker isolate tested.",
+    "current": "qip-cli event-fabric grant (ACLs), isolate/release (isolation) and, since 2026-10-18, lag exist. 'qip event-fabric lag --peer --stream --partition --group' asks the broker's group/lag route and prints the group's committed offset, the partition's high watermark and their gap as the broker computed them; a group that never committed is refused, not reported caught up. Loopback-only peer and file-only operator token, as for isolate.",
     "evidence": [
       "backend/crates/apps/qip-cli/src/event_fabric/inspect.rs, admin.rs:181 event-fabric grant/isolate/release subcommands (qip-cli main.rs:75)",
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:699 Broker::isolate",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 operator isolates one partition"
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 operator isolates one partition",
+      "backend/crates/apps/qip-cli/src/event_fabric/lag.rs:83 lag::run",
+      "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs:393 the_lag_command_reports_a_groups_committed_offset_against_the_high_watermark"
     ],
-    "gap": "No lag/mirroring/replay views (no mirroring exists).",
+    "gap": "Two views remain: partition health (the broker's metadata route already returns leader epoch, high watermark and archived_through, but no CLI asks it, and the response carries no isolation state, so a health view would need the route to report isolation too) and fabric replay (qip replay replays the event log, not a fabric partition). Mirroring has no view because the fabric does not mirror (ADR 0100).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -930,10 +932,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cli; cargo test -p qip-fabricd --test broker",
+    "verification": "cargo test -p qip-cli --test event_fabric_admin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " Lane L24 2026-10-18: lag view added. Mutation: printing the committed offset where the lag belongs fails the exact-line assertion; restored, qip-cli suite passes. Kept PARTIAL for the health and replay views."
   },
   {
     "id": "R12-FABRIC-7043",
