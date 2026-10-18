@@ -12,6 +12,23 @@ pub trait BlobStore: Send + Sync + std::fmt::Debug {
     fn delete(&self, key: &str) -> Result<bool>;
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
 
+    /// Write `bytes` under `key` only if no object is there, atomically with
+    /// the check: `Ok(true)` when this call created the object, `Ok(false)`
+    /// when one already existed and was left untouched. A read followed by a
+    /// write lets two writers racing on one key both pass the read, and the
+    /// second silently replaces the first; this is the write a sealed record
+    /// needs instead (R12-TICK-2055).
+    ///
+    /// The default refuses: a store that cannot make the write conditional
+    /// must say so rather than fall back to the race this exists to close.
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        let _ = bytes;
+        Err(Error::unavailable(format!(
+            "this blob store cannot write {key} conditionally; a sealed record needs a store \
+             whose create-if-absent is atomic"
+        )))
+    }
+
     /// Content hash of a stored blob, for integrity checks.
     fn digest(&self, key: &str) -> Result<Option<String>> {
         Ok(self.get(key)?.map(|b| qip_core::hash::sha256_hex(&b)))
@@ -36,6 +53,15 @@ impl BlobStore for MemoryBlobStore {
             .unwrap_or_else(|e| e.into_inner())
             .insert(key.to_string(), bytes);
         Ok(())
+    }
+
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        let mut blobs = self.blobs.lock().unwrap_or_else(|e| e.into_inner());
+        if blobs.contains_key(key) {
+            return Ok(false);
+        }
+        blobs.insert(key.to_string(), bytes);
+        Ok(true)
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -111,6 +137,11 @@ impl BlobStore for FileBlobStore {
             std::fs::create_dir_all(parent)?;
         }
         crate::fsio::write_atomic(&path, &bytes)
+    }
+
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        let path = self.path_for(key)?;
+        crate::fsio::create_atomic(&path, &bytes)
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
