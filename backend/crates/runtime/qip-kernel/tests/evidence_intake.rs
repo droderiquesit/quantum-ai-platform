@@ -507,3 +507,58 @@ mod production {
         );
     }
 }
+
+/// EVID-2039: a campaign that rewords its copy is still a campaign. Three
+/// sources carry one story in three wordings — a clause added at the front,
+/// a clause added at the end — whose exact fingerprints differ, so the
+/// identical-text arm sees three unrelated stories; the shingle arm sees one
+/// statement in three near-identical wordings. Mutation: compare exact
+/// fingerprints only (set `near_duplicate_similarity` to above one in
+/// `detect_poisoning`, or skip the shingle components) — the finding is
+/// absent.
+#[test]
+fn a_reworded_campaign_across_three_sources_is_found_by_the_near_duplicate_arm() {
+    use qip_world_model::fabric::statement_fingerprint;
+    let mut platform = platform();
+    let thresholds = PoisoningThresholds::default();
+    let wordings = [
+        "Acme CEO arrested at the airport this morning on fraud charges",
+        "Breaking: Acme CEO arrested at the airport this morning on fraud charges, sources say",
+        "Acme CEO arrested at the airport this morning on fraud charges, according to police",
+    ];
+    let fingerprints: std::collections::BTreeSet<String> =
+        wordings.iter().map(|w| statement_fingerprint(w)).collect();
+    assert_eq!(
+        fingerprints.len(),
+        3,
+        "premise: the three wordings share no exact fingerprint"
+    );
+    let campaign = wordings
+        .into_iter()
+        .zip(['a', 'b', 'c'])
+        .enumerate()
+        .map(|(i, (wording, c))| {
+            checked(
+                &format!("k{i}"),
+                &format!("https://site{i}.example"),
+                wording,
+                "x",
+                &hash(c),
+            )
+        })
+        .collect();
+    platform.absorb_evidence(campaign, at(30));
+    assert_eq!(platform.evidence_held(), 3, "premise: all three held");
+    let findings = platform.evidence_poisoning(at(40), &thresholds);
+    let campaign = findings
+        .iter()
+        .find(|f| f.class == PoisoningClass::CoordinatedManipulation)
+        .unwrap_or_else(|| panic!("no coordination finding: {findings:?}"));
+    assert_eq!(campaign.sources.len(), 3, "{campaign:?}");
+    assert_eq!(campaign.claims.len(), 3, "{campaign:?}");
+    assert!(
+        campaign.evidence.contains("3 near-identical wordings"),
+        "{}",
+        campaign.evidence
+    );
+}

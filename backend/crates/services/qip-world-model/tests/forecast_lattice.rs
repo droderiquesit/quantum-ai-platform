@@ -14,8 +14,9 @@ use qip_contracts::forecast::{Calibration, ForecastFields, OutcomeDistribution, 
 use qip_core::Decimal;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::lattice::{
-    Calibrator, InconsistencyKind, Lane, LatticeHorizon, LatticeModel, Population, PromotionTarget,
-    Question, Reputation, Resolution, TargetInput, WeightUpdate, constrain, issue, route,
+    Calibrator, CatalystExpectation, FLOW_SHIFT_PER_SD, ForecastContext, InconsistencyKind, Lane,
+    LatticeHorizon, LatticeModel, ModelFamily, Population, PromotionTarget, Question, Reputation,
+    ReputationKey, Resolution, StructuralClaim, TargetInput, WeightUpdate, constrain, issue, route,
     staleness_multiplier,
 };
 use std::collections::BTreeMap;
@@ -34,6 +35,7 @@ fn input() -> TargetInput {
         regime_confidence_bp: 7_000,
         held_quantity: 10.0,
         evidence: vec!["kernel/bar-history#obj-AAA".into()],
+        context: ForecastContext::default(),
     }
 }
 
@@ -74,7 +76,7 @@ fn a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admiss
                 id: format!("{}/ok", horizon.as_str()),
                 horizon,
                 target: horizon.promotion_target(),
-                uses_drift: false,
+                family: ModelFamily::Martingale,
             })
             .unwrap();
     }
@@ -101,7 +103,7 @@ fn a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admiss
                 id: format!("{}/wrong/{}", horizon.as_str(), wrong.as_str()),
                 horizon,
                 target: wrong,
-                uses_drift: false,
+                family: ModelFamily::Martingale,
             });
             assert!(
                 refused.is_err(),
@@ -211,10 +213,12 @@ fn every_issued_forecast_is_a_calibrated_distribution_with_its_uncertainty_split
         };
         assert_eq!(points.len(), 3);
         assert_eq!(
-            f.models_consulted, 2,
-            "both members of the row are consulted"
+            f.models_consulted, 3,
+            "both generic members and the row's specialist are consulted"
         );
-        // The drift member and the martingale member disagree by the drift.
+        // The drift member and the martingale member disagree by the drift;
+        // a specialist given no signal states the level, or the NOW drift
+        // at the regime row, so the spread is still the drift.
         let days = horizon.representative().as_days_f64();
         let expected = Decimal::from_f64(0.1 * days).unwrap();
         assert!((f.model_disagreement - expected).abs() < Decimal::from_f64(1e-6).unwrap());
@@ -282,25 +286,58 @@ fn a_question_routes_by_reputation_and_falls_back_to_the_default_ensemble() {
     };
     let fallback = route(&population, &question, None).unwrap();
     assert!(fallback.fallback);
-    assert_eq!(fallback.weights.len(), 2);
-    assert!(fallback.weights.values().all(|w| (*w - 0.5).abs() < 1e-12));
-    let mut cache = Reputation::new();
-    cache.insert(
-        (LatticeHorizon::HoursDays, "hours_days/martingale".into()),
-        0.2,
+    assert_eq!(fallback.weights.len(), 3);
+    assert!(
+        fallback
+            .weights
+            .values()
+            .all(|w| (*w - 1.0 / 3.0).abs() < 1e-12)
     );
-    cache.insert((LatticeHorizon::HoursDays, "hours_days/drift".into()), 0.8);
+    let key = |domain: &str, model: &str| ReputationKey {
+        domain: domain.into(),
+        horizon: LatticeHorizon::HoursDays,
+        model: model.into(),
+    };
+    let mut cache = Reputation::new();
+    cache.insert(key("markets", "hours_days/martingale"), 0.1);
+    cache.insert(key("markets", "hours_days/drift"), 0.8);
+    cache.insert(key("markets", "hours_days/event_reaction"), 0.1);
     let routed = route(&population, &question, Some(&cache)).unwrap();
     assert!(!routed.fallback);
     assert_eq!(routed.best(), Some("hours_days/drift"));
     // A cache that does not cover the row is as good as none.
     let mut partial = Reputation::new();
-    partial.insert((LatticeHorizon::HoursDays, "hours_days/drift".into()), 1.0);
+    partial.insert(key("markets", "hours_days/drift"), 1.0);
     assert!(
         route(&population, &question, Some(&partial))
             .unwrap()
             .fallback
     );
+    // WORLD-9022: the reputation is earned per domain. The same row asked in
+    // the macro domain, where the martingale has done best, routes to the
+    // martingale; and a domain the cache has not scored falls back, however
+    // well the row is known in markets. Mutation: look the cache up under a
+    // fixed domain in `route`.
+    cache.insert(key("macro", "hours_days/martingale"), 0.7);
+    cache.insert(key("macro", "hours_days/drift"), 0.2);
+    cache.insert(key("macro", "hours_days/event_reaction"), 0.1);
+    let macro_question = Question {
+        domain: "macro".into(),
+        ..question.clone()
+    };
+    let macro_routed = route(&population, &macro_question, Some(&cache)).unwrap();
+    assert!(!macro_routed.fallback);
+    assert_eq!(macro_routed.best(), Some("hours_days/martingale"));
+    assert_eq!(
+        route(&population, &question, Some(&cache)).unwrap().best(),
+        Some("hours_days/drift"),
+        "premise: the markets answer is unchanged by the macro entries"
+    );
+    let unknown = Question {
+        domain: "weather".into(),
+        ..question
+    };
+    assert!(route(&population, &unknown, Some(&cache)).unwrap().fallback);
 }
 
 /// WORLD-9024: a forecast past its expiry is not used, and the multiplier a
@@ -330,6 +367,7 @@ fn resolution(
     let due = t0().saturating_add(horizon.representative());
     Resolution {
         forecast_id: id.into(),
+        domain: "markets".into(),
         horizon,
         regime: regime.into(),
         model_means: BTreeMap::from([
@@ -416,7 +454,11 @@ fn with_the_calibrator_unavailable_the_weights_equal_the_last_safe_set() {
     assert_eq!(c.refresh_weights(true), WeightUpdate::Updated);
     let safe = c.weights().clone();
     assert_eq!(safe.len(), 2, "premise: both members weighed");
-    let drift = safe[&(h, "hours_days/drift".to_string())];
+    let drift = safe[&ReputationKey {
+        domain: "markets".into(),
+        horizon: h,
+        model: "hours_days/drift".into(),
+    }];
     assert!(drift > 0.5, "the closer member weighs more: {drift}");
     // More evidence arrives that would move the weights a long way.
     for i in 0..20 {
@@ -428,4 +470,256 @@ fn with_the_calibrator_unavailable_the_weights_equal_the_last_safe_set() {
     assert!(c.frozen());
     assert_eq!(c.refresh_weights(true), WeightUpdate::Updated);
     assert_ne!(c.weights(), &safe);
+}
+
+/// Issue the row with the given context, routed by the default ensemble.
+fn issued_with(
+    horizon: LatticeHorizon,
+    context: ForecastContext,
+) -> qip_world_model::lattice::Issued {
+    let population = Population::standard().unwrap();
+    let routed = route(
+        &population,
+        &Question {
+            target: "obj-AAA/close".into(),
+            domain: "markets".into(),
+            horizon,
+        },
+        None,
+    )
+    .unwrap();
+    let input = TargetInput { context, ..input() };
+    issue(
+        Lane::Central,
+        &input,
+        horizon,
+        &population,
+        &routed,
+        Calibration::Uncalibrated,
+        t0(),
+    )
+    .unwrap()
+}
+
+fn width(made: &qip_world_model::lattice::Issued) -> f64 {
+    made.quantiles[2] - made.quantiles[0]
+}
+
+/// WORLD-3085: the seconds-minutes row holds an order-flow member whose
+/// distribution moves with the imbalance — a buy imbalance lifts its mean
+/// above the level by the stated share of the horizon's standard deviation
+/// and widens the row; a sell imbalance lowers it; and an imbalance outside
+/// `[-1, 1]` is refused, not clamped. Mutation: ignore the imbalance in
+/// `project` for `ModelFamily::OrderFlow`.
+#[test]
+fn the_seconds_row_holds_a_flow_member_whose_distribution_moves_with_the_imbalance() {
+    let h = LatticeHorizon::SecondsMinutes;
+    let flat = issued_with(h, ForecastContext::default());
+    assert!(
+        flat.model_means.contains_key("seconds_minutes/order_flow"),
+        "premise: the row holds a flow member: {:?}",
+        flat.model_means.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        (flat.model_means["seconds_minutes/order_flow"] - 100.0).abs() < 1e-12,
+        "premise: with no flow the member states the level"
+    );
+    let with = |imbalance: f64| {
+        issued_with(
+            h,
+            ForecastContext {
+                flow_imbalance: Some(imbalance),
+                ..ForecastContext::default()
+            },
+        )
+    };
+    let buy = with(0.8);
+    let sell = with(-0.8);
+    let days = h.representative().as_days_f64();
+    let sd = (1.0 * days).sqrt();
+    let flow_mean = buy.model_means["seconds_minutes/order_flow"];
+    assert!(
+        (flow_mean - (100.0 + 0.8 * FLOW_SHIFT_PER_SD * sd)).abs() < 1e-9,
+        "buy flow lifts the member by its share of the horizon sd: {flow_mean}"
+    );
+    assert!(sell.model_means["seconds_minutes/order_flow"] < 100.0);
+    assert!(
+        buy.quantiles[1] > flat.quantiles[1],
+        "the row's median leans with the flow"
+    );
+    assert!(sell.quantiles[1] < flat.quantiles[1]);
+    assert!(width(&buy) > width(&flat), "an imbalance widens the row");
+    assert!(
+        buy.forecast.fields().uncertainty.aleatoric > flat.forecast.fields().uncertainty.aleatoric
+    );
+    let population = Population::standard().unwrap();
+    let routed = route(
+        &population,
+        &Question {
+            target: "obj-AAA/close".into(),
+            domain: "markets".into(),
+            horizon: h,
+        },
+        None,
+    )
+    .unwrap();
+    let bad = TargetInput {
+        context: ForecastContext {
+            flow_imbalance: Some(1.7),
+            ..ForecastContext::default()
+        },
+        ..input()
+    };
+    assert!(
+        issue(
+            Lane::Central,
+            &bad,
+            h,
+            &population,
+            &routed,
+            Calibration::Uncalibrated,
+            t0()
+        )
+        .is_err(),
+        "an imbalance outside [-1, 1] is refused"
+    );
+}
+
+/// WORLD-3086: the hours-days row holds an event-reaction member, and a
+/// pending catalyst widens the row by the expected reaction without moving
+/// its median, because the direction is the thing nobody knows yet.
+/// Mutation: ignore the catalyst in `project` for `ModelFamily::EventReaction`.
+#[test]
+fn a_pending_catalyst_widens_the_hours_row_without_moving_its_median() {
+    let h = LatticeHorizon::HoursDays;
+    let quiet = issued_with(h, ForecastContext::default());
+    assert!(
+        quiet.model_means.contains_key("hours_days/event_reaction"),
+        "premise: the row holds an event-reaction member"
+    );
+    let pending = issued_with(
+        h,
+        ForecastContext {
+            pending_catalyst: Some(CatalystExpectation {
+                source: "macro_surprise/US.CPI.YOY".into(),
+                expected_abs_move: 0.05,
+            }),
+            ..ForecastContext::default()
+        },
+    );
+    assert!(
+        (pending.quantiles[1] - quiet.quantiles[1]).abs() < 1e-9,
+        "a catalyst of unknown direction does not move the median"
+    );
+    assert!(
+        width(&pending) > width(&quiet),
+        "a pending catalyst widens the row: {} vs {}",
+        width(&pending),
+        width(&quiet)
+    );
+    // The widening is the member's share of (0.05 * 100)^2 = 25 at a third
+    // of the weight: the aleatoric variance grows by 25 / 3.
+    let grew = (pending.forecast.fields().uncertainty.aleatoric
+        - quiet.forecast.fields().uncertainty.aleatoric)
+        .to_f64();
+    assert!((grew - 25.0 / 3.0).abs() < 1e-6, "{grew}");
+}
+
+/// WORLD-3087: the weeks-months row holds a regime-path member that projects
+/// the drift the current regime label has shown, so a regime change moves
+/// the row's median while every other input is unchanged. Mutation: ignore
+/// the regime in `project` for `ModelFamily::RegimePath`.
+#[test]
+fn a_regime_change_moves_the_weeks_rows_median_through_the_regime_path_member() {
+    let h = LatticeHorizon::WeeksMonths;
+    let drifts = BTreeMap::from([("bull".to_string(), 0.4), ("bear".to_string(), -0.4)]);
+    let under = |regime: &str| {
+        issued_with(
+            h,
+            ForecastContext {
+                regime: Some(regime.into()),
+                regime_drifts: drifts.clone(),
+                ..ForecastContext::default()
+            },
+        )
+    };
+    let bull = under("bull");
+    let bear = under("bear");
+    assert!(
+        bull.model_means.contains_key("weeks_months/regime_path"),
+        "premise: the row holds a regime-path member"
+    );
+    let days = h.representative().as_days_f64();
+    assert!((bull.model_means["weeks_months/regime_path"] - (100.0 + 0.4 * days)).abs() < 1e-9);
+    assert!((bear.model_means["weeks_months/regime_path"] - (100.0 - 0.4 * days)).abs() < 1e-9);
+    assert!(
+        bull.quantiles[1] > bear.quantiles[1],
+        "the regime label moves the median: {} vs {}",
+        bull.quantiles[1],
+        bear.quantiles[1]
+    );
+    // A label the drifts do not cover falls back to the NOW drift, like the
+    // drift member, rather than inventing a regime.
+    let unknown = under("sideways");
+    assert!(
+        (unknown.model_means["weeks_months/regime_path"]
+            - unknown.model_means["weeks_months/drift"])
+            .abs()
+            < 1e-9
+    );
+}
+
+/// WORLD-3088: the quarters-years row holds a structural member fed by the
+/// live causal claims bearing on the target; each adds its transmission
+/// squared of the row's variance, so a claim retired (absent from the live
+/// set) narrows the row. Mutation: ignore the claims in `project` for
+/// `ModelFamily::Structural`.
+#[test]
+fn a_retired_structural_claim_narrows_the_quarters_row() {
+    let h = LatticeHorizon::QuartersYears;
+    let claim = |cause: &str, transmission: f64| StructuralClaim {
+        cause: cause.into(),
+        mechanism: "supply_chain".into(),
+        transmission,
+        lag: Duration::from_days(90),
+    };
+    let with = |claims: Vec<StructuralClaim>| {
+        issued_with(
+            h,
+            ForecastContext {
+                structural_claims: claims,
+                ..ForecastContext::default()
+            },
+        )
+    };
+    let none = with(vec![]);
+    assert!(
+        none.model_means.contains_key("quarters_years/structural"),
+        "premise: the row holds a structural member"
+    );
+    let two = with(vec![claim("kestrel", 0.6), claim("rates", -0.3)]);
+    let one = with(vec![claim("kestrel", 0.6)]);
+    assert!(
+        width(&two) > width(&one),
+        "{} vs {}",
+        width(&two),
+        width(&one)
+    );
+    assert!(
+        width(&one) > width(&none),
+        "{} vs {}",
+        width(&one),
+        width(&none)
+    );
+    // The widening is exact: (0.36 + 0.09) of the horizon variance (365) at
+    // a third of the weight.
+    let days = h.representative().as_days_f64();
+    let grew = (two.forecast.fields().uncertainty.aleatoric
+        - none.forecast.fields().uncertainty.aleatoric)
+        .to_f64();
+    assert!((grew - 0.45 * days / 3.0).abs() < 1e-6, "{grew}");
+    assert!(
+        (two.quantiles[1] - none.quantiles[1]).abs() < 1e-9,
+        "claims of unknown direction over the horizon do not move the median"
+    );
 }

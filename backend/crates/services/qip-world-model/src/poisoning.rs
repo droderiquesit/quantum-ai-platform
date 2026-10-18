@@ -28,7 +28,9 @@
 //!
 //! Findings are ordered by class then by source so a replay reads the same.
 
-use crate::fabric::{EvidenceFabric, statement_fingerprint};
+use crate::fabric::{
+    EvidenceFabric, shingle_similarity, statement_fingerprint, statement_shingles,
+};
 use qip_core::{Duration, Timestamp};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,6 +86,16 @@ pub struct PoisoningThresholds {
     pub min_coordinated_sources: usize,
     /// The publication spread inside which identical text is coordinated.
     pub coordination_spread: Duration,
+    /// Shingle similarity ([`shingle_similarity`]) at or above which two
+    /// statements are near-identical for the coordination arm (EVID-2039).
+    /// Identical text scores one; a copy with a clause added or a word
+    /// swapped every few words still scores above this; two stories on one
+    /// event in their own words do not.
+    pub near_duplicate_similarity: f64,
+    /// The most recent records the near-duplicate pass compares pairwise.
+    /// The pass is quadratic in this figure, so it is bounded here rather
+    /// than by the fabric's capacity.
+    pub near_duplicate_scan: usize,
     /// Contradicted resolutions before a source can be called poisoned.
     pub min_resolved: u64,
     /// Share of resolved claims lost at or above which it is.
@@ -102,6 +114,8 @@ impl Default for PoisoningThresholds {
             window: Duration::from_hours(24),
             min_coordinated_sources: 3,
             coordination_spread: Duration::from_mins(10),
+            near_duplicate_similarity: 0.6,
+            near_duplicate_scan: 512,
             min_resolved: 3,
             poisoned_share: 0.6,
             min_impossible: 2,
@@ -124,7 +138,13 @@ pub fn detect_poisoning(
         .filter(|held| held.record.ingestion_timestamp >= since)
         .collect();
 
-    // Coordination: identical text, distinct sources, distinct documents.
+    // Coordination: near-identical text, distinct sources, distinct
+    // documents. Identical text (one fingerprint) is the similarity-one
+    // case of the same clustering; the shingle pass is what catches a copy
+    // with a clause added or a word swapped, which an exact fingerprint read
+    // as three unrelated stories (EVID-2039). Clusters are the connected
+    // components of "similar enough" over the newest records, pairwise, so
+    // the scan is bounded by `near_duplicate_scan` rather than the window.
     let mut by_text: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for held in &recent {
         by_text
@@ -132,7 +152,57 @@ pub fn detect_poisoning(
             .or_default()
             .push(*held);
     }
-    for cluster in by_text.values() {
+    let mut newest: Vec<_> = recent.clone();
+    newest.sort_by(|a, b| {
+        b.record
+            .ingestion_timestamp
+            .cmp(&a.record.ingestion_timestamp)
+            .then_with(|| a.record.id.cmp(&b.record.id))
+    });
+    newest.truncate(thresholds.near_duplicate_scan);
+    let shingles: Vec<BTreeSet<String>> = newest
+        .iter()
+        .map(|held| statement_shingles(&held.record.statement))
+        .collect();
+    let mut parent: Vec<usize> = (0..newest.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..newest.len() {
+        for j in (i + 1)..newest.len() {
+            if shingle_similarity(&shingles[i], &shingles[j])
+                >= thresholds.near_duplicate_similarity
+            {
+                let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                if a != b {
+                    parent[a] = b;
+                }
+            }
+        }
+    }
+    let mut components: BTreeMap<usize, Vec<_>> = BTreeMap::new();
+    for (i, held) in newest.iter().enumerate() {
+        let r = root(&mut parent, i);
+        components.entry(r).or_default().push(*held);
+    }
+    // A component of one fingerprint is already the exact cluster above;
+    // keep the exact clusters (they cover records past the scan bound) and
+    // add every component that joins more than one fingerprint.
+    let mut clusters: Vec<Vec<_>> = by_text.into_values().collect();
+    for component in components.into_values() {
+        let fingerprints: BTreeSet<String> = component
+            .iter()
+            .map(|held| statement_fingerprint(&held.record.statement))
+            .collect();
+        if fingerprints.len() > 1 {
+            clusters.push(component);
+        }
+    }
+    for cluster in &clusters {
         let sources: BTreeSet<String> = cluster
             .iter()
             .map(|held| held.record.source_identity.clone())
@@ -153,11 +223,21 @@ pub fn detect_poisoning(
         if last.since(first) > thresholds.coordination_spread {
             continue;
         }
+        let distinct_texts = cluster
+            .iter()
+            .map(|held| statement_fingerprint(&held.record.statement))
+            .collect::<BTreeSet<_>>()
+            .len();
         findings.push(PoisoningFinding {
             class: PoisoningClass::CoordinatedManipulation,
             evidence: format!(
-                "{} sources published one statement from {} distinct documents within {:.0}s",
+                "{} sources published {} from {} distinct documents within {:.0}s",
                 sources.len(),
+                if distinct_texts == 1 {
+                    "one statement".to_string()
+                } else {
+                    format!("{distinct_texts} near-identical wordings of one statement")
+                },
                 documents.len(),
                 last.since(first).as_secs_f64()
             ),

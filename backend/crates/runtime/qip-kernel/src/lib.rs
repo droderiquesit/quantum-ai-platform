@@ -53,6 +53,7 @@ pub mod desk_fabric;
 pub mod desk_ledger;
 pub mod event_markets;
 pub mod evidence_intake;
+pub mod executable_scope;
 pub mod exploration;
 pub mod fabric_declaration;
 pub mod falsification;

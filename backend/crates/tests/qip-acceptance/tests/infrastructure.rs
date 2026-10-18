@@ -13251,3 +13251,341 @@ fn static_analysis_gates_ci_and_deploy_reads_it_by_name() {
         "codeql-analysis.yml triggers itself on push or pull request again: {triggers}"
     );
 }
+
+// --- the ledger's Spanner instance (ADR 0113) --------------------------------
+
+const DATA_MODULE: &str = "infrastructure/terraform/modules/data/main.tf";
+
+#[test]
+fn the_ledger_spanner_instance_holds_only_the_positions_database() {
+    // R12-LEDGER-10197 and R12-LEDGER-8133. The ledger, the world graph, agent
+    // memory and service tables must not share one Spanner database, and the
+    // ledger and the graph must not share one instance. ADR 0113 admits one
+    // instance for the ledger and refuses Spanner Graph outright, so today the
+    // separation holds because nothing else exists — and "nothing else exists"
+    // is the property that erodes one convenient `resource` at a time. This
+    // refuses the second database on the ledger's instance, whatever it is
+    // called, and names the ones the blueprint fears by name so the failure
+    // message says which rule was crossed.
+    let data = without_comments(&read(DATA_MODULE));
+
+    let instances = terraform_resources(&data, "google_spanner_instance");
+    assert_eq!(
+        instances
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["global"],
+        "modules/data declares a Spanner instance other than the ledger's `global` (or none): \
+         a second instance here is either a graph or a memory store ADR 0113 did not admit, \
+         and the ledger's instance renamed is a ledger nobody's grant reaches"
+    );
+
+    let databases = terraform_resources(&data, "google_spanner_database");
+    assert!(
+        !databases.is_empty(),
+        "modules/data declares no google_spanner_database: the ledger has nowhere to live and \
+         this check is reading the wrong module"
+    );
+    let names: Vec<&str> = databases.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["positions"],
+        "the ledger's Spanner instance holds a database other than `positions`: {names:?}. \
+         One database per trust domain (R12-LEDGER-10197); a second domain's tables go on \
+         their own instance under their own ADR, never beside the ledger"
+    );
+    for forbidden in ["graph", "memory", "service", "world"] {
+        assert!(
+            !names.iter().any(|name| name.contains(forbidden)),
+            "a `{forbidden}` database sits on the ledger's instance"
+        );
+    }
+    let (_, positions) = &databases[0];
+    assert_eq!(
+        hcl_field(positions, "name").as_deref(),
+        Some("\"positions\""),
+        "the `positions` resource creates a database under another name"
+    );
+    assert_eq!(
+        hcl_field(positions, "instance").as_deref(),
+        Some("google_spanner_instance.global[0].name"),
+        "the positions database is not on the ledger's `global` instance"
+    );
+}
+
+#[test]
+fn the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration() {
+    // R12-LEDGER-8132: the ledger of record is Spanner Enterprise Plus in a
+    // multi-region configuration with external consistency. The configuration
+    // name carries the multi-region half; the edition is a separate attribute
+    // that, left unset, the provider fills from the project's default — so a
+    // ledger on Standard and a ledger on Enterprise Plus would read as the
+    // same resource in every review. Refuse the attribute's absence.
+    let data = without_comments(&read(DATA_MODULE));
+    let instances = terraform_resources(&data, "google_spanner_instance");
+    let (_, global) = instances
+        .iter()
+        .find(|(name, _)| name == "global")
+        .expect("modules/data declares google_spanner_instance.global");
+
+    assert_eq!(
+        hcl_field(global, "edition").as_deref(),
+        Some("\"ENTERPRISE_PLUS\""),
+        "the ledger's Spanner instance does not pin `edition = \"ENTERPRISE_PLUS\"`; a project \
+         default is an edition nobody reviewed"
+    );
+    let config = hcl_field(global, "config").expect("the instance names a `config`");
+    let config = config.trim_matches('"');
+    assert!(
+        config.contains('-') && !config.starts_with("regional-"),
+        "the ledger's instance config `{config}` is a single region, not a multi-region \
+         configuration; external consistency across regions needs one"
+    );
+}
+
+// --- five networks, each deny-by-default on ingress ---------------------------
+
+#[test]
+fn the_network_module_declares_five_vpcs_each_with_a_deny_ingress_rule() {
+    // R12-GCP-10008: Reflex, Fabric, Service, Data and Engineering are five
+    // networks, each with a catch-all ingress deny. Three come from one
+    // `for_each` over `local.networks` and two are standalone resources, so a
+    // count of `google_compute_network` blocks reads three and a count of
+    // deny rules reads three; this walks the map and the standalone pair and
+    // pairs every network with the deny rule that names it.
+    let network = without_comments(&read(NETWORK_MODULE));
+
+    let map = block_under(&network, "networks = {");
+    let mapped: Vec<String> = map
+        .lines()
+        .filter_map(|line| {
+            let (key, _) = line.split_once('=')?;
+            Some(key.trim().to_string())
+        })
+        .collect();
+    assert_eq!(
+        mapped,
+        vec!["reflex", "fabric", "service"],
+        "local.networks no longer names the three planes ADR 0100 separates"
+    );
+
+    let networks = terraform_resources(&network, "google_compute_network");
+    let network_names: Vec<&str> = networks.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        network_names.contains(&"vpc"),
+        "the planes' `google_compute_network.vpc` is gone: {network_names:?}"
+    );
+    let (_, vpc) = networks
+        .iter()
+        .find(|(name, _)| name == "vpc")
+        .expect("checked above");
+    assert_eq!(
+        hcl_field(vpc, "for_each").as_deref(),
+        Some("local.networks"),
+        "google_compute_network.vpc no longer iterates local.networks, so the three planes \
+         may have collapsed to one"
+    );
+    let standalone = ["data_vpc", "engineering_vpc"];
+    for name in standalone {
+        assert!(
+            network_names.contains(&name),
+            "the network module no longer declares google_compute_network.{name}: {network_names:?}"
+        );
+    }
+    let total = mapped.len() + standalone.len();
+    assert_eq!(
+        total, 5,
+        "the module declares {total} networks rather than five"
+    );
+
+    // Every network has exactly one catch-all ingress deny, bound to it.
+    let rules = terraform_resources(&network, "google_compute_firewall");
+    assert!(
+        !rules.is_empty(),
+        "the network module declares no firewall rules"
+    );
+    let is_catch_all_ingress_deny = |body: &str| -> bool {
+        let fields = |key: &str| hcl_field(body, key).unwrap_or_default();
+        fields("direction") == "\"INGRESS\""
+            && body.contains("deny {")
+            && block_under(body, "deny {")
+                .lines()
+                .any(|line| collapsed(line) == "protocol = \"all\"")
+            && fields("source_ranges") == "[\"0.0.0.0/0\"]"
+    };
+    let (_, planes_deny) = rules
+        .iter()
+        .find(|(name, _)| name == "deny_ingress")
+        .expect("the planes' deny_ingress rule exists");
+    assert_eq!(
+        hcl_field(planes_deny, "for_each").as_deref(),
+        Some("local.networks"),
+        "deny_ingress does not iterate the same map as the networks, so a plane can exist \
+         without its deny"
+    );
+    assert_eq!(
+        hcl_field(planes_deny, "network").as_deref(),
+        Some("google_compute_network.vpc[each.key].id"),
+        "deny_ingress is not bound to the plane it iterates"
+    );
+    assert!(
+        is_catch_all_ingress_deny(planes_deny),
+        "the planes' deny_ingress is not a catch-all ingress deny from 0.0.0.0/0"
+    );
+    for name in standalone {
+        let rule_name = format!("{name}_deny_ingress");
+        let (_, deny) = rules
+            .iter()
+            .find(|(candidate, _)| *candidate == rule_name)
+            .unwrap_or_else(|| panic!("no google_compute_firewall.{rule_name} guards {name}"));
+        assert_eq!(
+            hcl_field(deny, "network").as_deref(),
+            Some(format!("google_compute_network.{name}.id").as_str()),
+            "{rule_name} is bound to another network"
+        );
+        assert!(
+            is_catch_all_ingress_deny(deny),
+            "{rule_name} is not a catch-all ingress deny from 0.0.0.0/0"
+        );
+    }
+}
+
+// --- the agent identity holds no deploy grant ---------------------------------
+
+#[test]
+fn the_agent_identity_holds_no_run_deploy_or_actas_role() {
+    // R12-CICD-8033: an autonomous agent's production changes go through the
+    // pipeline — tests, attestation, promotion — like anyone's, which is only
+    // true while the agent's own identity cannot deploy around it. The
+    // sibling test above reads one resource type; a `roles/run.admin` grant
+    // written as `google_project_iam_member`, or an `actAs` on a workload's
+    // account written as `google_service_account_iam_binding`, would pass it.
+    // This reads every `*_iam_member`, `*_iam_binding` and `*_iam_policy`
+    // resource in the tree and refuses one that names the identity at all:
+    // the account is deliberately grantless, and the first grant is the one
+    // to argue about in an ADR rather than admit by role name.
+    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+    let accounts = terraform_resources(&root, "google_service_account");
+    let (_, agent) = accounts
+        .iter()
+        .find(|(name, _)| name == "agent_identity")
+        .expect("the root module declares google_service_account.agent_identity");
+    assert_eq!(
+        hcl_field(agent, "account_id").as_deref(),
+        Some("\"qip-agent-identity\""),
+        "the agent identity's account_id changed; the scan below matches on it"
+    );
+
+    let mut grants_seen = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for rest in text.split("\nresource \"").skip(1) {
+            let (resource_type, body) = rest.split_once('"').unwrap_or((rest, ""));
+            if !(resource_type.ends_with("_iam_member")
+                || resource_type.ends_with("_iam_binding")
+                || resource_type.ends_with("_iam_policy"))
+            {
+                continue;
+            }
+            grants_seen += 1;
+            let body = body.split("\nresource \"").next().unwrap_or(body);
+            let names_agent = body.contains("agent_identity")
+                || body.contains("qip-agent-identity")
+                || body.contains("agent_identity_email");
+            assert!(
+                !names_agent,
+                "{}: `{resource_type}` grants the autonomous agent identity a role; the agent \
+                 deploys through the pipeline or not at all, and a grant it needs is an ADR, \
+                 not a binding:\n{body}",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        grants_seen > 10,
+        "the scan found {grants_seen} IAM grants in the whole tree; the resource shape has \
+         changed and this check reads nothing"
+    );
+    // The email is exported, so a grant could be written outside this
+    // repository; what this test can hold is that nothing here consumes it.
+    let consumers = root
+        .matches("google_service_account.agent_identity.")
+        .count();
+    assert_eq!(
+        consumers, 1,
+        "the root module reads the agent identity {consumers} times; only its `output` may"
+    );
+}
+
+// --- no NAT on the venue path without a benchmark -----------------------------
+
+#[test]
+fn no_execution_node_puts_a_cloud_nat_on_its_venue_path_without_a_recorded_benchmark() {
+    // R12-REFLEX-10200: reflex traffic traverses no NAT chain without a
+    // benchmarked necessity. The execution-node module can create a Cloud NAT
+    // for a node whose venue is on the public internet (`create_egress_nat`),
+    // and a reviewer reading a tfvars entry that flips it sees one boolean.
+    // This pins the default to false at every declaration and refuses any
+    // committed node that sets it true: the day a venue needs one, the
+    // benchmark is committed under docs/ops and this assertion is widened to
+    // name it, so the record and the NAT land in the same diff.
+    let root_variables = without_comments(&read("infrastructure/terraform/variables.tf"));
+    let node_variable = block_under(&root_variables, "variable \"execution_nodes\" {");
+    let node_type = block_under(&node_variable, "type = map(object({");
+    assert!(
+        node_type.contains("region_allocation"),
+        "variables.tf's execution_nodes object type was not found where expected"
+    );
+    assert!(
+        node_type
+            .lines()
+            .any(|line| collapsed(line) == "create_egress_nat = optional(bool, false)"),
+        "execution_nodes.create_egress_nat no longer defaults to false in variables.tf"
+    );
+    let cells_variables = without_comments(&read(
+        "infrastructure/terraform/modules/edge-cells-deployment/variables.tf",
+    ));
+    assert!(
+        cells_variables
+            .lines()
+            .any(|line| collapsed(line) == "create_egress_nat = optional(bool, false)"),
+        "modules/edge-cells-deployment no longer defaults create_egress_nat to false"
+    );
+    let node_variables = without_comments(&read(
+        "infrastructure/terraform/modules/execution-node/variables.tf",
+    ));
+    let nat_variable = block_under(&node_variables, "variable \"create_egress_nat\" {");
+    assert!(
+        !nat_variable.is_empty(),
+        "modules/execution-node declares no create_egress_nat variable"
+    );
+    assert!(
+        sets(&nat_variable, "default", "false"),
+        "modules/execution-node's create_egress_nat does not default to false"
+    );
+
+    let mut nodes_read = 0usize;
+    for path in files_with_extension("infrastructure/environments", "tfvars") {
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for line in text.lines() {
+            let line = collapsed(line);
+            let Some(value) = line.strip_prefix("create_egress_nat = ") else {
+                continue;
+            };
+            nodes_read += 1;
+            assert_eq!(
+                value,
+                "false",
+                "{} places a node's venue egress behind a Cloud NAT with no recorded benchmark; \
+                 commit the measurement under docs/ops and widen this test to name it",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        nodes_read >= 1,
+        "no committed execution node sets create_egress_nat; dev's newyork-1 entry used to, so \
+         this scan is reading the wrong files"
+    );
+}

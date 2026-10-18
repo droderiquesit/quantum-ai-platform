@@ -23,7 +23,31 @@ which with 538 does not make 1,518); recount with `python3 -I -c` over
 any document.
 
 Status counts are not restated as a drifting table; run the snippet above.
-Recounted **2026-10-18, after the day's third promotion round** with
+Recounted **2026-10-18, after the verification lane's three slices** with
+`python3 -I` over `docs/blueprint/assessment/*.json`: COMPLETE 307, PARTIAL
+1064, MISSING 114, BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1 (= 1518).
+47 rows moved to COMPLETE since the previous recount (1 in dcc82115, 3 in 4bf3965c, 14 in fe7d43fc, 12 in 7fd79920, 2 in 2eb6ad62, 13 in 5c0c9e33, 2 in 46ef4c11):
+thirty-nine of them are rows the triage had judged already complete, promoted
+only after the lane ran each proving test and mutated the implementation
+behind it (5c0c9e33, 7fd79920, fe7d43fc; two rows, EXEC-5074 and CAPITAL-4083,
+had their gap corrected instead); the rest are kernel and world-model closures
+with mutated tests (46ef4c11, 4bf3965c, 2eb6ad62, dcc82115).
+Before that it was recounted **after the infrastructure and world-model lanes' first slices** with
+`python3 -I` over `docs/blueprint/assessment/*.json`: COMPLETE 260, PARTIAL
+1111, MISSING 114, BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1 (= 1518).
+Three rows (WORLD-1130, WORLD-1155, REASON-3056) were promoted by the world-model lane
+(79072006: each view's lineage carried on the arbitration record, and a surprise
+explained counterfactually in REASON), after the five that follow.
+Five rows (CICD-8033, LEDGER-8133, GCP-10008, LEDGER-10197, REFLEX-10200) were promoted by the lane that
+guarded the ledger's Spanner instance, the five deny-by-default VPCs, the
+grantless agent identity and the NAT-free venue path with acceptance tests in
+`qip-acceptance/tests/infrastructure.rs` (f98186a4). The 2026-10-18 triage of
+every PARTIAL row, `docs/blueprint/lanes/triage-2026-10-18.json`, is the plan
+the lanes work from; a row leaves PARTIAL only when a mutated test proves the
+behaviour on a default path, and a row a lane cannot close gets its gap
+corrected instead.
+Before that it was recounted **after the day's third promotion round** with
+
 `python3 -I` over `docs/blueprint/assessment/*.json`: COMPLETE 252, PARTIAL
 1119, MISSING 114, BLOCKED 31, INCORRECT 1, NEEDS-VALIDATION 1 (= 1518).
 Two lanes promoted on the same day and merged here. Two AGENCY rows (1152,

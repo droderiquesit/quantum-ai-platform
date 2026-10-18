@@ -26,6 +26,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use qip_contracts::control::{
+    InformationRequest as ActiveSensingRequest, InformationRequestFields,
+};
 use qip_contracts::expansion::EffectAttribution;
 use qip_contracts::forecast::{
     Calibration as ForecastCalibration, Forecast, ForecastFields, OutcomeDistribution, OutcomeMass,
@@ -255,6 +258,22 @@ pub struct ScoredView {
     pub uncertainty: f64,
     /// Mean of the four, with uncertainty counted as `1 - uncertainty`.
     pub composite: Option<f64>,
+    /// Where the member came from (WORLD-1130): the parents it branched or
+    /// merged from and how many branches deep it sits below a root. Carried
+    /// on the arbitration record itself, because a reader of a disagreement
+    /// needs to know whether two far-apart views are siblings of one root
+    /// (one hypothesis, forked) or independent models, and the journal that
+    /// could answer that is not what the record hands them.
+    pub lineage: ViewLineage,
+}
+
+/// A member's ancestry as arbitration carries it. A root has no parents and
+/// depth zero; a branch or merge is one deeper than its deepest parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewLineage {
+    pub parents: Vec<String>,
+    pub trigger: Option<String>,
+    pub depth: usize,
 }
 
 /// Every live view, minority included, and how far apart they are.
@@ -292,6 +311,20 @@ pub struct Arbitration {
     /// The research task this arbitration raised, when the disagreement was
     /// material and no task on the proposition was already open.
     pub research: Option<ResearchTask>,
+}
+
+/// What resolving one proposition's disagreement is worth and may cost
+/// (AMBIENT-10093, CONTRACT-6111): the account-currency exposure that
+/// rides on the proposition, the share of its value of information a
+/// request may spend, when an answer stops being useful, and any sources
+/// beyond the disagreeing models' own evidence lineages the request may
+/// draw on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InformationStake {
+    pub exposure: Decimal,
+    pub budget_share_bp: u32,
+    pub deadline: Timestamp,
+    pub extra_sources: Vec<String>,
 }
 
 /// A question the models' disagreement put to research (WORLD-061).
@@ -732,11 +765,56 @@ impl Federation {
             .collect()
     }
 
+    /// Branch depth of every node: zero for a root, one more than the
+    /// deepest parent otherwise. Resolved by walking each node's parents
+    /// with a memo, because the register is keyed by id and not by
+    /// insertion order, and two nodes created at one instant (two branches
+    /// of one root in the same cycle) have no order a sort could trust. A
+    /// parent the register does not hold is read as a root rather than
+    /// refused, because lineage is a description and not a gate.
+    fn branch_depths(&self) -> BTreeMap<String, usize> {
+        fn depth_of(
+            nodes: &BTreeMap<String, Node>,
+            id: &str,
+            memo: &mut BTreeMap<String, usize>,
+            walking: &mut BTreeSet<String>,
+        ) -> usize {
+            if let Some(d) = memo.get(id) {
+                return *d;
+            }
+            // A parent that is unknown, or already on the walk (a cycle
+            // the register never admits, guarded anyway), counts as a root.
+            let Some(node) = nodes.get(id) else {
+                return 0;
+            };
+            if !walking.insert(id.to_string()) {
+                return 0;
+            }
+            let depth = node
+                .lineage
+                .parents
+                .iter()
+                .map(|p| depth_of(nodes, p, memo, walking) + 1)
+                .max()
+                .unwrap_or(0);
+            walking.remove(id);
+            memo.insert(id.to_string(), depth);
+            depth
+        }
+        let mut memo = BTreeMap::new();
+        let mut walking = BTreeSet::new();
+        for id in self.nodes.keys() {
+            depth_of(&self.nodes, id, &mut memo, &mut walking);
+        }
+        memo
+    }
+
     /// Compare every live, unexpired view on `proposition`.
     ///
     /// A model whose expiry is at or before `now` is excluded and the
     /// exclusion is journaled once as an expiry; renewing it brings it back.
     pub fn arbitrate(&mut self, proposition: &str, now: Timestamp) -> Result<Arbitration> {
+        let depths = self.branch_depths();
         let mut expired = Vec::new();
         let mut views = Vec::new();
         for (id, node) in &mut self.nodes {
@@ -773,6 +851,11 @@ impl Federation {
                 composite: performance.map(|p| {
                     (a.evidence_fit + p + a.causal_coherence + (1.0 - a.uncertainty)) / 4.0
                 }),
+                lineage: ViewLineage {
+                    parents: node.lineage.parents.clone(),
+                    trigger: node.lineage.trigger.clone(),
+                    depth: depths.get(id).copied().unwrap_or(0),
+                },
             });
         }
         let (lo, hi) = views
@@ -817,6 +900,89 @@ impl Federation {
             expired,
             research,
         })
+    }
+
+    /// The §24.9 active-sensing request an arbitration's disagreement is
+    /// worth issuing, or `None` where it is not (AMBIENT-10093).
+    ///
+    /// The value of information is the spread between the views times the
+    /// exposure riding on the proposition: a disagreement of a tenth on a
+    /// position of a million is worth a hundred thousand to settle, and the
+    /// same disagreement on nothing held is worth nothing. Issued only for a
+    /// material spread ([`MATERIAL_DISAGREEMENT_SPREAD`]) and a positive
+    /// value, so a small conflict or an unheld proposition asks nobody for
+    /// anything; the contract itself refuses a request with no budget, no
+    /// source or a deadline at issue, which is the point of emitting the
+    /// contract rather than a looser local record (CONTRACT-6111). The
+    /// allowed sources are the disagreeing models' declared evidence
+    /// lineages plus the stake's own, so the request can only draw on what
+    /// the models already cite.
+    pub fn information_request(
+        &self,
+        arbitration: &Arbitration,
+        stake: &InformationStake,
+    ) -> Result<Option<ActiveSensingRequest>> {
+        let spread = arbitration.disagreement.spread;
+        if spread < MATERIAL_DISAGREEMENT_SPREAD || !stake.exposure.is_positive() {
+            return Ok(None);
+        }
+        // Statistic to money: the spread (a probability difference) scales
+        // the exposure (account currency) into a value of information.
+        let spread_dec = Decimal::from_f64(spread).ok_or_else(|| {
+            Error::numeric(format!(
+                "the spread on `{}` ({spread}) has no decimal form",
+                arbitration.proposition
+            ))
+        })?;
+        let share = Decimal::from_f64(f64::from(stake.budget_share_bp) / 10_000.0)
+            .ok_or_else(|| Error::numeric("the budget share has no decimal form"))?;
+        let (Some(value), Some(budget)) = (
+            stake.exposure.checked_mul(spread_dec),
+            stake
+                .exposure
+                .checked_mul(spread_dec)
+                .and_then(|v| v.checked_mul(share)),
+        ) else {
+            return Err(Error::numeric(format!(
+                "the value of information on `{}` overflows the account currency",
+                arbitration.proposition
+            )));
+        };
+        if !(value.is_positive() && budget.is_positive()) {
+            return Ok(None);
+        }
+        let models: Vec<&str> = arbitration
+            .disagreement
+            .views
+            .iter()
+            .map(|v| v.model.as_str())
+            .collect();
+        let mut allowed: BTreeSet<String> = stake.extra_sources.iter().cloned().collect();
+        for model in &models {
+            if let Ok(node) = self.node(model) {
+                allowed.extend(node.spec.evidence_lineage().iter().cloned());
+            }
+        }
+        let request = ActiveSensingRequest::new(InformationRequestFields {
+            schema_version: InformationRequestFields::SCHEMA_VERSION,
+            request_id: format!(
+                "ir:{}@{}",
+                arbitration.proposition,
+                arbitration.at.as_nanos()
+            ),
+            question: format!(
+                "does `{}` hold? {} disagree by {spread:.3}: {}",
+                arbitration.proposition,
+                models.join(", "),
+                arbitration.reason
+            ),
+            expected_information_value: value,
+            issued_at: arbitration.at,
+            deadline: stake.deadline,
+            allowed_sources: allowed.into_iter().collect(),
+            budget,
+        })?;
+        Ok(Some(request))
     }
 
     /// AGENCY-002: Apply an effect attribution to the federation. Updates the

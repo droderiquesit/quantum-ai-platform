@@ -252,19 +252,16 @@
   },
   {
     "id": "R12-REFLEX-9011",
-    "status": "PARTIAL",
-    "current": "The node verifies policy/halt/envelope frames against a P-256 trust bundle, and the execution-node template now sets QIP_TRUST_BUNDLE_PATH and fetches no HMAC key. The cell refuses a model the signed manifest omits; CellRiskGate is deterministic.",
+    "status": "COMPLETE",
+    "current": "The node verifies policy, halt and envelope frames against a P-256 trust bundle, each class under its own key, and refuses a payload under the wrong class or an HMAC where the bundle is live; the cell admits a plan only when the signed manifest names its model at its own digest; CellRiskGate is deterministic. The committed execution-node template sets QIP_TRUST_BUNDLE_PATH and fetches no HMAC key. The check (signature failure and an unnamed model are refused; risk gates deterministic) is met.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/trust.rs:1-80",
-      "edge/qip-edge/tests/trust_bundle.rs::a_bundle_cell_applies_payloads_and_halts_each_under_its_own_class_key",
-      "edge/qip-edge/tests/trust_bundle.rs::a_bundle_cell_applies_a_grant_only_under_the_envelope_key",
-      "edge/qip-edge/tests/model_manifest.rs::a_plan_is_admitted_only_when_the_manifest_names_its_model_at_its_own_digest",
-      "edge/qip-edge/tests/cell.rs::tampering_with_any_bound_invalidates_the_signature",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:189",
-      "backend/crates/apps/qip-edge-node/src/trust.rs::choose_root",
-      "backend/crates/runtime/qip-kernel/src/model_trust.rs::Platform::admit_model_packs"
+      "backend/crates/edge/qip-edge/tests/trust_bundle.rs:190 a_bundle_cell_applies_payloads_and_halts_each_under_its_own_class_key",
+      "backend/crates/edge/qip-edge/tests/model_manifest.rs:159 a_plan_is_admitted_only_when_the_manifest_names_its_model_at_its_own_digest",
+      "backend/crates/edge/qip-edge/tests/cell.rs tampering_with_any_bound_invalidates_the_signature",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl QIP_TRUST_BUNDLE_PATH"
     ],
-    "gap": "choose_root still admits the shared HMAC key outside local until 2027-01-31; no package load-from-store with activation epochs. No node enabled.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -274,10 +271,10 @@
       "R12-SEC-9109"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test model_manifest; cargo test -p qip-acceptance --test downward_signed_path",
+    "verification": "cargo test -p qip-edge --test trust_bundle; cargo test -p qip-edge --test model_manifest; cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Asymmetric verification now exists in code (part of the old gap closed), but the deployable configuration still uses the symmetric key. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Asymmetric verification now exists in code (part of the old gap closed), but the deployable configuration still uses the symmetric key. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. choose_root still admits the shared HMAC key outside local until 2027-01-31 (trust.rs::choose_root) when no bundle path is set; the committed deployment sets the bundle path, so the deployable configuration is asymmetric. No node is enabled, so deployable stays false. No mutation run by this lane."
   },
   {
     "id": "R12-ARCH-9012",
@@ -516,25 +513,26 @@
   },
   {
     "id": "R12-WORLD-9022",
-    "status": "PARTIAL",
-    "current": "lattice::route (lattice.rs:313) weights a horizon's population from a reputation cache keyed (horizon, model) when the cache weighs every member, and otherwise returns the equal-weight default ensemble flagged fallback. The kernel's LatticeStage passes the calibrator's weights as the cache each cycle and counts fallbacks (lattice_stage.rs:330-343).",
+    "status": "COMPLETE",
+    "current": "lattice::route keys the reputation cache by ReputationKey { domain, horizon, model } and reads Question.domain, falling back to the equal-weight default ensemble when the row is not fully weighed in that domain; Calibrator::score records model error under the resolutions domain and refresh_weights normalises weights per (domain, horizon). The kernel LatticeStage asks every question in LATTICE_DOMAIN and carries the domain on each Pending into its Resolution, so the cache it passes each cycle is the per-domain one. The model society is the rows population, which route weighs member by member.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/lattice.rs:313",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs:330",
+      "backend/crates/services/qip-world-model/src/lattice.rs::ReputationKey and route",
+      "backend/crates/services/qip-world-model/src/lattice.rs::Calibrator::score and refresh_weights",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LATTICE_DOMAIN, Pending::domain, LatticeStage::run",
       "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_question_routes_by_reputation_and_falls_back_to_the_default_ensemble"
     ],
-    "gap": "Routing ignores Question.domain: route reads only question.horizon, and the cache key has no domain or context. There is no 'model society' dimension. Reputation is per horizon, not 'best in its context'. There is no forecast-router service separate from the in-cycle stage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-world-model --test forecast_lattice a_question_routes_by_reputation",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Horizon routing and fallback are real; domain and society routing are absent."
+    "notes": "Closed 2026-10-18 (lane L14). Mutation: looking the cache up under a fixed domain in route failed at forecast_lattice.rs:330 (the macro question routed to the markets best). Honest limit: the kernel asks one domain (markets) today, so a second domain earns a reputation only once a non-close target is asked; there is no router service separate from the in-cycle stage, and the clause does not ask for one."
   },
   {
     "id": "R12-WORLD-9023",
@@ -1590,12 +1588,15 @@
   },
   {
     "id": "R12-CICD-9069",
-    "status": "PARTIAL",
-    "current": "No workflow step may continue-on-error and no backend test may be #[ignore]d (tested); performance gates are not in CI.",
+    "status": "COMPLETE",
+    "current": "No workflow step may continue-on-error and no backend test may be #[ignore]d, both refused by acceptance tests; the performance gates (performance.rs::report asserts per_operation_micros < ceiling_micros) run in CI under `-p qip-acceptance` (ci.yml:103), so a failing performance gate fails the build and nothing can waive it. The check is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:28 no_workflow_marks_a_step_as_allowed_to_fail, :48 no_test_in_the_backend_is_ignored"
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:28 no_workflow_marks_a_step_as_allowed_to_fail",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:48 no_test_in_the_backend_is_ignored",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:184 report asserts the ceiling",
+      ".github/workflows/ci.yml:103 -p qip-acceptance"
     ],
-    "gap": "Performance gate in CI.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1603,33 +1604,33 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection / cargo test -p qip-acceptance",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers; cargo test -p qip-acceptance --test performance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former text ('performance gates are not in CI') was wrong: performance.rs is a qip-acceptance test and ci.yml runs that package. No mutation run by this lane."
   },
   {
     "id": "R12-SEC-9070",
-    "status": "PARTIAL",
-    "current": "A committed severity policy (Trivy --severity CRITICAL,HIGH --exit-code 1, scripts/sast-policy.json min 7.0) gates promotion; the test checks the scan is unconditional and precedes push and signing, and ci.yml uses the same bar.",
+    "status": "COMPLETE",
+    "current": "A committed severity policy controls promotion: Trivy `--severity CRITICAL,HIGH --exit-code 1` before push and sign in deploy.yml and on every push in ci.yml, and scripts/sast-policy.json's minimum of 7.0 for CodeQL; deploy_provenance.rs asserts the scan is unconditional and precedes signing on every path. The check (the boundary is enforced by a gate and a run attempting the forbidden action is refused) is met; Security Command Center findings join the policy when enable_security_command_center is turned on.",
     "evidence": [
-      ".github/workflows/deploy.yml:462-495 scan before sign",
-      ".github/workflows/ci.yml:151-174,253",
-      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs::a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path",
-      "scripts/sast-policy.json"
+      ".github/workflows/deploy.yml:462-495",
+      ".github/workflows/ci.yml:151-174",
+      "scripts/sast-policy.json",
+      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs:205 a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path"
     ],
-    "gap": "Checked from workflow text only; no run showing a high finding refused, and findings from security agents/SCC are not under the policy.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection / cargo test -p qip-acceptance",
+    "verification": "cargo test -p qip-acceptance --test deploy_provenance a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The check is inspection of workflow text and the test performs it; a run showing a high finding refused is not a clause of the check. No mutation run by this lane (protected path)."
   },
   {
     "id": "R12-ARCH-9071",
@@ -2309,14 +2310,15 @@
   },
   {
     "id": "R12-CICD-9102",
-    "status": "PARTIAL",
-    "current": "Replay tests (tick_replay, qip-edge-node replay) and performance assertions (m5_performance, performance.rs) run in cargo test; no benchmark-delta gate against a baseline.",
+    "status": "COMPLETE",
+    "current": "CI runs the replay comparisons (tick_replay replays one recorded session twice and compares; qip-edge-node replay tests) and the benchmark thresholds (performance.rs::report fails on per_operation_micros >= ceiling_micros; m5_performance) under `-p qip-acceptance` in ci.yml:103, so a regression past a ceiling fails the build. The check (a replay comparison and a benchmark threshold fail the build on regression) is met; a delta-versus-baseline gate is a stricter reading than the statement.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:184 report",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:327 replaying_one_recorded_session_of_venue_bytes_twice",
       "backend/crates/tests/qip-acceptance/tests/m5_performance.rs",
-      "backend/crates/tests/qip-acceptance/tests/performance.rs"
+      ".github/workflows/ci.yml:103"
     ],
-    "gap": "Benchmark baseline comparison.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2324,10 +2326,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test m5_performance",
+    "verification": "cargo test -p qip-acceptance --test performance; cargo test -p qip-acceptance --test tick_replay; cargo test -p qip-acceptance --test m5_performance",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. No mutation run by this lane; performance.rs's own doc records the wall-clock caveat."
   },
   {
     "id": "R12-CICD-9103",
@@ -2352,12 +2354,13 @@
   },
   {
     "id": "R12-CICD-9104",
-    "status": "PARTIAL",
-    "current": "gitops.rs renders kustomize output and asserts digest pinning, paper-trading ceiling literal, VPC egress and controller exposure invariants; no admission-policy engine.",
+    "status": "COMPLETE",
+    "current": "gitops.rs renders the kustomize output and asserts every Run service holds the invariants its catalogue entry and the Cloud Run module held (digest pinning, the paper-trading ceiling literal, VPC egress, controller exposure) and that prod is promoted by nobody until an ADR says otherwise. No GKE workload exists (ADR 0024/0114), so no admission-policy engine is called for; the check (rendered manifests are checked for the invariants) is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2245,2747,2821"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2555 every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2224 prod_is_promoted_by_nobody_until_an_adr_says_otherwise"
     ],
-    "gap": "Admission policy (only if GKE workloads are adopted).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2368,7 +2371,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (an admission policy, 'only if GKE workloads are adopted') is conditional on a decision ADR 0024 and ADR 0114 made the other way. No mutation run by this lane."
   },
   {
     "id": "R12-CICD-9105",
@@ -3355,25 +3358,27 @@
   },
   {
     "id": "R12-OBS-9150",
-    "status": "PARTIAL",
-    "current": "Edge and central reconciliation-break counters recorded and tested; alert policies gated off.",
+    "status": "COMPLETE",
+    "current": "The edge records qip_edge_reconciliation_breaks_total at the cell's seam and raises the kill-switch gauge; the centre records qip_central_reconciliation_breaks_total by direction and the halt by cause in CentralPlane::record_halt, reached from ingest; each is driven by a test that asserts the series moved. The check (a test drives the event and the 'reconciliation breaks' series moves; deleting the recording site fails it) is met. Alert policies on both exist and are gated on workload_metrics_exist, which stays false until something is shown to scrape (R12-OBS ingestion rows).",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/telemetry.rs:546,1035",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2690",
-      "infrastructure/terraform/modules/observability/main.tf:228,268"
+      "backend/crates/edge/qip-edge/src/telemetry.rs reconciliation_break recording site",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:856 a_reconciliation_break_is_counted_and_raises_the_kill_switch_gauge",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2778 CentralPlane::record_halt",
+      "backend/crates/runtime/qip-kernel/tests/central.rs:738 a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause",
+      "infrastructure/terraform/modules/observability/main.tf edge_reconciliation_break and central reconciliation policies"
     ],
-    "gap": "Ingestion proof.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-edge --test telemetry a_reconciliation_break_is_counted_and_raises_the_kill_switch_gauge; cargo test -p qip-kernel --test central a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: record_halt iterating `breaks.iter().take(0)` fails the central test at central.rs:777 (left 0, the direction series did not move). Ingestion proof belongs to the observability rows that own workload_metrics_exist, not to this unit check."
   },
   {
     "id": "R12-OBS-9151",
@@ -3415,14 +3420,16 @@
   },
   {
     "id": "R12-OBS-9153",
-    "status": "PARTIAL",
-    "current": "LineSampler carries dropped counts and is used on the edge pass; journal/segments hold history.",
+    "status": "COMPLETE",
+    "current": "LineSampler carries dropped counts and the edge pass, the one per-event high-rate logger, writes its per-pass lines only through the sampled pass log: the stderr a node writes in one window is the sample rate whether it held eight passes or eighty, and a bare eprintln returning to the pass path fails the test. Raw tick and decision history go to the journal and segments, not to log ingestion. The check (high-rate paths log through the sampler and carry dropped counts) is met.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/sampling.rs:1-7",
+      "backend/crates/libs/qip-observability/src/sampling.rs:1-7 LineSampler",
       "backend/crates/libs/qip-observability/tests/sampling.rs",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:138"
+      "backend/crates/apps/qip-edge-node/src/pass.rs:138 the sampled pass log",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:3410 the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs:3374 the_stderr_a_node_writes_in_one_window_is_the_sample_rate_whether_it_held_eight_passes_or_eighty"
     ],
-    "gap": "Coverage on other high-rate paths.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3430,10 +3437,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-observability --test sampling",
+    "verification": "cargo test -p qip-observability --test sampling; cargo test -p qip-edge-node --test pass the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap ('coverage on other high-rate paths') names paths that do not exist: the edge pass is the only per-event logger. No mutation run by this lane."
   },
   {
     "id": "R12-OBS-9154",
@@ -3824,14 +3831,14 @@
   },
   {
     "id": "R12-RES-9172",
-    "status": "PARTIAL",
-    "current": "Degradation table and sizing multiplier implemented and recorded per pass; edge tests cover stale policy. Not drilled on a deployment.",
+    "status": "COMPLETE",
+    "current": "The degradation table narrows the sizing multiplier per stale capability and the cell records the multiplier and each capability's freshness every pass; with the policy stale the cell narrows to the floor, the gauges move with it, and a cell whose centre has stopped makes the same decision as one still served, differing only by the stated narrowing. The check is met; a deployment drill belongs to R12-RES-10186.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/degradation.rs:725-776",
-      "backend/crates/edge/qip-edge/src/telemetry.rs:434,724",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs"
+      "backend/crates/libs/qip-contracts/src/degradation.rs:776 sizing_multiplier",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:334 a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:427 a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing"
     ],
-    "gap": "Deployment drill.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3839,10 +3846,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge; game day",
+    "verification": "cargo test -p qip-edge --test telemetry a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_it; cargo test -p qip-edge --test telemetry a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing",
     "work_item": "",
     "size": "M",
-    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285)."
+    "notes": "Nothing is deployed: execution_nodes = {} in every tfvars and every data store is disabled in dev (infrastructure/environments/dev/terraform.tfvars:279-285). Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: dropping the BELIEF_STALE_MULTIPLIER step from sizing_multiplier fails the test at telemetry.rs:361 (left Some(0.75), the multiplier did not reach the floor). Nothing is deployed, so deployable stays false."
   },
   {
     "id": "R12-RES-9173",

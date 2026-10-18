@@ -809,6 +809,17 @@ pub struct Candidate {
     pub variance: f64,
 }
 
+/// A promoted belief about the same variable at a scope that contains this
+/// one (WORLD-3078): the region's `return` for an instrument's `return`,
+/// the global one for a region's. What the graph estimator reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelatedBelief {
+    pub key: VariableKey,
+    pub partition: PartitionKey,
+    pub mean: f64,
+    pub variance: f64,
+}
+
 /// What a worker is told about one variable this step.
 #[derive(Clone, Debug)]
 pub struct Evidence<'a> {
@@ -821,6 +832,10 @@ pub struct Evidence<'a> {
     pub measurement_variance: f64,
     /// Variance the state is assumed to have gained since the prior.
     pub process_variance: f64,
+    /// The same variable's promoted belief at the scopes containing this
+    /// one, as of the last step; empty for a scope nothing contains or on
+    /// the first step before any aggregate is promoted.
+    pub related: &'a [RelatedBelief],
 }
 
 impl Evidence<'_> {
@@ -981,6 +996,59 @@ impl StateFilter for ParticleFilter {
     }
     fn forget(&mut self, key: &VariableKey) {
         self.clouds.remove(key);
+    }
+}
+
+/// The graph estimator (WORLD-3078, [`EstimatorKind::Graph`]): a variable is
+/// read as one node of the scope graph, informed by the same variable at
+/// the scopes that contain it — an instrument's return by its region's and
+/// the global one, a region's by the global one. The readings are one
+/// measurement and each containing belief, widened by this step's process
+/// variance, is another; the estimate is their precision-weighted mean, so
+/// an instrument read far from its region is pulled toward it by exactly as
+/// much as the region's belief is tighter than the reading. It abstains
+/// where nothing contains the variable, because a node with no neighbours
+/// has no graph to read and a second copy of the Kalman answer would be
+/// counted as agreement that was never independent.
+#[derive(Debug, Default)]
+pub struct GraphFilter;
+
+impl StateFilter for GraphFilter {
+    fn id(&self) -> &str {
+        "graph-hierarchical"
+    }
+    fn kind(&self) -> EstimatorKind {
+        EstimatorKind::Graph
+    }
+    fn propose(&mut self, e: &Evidence<'_>) -> Result<Option<Candidate>> {
+        let neighbours: Vec<(f64, f64)> = e
+            .related
+            .iter()
+            .map(|r| (r.mean, r.variance + e.process_variance))
+            .filter(|(m, v)| m.is_finite() && v.is_finite() && *v > 0.0)
+            .collect();
+        if neighbours.is_empty() {
+            return Ok(None);
+        }
+        let r = e.measurement_variance;
+        if !(r.is_finite() && r > 0.0) {
+            return Err(Error::numeric(format!(
+                "the measurement variance for {} is {r}; the graph estimator cannot weigh a \
+                 reading of no stated precision",
+                e.key
+            )));
+        }
+        let z = e.mean();
+        let mut precision = 1.0 / r;
+        let mut weighted = z / r;
+        for (m, v) in neighbours {
+            precision += 1.0 / v;
+            weighted += m / v;
+        }
+        Ok(Some(Candidate {
+            mean: weighted / precision,
+            variance: 1.0 / precision,
+        }))
     }
 }
 
@@ -1211,12 +1279,60 @@ impl NowBrain {
         })
     }
 
-    /// The three in-tree filters over the standard catalogue.
+    /// The four in-tree filters over the standard catalogue: the three
+    /// single-variable filters and the graph estimator over the scope graph.
     pub fn standard(seed: u64) -> Result<Self> {
         Ok(Self::new(NowConfig::default(), Catalogue::standard()?)?
             .with_worker(Box::new(KalmanFilter))
             .with_worker(Box::new(ParticleFilter::seeded(seed)))
-            .with_worker(Box::new(RobustFilter)))
+            .with_worker(Box::new(RobustFilter))
+            .with_worker(Box::new(GraphFilter)))
+    }
+
+    /// The promoted beliefs about `key`'s variable at the scopes containing
+    /// `key`'s: the region scope named by the partition's region, in the
+    /// same partition, and the global scope in the same domain's global
+    /// partition. Never the variable itself, and never a sibling at the same
+    /// scope kind, which is what the graph estimator must not be allowed to
+    /// read: an instrument shrunk toward another instrument is a correlation
+    /// nobody established.
+    fn related(&self, partition: &PartitionKey, key: &VariableKey) -> Vec<RelatedBelief> {
+        let mut out = Vec::new();
+        let containing: &[(ScopeKind, &str, &str)] = &[
+            (
+                ScopeKind::Region,
+                partition.region.as_str(),
+                partition.region.as_str(),
+            ),
+            (ScopeKind::Global, GLOBAL_ID, GLOBAL_ID),
+        ];
+        for (kind, id, region) in containing {
+            if key.scope.kind >= *kind {
+                // Only a strictly containing scope: a region reads the
+                // global, an instrument reads both, the global reads none.
+                let (Ok(scope), Ok(part)) = (
+                    Scope::new(*kind, *id),
+                    PartitionKey::new(partition.domain, *region),
+                ) else {
+                    continue;
+                };
+                if scope == key.scope {
+                    continue;
+                }
+                let Ok(related_key) = VariableKey::new(scope, key.name.clone()) else {
+                    continue;
+                };
+                if let Some(v) = self.store.get(&part, &related_key) {
+                    out.push(RelatedBelief {
+                        key: related_key,
+                        partition: part,
+                        mean: v.mean,
+                        variance: v.uncertainty,
+                    });
+                }
+            }
+        }
+        out
     }
 
     pub fn with_worker(mut self, worker: Box<dyn StateFilter>) -> Self {
@@ -1424,12 +1540,14 @@ impl NowBrain {
         });
         let process_variance = (spec.drift_per_day * scale).powi(2) * elapsed_days;
         let prior = prior_var.as_ref().map(|p| (p.mean, p.uncertainty));
+        let related = self.related(partition, key);
         let evidence = Evidence {
             key,
             prior,
             readings: &readings,
             measurement_variance,
             process_variance,
+            related: &related,
         };
         let mut candidates: Vec<(String, Candidate)> = Vec::new();
         for w in &mut self.workers {

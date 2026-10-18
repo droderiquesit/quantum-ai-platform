@@ -40,12 +40,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
 use qip_world_model::federation::{
     Abstraction, Arbitration, Assessment, CalibrationClaim, Decision, Declaration, Event,
-    Federation, ModelKind, Scope, WorldModelSpec,
+    Federation, InformationStake, ModelKind, Scope, WorldModelSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +75,20 @@ pub const SELF_SYSTEM: &str = "self.operational-health.global";
 pub const ON_CHAIN: &str = "crypto-onchain.flows.global";
 /// The regional member's id is `markets.microstructure.<region>.micro`.
 pub const REGIONAL_PREFIX: &str = "markets.microstructure.";
+/// The domain members' id prefix (MODEL-4009): one per asset class the
+/// composition root has named, `domain.<class>.global.meso`, declared the
+/// first pass the class is seen.
+pub const DOMAIN_PREFIX: &str = "domain.";
+/// The domain members' hypothesis: an instrument moves with the breadth of
+/// its own asset class, not with its own tape.
+pub const DOMAIN_HYPOTHESIS: &str = "cross-sectional-breadth";
+/// The share of a disagreement's value of information an active-sensing
+/// request may spend (AMBIENT-10093): a tenth, so settling a question is
+/// never allowed to cost what the question is worth.
+pub const REQUEST_BUDGET_SHARE_BP: u32 = 1_000;
+/// How long an active-sensing request's answer stays useful: the next
+/// close, which is what every instrument proposition is about.
+pub const REQUEST_DEADLINE: Duration = Duration::from_days(1);
 
 /// One instrument as the platform has observed it.
 #[derive(Clone, Debug, PartialEq)]
@@ -169,6 +184,13 @@ pub struct FederationReview {
     /// `journal_base` is the absolute position of its first event.
     pub journal_base: usize,
     pub events: Vec<Event>,
+    /// The §24.9 active-sensing requests this pass's disagreements were
+    /// worth issuing (AMBIENT-10093, CONTRACT-6111): one per arbitration
+    /// whose spread is material on a proposition with exposure at stake,
+    /// as [`Federation::information_request`] builds it. Absent on a record
+    /// written before the field existed.
+    #[serde(default)]
+    pub information_requests: Vec<qip_contracts::control::InformationRequest>,
 }
 
 impl EventBody for FederationReview {
@@ -256,6 +278,16 @@ pub struct FederationStage {
     pending: BTreeMap<String, Pending>,
     /// The confirmed trade count the on-chain member last read.
     last_chain_trades: Option<u64>,
+    /// Account-currency exposure per subject, as the composition root last
+    /// stated it ([`Self::set_stakes`]); what a disagreement's value of
+    /// information is scaled by. Empty means nothing is at stake anywhere
+    /// and no request is issued.
+    stakes: BTreeMap<String, Decimal>,
+    /// Asset class per subject ([`Self::set_asset_classes`]); what the
+    /// domain members are declared and fed from.
+    asset_classes: BTreeMap<String, String>,
+    /// Classes whose domain member has been declared.
+    domain_members: BTreeSet<String>,
 }
 
 /// Hand one view to `model`; true when the federation took it. A refusal is
@@ -300,6 +332,10 @@ pub fn covers(family: &str, scope: &Scope, region: &str) -> bool {
         "counterfactual" => scope.kind == ModelKind::Counterfactual,
         "self/system" => scope.domain == "self",
         "crypto/on-chain" => scope.domain == "crypto/on-chain",
+        // Not in `REQUIRED_FAMILIES`: a domain member exists only once the
+        // composition root has named an asset class, so requiring one would
+        // report a process with no classes named as uncovered every cycle.
+        "domain" => scope.hypothesis == DOMAIN_HYPOTHESIS,
         _ => false,
     }
 }
@@ -362,6 +398,84 @@ impl FederationStage {
     /// Forecasts still waiting for reality, by proposition.
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+
+    /// State the exposure riding on each subject, in the account currency,
+    /// before a pass (AMBIENT-10093). Read by the pass that follows; a
+    /// subject not named has nothing at stake.
+    pub fn set_stakes(&mut self, stakes: BTreeMap<String, Decimal>) {
+        self.stakes = stakes;
+    }
+
+    /// Name each subject's asset class before a pass (MODEL-4009). A class
+    /// seen for the first time gets its domain member declared on that
+    /// pass; a subject not named is read by no domain member.
+    pub fn set_asset_classes(&mut self, classes: BTreeMap<String, String>) {
+        self.asset_classes = classes;
+    }
+
+    /// The id of the domain member for `class`.
+    pub fn domain_member(class: &str) -> String {
+        format!("{DOMAIN_PREFIX}{class}.global.meso")
+    }
+
+    fn declare_domain_members(&mut self, now: Timestamp, refused: &mut Vec<(String, String)>) {
+        let classes: BTreeSet<String> = self.asset_classes.values().cloned().collect();
+        for class in classes {
+            if self.domain_members.contains(&class) {
+                continue;
+            }
+            let id = Self::domain_member(&class);
+            let declaration = Declaration {
+                id: id.clone(),
+                scope: Some(Scope {
+                    domain: class.clone(),
+                    region: "global".to_string(),
+                    horizon: Duration::from_days(5),
+                    abstraction: Abstraction::Meso,
+                    hypothesis: DOMAIN_HYPOTHESIS.to_string(),
+                    kind: ModelKind::Observational,
+                }),
+                evidence_lineage: vec!["sense:bar-closes".to_string()],
+                calibration: Some(CalibrationClaim { max_brier: 0.25 }),
+                update_cadence: Some(Duration::from_days(1)),
+                expires_at: Some(now.saturating_add(MEMBER_LEASE)),
+            };
+            match WorldModelSpec::declare(declaration)
+                .and_then(|spec| self.federation.register(spec, now))
+            {
+                Ok(()) => {
+                    self.domain_members.insert(class);
+                }
+                Err(error) => refused.push((id, error.message().to_string())),
+            }
+        }
+    }
+
+    /// Each named class's breadth over the readable instruments: the share
+    /// whose short-window mean return is positive, and how many were read.
+    fn class_breadth(&self, inputs: &FederationInputs) -> BTreeMap<String, (f64, usize)> {
+        let mut tally: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for view in inputs
+            .instruments
+            .iter()
+            .filter(|v| v.returns.len() >= FEDERATION_MIN_RETURNS)
+            .take(FEDERATION_MAX_SUBJECTS)
+        {
+            let Some(class) = self.asset_classes.get(&view.subject) else {
+                continue;
+            };
+            let short = &view.returns[view.returns.len().saturating_sub(5)..];
+            let entry = tally.entry(class.clone()).or_insert((0, 0));
+            entry.1 += 1;
+            if mean(short) > 0.0 {
+                entry.0 += 1;
+            }
+        }
+        tally
+            .into_iter()
+            .map(|(class, (up, n))| (class, (up as f64 / n as f64, n)))
+            .collect()
     }
 
     fn declarations(region: &str, at: Timestamp) -> Vec<Declaration> {
@@ -494,6 +608,8 @@ impl FederationStage {
             }
             self.registered = true;
         }
+        self.declare_domain_members(now, &mut refused);
+        let breadth = self.class_breadth(inputs);
 
         let (resolved, abandoned) = self.resolve(inputs, now);
 
@@ -566,8 +682,30 @@ impl FederationStage {
                     (2.0 * (base * (1.0 - base) / r.len() as f64).sqrt()).min(1.0),
                 ),
             ];
+            // The domain member's view (MODEL-4009): the breadth of the
+            // instrument's own asset class, which says nothing about this
+            // tape and everything about its neighbours' — a view the tape
+            // members cannot hold, so their disagreement is real.
+            let domain_view = self
+                .asset_classes
+                .get(&view.subject)
+                .and_then(|class| breadth.get(class).map(|b| (class.clone(), *b)))
+                .map(|(class, (share, n))| {
+                    (
+                        Self::domain_member(&class),
+                        share,
+                        fit,
+                        0.4,
+                        (2.0 * (share * (1.0 - share) / n as f64).sqrt()).clamp(0.1, 1.0),
+                    )
+                });
             let mut any = false;
-            for (model, probability, evidence_fit, causal_coherence, uncertainty) in views {
+            for (model, probability, evidence_fit, causal_coherence, uncertainty) in views
+                .into_iter()
+                .map(|(m, p, f, c, u)| (m.to_string(), p, f, c, u))
+                .chain(domain_view)
+            {
+                let model = model.as_str();
                 any |= feed(
                     &mut self.federation,
                     model,
@@ -675,9 +813,38 @@ impl FederationStage {
         }
 
         let mut arbitrations = Vec::new();
+        let mut information_requests = Vec::new();
         for proposition in &propositions {
             match self.federation.arbitrate(proposition, now) {
-                Ok(a) => arbitrations.push(a),
+                Ok(a) => {
+                    // A material disagreement on a proposition with exposure
+                    // at stake is worth a question to active sensing
+                    // (AMBIENT-10093); the federation gates it on the value
+                    // of information and the contract refuses an ill-formed
+                    // request, so what reaches the review is well-formed.
+                    let exposure = match self.pending.get(proposition) {
+                        Some(Pending::Instrument { subject, .. }) => {
+                            self.stakes.get(subject).copied()
+                        }
+                        _ => None,
+                    };
+                    if let Some(exposure) = exposure {
+                        let stake = InformationStake {
+                            exposure,
+                            budget_share_bp: REQUEST_BUDGET_SHARE_BP,
+                            deadline: now.saturating_add(REQUEST_DEADLINE),
+                            extra_sources: Vec::new(),
+                        };
+                        match self.federation.information_request(&a, &stake) {
+                            Ok(Some(request)) => information_requests.push(request),
+                            Ok(None) => {}
+                            Err(error) => {
+                                refused.push((proposition.clone(), error.message().to_string()));
+                            }
+                        }
+                    }
+                    arbitrations.push(a);
+                }
                 Err(error) => refused.push((proposition.clone(), error.message().to_string())),
             }
         }
@@ -725,6 +892,7 @@ impl FederationStage {
             system: inputs.system.clone(),
             journal_base,
             events,
+            information_requests,
         }
     }
 
@@ -835,6 +1003,7 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<FederationRevi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD;
 
     fn series(n: usize, drift: f64) -> Vec<f64> {
         (0..n)
@@ -887,6 +1056,153 @@ mod tests {
         assert_eq!(review.arbitrations.len(), 3);
         let instrument = &review.arbitrations[0];
         assert_eq!(instrument.disagreement.views.len(), 5);
+    }
+
+    /// MODEL-4009: a domain member per named asset class is declared and
+    /// fed the class's breadth, so an instrument rising while its class
+    /// falls is arbitrated between its momentum view and its class's view,
+    /// and the disagreement records both. Mutation: feed the domain member a
+    /// constant breadth of one half — the view's probability is wrong.
+    #[test]
+    fn a_domain_member_fed_its_asset_classs_breadth_disagrees_with_the_tape_members_and_is_recorded()
+     {
+        let mut stage = FederationStage::new();
+        let mut inputs = inputs(1, 100.0, day(0), None);
+        // AAA rises; BBB and CCC, the rest of the class, fall.
+        for (subject, drift) in [("BBB", -0.01), ("CCC", -0.01)] {
+            inputs.instruments.push(InstrumentView {
+                subject: subject.into(),
+                returns: series(40, drift),
+                last_close: 50.0,
+                observed_through: day(0),
+                spread_ratio: None,
+            });
+        }
+        inputs.instruments[0].returns = series(40, 0.01);
+        stage.set_asset_classes(
+            ["AAA", "BBB", "CCC"]
+                .into_iter()
+                .map(|s| (s.to_string(), "equity".to_string()))
+                .collect(),
+        );
+        let review = stage.run(&inputs, day(0));
+        assert!(review.refused.is_empty(), "{:?}", review.refused);
+        let member = FederationStage::domain_member("equity");
+        assert!(
+            review.population.iter().any(|m| m.id == member),
+            "premise: the domain member is in the population: {:?}",
+            review.population.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
+        assert!(
+            review
+                .population
+                .iter()
+                .any(|m| covers("domain", &m.scope, "home")),
+            "premise: the domain family is covered"
+        );
+        let aaa = review
+            .arbitrations
+            .iter()
+            .find(|a| a.proposition == instrument_proposition("AAA", 1))
+            .expect("AAA was arbitrated");
+        let domain = aaa
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == member)
+            .expect("the domain member holds a view on AAA");
+        let momentum = aaa
+            .disagreement
+            .views
+            .iter()
+            .find(|v| v.model == MOMENTUM)
+            .expect("the momentum member holds a view on AAA");
+        assert!(
+            (domain.probability - 1.0 / 3.0).abs() < 1e-9,
+            "one of three in the class rose: {}",
+            domain.probability
+        );
+        assert!(momentum.probability > 0.6, "{}", momentum.probability);
+        assert!(
+            aaa.disagreement.spread >= MATERIAL_DISAGREEMENT_SPREAD,
+            "{}",
+            aaa.disagreement.spread
+        );
+        assert!(
+            review
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::ResearchRaised(t) if t.proposition == aaa.proposition)),
+            "the disagreement raised research"
+        );
+    }
+
+    /// AMBIENT-10093, CONTRACT-6111: with exposure at stake on a subject
+    /// whose proposition the members disagree on materially, the pass
+    /// issues the §24.9 contract request on the review; with nothing at
+    /// stake it issues none. Mutation: skip the stake lookup in `run` —
+    /// no request is issued.
+    #[test]
+    fn a_material_disagreement_on_a_subject_with_exposure_at_stake_issues_an_information_request() {
+        let mut stage = FederationStage::new();
+        let mut inputs = inputs(1, 100.0, day(0), None);
+        for (subject, drift) in [("BBB", -0.01), ("CCC", -0.01)] {
+            inputs.instruments.push(InstrumentView {
+                subject: subject.into(),
+                returns: series(40, drift),
+                last_close: 50.0,
+                observed_through: day(0),
+                spread_ratio: None,
+            });
+        }
+        inputs.instruments[0].returns = series(40, 0.01);
+        stage.set_asset_classes(
+            ["AAA", "BBB", "CCC"]
+                .into_iter()
+                .map(|s| (s.to_string(), "equity".to_string()))
+                .collect(),
+        );
+        let unstaked = stage.run(&inputs, day(0));
+        let aaa = unstaked
+            .arbitrations
+            .iter()
+            .find(|a| a.proposition == instrument_proposition("AAA", 1))
+            .expect("AAA was arbitrated");
+        assert!(
+            aaa.disagreement.spread >= MATERIAL_DISAGREEMENT_SPREAD,
+            "premise: material"
+        );
+        assert!(unstaked.information_requests.is_empty(), "nothing at stake");
+
+        let mut staked = FederationStage::new();
+        staked.set_asset_classes(
+            ["AAA", "BBB", "CCC"]
+                .into_iter()
+                .map(|s| (s.to_string(), "equity".to_string()))
+                .collect(),
+        );
+        staked.set_stakes(BTreeMap::from([(
+            "AAA".to_string(),
+            Decimal::from_int(1_000_000),
+        )]));
+        let review = staked.run(&inputs, day(0));
+        assert_eq!(review.information_requests.len(), 1, "{:?}", review.refused);
+        let request = &review.information_requests[0];
+        assert!(
+            request
+                .request_id
+                .starts_with(&format!("ir:{}@", instrument_proposition("AAA", 1)))
+        );
+        assert!(request.expected_information_value.is_positive());
+        assert_eq!(request.deadline, day(0).saturating_add(REQUEST_DEADLINE));
+        assert!(
+            request
+                .allowed_sources
+                .contains(&"sense:bar-closes".to_string())
+        );
+        let json = serde_json::to_value(&review).unwrap();
+        let back: FederationReview = serde_json::from_value(json).unwrap();
+        assert_eq!(back.information_requests, review.information_requests);
     }
 
     #[test]

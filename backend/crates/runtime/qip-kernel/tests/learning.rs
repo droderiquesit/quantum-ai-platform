@@ -27,6 +27,7 @@ use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
 use qip_kernel::platform::Platform;
 use qip_market::bar::{Bar, Interval};
+use qip_market::quote::Tick;
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_observability::metrics::{Snapshot, labels, names};
@@ -1997,5 +1998,115 @@ fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunit
         "a declined allocation should generate both size and opportunity shadows"
     );
 
+    Ok(())
+}
+
+// --- publication delay and the decision-time read (R12-TICK-2087) ----------
+
+fn late_tick(symbol: &str, at: Timestamp, late_by: Duration, price: &str) -> SensedRecord {
+    SensedRecord::Tick(Tick {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        capture_time: at.saturating_add(late_by),
+        sequence: None,
+        price: Decimal::parse(price).expect("a price"),
+        volume: dec!("100"),
+        quality: DataQuality::clean(),
+    })
+}
+
+/// R12-TICK-2087, first half. A tick is knowable here only once the feed
+/// delivered it, and a read at a decision instant between the two must not
+/// see it: that is the feed-arrival delay, and reading through it is
+/// point-in-time leakage of exactly that length. The failure this guards
+/// happened: `capture_time` was optional until 2026-10-11 and the kernel
+/// filed a record with none as knowable the moment it happened.
+///
+/// Mutation: in `Platform::observe`'s `SensedRecord::Tick` arm use
+/// `tick.at` as `known_at` — the read at the decision instant then returns
+/// the tick and the second assertion fails.
+#[test]
+fn a_read_at_decision_time_returns_only_records_with_known_at_at_or_before_it() -> Result<()> {
+    let mut platform = platform()?;
+    let happened = start();
+    let late_by = Duration::from_mins(2);
+    let decided = happened.saturating_add(Duration::from_mins(1));
+    let arrived = happened.saturating_add(late_by);
+    assert_eq!(
+        platform.observe(vec![late_tick("AAA", happened, late_by, "101.5")]),
+        1,
+        "the premise: the tick was absorbed"
+    );
+    let world = platform.world();
+    let features = world.features();
+    let once_arrived = features
+        .value_as_of("close", object("AAA").as_str(), arrived, arrived)
+        .expect("the premise: once the tick has arrived, a read sees it");
+    assert!((once_arrived.value - 101.5).abs() < f64::EPSILON);
+
+    // Decided after the tick happened and before it arrived: not visible.
+    assert!(
+        features
+            .value_as_of("close", object("AAA").as_str(), decided, decided)
+            .is_none(),
+        "a read at the decision instant saw a tick the feed had not yet delivered"
+    );
+    Ok(())
+}
+
+/// R12-TICK-2087, second half. The delay each source shows is calibrated
+/// from what it delivered, and the SIMULATE stage's capacity probe runs
+/// behind the slowest one — reported off the simulator's own applied
+/// conditions, not off the schedule that was asked for.
+///
+/// Mutation: drop the `with_conditions` call in `capacity_probe` — the probe
+/// reports no `delayed_feed` condition and the last assertion fails.
+/// Mutation: drop `observe_publication_delay` from the `Tick` arm — the
+/// calibration premise fails.
+#[test]
+fn a_sources_publication_delay_is_calibrated_from_its_ticks_and_the_capacity_probe_runs_behind_it()
+-> Result<()> {
+    let mut platform = platform()?;
+    assert!(platform.publication_delays().is_empty());
+    assert_eq!(platform.calibrated_feed_delay(), Duration::ZERO);
+    platform.observe(bars("AAA", 120));
+    for (minutes_ago, late_by) in [(30, 1), (20, 3), (10, 2)] {
+        let at = start().saturating_sub(Duration::from_mins(minutes_ago));
+        platform.observe(vec![late_tick(
+            "AAA",
+            at,
+            Duration::from_mins(late_by),
+            "100",
+        )]);
+    }
+    let delay = platform
+        .publication_delays()
+        .get("XNYS")
+        .expect("the premise: the source was calibrated");
+    assert_eq!(delay.observations(), 3);
+    assert_eq!(delay.mean(), Duration::from_mins(2));
+    assert_eq!(delay.max(), Duration::from_mins(3));
+    assert_eq!(platform.calibrated_feed_delay(), Duration::from_mins(2));
+
+    let report = platform.run_cycle(start());
+    let simulate = report.stage(Stage::Simulate).expect("simulate ran");
+    assert!(
+        simulate.detail.contains("capacity probe"),
+        "the premise: the probe ran: {}",
+        simulate.detail
+    );
+    assert!(
+        simulate
+            .detail
+            .contains("behind a 120s calibrated feed delay"),
+        "the probe did not run behind the calibrated delay: {}",
+        simulate.detail
+    );
+    assert!(
+        simulate.detail.contains("delayed_feed"),
+        "the simulator did not apply the feed delay to the probe's arrival: {}",
+        simulate.detail
+    );
     Ok(())
 }
