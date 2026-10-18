@@ -348,9 +348,12 @@ fn a_residual_above_threshold_between_replay_and_live_opens_a_curriculum_item() 
     };
     let question = question_for(&raised);
 
-    // The tool is registered so the admission is decided by the item, not by
-    // a missing tool; that path has its own test below.
-    let mut desk = desk_with(&[("tick-replay", ToolKind::Simulator)]);
+    // The tools are registered so the admission is decided by the item, not
+    // by a missing tool; that path has its own test below.
+    let mut desk = desk_with(&[
+        ("tick-replay", ToolKind::Simulator),
+        ("venue-adapter", ToolKind::VenueAdapter),
+    ]);
     assert!(desk.queue().is_empty(), "premise: an empty desk");
     assert_eq!(
         desk.offer(raised, &set(&[]), &set(&["US"])),
@@ -657,7 +660,10 @@ fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
 fn quantum_research_reaches_capability_only_through_every_environment_and_criterion() {
     let us = set(&["US"]);
     let started = |raised: &qip_expansion::gap::RaisedGap| {
-        let mut desk = desk_with(&[("quantum-backend", ToolKind::QuantumBackend)]);
+        let mut desk = desk_with(&[
+            ("quantum-backend", ToolKind::QuantumBackend),
+            ("classical-solver", ToolKind::Solver),
+        ]);
         let admission = desk.offer(raised.clone(), &set(&[]), &us);
         assert!(
             !matches!(admission, Admission::Refused { .. }),
