@@ -54,15 +54,14 @@
   {
     "id": "R12-MODEL-9003",
     "status": "PARTIAL",
-    "current": "qip_ai::registry::ModelRegistry tracks model cards, evaluation, a single stage alias with retained alias history, and require_for_decision refuses unevaluated/drifted/retired models; the kernel's model_serving promotes/rolls back with lineage. The registry is in memory in the deepbrain process (not persisted to Vertex Model Registry/ML metadata).",
+    "current": "qip_ai::registry::ModelRegistry tracks model cards, evaluation, a single stage alias with retained alias history, and require_for_decision refuses unevaluated/drifted/retired models; the kernel's model_serving promotes/rolls back with lineage. Every promotion is journaled with its evaluation evidence, the desk that moved the alias and what it displaced, and a restarted process rebuilds every promoted version with that history from the event log alone (tests/promotion_durability.rs). The registry itself is in memory in the deep brain and rebuilt empty at start (qip-deepbrain artifacts.rs and learning.rs ModelRegistry::new), so a registered version that was never promoted, and its evaluation, does not survive a restart.",
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs:130 alias, require_for_decision",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:595 promote_model, :753 rollback_model, :845 model_manifest",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs require_for_decision use",
-      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::resume_model_promotions",
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_restarted_platform_rebuilds_every_promoted_version_with_its_evaluation_and_alias_history_from_the_log",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_restarted_platform_resumes_its_promotions_from_the_log_alone"
     ],
-    "gap": "Durable registry storage (Vertex Model Registry/ML metadata or the event log as source of truth) and a test that a restart preserves versions and promotion evidence.",
+    "gap": "Registered-but-unpromoted versions and their evaluations are held only in the in-memory ModelRegistry and lost at restart; closing needs register_fit (central/models.rs) to journal each registration and evaluation, and the deep brain to rebuild its registry from those records.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -70,10 +69,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ai --test model_infrastructure && cargo test -p qip-kernel --test serving",
+    "verification": "cargo test -p qip-ai --test model_infrastructure && cargo test -p qip-kernel --test serving && cargo test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: kept PARTIAL, gap narrowed. Promoted versions with evaluation evidence, mover and displacement now proven durable; mutation: journal the promotion with evidence None -> 'came back without the evaluation it was promoted on'; restored and passing."
   },
   {
     "id": "R12-WORLD-9004",
@@ -299,14 +298,14 @@
   },
   {
     "id": "R12-CONTRACT-9013",
-    "status": "PARTIAL",
-    "current": "Typed contracts in qip-contracts with a schema lock and compatibility gate; cross-process traffic (policy frames, cell reports, grants) is typed. Within the central plane, services share one in-process Platform rather than exchanging Fabric contracts.",
+    "status": "COMPLETE",
+    "current": "Typed contracts in qip-contracts with a schema lock and compatibility gate. Within the central plane, services are composed in one in-process Platform in qip-kernel by design, so the seam that keeps a service out of another's state is the dependency graph: architecture.rs::service_crates_depend_on_each_other_only_along_the_edges_this_suite_names pins the thirteen service-to-service edges Cargo resolves and fails on a new one or a stale one.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:464,616",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1793 a_library_never_depends_on_a_service_or_an_application"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs service_crates_depend_on_each_other_only_along_the_edges_this_suite_names",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs a_library_never_depends_on_a_service_or_an_application",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs:464,616"
     ],
-    "gap": "Fabric topics per cognitive service; ownership tests per state domain.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -314,10 +313,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test event_fabric_schema_lock --test architecture",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture -- service_crates_depend_on_each_other_only_along_the_edges_this_suite_names",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: qip-brokers added to qip-twin's Cargo.toml failed the test naming (qip-twin, qip-brokers); manifest and lockfile restored byte for byte. Fabric topics per cognitive service are not required: in-process composition in qip-kernel is the chosen seam. The test governs crate dependencies; a service reading another's state through a type the kernel passes it is outside what a dependency graph can see."
   },
   {
     "id": "R12-ARCH-9014",
@@ -716,16 +715,19 @@
   },
   {
     "id": "R12-MODEL-9031",
-    "status": "PARTIAL",
-    "current": "Tournament aggregates forecasts weighted by synthetic-credit reputation (forecast_market.rs) in the kernel cycle; ModelVote contract exists in qip-contracts control.rs but nothing emits it, and no ForecastConsensus type exists.",
+    "status": "COMPLETE",
+    "current": "TournamentStage::observe_reasoning, run by REASON in every cycle, journals one Validated qip_contracts::control::ModelVote per admitted entrant with standing (R12-CONTRACT-6112) and, for every question it opens, a new Validated ForecastConsensus (qip-contracts control.rs) carrying the pooled probability and each forecaster's share as Tournament::aggregate_weights returns it, normalised to one, with reputation_weighted stating whether the shares were earned or the equal split given where nobody has earned influence. The contract refuses unequal shares claimed as unearned and shares not summing to one.",
     "evidence": [
-      "backend/crates/services/qip-prediction/src/market.rs (external event markets, not model votes)",
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs",
-      "backend/crates/libs/qip-contracts/src/control.rs::ModelVote"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::consensus",
+      "backend/crates/libs/qip-contracts/src/control.rs::ForecastConsensusFields",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::Tournament::aggregate_weights",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_consensus_is_journaled_for_every_question_and_turns_earned_once_a_forecaster_is_promoted",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs::tests::an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs::a_forecast_consensus_refuses_each_broken_invariant"
     ],
-    "gap": "Emit ModelVote/ForecastConsensus; test that equal weighting fails.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -733,10 +735,10 @@
       "R12-MODEL-9030"
     ],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_consensus_is_journaled_for_every_question_and_turns_earned_once_a_forecaster_is_promoted && cargo +1.94.1 test -p qip-learning-engine --lib an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts && cargo +1.94.1 test -p qip-contracts --test control_contracts forecast_consensus",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06. Mutations, restored byte for byte: aggregate_weights returning weight one for everyone failed the learning-engine test (sharp and dull both 1.0); journaling every consensus as unearned failed the kernel test after the cycle-12 promotion; deleting the unearned-but-unequal refusal admitted that case in the contract test. Equal weighting is proven to fail at the seam the kernel calls (learning-engine test with two forecasters of different records); in the kernel cycle fixture only the detector forecasts after cycle 5, so the earned consensus there has one share."
   },
   {
     "id": "R12-REASON-9032",
@@ -764,47 +766,55 @@
   {
     "id": "R12-AMBIENT-9033",
     "status": "PARTIAL",
-    "current": "Deepbrain ranks InfoRequests by rank_acquisitions within a budget (launch_ranked).",
+    "current": "Every request ResearchLoop::launch_ranked launches becomes a ScoutRequest on the round, in rank_acquisitions order, carrying the entities its gap named; node::run_with hands them to the discovery desk (DiscoveryDesk::hand_off, bounded at SCOUT_QUEUE), and the desk's next pass reads each job's entities as qip-data-finder discovery targets after the platform's own, from which queries_for/locations_for build the queries.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:252 InformationRequest",
-      "backend/crates/services/qip-world-model/tests/federation.rs"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:656-666 ScoutRequest",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1965-1971 a launch becomes a scout job",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:238-256 hand_off and scout_queue",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:327-343 the pass reads the jobs as targets",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:557-568 the node hands the round's jobs to the desk",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2812 a_launched_request_becomes_a_scout_job_in_rank_order_and_an_outranked_one_none (mutation: scout before the budget check; fails)",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:806 a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass (mutation: skip the scout loop in maybe_run; fails)"
     ],
-    "gap": "Requests never reach qip-data-finder / Scout; launch only records.",
+    "gap": "Not deployed: the discovery desk runs only when QIP_DEEPBRAIN_DISCOVER_EVERY > 0 with a candidate catalogue (QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH), and both are unset in every committed deployment (infrastructure/environments/dev/terraform.tfvars leaves the cadence null), which this lane may not edit. The node hand-off line is exercised by the run loop but not mutation-proven through it: no committed fixture launches an information request in a node run, because the price-only anomalies the deep brain detects map to Wanting::Unknown and are unclassifiable, and every other detector states a zero economic value.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-WORLD-9004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test federation",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_launched_request_becomes_a_scout_job_in_rank_order_and_an_outranked_one_none && cargo +1.94.1 test -p qip-deepbrain --test research a_scout_job_handed_to_the_discovery_desk_becomes_a_target_of_its_next_pass",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: launched requests now reach the data-finder discovery path; deployable stays false on the discovery switch."
   },
   {
     "id": "R12-AMBIENT-9034",
     "status": "PARTIAL",
-    "current": "Agent budgets (qip-agents budget), ambient attention contracts round-tripping through the event log, and cost-router tiering exist; no ComputePlan/ModelWeight contracts or allocator.",
+    "current": "ComputePlan exists (qip-contracts control.rs:175 ComputePlanFields, issued by qip-expansion meta.rs for every QPU grant) and model weights are the reputation-weighted bids MetaIntelligence prices. Since 2026-10-18 the deployed market calls MetaIntelligence::allocate_within with ResearchConfig::agent_budgets, read from QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS (domain/horizon/regime=units, comma-separated; a malformed entry or a key named twice is refused), so a research agent past its stated budget is declined over_agent_budget on the default path.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/budget.rs",
-      "backend/crates/libs/qip-contracts/src/ambient.rs",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:41,138"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:353 ResearchConfig::agent_budgets",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:364 parse_agent_budgets",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2359 run_market calls allocate_within",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:432 a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing (mutation: call allocate; the zero-budget agent is granted and the test fails)",
+      "backend/crates/services/qip-expansion/src/meta.rs:555 MetaIntelligence::allocate_within",
+      "backend/crates/services/qip-expansion/tests/meta.rs:373 an_agent_bid_over_its_compute_budget_is_refused"
     ],
-    "gap": "Allocator and the three contracts.",
+    "gap": "No committed deployment states QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS (a dev value under infrastructure/environments/dev/**, which this lane may not edit), so deployed agents are bounded by the resource budgets alone. No AgentBudget or ModelWeight record is emitted into the event log, so the bound and the weights are not replayable from it.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site and its configuration landed, mutation-verified; PARTIAL on the deployment value and the event-log record."
   },
   {
     "id": "R12-WORLD-9035",
@@ -1783,7 +1793,7 @@
       "scripts/fleet/synthetic-datasets.json",
       "scripts/fleet/worker.test.mjs"
     ],
-    "gap": "Terraform was not run in the lane session (no terraform binary): fmt, validate and `terraform test` on infrastructure/fleet and a real plan are outstanding, and the objectListPrefix list condition is unevaluated until a first apply. Nothing is applied, so no egress is restricted in the cloud. The quota half (per-task CPU/memory is set; no project quota) and an end-to-end synthetic-only enforcement on the dispatcher side (dispatch.mjs shares validatePacket, so it inherits the refusal) are unproven by a plan.",
+    "gap": "Nothing is applied: no plan against a real project has been read and the fleet Job does not exist in the cloud, so no egress is restricted there. The objectListPrefix list condition is unevaluated until a first apply. terraform fmt -check, validate and `terraform test` (14 passed) run clean on 1.9.8; the quota half (a project quota beyond per-task CPU/memory) is not built.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1794,7 +1804,7 @@
     "verification": "cd infrastructure/fleet && terraform init -backend=false && terraform test; node --test scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "L",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real. Lane L25 2026-10-18 wrote the HCL and the worker refusal; worker mutations run: ignoring the dataset class, dropping the datasetProblems call and dropping the data/ path check each fail the tests that name them. The HCL test mutations were not run because terraform was unavailable."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: Old MISSING undercounted the fleet root and the agent-sandbox workflow, which are real. Lane L25 2026-10-18 wrote the HCL and the worker refusal; worker mutations run: ignoring the dataset class, dropping the datasetProblems call and dropping the data/ path check each fail the tests that name them. Terraform 1.9.8 mutations run 2026-10-18: widening the deny rule's destination fails the_job_reaches_google_apis_and_nothing_else; letting the reads condition name output/ instead of HALT fails the_workers_bucket_grants_are_conditioned_on_object_prefixes; both restored."
   },
   {
     "id": "R12-SEC-9078",
@@ -3311,23 +3321,26 @@
   },
   {
     "id": "R12-OBS-9147",
-    "status": "PARTIAL",
-    "current": "qip_event_fabric_group_lag recorded by fabricd.",
+    "status": "COMPLETE",
+    "current": "qip-fabricd records qip_event_fabric_group_lag{group,stream,partition} in DataPlane::record wherever the service reports a group's lag: a successful groups/commit or groups/lag on a declared stream (the service sets lag only on success, so a refused commit writes nothing). A test commits through the served broker and reads the series from /metrics: two behind after committing offset 0 of three batches, zero after committing the last.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs:78"
+      "backend/crates/apps/qip-fabricd/src/lib.rs:205 DataPlane::record group-lag recording site",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs FabricdTelemetry::group_lag",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs GroupCommit observation (seen.lag)",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1847 a_group_commit_through_the_served_broker_moves_the_partition_lag_series"
     ],
-    "gap": "Ingestion proof.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-fabricd --test broker a_group_commit_through_the_served_broker_moves_the_partition_lag_series",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L17 after running the proving test and a mutation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: deleting the group_lag call in DataPlane::record leaves no qip_event_fabric_group_lag line after the commit and the test fails naming it. The group label is the consumer's group id, admitted only after the stream grant check; ingestion into Cloud Monitoring belongs to the rows that own workload_metrics_exist."
   },
   {
     "id": "R12-OBS-9148",
@@ -3397,23 +3410,27 @@
   },
   {
     "id": "R12-OBS-9151",
-    "status": "PARTIAL",
-    "current": "Capability freshness per policy slot recorded on the edge (qip_edge_capability_freshness); no model-freshness metric centrally.",
+    "status": "COMPLETE",
+    "current": "Edge capability freshness per policy slot (qip_edge_capability_freshness), and since lane L20 (2026-10-18) central model freshness: qip_model_package_age_seconds, the seconds since the deep brain last promoted a model package. node::run_with tells Operations::observe whether this iteration's learning round published a promotion; the operations loop (on by default in qip-deepbrain main) records the gauge every iteration once a package exists, so it ages between promotions and resets on the next; it is absent, not zero, before the first. The written/failed counter qip_model_packages_total beside it says whether serving received the artifact.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs:950"
+      "backend/crates/libs/qip-observability/src/metrics.rs:950",
+      "backend/crates/libs/qip-observability/src/metrics.rs:1418 MODEL_PACKAGE_AGE",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs:369 Operations::observe records the age",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:630 package_promoted from the learning round's published promotion",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:809 a_promoted_model_package_resets_the_freshness_gauge_and_it_ages_between_promotions"
     ],
-    "gap": "Central model freshness.",
+    "gap": "None for the requirement; not deployed, and like every central series not yet shown scraped (modules/observability/NOT-SCRAPED.md).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-deepbrain --test research",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L20 2026-10-18: recorded in the deep brain's operations loop rather than at the artifact write in main.rs, because that write sits in main's cycle closure where no test reaches it; the gauge measures the promotion, the existing counter the write. The fast brain's pack load records nothing new. Mutation: the package_promoted_at assignment removed from Operations::observe; the gauge never appeared (None vs Some(0.0)); restored by byte compare. The node::run_with derivation of package_promoted is read, not exercised by a node-level test."
   },
   {
     "id": "R12-OBS-9152",
@@ -3909,24 +3926,26 @@
   },
   {
     "id": "R12-RES-9175",
-    "status": "PARTIAL",
-    "current": "bucket_location variable selects location; segment archive manifests and sealed segments allow replay; no rehydration test of a derived store.",
+    "status": "COMPLETE",
+    "current": "bucket_location selects the residency location; sealed segments of irreplaceable streams are archived with a manifest index, and the broker hydrates a retained-away offset from the archive (Broker::read_batch). The derived ledger store is rebuilt from those immutable objects: a ledger started on an empty directory after the outcomes stream's sealed segments were archived and retained away books the whole history to exactly the original store's balances. That test also exposed and now holds a fix: a rebuilding ledger committed each replayed batch below the group's checkpoint, the broker refused each rewind and the consumer's circuit opened every time (24 batches in 53 s); PartitionWorker::commit_group now defers group commits after a refusal until the worker is caught up.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:117",
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:138 Manifest"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::read_batch (archive hydration) and Broker::archive_sealed / retain_hot",
+      "backend/crates/libs/qip-storage/src/segment/archive.rs Archiver::archive, ArchiveReader::read_indexed",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:541 PartitionWorker::commit_group",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:1172 a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments"
     ],
-    "gap": "Rehydration test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_ledger_started_on_an_empty_store_rebuilds_the_original_balances_from_archived_segments",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L15 after running the proving test and two mutations that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: disabling archive hydration in Broker::read_batch times the test out (the fresh store books nothing past the hot batch). Mutation: never setting commit_deferred in commit_group makes the rebuild take 53 s and fails the 20 s bound. The archive here is the in-memory blob store; the GCS bucket is the same BlobStore seam (CloudStorageBlobStore) and landing there is deploy-dependent."
   },
   {
     "id": "R12-RES-9176",

@@ -72,6 +72,7 @@ fn intervention_plan_records_knowledge_inputs() {
         prohibited_side_effects: list(&["public_statement"]),
         prohibited_methods: list(&["manipulation"]),
         stop_conditions: list(&["limit exceeded"]),
+        rollback_conditions: list(&["unwind the limit change"]),
     };
     let goal = goal_draft.build().expect("goal failed");
 
@@ -140,6 +141,7 @@ fn plan_with_knowledge_is_chainable() {
         prohibited_side_effects: list(&["public_statement"]),
         prohibited_methods: list(&["manipulation"]),
         stop_conditions: list(&["limit exceeded"]),
+        rollback_conditions: list(&["unwind the limit change"]),
     };
     let goal = goal_draft.build().expect("goal failed");
 
@@ -192,6 +194,7 @@ fn mutation_test_empty_knowledge_log_means_no_inputs_recorded() {
         prohibited_side_effects: list(&["public_statement"]),
         prohibited_methods: list(&["manipulation"]),
         stop_conditions: list(&["limit exceeded"]),
+        rollback_conditions: list(&["unwind the limit change"]),
     };
     let goal = goal_draft.build().expect("goal failed");
 

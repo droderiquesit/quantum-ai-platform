@@ -386,7 +386,7 @@
     "verification": "terraform plan; unit tests for pack writer",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-DATA-8018",
@@ -1633,24 +1633,27 @@
   },
   {
     "id": "R12-FABRIC-8074",
-    "status": "PARTIAL",
-    "current": "The broker's data plane sets max_body to MAXIMUM_REQUEST_BYTES; a declaration one byte over (or 16 MiB) is refused 413, and ServerLimits caps concurrent connections at 64 with a 503.",
+    "status": "COMPLETE",
+    "current": "The broker's protocol listener runs under qip_fabricd::data_plane_limits: the transport's ServerLimits defaults (64 live connections, 16 of them handshaking, one request per connection) with the body ceiling raised to MAXIMUM_REQUEST_BYTES. A declaration over the ceiling is refused 413 before any body is buffered; a connection past the cap is answered 503 at the accept loop and never reaches a handler. Request memory is therefore bounded by the cap times the ceiling (64 x (8 MiB + 4 KiB)); the bound is a fixed connection pool with a fixed per-request ceiling, not a pooled buffer allocator.",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:70-75 MAXIMUM_REQUEST_BYTES",
-      "backend/crates/libs/qip-transport/src/server.rs ServerLimits"
+      "backend/crates/apps/qip-fabricd/src/lib.rs:184 data_plane_limits",
+      "backend/crates/libs/qip-transport/src/server.rs Server::serve max_concurrent 503 and max_handshaking",
+      "backend/crates/libs/qip-transport/tests/server_connection_cap.rs the_connection_past_the_cap_is_refused_503_while_the_held_ones_are_served",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1901 the_broker_data_plane_runs_under_the_capped_server_limits",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1719 a_request_over_the_brokers_ceiling_is_refused_on_its_declared_length_and_the_broker_keeps_serving"
     ],
-    "gap": "No test of the max_concurrent 503 refusal at the broker; no pooled buffer allocator.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-fabricd",
+    "verification": "cargo test -p qip-transport --test server_connection_cap; cargo test -p qip-fabricd --test broker the_broker_data_plane_runs_under_the_capped_server_limits a_request_over_the_brokers_ceiling_is_refused_on_its_declared_length_and_the_broker_keeps_serving",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged. Re-graded 2026-10-18 by lane L17 after running the proving tests and mutations that made each fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The 503 is driven at the transport's Server with a handler that holds its requests, because no qip-fabricd route holds a connection (one request per connection, every route answers at once, and a slow sender is bounded first by max_handshaking); the broker's own limits are pinned to that server's by a separate test. Mutation: admitting at max_concurrent + 1 in Server::serve leaves the fifth connection held, not refused, and the 503 assertion fails. Mutation: max_concurrent 4096 in data_plane_limits fails the cap assertion."
   },
   {
     "id": "R12-FABRIC-8075",
@@ -2158,12 +2161,14 @@
   {
     "id": "R12-FABRIC-8097",
     "status": "PARTIAL",
-    "current": "Boot disk type defaults to hyperdisk-balanced; a journal device variable is passed to the startup script; no separate journal disk resource; module not instantiated.",
+    "current": "The broker template declares a dedicated, non-auto-deleted Hyperdisk journal disk (device qip-journal, its own size variable) and provisions its IOPS and throughput explicitly (journal_provisioned_iops, default 3000; journal_provisioned_throughput_mibps, default 140), validated to the Hyperdisk Balanced ranges; disk_type is refused unless it is a hyperdisk-* type, because only a Hyperdisk accepts provisioned performance. The module is instantiated by fabric.tf only when var.event_fabric_broker is set, and it is null in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/variables.tf (disk_type default hyperdisk-balanced)",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:37-47"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:78 provisioned_iops / provisioned_throughput on the qip-journal disk",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:208 journal_provisioned_iops and journal_provisioned_throughput_mibps with range validations; disk_type hyperdisk-* validation",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:223 the_journal_disk_is_provisioned_for_iops_and_throughput, a_journal_throughput_outside_the_hyperdisk_range_is_refused, provisioned_journal_performance_on_a_persistent_disk_type_is_refused",
+      "infrastructure/terraform/fabric.tf module \"event_fabric_broker\" count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Dedicated Hyperdisk journal with throughput sizing.",
+    "gap": "Not deployed: event_fabric_broker is null in every environment because no broker boot image has been baked, and the root object in infrastructure/terraform/variables.tf (protected) does not expose the two throughput figures, so a deployment takes the module defaults; no measurement yet ties the defaults to the catalogue's peak_bytes_per_second.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2171,10 +2176,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "event_fabric_infrastructure.rs:218 fabric_085 asserts a hand-built struct, not Terraform."
+    "notes": "Lane L22, 2026-10-18: provisioned IOPS and throughput added and proven at plan with a mocked provider (18 runs pass). Mutations: delete the provisioned_iops line - the provisioning run fails; delete the disk_type hyperdisk validation - the persistent-disk refusal run fails; both restored. Kept PARTIAL because nothing instantiates the module in a committed environment."
   },
   {
     "id": "R12-FABRIC-8098",
@@ -2343,9 +2348,10 @@
     "current": "qip-capital and the kernel issue signed envelopes/grants carried to cells; authoritative capital state in kernel ledger; runs in Cloud Run binaries.",
     "evidence": [
       "backend/crates/services/qip-capital/src",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1138 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_ledger_of_records_durable_write_seam_is_named_by_no_crate_but_qip_ledgerd"
     ],
-    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Needs the authoritative store per LEDGER-8007 (ADR 0113 §1) and an inspection test that authoritative capital state is written only through qip-ledgerd.",
+    "gap": "Placement on Cloud Run satisfies the requirement (ADR 0114 Amendment 1). Authoritative capital state is not yet written only through qip-ledgerd: qip-ledgerd is not in catalogue.tf and no environment deploys it, and the kernel's TrackedCapital, the cells' UserLedger, the fabric Wallet and the brokers' AccountLedger are separate in-process writers (the ledger_001 test documents them). What is pinned today is narrower: the durable ledger-of-record write seam (LedgerBackend, LedgerBatch) is named by qip-ledgerd alone. The whole requirement waits on LEDGER-8007 and the consolidation of those stores.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2356,7 +2362,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Corrected 2026-10-18 (lane L08): added the write-seam guard, kept PARTIAL. Mutation: pub struct LedgerBatch appended to qip-risk-engine's lib.rs failed the test naming qip-risk-engine; restored byte for byte. The closure's authoritative_capital_state_is_written_only_through_qip_ledgerd would be false today, so it was not written."
   },
   {
     "id": "R12-GCP-8106",
@@ -2366,7 +2372,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs",
       "backend/crates/services/qip-risk-engine/src"
     ],
-    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests.",
+    "gap": "Placement on the Cloud Run brains satisfies the requirement (ADR 0114 Amendment 1). Needs a test that stress scenarios and envelopes are produced by the deployed composition, not only in kernel tests. No such test can be written today without restating the composition: qip-deepbrain main.rs assembles the platform inline (Platform::with_model_provider at main.rs:249, then trust::harden_central, survival policy, central horizons, each read from the environment in main), so a test under qip-deepbrain/tests builds its own Platform and proves only the kernel again. The prerequisite is extracting that composition into a library function main calls and a test can call; then the test drives a held book through SIMULATE and asserts the stress report and a central policy envelope.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2377,7 +2383,7 @@
     "verification": "inspection of catalogue.tf and the binary's composition",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Lane L20 2026-10-18: gap corrected, no code changed; extracting main's composition is a refactor of the binary's start-up order (configuration, ports, trust root, serve) larger than this test-only row."
   },
   {
     "id": "R12-RISK-8107",

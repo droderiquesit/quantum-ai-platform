@@ -355,9 +355,10 @@
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/contradiction.rs:21 ResolutionMethod",
       "backend/crates/services/qip-world-model/tests/contradictions.rs",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs",
+      "backend/crates/tests/qip-acceptance/tests/uncertainty_records.rs"
     ],
-    "gap": "Uniform uncertainty/contradiction fields across all five model kinds, integrated in the cycle.",
+    "gap": "Uncertainty is shown on four of the five model kinds by acceptance tests (2026-10-18): world Fact (confidence refused outside [0,1]), episodic ClaimRecord.confidence, self-model CapabilityEstimate (refuses a thin sample, never reports certainty), reasoning-engine confidence-by-arithmetic. Contradiction records exist only for the world graph (graph::Contradiction, both beliefs kept) and the reasoning engine (ContradictionResolution); the episodic, semantic and self models hold no contradiction record, and nothing shows a semantic-memory type carrying confidence. Uniform fields across all five kinds are unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -365,10 +366,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test contradictions",
+    "verification": "cd backend && cargo test -p qip-acceptance --test uncertainty_records && cargo test -p qip-world-model --test contradictions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations 2026-10-18, each failing its named test and restored: Fact::new confidence check disabled; contradiction gap threshold unreachable; MINIMUM_SAMPLE check removed (the first version of the test survived this, because an empty record errs by another path; strengthened to MINIMUM_SAMPLE-1 outcomes); ContradictionResolution two-id minimum lowered."
   },
   {
     "id": "R12-GOV-1017",
@@ -863,7 +864,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1038",
@@ -888,7 +889,7 @@
     "verification": "cargo test -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-DATA-1039",
@@ -926,7 +927,7 @@
     "evidence": [
       "backend/crates/services/qip-data-finder/tests/acquisition_manifest.rs:226 a_watcher_classifies_new_unchanged_and_changed_extents_and_survives_a_restart"
     ],
-    "gap": "SourceWatcher has no caller outside tests; no binary runs a watcher loop.",
+    "gap": "SourceWatcher has no caller outside tests. The seam the triage proposed for it, the deep brain's re-fetch pass (EvolutionEngine::maybe_refetch), is itself off by default: connectors::refetch_every returns 0 when QIP_DEEPBRAIN_REFETCH_EVERY is unset (connectors.rs:212-214), no committed deployment sets it, and the pass also needs a catalogued connector. Wiring the watcher there would not make it run on a default path; it needs an owner to set the re-fetch cadence and a connector in a committed deployment (owner switch), or a watcher seam that runs by default.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -939,7 +940,7 @@
     "verification": "new watcher test in qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Watcher built and tested; no production caller. Unchanged."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Watcher built and tested; no production caller. Unchanged. Lane L20 2026-10-18: gap corrected, no code changed; the triage closure itself made the row an owner switch if the re-fetch default was zero, and it is (connectors.rs:212 refetch_every, None => Ok(0))."
   },
   {
     "id": "R12-DATA-1041",
@@ -960,7 +961,7 @@
     "verification": "inspection + size metric",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-GOV-1042",
@@ -1626,14 +1627,18 @@
   {
     "id": "R12-EXEC-1068",
     "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
+    "current": "Spoofing is a whole-word conduct phrase class (qip-contracts action.rs); and the edge cell now refuses a place-and-cancel pattern before the next order of its shape exists: GATE_CONDUCT_SPOOFING in place_net, on the cell's own record of placements and unfilled time-to-live withdrawals per venue, instrument and side.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/conduct.rs:42 ConductPolicy (default: 4 unfilled withdrawals in 60 s, above 0.75 of placements) and :151 ConductWatch::refusal, keyed by venue, instrument and side, bounded by the window and MAX_EVENTS_PER_KEY",
+      "backend/crates/edge/qip-edge/src/cell.rs:215 GATE_CONDUCT_SPOOFING; :5278 place_net refuses through Cell::refuse before pricing builds the order; :5536 Cell::send records each accepted placement; :6261 withdraw_all records an order withdrawn at its time to live with nothing filled, after the last reports",
+      "backend/crates/edge/qip-edge/tests/pricing.rs:659 a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
+      "backend/crates/libs/qip-contracts/src/action.rs:53 Spoofing as a whole-word conduct phrase class",
       "backend/crates/libs/qip-contracts/src/action.rs:93 whole-word matcher"
     ],
-    "gap": "No behavioural spoofing control (order-to-cancel / intent patterns) in qip-edge quoting.",
+    "gap": "The behavioural control covers the cell's own place-then-withdraw-unfilled pattern only. Requotes sent beneath the placer seam (qip-edge-node reprice.rs, Cell::spend_requote) are deliberately not counted, so layering by repeated repricing away from the touch is not judged; cross-venue and momentum-ignition patterns have no control; and the desk's order path in qip-execution-engine has none.",
     "implemented": false,
     "tested": false,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1641,7 +1646,7 @@
     "verification": "cargo test -p qip-edge --test pricing; cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Lane L11, 2026-10-18: PARTIAL kept. The clause says any order pattern constituting spoofing; one pattern is now refused (see R12-AGENCY-6100, closed by the same change, mutation-verified). A requote keeps an order's intent to trade and counting it would convict ordinary market making, so judging requote layering needs its own bound, not this one."
   },
   {
     "id": "R12-AGENCY-1069",
@@ -2195,14 +2200,16 @@
   {
     "id": "R12-COMMERCE-1093",
     "status": "PARTIAL",
-    "current": "Commerce research reached from qip-deepbrain charges customs duty and purchase tax into each candidate's all-in cost and journals both; test asserts the exact difference through real cycles.",
+    "current": "Commerce research reached from qip-deepbrain charges customs duty and purchase tax into each candidate's all-in cost, journals both, and books each received unit into the inventory ledger at all_in_cost / quantity, so the unit's cost basis carries its share of the duty and the tax; tests assert both through real cycles.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/commerce.rs:254",
+      "backend/crates/libs/qip-financial/src/commerce.rs:337 all_in_cost = landed.total() + purchase_tax",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs:686 cost_basis = all_in_cost / quantity",
       "backend/crates/libs/qip-financial/src/commerce.rs:9 paper only, structurally",
       "backend/crates/libs/qip-financial/tests/commerce.rs",
-      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_duty_and_purchase_tax_in_the_plan_are_charged_into_the_all_in_cost_and_journaled"
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::a_duty_and_purchase_tax_in_the_plan_are_charged_into_the_all_in_cost_and_journaled",
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs:387 a_received_units_cost_basis_carries_its_duty_and_purchase_tax"
     ],
-    "gap": "The test asserts the journaled assessment, not the inventory ledger: no test shows duty/tax in a unit's cost basis or settlement.",
+    "gap": "Off by default: unset QIP_DEEPBRAIN_BREADTH_PLAN means no commerce plane, and no committed deployment sets it. The ledger effect itself is now tested.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2210,10 +2217,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test commerce",
+    "verification": "cargo test -p qip-deepbrain --test commerce",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: the ledger half is closed by a_received_units_cost_basis_carries_its_duty_and_purchase_tax (mutation: self.duty dropped from LandedCost::total; the basis rose over the duty-free assessment by the tax alone, 36.824 vs 55.236; restored). Kept PARTIAL with its siblings 1090/1091/1094 because the plane runs only under the owner switch QIP_DEEPBRAIN_BREADTH_PLAN."
   },
   {
     "id": "R12-COMMERCE-1094",
@@ -2454,7 +2461,7 @@
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:68",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk"
     ],
-    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; no global Scout Fabric beyond one deep brain's arms.",
+    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; recording it needs a kernel journaling seam for a deep-brain-owned record (Platform has journal_campaign for campaigns, nothing generic a binary may call). Even recorded, it would reach no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is deliberately unset (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) and deepbrain_connector is null in every environment's terraform.tfvars (protected path). No global Scout Fabric beyond one deep brain's arms.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2465,7 +2472,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the closure's 'commit the cadence' half would select a desk with nothing to read until an operator names a connector in a tfvars file, which a lane may not edit. The incumbent the desk scores against now spans every held arm (R12-DATA-2022)."
   },
   {
     "id": "R12-DATA-1106",
@@ -2508,7 +2515,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1108",
@@ -2529,7 +2536,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1109",
@@ -2550,7 +2557,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1110",
@@ -2571,7 +2578,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1111",
@@ -2591,7 +2598,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1112",
@@ -2613,7 +2620,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EXPAND-1113",
@@ -2662,24 +2669,26 @@
   },
   {
     "id": "R12-EXPAND-1115",
-    "status": "PARTIAL",
-    "current": "OntologyRegistry/CapabilityRegistry in qip-agents; source catalogue in data-finder.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop holds an OntologyRegistry of every type its detectors read (SWEEP_ONTOLOGY: Market.price_series, Asset.asset_class, Event.anomaly, Entity.evidence_claim, Lifecycle.research_item), refused at construction and again at each sweep if a type is missing, beside the ToolRegistry and the BrainSpec map; every sweep record carries RegistryCounts naming the licensed sources the discovery desk handed it, the ontology types, the tools and the brains it ran against.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21",
-      "backend/crates/libs/qip-agents/src/registries.rs:115"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:595-650 RegistryCounts, SWEEP_ONTOLOGY, sweep_ontology",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:947-958 check_ontology",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1076-1086 the sweep consults and records the registries",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:861 a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted (mutation: drop the round.registries assignment; every count reads zero and the test fails)"
     ],
-    "gap": "Integrate source/ontology/tool/brain registries in deepbrain with a named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test expansion_rows a_sweep_records_the_source_ontology_tool_and_brain_registries_it_consulted",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L03: closed. The source registry the sweep consults is the discovery desk's licensed catalogue (qip-data-finder), handed to every sweep by node::run_with; with discovery off it is empty and the record says zero."
   },
   {
     "id": "R12-EXPAND-1116",
@@ -3220,26 +3229,31 @@
   },
   {
     "id": "R12-AMBIENT-1141",
-    "status": "PARTIAL",
-    "current": "The scheduled deep-brain research sweep runs DetectorRegistry anomaly scans and opportunity detectors (repeated_vetoes, PersistenceTracker -> MissedOpportunity -> SignalClass::Opportunity); anomaly signals and router decisions are journaled and tested.",
+    "status": "COMPLETE",
+    "current": "The deep-brain research sweep (ResearchLoop::sweep_over, run every cycle by default from node::run_with) feeds flagged subjects to PersistenceTracker; a discrepancy persisting PERSIST_SWEEPS (3) sweeps raises GapTrigger::MissedOpportunity, research::signal_class maps it to SignalClass::Opportunity, and AmbientJournal::record journals it on the hash-chained ambient journal alongside the anomaly scans.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:94 Detection",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::signal_class",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over",
+      "backend/crates/services/qip-expansion/src/detectors.rs::PersistenceTracker::observe",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:375 a_discrepancy_persisting_for_the_sweep_count_is_journaled_as_an_opportunity_class_signal",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs::an_anomaly_scan_is_journaled_as_signals_each_with_the_routers_decision"
     ],
-    "gap": "No test asserts an Opportunity-class signal from the opportunity scans is journaled.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cargo test -p qip-deepbrain --test ambient_journal",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Lane L20 2026-10-18: the opportunity half is now proven on the journal through the default sweep, driven by the persistent-discrepancy scan rather than repeated vetoes (vetoes need scored declines a unit test cannot cheaply produce; both map through the same signal_class arm). Mutation: GapTrigger::MissedOpportunity mapped to SignalClass::Assumption in research::signal_class; the new test failed with the record journaled as class Assumption; restored."
   },
   {
     "id": "R12-AMBIENT-1142",
@@ -3537,7 +3551,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-WORLD-1155",
@@ -3571,9 +3585,11 @@
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/cycle.rs:17 Stage",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs"
+      "backend/crates/services/qip-learning-engine/src/self_model.rs",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs::every_financial_agi_core_scope_item_names_a_seam_and_a_test_that_still_exist",
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open, unconditional"
     ],
-    "gap": "Complete the remaining scope items and integrate them.",
+    "gap": "A scope map now names a seam and an existing test for all ten items, and a test pins the deep brain's unconditional AmbientAgency::open. Still PARTIAL: it is inspection, not behaviour; hypothesis generation (stage_reason) and uncertainty (calibrate_resolved) are covered only by a cycle-level test, not one named for them; planning and tool use run in the ambient agency's shadow/outbox path, not as an executing planner.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3581,10 +3597,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cd backend && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Mutations 2026-10-18: renaming the counterfactual test failed the map naming 'counterfactuals'; wrapping the agency open in a conditional failed the unconditional-open test; restored."
   },
   {
     "id": "R12-MODEL-1157",

@@ -53,6 +53,7 @@ pub mod ambient_agency;
 pub mod ambient_journal;
 pub mod artifacts;
 pub mod attestation;
+pub mod brains;
 pub mod breadth;
 pub mod campaign;
 pub mod config;

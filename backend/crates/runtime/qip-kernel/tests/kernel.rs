@@ -1872,3 +1872,57 @@ fn a_deployment_whose_agent_review_interval_the_roster_does_not_honour_refuses_t
     );
     Ok(())
 }
+
+// --- lineage completeness (R12-OBS-7129) --------------------------------------
+
+/// The `data-provenance-lineage-completeness` objective was declared, given a
+/// gauge, and fed by nothing: every binary evaluated it unmeasured, so a deep
+/// brain absorbing connector records with no lineage at all read the same as
+/// one that logged every record under its ingestion correlation id. The
+/// platform now counts each received record by whether its lineage reached
+/// the event log, at the two doors a record comes in by.
+#[test]
+fn lineage_completeness_counts_records_logged_under_a_lineage_against_records_handed_in_bare()
+-> Result<()> {
+    use qip_observability::critical_paths::critical_path_slos;
+    let path = critical_path_slos()
+        .into_iter()
+        .find(|path| path.slo.name == "data-provenance-lineage-completeness")
+        .expect("the catalogue carries the lineage objective");
+    let mut platform = platform(PlatformConfig::default())?;
+    // The premise: nothing is measured before a record arrives, so the counts
+    // below are this test's records and not a fixture's.
+    assert_eq!(path.counts(&recorded(&platform)), (0, 0));
+
+    let linked = bars("AAA", 30);
+    let received = linked.len() as u64;
+    platform.observe_fresh(linked, "test-feed", start());
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        path.counts(&snapshot),
+        (received, received),
+        "records observed under a lineage the log accepted are all linked"
+    );
+    let status = path.evaluate(received, received);
+    assert!(status.is_observed() && status.is_met);
+
+    let bare = bars("AAA", 10);
+    let unlinked = bare.len() as u64;
+    platform.observe(bare);
+    let snapshot = recorded(&platform);
+    assert_eq!(
+        path.counts(&snapshot),
+        (received, received + unlinked),
+        "records handed in with no lineage are counted, and counted bad"
+    );
+    let (good, total) = path.counts(&snapshot);
+    assert!(
+        !path.evaluate(good, total).is_met,
+        "a quarter of the records unlinked cannot meet a 99.9% objective"
+    );
+    assert_eq!(
+        snapshot.gauge(names::DATA_LINEAGE_COMPLETENESS, &labels([])),
+        Some(received as f64 / (received + unlinked) as f64)
+    );
+    Ok(())
+}

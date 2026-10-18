@@ -941,6 +941,29 @@ impl Tournament {
         Ok(Self::pooled(open, &weights))
     }
 
+    /// The weight each forecaster on an open question carries in
+    /// [`Self::aggregate`], and whether any of it was earned — `false` where
+    /// no forecaster had earned influence and every one weighs equally
+    /// (R12-MODEL-9031: the consensus record states which).
+    pub fn aggregate_weights(
+        &self,
+        question: &str,
+        regime: &str,
+    ) -> Result<(BTreeMap<String, f64>, bool)> {
+        let open = self
+            .questions
+            .get(question)
+            .ok_or_else(|| Error::not_found(format!("no open question {question}")))?;
+        let weights = self.question_weights(open, regime, None);
+        let earned = self
+            .influence_among(weights.keys().map(String::as_str), regime)
+            .values()
+            .map(|w| w.weight)
+            .sum::<f64>()
+            > 0.0;
+        Ok((weights, earned))
+    }
+
     fn question_weights(
         &self,
         open: &Question,
@@ -1870,6 +1893,49 @@ mod tests {
         assert!(
             value("other").abs() > 1e-6,
             "premise: a distinct view moves the aggregate"
+        );
+        Ok(())
+    }
+
+    /// R12-MODEL-9031: once forecasters have earned influence, the weights
+    /// the aggregate pools by — which the kernel journals as the
+    /// `ForecastConsensus` shares — differ by record, and the aggregate is
+    /// not the equal-weight mean of the forecasts. Mutation: return weight one
+    /// for every forecaster from `aggregate_weights` and the weights come out
+    /// equal.
+    #[test]
+    fn an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts() -> Result<()> {
+        let mut t = Tournament::new();
+        t.admit(spec("sharp"), at(0))?;
+        t.admit(spec("dull"), at(0))?;
+        rounds(
+            &mut t,
+            "quiet",
+            0,
+            12,
+            &[("sharp", 8_000), ("dull", 2_000)],
+            "up",
+            60.0,
+        )?;
+        activate_all(&mut t);
+        t.open(question("next", "quiet", 40), at(40))?;
+        t.submit("next", forecast("sharp", "next", 8_000, 40), at(40))?;
+        t.submit("next", forecast("dull", "next", 3_000, 40), at(40))?;
+
+        let (weights, earned) = t.aggregate_weights("next", "quiet")?;
+        assert!(earned, "premise: the record earned influence");
+        let weight = |name: &str| weights.get(name).copied().unwrap_or(f64::NAN);
+        assert!(
+            weight("sharp") > weight("dull"),
+            "the forecaster with the better record carries no more weight: {weights:?}"
+        );
+        let up = t
+            .aggregate("next", "quiet")?
+            .and_then(|p| p.get("up").copied())
+            .unwrap_or(f64::NAN);
+        assert!(
+            (up - 0.55).abs() > 1e-3,
+            "the aggregate {up} is the equal-weight mean"
         );
         Ok(())
     }

@@ -77,6 +77,14 @@ variable "disk_type" {
   description = "Disk type for broker journal (P2 class Hyperdisk, FABRIC-085)"
   default     = "hyperdisk-balanced"
   nullable    = false
+
+  # The journal disk's IOPS and throughput are provisioned (FABRIC-8097), and
+  # only a Hyperdisk accepts them: a persistent-disk type here would be
+  # refused at apply, after the plan had been reviewed as sound.
+  validation {
+    condition     = startswith(var.disk_type, "hyperdisk-")
+    error_message = "disk_type must be a hyperdisk-* type: the journal's IOPS and throughput are provisioned, which only a Hyperdisk accepts."
+  }
 }
 
 variable "disk_size_gb" {
@@ -194,6 +202,30 @@ variable "journal_disk_size_gb" {
   validation {
     condition     = var.journal_disk_size_gb >= 10
     error_message = "journal_disk_size_gb must be at least 10."
+  }
+}
+
+variable "journal_provisioned_iops" {
+  type        = number
+  description = "IOPS provisioned on the journal disk. Hyperdisk Balanced admits 3000 to 160000."
+  default     = 3000
+  nullable    = false
+
+  validation {
+    condition     = var.journal_provisioned_iops >= 3000 && var.journal_provisioned_iops <= 160000 && floor(var.journal_provisioned_iops) == var.journal_provisioned_iops
+    error_message = "journal_provisioned_iops is a whole number from 3000 to 160000, the Hyperdisk Balanced range."
+  }
+}
+
+variable "journal_provisioned_throughput_mibps" {
+  type        = number
+  description = "Throughput provisioned on the journal disk, in MiB/s. Hyperdisk Balanced admits 140 to 2400."
+  default     = 140
+  nullable    = false
+
+  validation {
+    condition     = var.journal_provisioned_throughput_mibps >= 140 && var.journal_provisioned_throughput_mibps <= 2400 && floor(var.journal_provisioned_throughput_mibps) == var.journal_provisioned_throughput_mibps
+    error_message = "journal_provisioned_throughput_mibps is a whole number from 140 to 2400, the Hyperdisk Balanced range in MiB/s."
   }
 }
 

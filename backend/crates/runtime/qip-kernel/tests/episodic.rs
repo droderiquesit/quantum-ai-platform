@@ -946,3 +946,116 @@ fn the_learn_stage_reads_regime_experience_from_memory_and_journals_it_with_the_
     );
     Ok(())
 }
+
+/// R12-WORLD-3032: the research organisation's memory — what the reviewer
+/// reads to object to a poor analyst or an applicable lesson — had no writer
+/// in any binary. The LEARN pass that remembers a resolved thesis now charges
+/// each analyst that leaned one way or the other to it, through the same
+/// slot the desk's gate reads.
+#[test]
+fn the_learn_pass_that_remembers_a_resolved_thesis_charges_its_analysts_to_research_memory()
+-> Result<()> {
+    let (t2, t3) = resolution_instants()?;
+    let (platform, _) = three_cycles(t2, t3)?;
+    let leaning: usize = platform
+        .remembered_episodes(t3)
+        .map(|episode| {
+            episode
+                .stances
+                .iter()
+                .filter(|stance| {
+                    matches!(
+                        stance.direction,
+                        qip_ai::memory::StanceDirection::Positive
+                            | qip_ai::memory::StanceDirection::Negative
+                    )
+                })
+                .count()
+        })
+        .sum();
+    // The premise: the resolved thesis had analysts who took a side, so an
+    // empty research memory below would be a missing writer, not a quiet panel.
+    assert!(
+        leaning > 0,
+        "premise: no analyst took a side on the resolved thesis"
+    );
+    let memory = platform.research_memory();
+    assert_eq!(
+        memory.episode_count(),
+        leaning,
+        "one research episode per directional stance on the resolved thesis"
+    );
+    assert!(
+        memory
+            .episodes()
+            .iter()
+            .all(|episode| episode.outcome.is_some())
+    );
+    Ok(())
+}
+
+/// R12-REASON-3109 at the kernel seam: a hypothesis the red team refuses on
+/// review never reaches DECIDE. The refusal was proven inside
+/// `qip-reasoning-engine`, where the review verdict is formed, and nothing
+/// proved that the platform honours it — that a rejected hypothesis is not
+/// still turned into a thesis and sized. This tape is the one the review
+/// rejects (see the episode test above); the cycle runs every stage, and the
+/// assertion is on what DECIDE sized, not on what REASON said.
+///
+/// Mutation: in `Platform`'s REASON arm, take the thesis branch whatever the
+/// verdict (`if false && !approved {` in place of `if !approved {`) — REASON
+/// queues a thesis "sized on conviction 0.396" and DECIDE weighs obj-AAA, so
+/// the thesis assertion fires. Nothing is sized even then, because the action
+/// bar refuses so weak a thesis, which is why the assertion is on the queue
+/// and not only on the proposals.
+#[test]
+fn a_hypothesis_refused_on_review_forms_no_thesis_and_decide_sizes_nothing_for_it() -> Result<()> {
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    platform.observe(leading_bars("BBB", 120));
+    let report = platform.run_cycle(start());
+
+    let reason = report
+        .stage(Stage::Reason)
+        .expect("premise: the cycle reports its REASON stage");
+    // The verdict as the reasoning engine stated it, read from the stage
+    // detail its own summary writes, rather than from the problem the
+    // kernel's rejection arm adds — the arm under test.
+    assert!(
+        reason
+            .detail
+            .contains("; hypothesis rejected at confidence "),
+        "premise: the review rejected a hypothesis on this tape:\n{}",
+        report.summarise()
+    );
+    let decide = report
+        .stage(Stage::Decide)
+        .expect("premise: the cycle reports its DECIDE stage");
+    assert!(decide.ran, "premise: DECIDE ran:\n{}", report.summarise());
+    // No thesis was queued for DECIDE: the clause REASON writes when it
+    // queues one is absent, and DECIDE has no clause about the instrument.
+    assert!(
+        !reason.detail.contains("; sized on conviction "),
+        "REASON queued a thesis for a hypothesis the review refused:\n{}",
+        report.summarise()
+    );
+    assert!(
+        !decide
+            .detail
+            .split("; ")
+            .any(|clause| clause.starts_with("obj-AAA: ")),
+        "DECIDE weighed the refused hypothesis's instrument:\n{}",
+        report.summarise()
+    );
+    let sized: Vec<String> = platform
+        .proposals()
+        .iter()
+        .flat_map(|p| p.legs.iter().map(|leg| leg.object_id.to_string()))
+        .collect();
+    assert!(
+        sized.is_empty(),
+        "DECIDE sized {sized:?} on a cycle whose only hypothesis the review refused:\n{}",
+        report.summarise()
+    );
+    Ok(())
+}

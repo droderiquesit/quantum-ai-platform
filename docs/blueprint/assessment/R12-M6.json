@@ -243,7 +243,7 @@
       "backend/crates/services/qip-expansion/tests/loop.rs:69 no competent specialist",
       "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
     ],
-    "gap": "Contradictory evidence and missing causal links share one detector over price-direction readings; nothing reads the evidence fabric's contested claims or the causal graph for missing links.",
+    "gap": "Contradictory evidence and missing causal links share one detector over price-direction readings. Neither replacement has an input the deep brain can read: the kernel's evidence intake (qip-kernel evidence_intake.rs EvidenceIntake) retains only a count of contested claims, not the KnowledgeDelta.contested ClaimKeys, and Platform::world().causal().edges() names causal variables, not the subject ids the sweep's detectors key on, so a missing-link detector would have to guess the mapping. Closing it needs the kernel to retain a bounded list of contested keys and a stated variable-to-subject map first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -254,7 +254,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Detectors now run from the deep brain; two of six kinds are conflated in one proxy."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: gap corrected after reading evidence_intake.rs and the world model's causal edges; no detector added, because one with no honest input would read as coverage."
   },
   {
     "id": "R12-REFLEX-6012",
@@ -390,15 +390,16 @@
   },
   {
     "id": "R12-MODEL-6018",
-    "status": "PARTIAL",
-    "current": "Scorecard carries directional_accuracy and quantile_loss (pinball over stated quantiles), tested in the library. Every kernel forecaster submits quantiles: None, so quantile loss is never measured in production.",
+    "status": "COMPLETE",
+    "current": "TournamentStage::observe_reasoning, run by REASON in every cycle, submits quantiles at 0.1/0.5/0.9 over the realised move in basis points for the detector and each analyst (model_tournament.rs::move_quantiles): centred on the mean of the claim's two-point move under the forecaster's own p_up, spread by the subject's one-period return deviation, and None where the claim states no non-zero move or the deviation cannot be measured. The resolution's realised_value is that move, so Scorecard::quantile_loss is measured per forecaster.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:268 hits",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:222 brier",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:321",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:419",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:447",
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Scorecard::quantile_loss",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage (quantiles: None)"
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::every_forecaster_a_cycle_scored_has_its_quantile_loss_measured"
     ],
-    "gap": "No production forecaster states quantiles; quantile accuracy is unmeasured for every forecaster the cycle runs.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -406,10 +407,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-learning-engine",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament every_forecaster_a_cycle_scored_has_its_quantile_loss_measured",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06. Two mutations each failed the test, restored byte for byte: the detector submitting quantiles None (model_tournament.rs:419) left detector:volatility_shift unmeasured, and the analyst arm submitting None (:447) left analyst:chief-investment-intelligence unmeasured; 5 passed after. Stated limits: the spread is one-period and not scaled to the horizon, which charges every forecaster alike; an analyst's distribution is derived from its stated direction and conviction applied to the claim's magnitude, since a finding states no magnitude of its own."
   },
   {
     "id": "R12-MODEL-6019",
@@ -609,7 +610,7 @@
     "verification": "cargo test (crate producing EvidencePolicy / SourceScore)",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EXPAND-6028",
@@ -869,13 +870,17 @@
   {
     "id": "R12-EXPAND-6040",
     "status": "PARTIAL",
-    "current": "Tournament/lattice Scorecards in kernel.",
+    "current": "Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in qip_ai::language::ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:271 GapSignal",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15155",
-      "backend/crates/services/qip-training/src/estimators.rs degraded_models"
+      "backend/crates/services/qip-training/src/estimators.rs degraded_models",
+      "backend/crates/libs/qip-ai/src/language.rs:614 ReplyTally, :673 CountedModel::complete (beside the port, so ADR 0117's implementation list is unchanged); backend/crates/apps/qip-deepbrain/src/language.rs:255 the installed adapter is wrapped",
+      "backend/crates/services/qip-expansion/src/detectors.rs:242 model_error_rate",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:862 the tally reaches the research loop",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:935 a_model_whose_replies_are_refused_past_the_rate_raises_one_error_rate_gap"
     ],
-    "gap": "No hallucination/error-rate or residual GapSignal metrics.",
+    "gap": "No committed deployment installs the hosted adapter (ADR 0037 preconditions unmet: no pinned provider, attestation or credential anywhere), so language::assemble returns replies: None and no reply is ever counted on a running path. The counting and the GapSignal are implemented and mutation-tested; they run once an operator satisfies ADR 0037.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -883,10 +888,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing Scorecard / GapSignal)",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: counting and the error-rate gap added. Mutation: an Err reply counted as served in CountedModel::complete; the test raised no signal (0 vs 1); restored by byte compare. Kept PARTIAL because the behaviour depends on a hosted adapter no deployment installs; that is an operator act (ADR 0037), not code. The wrapper first lived in qip-deepbrain/src/language.rs, which made qip-acceptance model_gateway_boundary fail twice (a new LanguageModel implementation and call site outside ADR 0117's list); it was moved into qip-ai/src/language.rs and the mutation re-run there (fired, 0 vs 1)."
   },
   {
     "id": "R12-EXPAND-6041",
@@ -914,25 +919,27 @@
   },
   {
     "id": "R12-EXPAND-6042",
-    "status": "PARTIAL",
-    "current": "TickCampaign is opened from the deep-brain sweep. TickCampaignDetector::conclude (campaigns.rs:421) produces a validated MicrostructureDelta for a venue-scoped campaign from its re-measured residuals, the delta_id being the campaign id and the residual kind taken from the trigger; no production caller yet.",
+    "status": "COMPLETE",
+    "current": "TickCampaign is opened from the deep-brain sweep. Since 2026-10-18 the sweep retains every venue-scoped fill-prediction campaign it opens (bounded at RETAINED) and, once at least MIN_REMEASURED fills at that venue and instrument have scored since it opened, calls TickCampaignDetector::conclude with the twin's calibrated fill bias as the modelled figure, the fills' mean trade error as the observed one, the calibration state as the model version and the opening-to-now window; the MicrostructureDelta (delta_id = campaign id) is put on the round and journaled as an AmbientRecord::MicrostructureDelta. A concluded campaign leaves the set.",
     "evidence": [
-      "backend/crates/services/qip-expansion/src/campaigns.rs:23 TickCampaign",
-      "backend/crates/services/qip-expansion/src/campaigns.rs:421 TickCampaignDetector::conclude",
-      "backend/crates/services/qip-expansion/tests/loop.rs:222 a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1330-1340 conclude, then retain this sweep's campaigns",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2062 conclude_campaigns",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:77,241 the MicrostructureDelta record",
+      "backend/crates/services/qip-expansion/src/campaigns.rs:424 TickCampaignDetector::conclude",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:638 a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta (mutation: drop the conclude_campaigns call; no delta and the test fails)"
     ],
-    "gap": "Producer exists but nothing on the default path calls it: apps/qip-deepbrain/src/research.rs keeps no open campaigns between sweeps, so it never knows a campaign's residual was re-measured; it needs to retain each opened TickCampaign (bounded) and, when a later sweep's fills re-measure that venue and instrument, call TickCampaignDetector::conclude and journal the delta.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test loop a_concluded_tick_campaign_yields_one_microstructure_delta_naming_its_campaign",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-18 lane L18: conclude landed with a mutated test (delta_id set to the cell, and the studied-instrument guard removed, each fail it); the research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing). 2026-10-18 lane L18: conclude landed with a mutated test (delta_id set to the cell, and the studied-instrument guard removed, each fail it); the research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: closed on the fill-prediction trigger, the one whose re-measurement the sweep reads (scored fills). Slippage campaigns are not concluded: the twin states no modelled slippage to set against the measured one."
   },
   {
     "id": "R12-EXPAND-6043",
@@ -1001,14 +1008,18 @@
   },
   {
     "id": "R12-EXPAND-6046",
-    "status": "PARTIAL",
-    "current": "backend/crates/apps/qip-deepbrain/src/research.rs:449 detectors emit Surprise, LowConfidence, Contradiction, MissedOpportunity, UnexplainedPnl, UnsupportedRequest",
+    "status": "COMPLETE",
+    "current": "All seven triggers have a producer on the deep-brain research sweep. Model drift: node::run_with hands ResearchLoop::note_drifted_models the references the learning round found past their own threshold (the same derivation the operations timeline reads, node.rs drifted_references); sweep_over consumes the list through qip_expansion::detectors::model_drift, one GapTrigger::ModelDrift observation wanting a model per distinct reference, so a drift is reported once per learning round. Unsupported request: incompetent_specialists and coverage. Learning runs every 8 cycles and research every cycle by default.",
     "evidence": [
-      "backend/crates/services/qip-expansion/tests/expansion.rs:184 each_of_the_seven_triggers_raises_exactly_one_gap_signal_naming_its_trigger",
-      "backend/crates/services/qip-expansion/src/gap.rs:23 ModelDrift has no producing detector in qip-expansion or the deep brain",
-      "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
+      "backend/crates/services/qip-expansion/src/detectors.rs:216 model_drift",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:657 ResearchLoop::note_drifted_models",
+      "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over observations.extend(model_drift(..))",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:555 node::run_with hands the learning round's drifted list to the sweep",
+      "backend/crates/services/qip-expansion/tests/loop.rs:788 a_drifted_model_raises_one_model_drift_gap_per_reference",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:843 a_drifted_model_raises_exactly_one_model_drift_gap",
+      "backend/crates/services/qip-expansion/tests/expansion.rs:184 each_of_the_seven_triggers_raises_exactly_one_gap_signal_naming_its_trigger"
     ],
-    "gap": "No detector produces ModelDrift; \"a request no brain/tool can satisfy\" is approximated by agent hit rates and asset-class coverage.",
+    "gap": "None for the requirement; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1016,10 +1027,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion",
+    "verification": "cargo test -p qip-expansion --test loop && cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Six of seven triggers now produced in production."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Six of seven triggers now produced in production. Lane L20 2026-10-18: ModelDrift now produced. Mutations: model_drift without the BTreeSet dedup raised 3 for 2 models (loop.rs test failed); deleting the observations.extend(model_drift(..)) line in sweep_over left the noted drift with no signal (expansion_rows test failed, 0 vs 1); both restored by byte compare. The node::run_with handoff itself is one call on the default path, read and not exercised by a node-level test: a node test would need a learning round that measured real drift."
   },
   {
     "id": "R12-EXPAND-6047",
@@ -1046,13 +1057,15 @@
   {
     "id": "R12-EXPAND-6048",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for fills eleven inputs and passes the detector's economic_value through. detectors.rs::repeated_vetoes_priced measures a veto gap's economic value as the summed positive counterfactual earnings of the gate's regretted declines; the deployed sweep still calls the unpriced repeated_vetoes, so on the default path the value is zero, and urgency is stated Some(0.0).",
+    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for fills eleven inputs and passes the detector's economic_value through. Since 2026-10-18 the deployed sweep prices every repeated-veto gap: ResearchLoop::sweep_over hands each DeclinedScore's (gate, regret, would_have_earned) to veto_observations, which crosses the counterfactual through as_f64_for_statistics (refusing a figure with no decimal form) and calls repeated_vetoes_priced, so a veto gap's economic value is the summed positive earnings its gate's regretted declines forwent.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1170 the sweep calls veto_observations",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2605 veto_observations",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2886 a_repeated_veto_gap_carries_the_earnings_its_gate_forwent (mutation: call the unpriced repeated_vetoes; the gap prices at zero and the test fails)",
       "backend/crates/services/qip-expansion/src/detectors.rs:223 repeated_vetoes_priced",
-      "backend/crates/services/qip-expansion/tests/expansion.rs:780 a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
       "backend/crates/services/qip-expansion/src/desk.rs:142 urgency: Some(0.0) stated, never measured"
     ],
-    "gap": "Default path not wired: apps/qip-deepbrain/src/research.rs::sweep_over must call repeated_vetoes_priced with each DeclinedScore's would_have_earned (crossed via as_f64_for_statistics) instead of repeated_vetoes; residual gaps carry no notional so slippage cost is unmeasurable from FillObservation; urgency needs a signal age the desk does not hold (signal_ttl lives in ResearchConfig) and stays a stated zero.",
+    "gap": "Veto pricing is on the default path. Still open: residual gaps carry no notional, so slippage cost is unmeasurable from FillObservation; and the desk's criteria_for states urgency Some(0.0) — the research loop now measures urgency from a gap's deadline for its information requests (R12-AMBIENT-3106) but the desk's curriculum criteria do not receive it, a change in qip-expansion desk.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1060,10 +1073,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test expansion a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_repeated_veto_gap_carries_the_earnings_its_gate_forwent && cargo +1.94.1 test -p qip-expansion --test expansion a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site landed (veto_observations), mutation-verified; status PARTIAL on the two remaining inputs."
   },
   {
     "id": "R12-EXPAND-6049",
@@ -1179,7 +1192,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:14585 stage_learn",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8958"
     ],
-    "gap": "Source-score and curriculum updates; cell episodes.",
+    "gap": "No single test drives one veto through belief, memory and curriculum, and the clause cannot hold for one veto as built: repeated_vetoes raises a curriculum gap only at MIN_REGRETS (3) regretted declines at one gate (research.rs), and Platform::score_declined writes a DeclinedScore read by the precedent join (memory), counterfactual_sizing_multiplier and review_rules, not by a belief. A test needs three regretted refusals at one gate resolved in LEARN plus a ResearchLoop sweep; source-score updates (R12-EXPAND-6027) and cell episodes stay open.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1192,7 +1205,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L04 after reading stage_learn, score_declined and repeated_vetoes; not closed. The triage proposed a test-only closure; the threshold of three makes 'a veto' plural."
   },
   {
     "id": "R12-EXPAND-6055",
@@ -1202,7 +1215,7 @@
       "backend/crates/services/qip-data-finder/src/decision.rs:464-476",
       "backend/crates/apps/qip-api/src/registration_views.rs"
     ],
-    "gap": "Discovery methods and sensors/marketplaces as registry entries.",
+    "gap": "RegisteredSource::entry (decision.rs) is read only by tests/source_registry.rs: no binary consults the Source Registry entry on a running path, and discovery itself runs in the deep brain only when QIP_DEEPBRAIN_DISCOVER_EVERY is set (unset in every committed environment). Discovery method is already recorded and required: SourceCandidate::validate refuses an empty discovered_from and SourceLineage carries it into the entry's provenance. Sensors have no category of their own: §7.6.1's table has eight and a physical sensor feed classifies as PhysicalAndGeospatial; adding a ninth variant to qip_financial::SourceCategory would contradict the table it encodes, so the grader's closure (SourceCategory::Sensor) is not taken.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1213,7 +1226,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading source.rs:146 (SourceCandidate::validate), source.rs:315 (SourceLineage) and decision.rs (entry, SourceRegistryEntry); no code changed. Closing needs a production reader of the entry (for example the qip-api registration view rendering provenance, cost, licence, freshness and utility from RegisteredSource::entry) and discovery on by default or committed in an environment."
   },
   {
     "id": "R12-EXPAND-6056",
@@ -1259,13 +1272,15 @@
   },
   {
     "id": "R12-EXPAND-6058",
-    "status": "PARTIAL",
-    "current": "BrainSpec contract with competency domains, tools, evaluations, abstention, authority envelope, calibration and parent version; no registry store.",
+    "status": "COMPLETE",
+    "current": "qip-deepbrain brains.rs holds the Brain Registry the node starts on: BrainRegistry::register validates every BrainSpec (competency domains, tools, source permissions, memory scope, model stack, evaluations, abstention rules, authority envelope, calibration, version and parent lineage) and refuses an entry missing a declared field or an id registered twice. brains::standard registers one entry per agent on the organisation the platform convened (Platform::organisation().roster(), read rather than listed), the four NOW specialists and the two ambient brains; main.rs builds it after the platform is assembled and before anything is served, so a convened agent without a valid entry stops the process, and prints the count on the banner. Models remain recorded in qip-ai's ModelRegistry (ModelCard), the registry the learning desk registers every fit in.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs:444",
-      "backend/crates/libs/qip-contracts/tests/brain_registry.rs:4"
+      "backend/crates/apps/qip-deepbrain/src/brains.rs BrainRegistry::register, standard, organisation_spec",
+      "backend/crates/apps/qip-deepbrain/src/main.rs qip_deepbrain::brains::standard(platform.organisation().roster())",
+      "backend/crates/libs/qip-contracts/src/expansion.rs BrainSpec::validate",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs"
     ],
-    "gap": "Registry store and integration.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1273,10 +1288,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test expansion_registries",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L04. Mutations fired: the roster loop in standard skipped (`.take(0)`) fails every_agent_the_platform_convenes_and_both_ambient_brains_have_a_validated_entry; `spec.validate()?` removed from register fails an_entry_missing_a_declared_field_or_registered_twice_is_refused; restored byte-identical each time. calibration is 0.0 for every entry because nothing scores a brain's output through this registry yet; the floor of the field, not a measurement."
   },
   {
     "id": "R12-EXPAND-6059",
@@ -1459,7 +1474,7 @@
     "evidence": [
       "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence"
     ],
-    "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies; the queued item triggers no specialist, simulator, feed or model family.",
+    "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies, and no per-subject belief level exists to compare a price against: Platform::calibration() is a CalibrationReport of hit rates by class and agent, and the belief priors (qip-contracts policy.rs BeliefPriors, issued through &mut Platform::issue_belief_priors) are probabilities per key, not price levels. Closing it needs the kernel to expose a read-only belief price per subject first; the queued item also triggers no specialist, simulator, feed or model family (6049's executor work).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1470,7 +1485,7 @@
     "verification": "cargo test -p qip-expansion",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: a persistence trigger exists and runs; it is not a belief discrepancy."
+    "notes": "Re-graded 2026-10-11 by an independent audit: MISSING->PARTIAL. 2026-10-18 lane L18: gap corrected after reading the calibration and belief-prior types; no code changed."
   },
   {
     "id": "R12-EXPAND-6068",
@@ -2192,14 +2207,17 @@
   },
   {
     "id": "R12-AGENCY-6100",
-    "status": "PARTIAL",
-    "current": "Method enumerates the deceptive classes and is_deceptive is fail-closed for new variants; the edge cell refuses a net opposite its own resting order as a self-trade. Detection depends on a tool honestly declaring its method; no spoofing (place-and-cancel pattern) control found in the order path.",
+    "status": "COMPLETE",
+    "current": "Method enumerates the deceptive classes and is_deceptive is fail-closed for new variants; the edge cell refuses a net opposite its own resting order as a self-trade; and the cell refuses a further order on one side of one book under GATE_CONDUCT_SPOOFING once its own cancel-before-fill ratio there over the conduct window exceeds the committed ConductPolicy bound, journaled and counted on qip_edge_refusals_total{gate=\"conduct_spoofing\"}.",
     "evidence": [
+      "backend/crates/edge/qip-edge/src/conduct.rs:42 ConductPolicy (default: 4 unfilled withdrawals in 60 s, above 0.75 of placements) and :151 ConductWatch::refusal, keyed by venue, instrument and side, bounded by the window and MAX_EVENTS_PER_KEY",
+      "backend/crates/edge/qip-edge/src/cell.rs:215 GATE_CONDUCT_SPOOFING; :5278 place_net refuses through Cell::refuse before pricing builds the order; :5536 Cell::send records each accepted placement; :6261 withdraw_all records an order withdrawn at its time to live with nothing filled, after the last reports",
+      "backend/crates/edge/qip-edge/tests/pricing.rs:659 a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears",
       "backend/crates/services/qip-agency/src/affordance.rs:28-63",
-      "backend/crates/edge/qip-edge/src/cell.rs:5517 would_self_trade",
+      "backend/crates/edge/qip-edge/src/cell.rs would_self_trade",
       "backend/crates/edge/qip-edge/tests/pricing.rs:557"
     ],
-    "gap": "Spoofing/layering pattern control on the order path; method declaration verified rather than trusted.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2210,7 +2228,7 @@
     "verification": "cargo test -p qip-edge --test pricing && cargo test -p qip-agency",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18. The pattern control runs in Cell::work's place_net on every cell (ConductPolicy is a CellConfig default, not opt-in), so qip-edge-node's simulated passes carry it. Method declaration stays operator policy, as the triage closure states; the row's unmet clause was the order-path pattern control. Mutations: a ratio check that never exceeds the bound, and never recording an unfilled withdrawal, each fail the pricing test at the refused-order assertion."
   },
   {
     "id": "R12-AGENCY-6101",
@@ -2291,7 +2309,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
     ],
-    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced; the one attribution the platform computes itself (simulated::evidence after a shadowed pass) is of the simulation at the plan's own horizon, and nothing measures an effect after an intervention.",
+    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced, and the triage closure (require two distinct horizons in EffectAttribution::validate) cannot land alone. Both default-path producers build exactly one HorizonObservation: qip-agency simulated.rs:178 (the shadowed pass's simulated effect, at the plan's own horizon) and qip-deepbrain ambient_agency.rs:663 (the measured null effect of a draft read again on a later sweep). Each must first observe a second distinct horizon, from the simulator's path or a second sweep. Raising the bound alone broke 14 tests across qip-agency (agency, causal, journal), qip-cli (agency_record), qip-deepbrain (ambient_agency) and qip-world-model (federation).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2302,7 +2320,7 @@
     "verification": "cargo test -p qip-agency -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
+    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL."
   },
   {
     "id": "R12-AGENCY-6105",
@@ -2476,14 +2494,16 @@
   },
   {
     "id": "R12-CONTRACT-6112",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/control.rs:107 ModelVote = Validated<ModelVoteFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "TournamentStage (qip-kernel model_tournament.rs), run by REASON and LEARN in every cycle, keeps each forecaster's Brier score at every resolution (bounded at SCORE_HISTORY = 32) and, for every entrant whose forecast it admits and who has that history, builds one Validated qip_contracts::control::ModelVote (model, version from the analyst run's manifest digest or the kernel version for a detector, the stated probability, regime, score history, compute cost from the run's metered spend) and journals it on TournamentReview.votes; an entrant without history, or whose cost is not an amount, is named in TournamentReview.voteless instead.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/control.rs:107 type",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:506 a_model_vote_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:515 a_model_vote_refuses_each_broken_invariant"
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::model_vote",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage::record_score",
+      "backend/crates/libs/qip-contracts/src/control.rs:107",
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::tests::a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused"
     ],
-    "gap": "No production seam constructs or consumes ModelVote (grep of ModelVoteFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2491,10 +2511,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_scored_forecaster_journals_a_model_vote_on_every_question_it_answers_after && cargo +1.94.1 test -p qip-kernel --lib a_vote_with_a_cost_nobody_can_bill_or_no_history_is_refused",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it. Closed 2026-10-18 by lane L06. Mutations, restored byte for byte: removing the record_score call in learn left every entrant without standing and the third cycle journaled no vote (the test names the seven forecasters scored and an empty voter set); defaulting an unrepresentable cost to zero in model_vote failed the unit test at a vote with no cost was cast. Consumer side: votes are journaled, read by nothing that decides yet; R12-MODEL-9031 covers the consensus."
   },
   {
     "id": "R12-CONTRACT-6113",
@@ -2521,27 +2541,27 @@
   },
   {
     "id": "R12-CONTRACT-6114",
-    "status": "PARTIAL",
-    "current": "Kernel hedge brain (qip-kernel/src/hedge.rs) now constructs and journals a HedgePlan in DECIDE; contract tests refuse missing/unknown fields and round-trip.",
+    "status": "COMPLETE",
+    "current": "Kernel hedge brain (qip-kernel/src/hedge.rs) constructs and journals a validated HedgePlan in DECIDE, and every central root now declares hedge candidates from its loaded catalogue (qip-api, qip-fastbrain, qip-deepbrain main.rs -> PlatformConfig::with_hedge_candidates(paper_hedge_candidates(..))), so a book failing a stressed world inside the withheld hedge capacity is planned a HedgePlan in production by default. Contract tests refuse missing/unknown fields and round-trip.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/control.rs:316 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:656 a_hedge_plan_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:665 a_hedge_plan_refuses_each_broken_invariant",
       "backend/crates/runtime/qip-kernel/src/hedge.rs::plan",
-      "backend/crates/runtime/qip-kernel/src/config.rs::with_hedge_candidates"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue"
     ],
-    "gap": "PlatformConfig::hedge_candidates defaults empty and no binary sets it, so no HedgePlan is produced in production by default.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts && cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding HedgePlan exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. Text corrected 2026-10-18 by an independent grader. Lane L07, 2026-10-18: PARTIAL->COMPLETE. The test assembles the platform as the roots do (committed catalogue, paper_hedge_candidates, SurvivalPolicy::shipped) and decodes the journaled HedgePlan. Mutation: the declared equity loading misspelt -> no HedgePlan; restored and passing."
   },
   {
     "id": "R12-CONTRACT-6115",
@@ -2829,14 +2849,14 @@
   {
     "id": "R12-GOV-6127",
     "status": "PARTIAL",
-    "current": "check_justification refuses profit/price-impact-only grounds in preflight before any adapter call; reached only from the CLI shadow pass when a guard is supplied, and not in front of market-facing order paths.",
+    "current": "The kernel order path now consults check_justification: stage_reason refuses to queue an approved thesis unless its hypothesis carries at least one supporting evidence item (grounds = ExpectedProfit plus Evidence(record_id) per supporting item, via justify_thesis), recording \"approved but not justified\" and DecisionTaken::NotSizeable; DECIDE sizes only queued theses, so no intent forms on profit alone. The agency path still checks in ActionGuard::preflight.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs:299 no guard + acting authority refused; :311 guard.preflight; :330 authorise before adapter.call",
-      "backend/crates/services/qip-agency/src/guard.rs:141 check_justification, registry lookup, approval chain",
-      "backend/crates/apps/qip-cli/src/agency.rs:48 only production caller: engine::run with no action policy (shadow) and an adapter that refuses every call",
-      "backend/crates/services/qip-agency/tests/agency.rs:1545 each_guard_check_alone_withholds_the_plan_before_any_adapter_call"
+      "backend/crates/runtime/qip-kernel/src/platform.rs stage_reason: else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) (grep -n justify_thesis)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn justify_thesis builds grounds from Stance::Supports items and calls qip_contracts::action::check_justification",
+      "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
+      "backend/crates/services/qip-agency/src/guard.rs check_justification in ActionGuard::preflight"
     ],
-    "gap": "Apply ahead of any real market-facing action; guard mandatory in production.",
+    "gap": "No test drives an approved hypothesis with no supporting evidence through stage_reason, so the call site in stage_reason is proven by reading, not by a mutated test; only justify_thesis itself is mutation-proven. Closing needs a kernel fixture that queues an opportunity whose reasoning outcome is approved with zero supporting items (red-team serious_tolerance >= 1) and asserts no thesis is queued and DECIDE forms no intent.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2844,9 +2864,9 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it. 2026-10-18 (lane L01): justification wired into the kernel REASON->DECIDE seam. Mutation: grounds built from every evidence item instead of supporting ones admitted the contradicting-only set and the test failed at its expect_err; restored byte-for-byte, passes. Kept PARTIAL: call site not yet proven by a stage-level mutated test."
   }
 ]

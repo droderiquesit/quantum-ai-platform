@@ -14,8 +14,8 @@ use qip_expansion::curriculum::{Budget, State, TaskKind};
 use qip_expansion::desk::{Admission, CloseReason, DeskConfig, ExpansionDesk, question_for};
 use qip_expansion::detectors::{
     Decline, Origin, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
-    contradictions, coverage, incompetent_specialists, low_confidence, refusal_clusters,
-    repeated_vetoes, split_by_wanting, unexplained_residuals,
+    contradictions, coverage, incompetent_specialists, low_confidence, model_drift,
+    refusal_clusters, repeated_vetoes, split_by_wanting, unexplained_residuals,
 };
 use qip_expansion::gap::{GapTrigger, Observation, Wanting, classify, raise};
 use qip_expansion::plan::{AcquisitionAction, Environment, ResearchPlan, Step};
@@ -345,6 +345,7 @@ fn several_subjects_showing_one_symptom_surface_one_investigation_nobody_asked_f
         evidence: vec!["price_move_detector".into()],
         severity: 0.6,
         economic_value: Decimal::ZERO,
+        risk_value: Decimal::ZERO,
     };
     let members: Vec<(String, Observation)> = ["A", "B", "C"]
         .iter()
@@ -373,6 +374,7 @@ fn an_observation_naming_two_lacks_becomes_two_classifiable_observations() {
         evidence: vec!["d".into()],
         severity: 0.5,
         economic_value: Decimal::ZERO,
+        risk_value: Decimal::ZERO,
     };
     assert!(
         classify(&mixed.wanting).is_err(),
@@ -757,6 +759,7 @@ fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
         evidence: vec!["solver-gap:portfolio-40".into()],
         severity: 0.6,
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     };
     let raised = raise(observation).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
@@ -851,6 +854,7 @@ fn model_gap(trigger: GapTrigger, observation: &str) -> qip_expansion::gap::Rais
         // Priority multiplies by value per cost, so a zero here zeroes both
         // gaps and the comparison below would be between two zeros.
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     })
     .unwrap_or_else(|e| panic!("{e}"))
 }
@@ -906,4 +910,33 @@ fn a_failure_signal_outranks_an_otherwise_identical_surprise_on_the_desk() {
         "premise: the surprise has a priority to be outranked"
     );
     assert!(priority(&drift) > priority(&surprise));
+}
+
+/// R12-EXPAND-6046: a drifted model raises a `ModelDrift` gap wanting a
+/// model, one per reference however many times the learning round listed it,
+/// and no drift raises none. Without the detector the trigger had no
+/// producer and a retired model's empty slot never reached the curriculum.
+///
+/// Mutation: return one observation per listed reference (no dedup) and the
+/// repeated reference raises two.
+#[test]
+fn a_drifted_model_raises_one_model_drift_gap_per_reference() {
+    assert!(model_drift(&[]).is_empty());
+    let raised = model_drift(&[
+        "m-a@1".to_string(),
+        "m-a@1".to_string(),
+        "m-b@2".to_string(),
+    ]);
+    assert_eq!(raised.len(), 2, "{raised:?}");
+    for (observation, reference) in raised.iter().zip(["m-a@1", "m-b@2"]) {
+        assert_eq!(observation.trigger, GapTrigger::ModelDrift);
+        assert_eq!(observation.wanting, vec![Wanting::Model]);
+        assert_eq!(origin_of(observation), "detector:model_drift");
+        assert!(
+            observation
+                .evidence
+                .iter()
+                .any(|e| *e == format!("model:{reference}"))
+        );
+    }
 }

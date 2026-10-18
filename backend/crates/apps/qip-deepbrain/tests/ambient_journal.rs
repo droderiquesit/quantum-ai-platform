@@ -15,7 +15,7 @@ use qip_deepbrain::ambient_journal::{
 };
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::node::{self, Loops};
-use qip_deepbrain::research::{ResearchConfig, ResearchLoop};
+use qip_deepbrain::research::{PERSIST_SWEEPS, ResearchConfig, ResearchLoop};
 use qip_deepbrain::status::NodeStatus;
 use qip_events::EventLog;
 use qip_financial::quality::DataQuality;
@@ -454,6 +454,77 @@ fn an_anomaly_scan_is_journaled_as_signals_each_with_the_routers_decision() {
     assert!(decided.is_subset(&signalled), "{journaled:?}");
 }
 
+/// R12-AMBIENT-1141: the opportunity half of the ambient scans. A price
+/// discrepancy that persists for `PERSIST_SWEEPS` consecutive sweeps is a
+/// missed opportunity, and it reaches the journal as an Opportunity-class
+/// signal, not as one more anomaly. Without this the opportunity scan could
+/// be mapped to any class and the journal would still look busy.
+///
+/// Mutation: map `GapTrigger::MissedOpportunity` to `SignalClass::Assumption`
+/// in `research::signal_class` and no Opportunity-class record is journaled.
+#[test]
+fn a_discrepancy_persisting_for_the_sweep_count_is_journaled_as_an_opportunity_class_signal() {
+    let mut platform = platform();
+    let mut records_in = Vec::new();
+    for day in 0..61i64 {
+        let close = if day == 60 {
+            125.0
+        } else if day % 2 == 0 {
+            100.1
+        } else {
+            99.9
+        };
+        records_in.push(bar(
+            "obj-P",
+            start().saturating_sub(Duration::from_days(61 - day)),
+            close,
+        ));
+    }
+    platform.observe(records_in);
+    let mut loop_ = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ambient = journal();
+    let opportunity = |records: &[AmbientRecord]| -> Vec<String> {
+        records
+            .iter()
+            .filter_map(|r| match r {
+                AmbientRecord::Signal { signal, .. }
+                    if signal.class() == SignalClass::Opportunity =>
+                {
+                    Some(signal.evidence_ids().join(","))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    for sweep in 1..=u64::from(PERSIST_SWEEPS) {
+        let round = loop_
+            .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            round.anomalies >= 1,
+            "premise: the jump is flagged on sweep {sweep}"
+        );
+        ambient
+            .record(sweep, &round, start())
+            .unwrap_or_else(|e| panic!("{e}"));
+        if sweep < u64::from(PERSIST_SWEEPS) {
+            assert!(
+                opportunity(&read(ambient.log())).is_empty(),
+                "premise: no opportunity before the discrepancy has persisted"
+            );
+        }
+    }
+    let journaled = read(ambient.log());
+    let found = opportunity(&journaled);
+    assert!(
+        found
+            .iter()
+            .any(|evidence| evidence.split(',').any(|e| e == "persistent:obj-P")),
+        "the persistent discrepancy is journaled as an Opportunity-class signal: {journaled:?}"
+    );
+}
+
 /// `main`'s resolution: a blank variable is refused, an unset one journals
 /// beside a file event log and in memory beside an in-memory one, and a
 /// file journal survives a restart with its chain intact. Mutation: in
@@ -553,4 +624,86 @@ fn a_storm_of_signals_never_wakes_past_the_attention_budget_and_the_excess_is_on
     let held = by_disposition.get("Deferred").copied().unwrap_or(0)
         + by_disposition.get("Shed").copied().unwrap_or(0);
     assert_eq!(held, 44, "{by_disposition:?}");
+}
+
+/// A tick campaign the sweep opened is concluded once a later sweep's fills
+/// re-measure its venue, and the delta is journaled (R12-EXPAND-6042): ten
+/// fills forty basis points off the twin open a fill-prediction campaign at
+/// the venue; eight more after it opened conclude it into a microstructure
+/// delta whose id is the campaign's, measured over those eight; a third
+/// sweep with nothing new concludes nothing again. Mutation: drop the
+/// `self.conclude_campaigns(..)` call in `sweep_over` — no delta and the
+/// test fails.
+#[test]
+fn a_campaign_whose_venue_is_remeasured_is_concluded_into_a_journaled_delta() {
+    use qip_deepbrain::research::FillObservation;
+    let platform = platform();
+    let fill = |minutes: i64, bps: f64| FillObservation {
+        venue: "XSIM".to_string(),
+        object_id: "BTC-USD".to_string(),
+        filled_at: start().saturating_add(Duration::from_mins(minutes)),
+        trade_error_bps: Some(bps),
+    };
+    let mut fills: Vec<FillObservation> = (0..10)
+        .map(|i| fill(i - 60, if i % 2 == 0 { 35.0 } else { 45.0 }))
+        .collect();
+    let mut loop_ = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let first = loop_
+        .sweep_over(&platform, &fills, &[], start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        first.campaigns_opened >= 1,
+        "premise: a campaign opened: {first:?}"
+    );
+    assert!(first.deltas.is_empty(), "nothing re-measured yet");
+
+    fills.extend((0..8).map(|i| fill(i + 1, if i % 2 == 0 { 38.0 } else { 42.0 })));
+    let later = start().saturating_add(Duration::from_hours(1));
+    let second = loop_
+        .sweep_over(&platform, &fills, &[], later, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !second.deltas.is_empty(),
+        "the re-measured campaign concluded: {second:?}"
+    );
+    for delta in &second.deltas {
+        assert_eq!(delta.venue.as_str(), "XSIM");
+        let [residual] = delta.residuals.as_slice() else {
+            panic!("one instrument studied: {delta:?}");
+        };
+        assert_eq!(
+            residual.samples, 8,
+            "measured over the fills since it opened"
+        );
+        assert_eq!(residual.observed, Decimal::from_int(40));
+    }
+    let mut ambient = journal();
+    ambient
+        .record(2, &second, later)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let journaled: Vec<String> = read(ambient.log())
+        .into_iter()
+        .filter_map(|r| match r {
+            AmbientRecord::MicrostructureDelta { delta, .. } => Some(delta.delta_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let concluded: Vec<String> = second.deltas.iter().map(|d| d.delta_id.clone()).collect();
+    assert_eq!(journaled, concluded, "every delta is journaled");
+
+    let third = loop_
+        .sweep_over(
+            &platform,
+            &fills,
+            &[],
+            later.saturating_add(Duration::from_hours(1)),
+            &set(&[]),
+            &set(&["US"]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        third.deltas.is_empty(),
+        "a concluded campaign is not concluded twice"
+    );
 }
