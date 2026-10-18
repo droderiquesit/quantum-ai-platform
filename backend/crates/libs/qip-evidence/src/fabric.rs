@@ -1003,7 +1003,25 @@ impl EvidenceFabric {
 
     fn evict(&mut self) {
         while self.held.len() > self.capacity {
-            let Some(oldest) = self.held.pop_front() else {
+            // The oldest claim that stands in no open contest goes first: an
+            // eviction that took a contested claim dropped a competing
+            // hypothesis, and the later evidence that would have resolved the
+            // contest then found one side and resolved nothing (R12-EVID-2038).
+            // Only when every held claim is contested does the oldest go
+            // anyway, so the bound still holds.
+            let contested: BTreeSet<&str> = self
+                .contests
+                .values()
+                .filter(|contest| contest.is_contested())
+                .flat_map(|contest| contest.hypotheses.values().flatten())
+                .map(String::as_str)
+                .collect();
+            let index = self
+                .held
+                .iter()
+                .position(|held| !contested.contains(held.record.id.as_str()))
+                .unwrap_or(0);
+            let Some(oldest) = self.held.remove(index) else {
                 break;
             };
             let id = oldest.record.id;

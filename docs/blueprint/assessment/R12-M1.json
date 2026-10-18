@@ -2813,13 +2813,15 @@
   },
   {
     "id": "R12-TICK-1122",
-    "status": "PARTIAL",
-    "current": "event vs capture time preserved; qip-sequencing orders venue events.",
+    "status": "COMPLETE",
+    "current": "Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/temporal_correctness.rs:19",
-      "backend/crates/edge/qip-sequencing/src"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/edge/qip-sequencing/src/capture.rs CaptureStream::capture"
     ],
-    "gap": "Implement/integrate clock normalization.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2827,10 +2829,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test tick_replay",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: clock normalization now runs on the node's production drain. The test recomputes every lake line's clock block with an independent CaptureStream over the line's own event and requires equality, plus an offset estimate once the discipline holds its minimum samples. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte."
   },
   {
     "id": "R12-TICK-1123",

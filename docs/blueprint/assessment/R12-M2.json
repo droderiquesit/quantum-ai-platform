@@ -887,15 +887,15 @@
   {
     "id": "R12-EVID-2038",
     "status": "PARTIAL",
-    "current": "Contests keep every hypothesis and now resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser.",
+    "current": "Contests keep every hypothesis and resolve in production once two independent other sources corroborate one side, recording the resolving id and keeping the loser. Since 2026-10-18 capacity eviction takes the oldest claim standing in no open contest, so a full fabric no longer drops a competing hypothesis; only when every held claim is contested does the oldest go anyway, keeping the bound.",
     "evidence": [
+      "backend/crates/libs/qip-evidence/src/fabric.rs:1006 contest-exempt eviction",
       "backend/crates/libs/qip-evidence/src/fabric.rs:54-56",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:657-704",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:121-131",
-      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them",
-      "qip-kernel/tests/evidence_intake.rs::two_sources_disagreeing_are_a_contest_only_once_forwarded_into_the_world_fabric"
+      "backend/crates/services/qip-world-model/tests/evidence_fabric.rs:854 an_open_contest_survives_a_fabric_filled_past_capacity_with_unrelated_claims",
+      "qip-world-model/tests/evidence_fabric.rs::disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them"
     ],
-    "gap": "Hypotheses are dropped on capacity eviction and nothing persists contests across restart; nothing downstream reads contests.",
+    "gap": "Nothing persists contests or their resolutions across restart (the fabric is in-memory and unjournaled; see R12-EVID-2032 for the topic blocker), and nothing downstream reads contests. A fabric whose every held claim is contested still evicts the oldest contested claim.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -905,10 +905,10 @@
       "R12-EVID-2032"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine contradiction",
+    "verification": "cargo test -p qip-world-model --test evidence_fabric",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: resolution is unreachable in production (max production authenticity 0.5 vs threshold 0.6), so source-history scoring (score_resolution) never moves either. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: contest-exempt eviction landed; mutation fired - evicting the front regardless of contests lost a (assertion fabric.get(\"a\").is_some() failed)."
   },
   {
     "id": "R12-EVID-2039",
@@ -1192,13 +1192,13 @@
   {
     "id": "R12-TICK-2051",
     "status": "PARTIAL",
-    "current": "CapturedMarketEvent holds event/receive/normalized time and clock uncertainty; central Tick types and the edge lake line carry event and capture time only; CaptureStream has no production caller.",
+    "current": "MarketEvent and CapturedMarketEvent hold event, receive and normalized time and clock uncertainty as distinct fields (qip-contracts tests/market_event.rs). Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. The central plane's Tick (backend/crates/libs/qip-market/src/quote.rs) still carries event and capture time only.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/tick_capture.rs:10 three times plus uncertainty",
-      "backend/crates/libs/qip-market/src/quote.rs:47",
-      "backend/crates/edge/qip-sequencing/src/lib.rs:50 CaptureStream re-export only"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/libs/qip-contracts/tests/market_event.rs"
     ],
-    "gap": "Normalized time and uncertainty on production records.",
+    "gap": "The central Tick in qip-market quote.rs carries no normalized time or uncertainty; the edge lake line now does.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1206,20 +1206,21 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts market_event",
+    "verification": "cargo test -p qip-contracts market_event; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Receive time added centrally; normalized time/uncertainty still not in production."
+    "notes": "Re-graded 2026-10-18 by lane L09: edge half closed (lake line). Central Tick not changed in this lane."
   },
   {
     "id": "R12-TICK-2052",
     "status": "PARTIAL",
-    "current": "ClockDiscipline estimates venue offset and bounds it with an uncertainty from observations, with tests; not used outside qip-sequencing; no PTP/GPS hardware integration.",
+    "current": "ClockDiscipline estimates venue offset and bounds it with an uncertainty from observations. Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool. The bound is published per tick on the lake line, not yet as a gauge, and the time source is the host clock: no PTP/GPS integration.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/src/clock.rs:96-140 ClockCorrection, ClockDiscipline",
-      "backend/crates/edge/qip-sequencing/tests/clock.rs:35 the_estimate_recovers_a_known_offset_once_a_packet_arrives_without_queuing"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/edge/qip-sequencing/src/clock.rs ClockDiscipline"
     ],
-    "gap": "Wire ClockDiscipline into the node; hardware time source needs a deployed node.",
+    "gap": "PTP/GPS-grade time source and the game-day measurement against a reference need a deployed node; a qip_edge_clock_uncertainty gauge is not yet published (LakeSink::discipline exposes the bound for one).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1227,10 +1228,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test clock",
+    "verification": "cargo test -p qip-sequencing --test clock; cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: ClockDiscipline now has a production caller through CaptureStream on the drain."
   },
   {
     "id": "R12-TICK-2053",
@@ -2093,13 +2094,15 @@
   },
   {
     "id": "R12-TICK-2089",
-    "status": "PARTIAL",
-    "current": "CaptureStream records ClockCorrection and round-trips it through the lake in tests; no production path uses CaptureStream.",
+    "status": "COMPLETE",
+    "current": "Since 2026-10-18 the node's drain runs every applied tick through qip_sequencing::CaptureStream before it reaches the tick lake: LakeSink::deliver disciplines each tick per venue feed and partition (kept or withheld) on the drain thread, off the decision path, and the lake line carries a clock block of its own: normalized_time_ns, uncertainty_ns, the ClockCorrection lineage (offset_estimate, monotonic_floor) and arrival_order beside the raw exchange and capture instants. A tick the discipline refuses is written with the refusal in place of the block, rather than stalling the spool.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/tests/capture.rs:126 a_captured_event_round_trips_through_the_tick_lake_with_its_corrections",
-      "backend/crates/edge/qip-sequencing/src/lib.rs:50 no production caller"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:645 LakeSink::deliver disciplines every applied tick through CaptureStream",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:708 tick_line writes the clock block",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock",
+      "backend/crates/libs/qip-contracts/src/captured_event.rs ClockCorrectionLineage"
     ],
-    "gap": "Corrections carried on production stored events.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2110,10 +2113,10 @@
       "R12-TICK-2052"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-sequencing --test align",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock; cargo test -p qip-sequencing --test align",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
+    "notes": "Re-graded 2026-10-18 by lane L09: every correction the discipline applies is written into the stored lake line's corrections array on the production path, and the test fails if the lineage differs from the discipline's. Mutation: a fresh CaptureStream per tick in LakeSink::deliver (no discipline state) made the lake line's correction lineage differ from the independent discipline's and the test fail; restored byte for byte."
   },
   {
     "id": "R12-TICK-2090",
