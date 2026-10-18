@@ -4197,12 +4197,16 @@
   },
   {
     "id": "R12-COVERAGE-7188",
-    "status": "PARTIAL",
-    "current": "EffectAttribution multi-horizon; widen refuses unidentified.",
+    "status": "COMPLETE",
+    "current": "qip-agency draws a randomised hold-out itself (estimate::Experiment::design: units ranked by SHA-256 of seed and unit, the first share held out) and analyses outcomes per horizon into an Estimate labelled Identification::Experiment, so the assignment is a pure function of a committed seed and the operator cannot pick who is held out. The shipped shadow binary takes it as widening evidence (EstimateInput::HoldOutExperiment): ActionPolicy::widen accepts an attribution this estimate supports and still refuses a correlation of the same cells as not identified.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects"
+      "backend/crates/services/qip-agency/src/estimate.rs::Experiment, EstimatorKind::HoldOutExperiment, EstimateInput::HoldOutExperiment",
+      "backend/crates/services/qip-agency/src/autonomy.rs:112 (widen still refuses an unidentified attribution)",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_hold_out_drawn_here_earns_the_experiment_label_and_a_correlation_of_the_same_cells_widens_nothing",
+      "backend/crates/services/qip-agency/tests/agency.rs::an_experiment_is_refused_when_its_hold_out_is_degenerate_or_its_outcomes_do_not_match_the_design",
+      "backend/crates/apps/qip-cli/tests/agency.rs::the_binary_widens_on_a_hold_out_it_drew_and_refuses_one_with_a_cell_dropped"
     ],
-    "gap": "Experiment runner.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4210,10 +4214,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L10). Mutations that fired: correlation() labelled Experiment (the observational estimate then widens); the seed dropped from the ranking hash (eight seeds draw one split); the missing-outcome check replaced by a zero default (a held-out cell dropped after the fact is analysed, in the library and in the binary). Limits stated, not hidden: the platform is shadow-only and stages no intervention, so the operator runs the treatment in the cells Experiment names and supplies the outcomes; that the seed was committed before any outcome existed is the caller's ordering and nothing here proves it. Running estimators on observed post-intervention effects is R12-AGENCY-1184."
   },
   {
     "id": "R12-COVERAGE-7189",
