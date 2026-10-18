@@ -2126,13 +2126,13 @@
   {
     "id": "R12-TICK-2092",
     "status": "PARTIAL",
-    "current": "Tick desk trains fill and volatility models against naive baselines on held-out slices; SkillPolicy needs positive holdout R2.",
+    "current": "TickDesk::round refuses the model card through tick_desk::skill_gate when FillModel::beats_baseline is false, naming both Brier figures; with no card, OpportunityMap::authorise_for refuses every region, so an unskilled model ships no map. The round line still reports the comparison.",
     "evidence": [
-      "backend/crates/services/qip-training/src/local.rs:316-332 SkillPolicy",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs register_fit verdict",
-      "backend/crates/services/qip-training/src/microstructure.rs"
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:256-268 skill_gate",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:604 the gate before ModelCard::new",
+      "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs:557 a_fill_model_that_does_not_beat_its_baseline_issues_no_card (mutation: skill_gate returns Ok unconditionally; fails)"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. Registration refusal for a tick model that fails its baseline not shown from a binary.",
+    "gap": "The tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY is unset and no committed deployment sets it (with an entitlement grant), so the gate reaches no deployed binary. Setting it is a dev deployment value under infrastructure/environments/dev/**, which this lane may not edit.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2142,9 +2142,9 @@
       "R12-TICK-2068"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training --test training",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test tick_desk a_fill_model_that_does_not_beat_its_baseline_issues_no_card",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: the refusal is in the desk's own round path and mutation-verified; deployable stays false on the switch alone."
   }
 ]

@@ -2699,24 +2699,25 @@
   },
   {
     "id": "R12-EXPAND-1117",
-    "status": "PARTIAL",
-    "current": "Deepbrain evolution desk (every 4 cycles) mints challengers and crowns champions, tested in evolution.rs.",
+    "status": "COMPLETE",
+    "current": "node::run_with puts the evolution round that ran in the cycle's gap on that cycle's ResearchRound as EvolutionTrace (subject, proposed, registered, challengers minted, champion crowned), so the sweep record shows the model evolution its research followed; a cycle in which the engine did not turn carries None.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:36",
-      "backend/crates/services/qip-evolution/src/promotion.rs"
+      "backend/crates/apps/qip-deepbrain/src/node.rs:558-575 the wiring",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:574-581 EvolutionTrace",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:696 a_sweep_record_carries_the_evolution_round_that_preceded_it (mutation: `&& false` on the wiring; traced stays zero and the test fails)"
     ],
-    "gap": "Not run or recorded as part of the expansion engine; no expansion-engine record of model evolution.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion -p qip-evolution; cargo test -p qip-deepbrain",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research a_sweep_record_carries_the_evolution_round_that_preceded_it",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed with the evolution desk at its default cadence (every_cycles 4) in the binary; the test runs it every cycle over the synthetic feed through node::run_with."
   },
   {
     "id": "R12-EXPAND-1118",
