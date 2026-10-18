@@ -1895,7 +1895,7 @@
       "backend/crates/runtime/qip-kernel/tests/learning.rs:935 a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue",
       "backend/crates/services/qip-twin/src/calibration.rs::FillCalibration"
     ],
-    "gap": "Only the spread/fill model is calibrated; queue, impact and latency parameters stay fixed.",
+    "gap": "Only the half-spread moves: Platform::score_filled (LEARN, default path) feeds FillCalibration::observe one aggregate signed fill error per fill, and FillCalibration::cost_model adjusts half_spread_bps alone. Impact cannot be separated from spread without the fill's participation reaching the calibration (the kernel does not pass it; an online two-parameter fit of error on participation would). Latency has no input at all: the simulated venue does not time acknowledgements (the LEARN stage says so), so there is no ack delay to calibrate against. Queue position is not modelled by the twin's CostModel.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1908,7 +1908,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading qip-twin/src/calibration.rs and the score_filled calibration site in qip-kernel/src/platform.rs; no code changed. Closing needs participation passed from score_filled (a platform.rs change in L01's file), a per-venue impact term in FillCalibration, and an acknowledgement-latency measurement from a venue that produces one."
   },
   {
     "id": "R12-TICK-2081",

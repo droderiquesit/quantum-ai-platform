@@ -3546,26 +3546,28 @@
   },
   {
     "id": "R12-OBS-9157",
-    "status": "PARTIAL",
-    "current": "fabric-archive-backlog (ceiling 2, 0.99, Hour) in default_slos and reconciliation-breaks-zero-unexplained in blueprint_slos, both asserted by acceptance test. Register text stale (says no backlog SLO).",
+    "status": "COMPLETE",
+    "current": "Both are declared product objectives with targets: fabric-archive-backlog (backlog at most 2 sealed-but-unarchived segments, 0.99, Hour; one constructor slo::fabric_archive_backlog used by the declaration and the evaluation) and reconciliation-breaks-zero-unexplained (1.0). qip-fabricd's archiver thread, on every housekeeping pass of the binary, records the lag, counts the reading within or over the ceiling under qip_event_fabric_archive_backlog_checks_total{outcome} and writes the objective as qip_slo_observations / qip_slo_budget_consumed{objective=fabric-archive-backlog}. The kernel observes reconciliation-breaks-zero-unexplained on every cell report it ingests, refused reports included.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:427",
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs:74,78",
-      "backend/crates/libs/qip-observability/src/slo.rs::default_slos",
-      "backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs::FED_OPERATIONAL_OBJECTIVES"
+      "backend/crates/libs/qip-observability/src/slo.rs:350 fabric_archive_backlog",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs:260 FabricdTelemetry::archive_lag evaluates the objective",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs telemetry.archive_lag(unarchived) on each pass; lib.rs archive thread",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs:630 a_backlog_past_its_ceiling_marks_the_archive_backlog_objective_missed",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs:375 fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_recorded_series",
+      "backend/crates/runtime/qip-kernel/src/platform.rs ingest_cell_report observes blueprint_objectives::RECONCILIATION_BREAKS_ZERO"
     ],
-    "gap": "Backlog objective is never evaluated (not in FED_OPERATIONAL_OBJECTIVES, no caller feeds archive lag into a ledger); reconciliation feed is off by default. Test asserts recording sites by substring only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-fabricd --lib a_backlog_past_its_ceiling_marks_the_archive_backlog_objective_missed; cargo test -p qip-acceptance --test slo fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_recorded_series",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L22. The backlog objective was declared and evaluated by nothing; qip-fabricd now evaluates it where the lag is measured. Readings 0, 2, 5 give three observations and a budget consumed past one. Mutation: drop the backlog-check count in archive_lag - the evaluation reads zero observations; restored. The acceptance test's recording-site check is now a whole-statement match rather than a substring, plus a check that the recorder evaluates; mutation: comment out the archiver's archive_lag call - it fires. No fabricd is deployed (event_fabric_broker is null everywhere), and the reconciliation objective moves only when a cell report arrives."
   },
   {
     "id": "R12-OBS-9158",
