@@ -1411,4 +1411,9 @@ pub mod names {
     /// Promoted model packages, by whether the artifact the promotion names
     /// was written where serving reads it (`written`, `failed`).
     pub const MODEL_PACKAGES: &str = "qip_model_packages_total";
+    /// Seconds since the deep brain last promoted a model package: the
+    /// central plane's model freshness, beside the edge's capability
+    /// freshness. Absent, not zero, until a first package is promoted —
+    /// a zero would read as a model promoted this instant.
+    pub const MODEL_PACKAGE_AGE: &str = "qip_model_package_age_seconds";
 }

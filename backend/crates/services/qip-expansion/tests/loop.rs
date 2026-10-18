@@ -345,6 +345,7 @@ fn several_subjects_showing_one_symptom_surface_one_investigation_nobody_asked_f
         evidence: vec!["price_move_detector".into()],
         severity: 0.6,
         economic_value: Decimal::ZERO,
+        risk_value: Decimal::ZERO,
     };
     let members: Vec<(String, Observation)> = ["A", "B", "C"]
         .iter()
@@ -373,6 +374,7 @@ fn an_observation_naming_two_lacks_becomes_two_classifiable_observations() {
         evidence: vec!["d".into()],
         severity: 0.5,
         economic_value: Decimal::ZERO,
+        risk_value: Decimal::ZERO,
     };
     assert!(
         classify(&mixed.wanting).is_err(),
@@ -757,6 +759,7 @@ fn quantum_research_gap() -> qip_expansion::gap::RaisedGap {
         evidence: vec!["solver-gap:portfolio-40".into()],
         severity: 0.6,
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     };
     let raised = raise(observation).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
@@ -851,6 +854,7 @@ fn model_gap(trigger: GapTrigger, observation: &str) -> qip_expansion::gap::Rais
         // Priority multiplies by value per cost, so a zero here zeroes both
         // gaps and the comparison below would be between two zeros.
         economic_value: Decimal::from_int(5),
+        risk_value: Decimal::ZERO,
     })
     .unwrap_or_else(|e| panic!("{e}"))
 }
