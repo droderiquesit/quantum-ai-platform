@@ -2162,7 +2162,7 @@ fn operator(name: &str, at: Timestamp) -> OperatorIdentity {
 ///
 /// Mutation: in `Platform::issue_capital`, skip `fund_capital_grant` — the
 /// premise that two operations are queued fails, and the book is never
-/// funded. Mutation: in `Platform::requeue_capital_grant_fundings`, rebuild
+/// funded. Mutation: in `Platform::requeue_capital_grant_operations`, rebuild
 /// the operation at the restart's clock instead of replaying the record —
 /// the resend carries a second digest under the same id, the ledger refuses
 /// it as a conflict and the "noted no refusal" assertion fails.
@@ -2275,5 +2275,173 @@ fn a_capital_grants_funding_reaches_the_ledger_once_across_restarts() {
     );
     let trial = ledger.store().trial_balance().unwrap();
     assert!(trial.values().all(|total| total.is_zero()), "{trial:?}");
+    ledger.stop();
+}
+
+/// ADR 0123, Amendment 1: when the cycle observes the grant's window has
+/// ended, the kernel recalls the grant's deployable capital from its book
+/// as a `CapitalGrantRecalled` operation on the same path, and a real
+/// `qip-ledgerd` reading the stream returns the book to zero and the
+/// treasury to the desk's own funding alone. A restart over the log — which
+/// holds the funding and the recall and no envelope — re-queues both as
+/// written; the ledger answers each with a duplicate and the balances do
+/// not move; and the cycles after the restart recall nothing again.
+///
+/// Mutation: in `Platform::recall_lapsed_capital_grants`, filter on nothing
+/// — the cycle at expiry queues no recall and the premise fails. Mutation:
+/// in `Platform::requeue_capital_grant_operations`, rebuild the replayed
+/// recall one second later instead of pushing the record — the resend
+/// carries a second digest under the same id, the ledger refuses it as a
+/// conflict and the "noted no refusal" assertion fails. Mutation: in
+/// `Platform::recall_capital_grant`, do not remove the grant from the
+/// outstanding fundings — the cycle after the expiry queues a second
+/// recall and the once-and-nothing-else premise fails.
+#[test]
+fn a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts() {
+    use qip_contracts::ledger_operation::CapitalRecallCause;
+    let fabric = Fabric::start();
+    let path = log_file("grant-recall");
+    let ledger = fabric.start_ledger(&temp_dir("ledger-grant-recall"));
+    let id = grant_strategy();
+    let book = Account::Trading {
+        cell: GRANT_CELL.to_string(),
+        strategy: id.as_str().to_string(),
+    };
+    let treasury = Account::Treasury {
+        treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string(),
+    };
+    let (gross, equity, expires_at) = {
+        let mut platform = warm_platform_at(&path).unwrap();
+        register_at_pilot(platform.central_mut(), &id, GRANT_CELL).unwrap();
+        let first_at = later();
+        let second_at = later().saturating_add(Duration::from_mins(2));
+        platform
+            .issue_capital(
+                &id,
+                &operator("alice.chen", first_at),
+                first_at,
+                "the pilot gate passed and the allocator sized it inside the budget",
+                first_at,
+            )
+            .unwrap();
+        let issued = platform
+            .issue_capital(
+                &id,
+                &operator("bram.oduya", second_at),
+                second_at,
+                "reviewed the allocation and the pilot evidence independently",
+                second_at,
+            )
+            .unwrap();
+        assert_eq!(issued.outcome, "issued", "{issued:?}");
+        let gross = issued
+            .gross_limit
+            .expect("an issued grant states its gross limit");
+        let expires_at = issued
+            .expires_at
+            .expect("an issued grant states its expiry");
+        let equity = platform.config().initial_equity;
+        let mut shipper = fabric.shipper();
+        ship_all(&mut shipper, &mut platform);
+        wait_until("the ledger funded the grant's book", || {
+            ledger.store().balance(&book, "USD").unwrap() == gross
+        });
+        assert_eq!(
+            ledger.store().balance(&treasury, "USD").unwrap(),
+            -(equity + gross),
+            "premise: the treasury was charged both fundings"
+        );
+
+        // The cycle that observes the window has ended, and the one after
+        // it, which finds the funding no longer outstanding.
+        platform.run_cycle(expires_at);
+        platform.run_cycle(expires_at.saturating_add(Duration::from_mins(1)));
+        let operations = platform.pending_desk_operations();
+        assert_eq!(
+            operations.len(),
+            1,
+            "premise: the cycles at and after expiry queued the grant's recall once and \
+             nothing else: {operations:?}"
+        );
+        let OperationKind::CapitalGrantRecalled { grant, cause, .. } = &operations[0].kind else {
+            panic!("the queued operation is not the grant's recall: {operations:?}");
+        };
+        assert_eq!(*cause, CapitalRecallCause::Expired);
+        assert_eq!(
+            grant.deployable(),
+            gross,
+            "the recall is of what was funded"
+        );
+        ship_all(&mut shipper, &mut platform);
+        assert!(platform.pending_desk_operations().is_empty());
+        (gross, equity, expires_at)
+    };
+    wait_until(
+        "the ledger returned the grant's book to the treasury",
+        || ledger.store().balance(&book, "USD").unwrap().is_zero(),
+    );
+    assert_eq!(
+        ledger.store().balance(&treasury, "USD").unwrap(),
+        -equity,
+        "the treasury does not read as the desk's own funding alone"
+    );
+    let shipped_before_restart = fabric.desk_operations();
+    assert_eq!(
+        shipped_before_restart, 3,
+        "premise: the treasury funding, the grant's funding and its recall were shipped"
+    );
+
+    // The restart, an hour after the expiry: the log re-queues all three
+    // as written, the ledger books none of them twice, and the cycle after
+    // finds nothing outstanding to recall.
+    let resumed_at = expires_at.saturating_add(Duration::from_hours(1));
+    let mut resumed = warm_platform_assembled_at(
+        PlatformConfig::default().with_event_log_file(&path),
+        resumed_at,
+    )
+    .unwrap();
+    assert!(
+        resumed.central().envelope(GRANT_CELL, &id).is_none(),
+        "premise: the plane's envelopes do not survive a restart"
+    );
+    let requeued = resumed.pending_desk_operations();
+    assert_eq!(
+        requeued.len(),
+        3,
+        "premise: the treasury funding, the grant's funding and its recall are re-queued: \
+         {requeued:?}"
+    );
+    assert!(
+        matches!(requeued[2].kind, OperationKind::CapitalGrantRecalled { .. }),
+        "the recall is not the last record re-queued: {requeued:?}"
+    );
+    let mut shipper = fabric.shipper();
+    ship_all(&mut shipper, &mut resumed);
+    wait_until("the broker holds the three resends", || {
+        fabric.desk_operations() == shipped_before_restart + 3
+    });
+    std::thread::sleep(StdDuration::from_millis(300));
+    assert!(
+        ledger.store().balance(&book, "USD").unwrap().is_zero(),
+        "the restart moved the grant's book: {}",
+        ledger.store().balance(&book, "USD").unwrap()
+    );
+    assert_eq!(ledger.store().balance(&treasury, "USD").unwrap(), -equity);
+    let notes = ledger.store().journal().unwrap();
+    assert!(
+        !notes.iter().any(|note| note.event == "operation_refused"),
+        "a resend was refused as a conflict: a recall's digest changed across a restart: \
+         {notes:?}"
+    );
+    resumed.run_cycle(resumed_at);
+    assert!(
+        resumed.pending_desk_operations().is_empty(),
+        "the cycle after the restart recalled the grant again: {:?}",
+        resumed.pending_desk_operations()
+    );
+    let trial = ledger.store().trial_balance().unwrap();
+    assert!(trial.values().all(|total| total.is_zero()), "{trial:?}");
+    // Said so the number above is not a coincidence of a zero gross.
+    assert!(gross.is_positive());
     ledger.stop();
 }

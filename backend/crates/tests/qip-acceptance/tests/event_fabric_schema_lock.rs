@@ -390,14 +390,16 @@ fn policy_frame_sample() -> PolicyFrame {
 
 /// ADR 0123's body. `OperationKind` is an enum, so one sample locks one
 /// variant's shape: this is `TreasuryAllocation`, the desks' funding. The
-/// kernel also produces `CapitalGrantFunded` (ADR 0123 decision 6), whose
-/// shape is *not* locked here:
-/// `the_lock_has_exactly_one_row_per_bound_body_and_version` admits
-/// one row per topic and version, so a second variant's sample would be a
-/// second row under the same key. That kind's shape is proven by
+/// kernel also produces `CapitalGrantFunded` (ADR 0123 decision 6) and
+/// `CapitalGrantRecalled` (ADR 0123 Amendment 1), whose shapes are *not*
+/// locked here: `the_lock_has_exactly_one_row_per_bound_body_and_version`
+/// admits one row per topic and version, so a second variant's sample would
+/// be a second row under the same key. Those kinds' shapes are proven by
 /// `qip-contracts`' one-of-every-kind test and by
-/// `vertical_slice_ship::a_capital_grants_funding_reaches_the_ledger_once_across_restarts`,
-/// which books it at a real `qip-ledgerd`; the ADR's cost note says so.
+/// `vertical_slice_ship::a_capital_grants_funding_reaches_the_ledger_once_across_restarts`
+/// and
+/// `vertical_slice_ship::a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts`,
+/// which book them at a real `qip-ledgerd`; the ADR's cost notes say so.
 fn ledger_operation_sample() -> qip_contracts::ledger_operation::LedgerOperation {
     use qip_contracts::ledger_operation::{Book, LedgerOperationFields, OperationKind, Phase};
     qip_contracts::validated::Validated::new(LedgerOperationFields {

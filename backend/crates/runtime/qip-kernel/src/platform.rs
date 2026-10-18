@@ -874,10 +874,24 @@ pub struct Platform {
     /// which fills exist.
     desk_ledger: DeskLedgerFeed,
     /// The desk's non-fill ledger operations not yet acknowledged by the
-    /// fabric (ADR 0123): today the treasury funding of its book. Rebuilt at
-    /// every start from the log and re-sent; the ledger books each once by
-    /// operation id, so a resend is a counted duplicate.
+    /// fabric (ADR 0123): the treasury funding of its book, and every
+    /// capital grant's funding and recall. Rebuilt at every start from the
+    /// log and re-sent; the ledger books each once by operation id, so a
+    /// resend is a counted duplicate.
     desk_operations: Vec<qip_contracts::ledger_operation::LedgerOperation>,
+    /// Every capital grant's funding the log holds and no recall has yet
+    /// answered, keyed by the grant's id — the book's deployable capital at
+    /// the ledger, as this process believes it. A funding leaves the map at
+    /// the instant its recall is in the log and not before, so a recall the
+    /// journal refused is attempted again rather than lost, and a restart
+    /// rebuilds the same map from the same records
+    /// ([`Self::requeue_capital_grant_operations`]).
+    capital_grant_fundings: BTreeMap<String, qip_contracts::ledger_operation::LedgerOperation>,
+    /// How many capital-grant operations — fundings and recalls — this log
+    /// holds on the desk's chain: the next one's `sequence` is one more,
+    /// so the chain's counter is monotonic across both kinds and never
+    /// zero, which the treasury funding carries.
+    capital_grant_operations: u64,
     /// Fills declined for want of a ledger record, bounded like the declined
     /// queue and cleared by nobody: the list is the evidence a person works
     /// from.
@@ -4087,6 +4101,39 @@ impl EventBody for CapitalGrantFunded {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// The journalled record that the central treasury recalled the deployable
+/// capital of a grant it had funded (ADR 0123, Amendment 1): the whole
+/// `CapitalGrantRecalled` [`qip_contracts::ledger_operation::LedgerOperation`]
+/// the ledger books, written by [`Platform::recall_capital_grant`] at the
+/// seam where the recall became a fact — the cycle that observed the
+/// grant's window had ended, the report whose concentration the plane
+/// answered with a recall order, or the renewal that funded the same book
+/// under a later grant — and before the operation is queued for the
+/// shipper.
+///
+/// Journalled whole and replayed as written, for the reason
+/// [`CapitalGrantFunded`] is: a restart holds no envelope and no clock that
+/// could reproduce the instant the recall was observed at, and a recall
+/// rebuilt at the restart's clock would be a second digest under the same
+/// id, which the ledger refuses. It is also what makes the recall happen
+/// once: the funding it recalls is held outstanding only until this record
+/// is in the log, and a restart that reads the log rebuilds the same
+/// outstanding set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapitalGrantRecalled {
+    pub operation: qip_contracts::ledger_operation::LedgerOperation,
+}
+
+/// The producer of [`CapitalGrantRecalled`]. Its own origin, distinct from
+/// [`CAPITAL_GRANT_FUNDING_ORIGIN`], so a reader of either stream of records
+/// decodes one body shape and never meets the other's.
+const CAPITAL_GRANT_RECALL_ORIGIN: &str = "kernel/capital-grant-recall";
+
+impl EventBody for CapitalGrantRecalled {
+    const TOPIC: Topic = Topic::LedgerOperationRecorded;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// The §24.9/§27 [`qip_contracts::capital::CapitalGrant`] an issued
 /// [`qip_contracts::CapitalEnvelope`] states, for the funding record
 /// [`Platform::fund_capital_grant`] writes; that method's documentation says
@@ -5127,6 +5174,8 @@ impl Platform {
             sensed_unlisted: 0,
             desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
             desk_operations: Vec::new(),
+            capital_grant_fundings: BTreeMap::new(),
+            capital_grant_operations: 0,
             unledgered_fills: Vec::new(),
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
@@ -5286,11 +5335,15 @@ impl Platform {
         // ledger is the authority for (ADR 0123). Journaled once, so every
         // restart re-derives the same operation with the same digest.
         platform.queue_treasury_funding(now)?;
-        // Every capital grant this log funded, re-queued as written: the
-        // plane's envelopes do not survive a restart but the ledger's debt to
-        // the books they funded does, and the ledger answers a resend with a
-        // duplicate rather than a second funding.
-        platform.requeue_capital_grant_fundings()?;
+        // Every capital grant this log funded or recalled, re-queued as
+        // written and in the order written: the plane's envelopes do not
+        // survive a restart but the ledger's debt to the books they funded
+        // does, and the ledger answers a resend with a duplicate rather than
+        // a second funding or a second recall. The same walk rebuilds which
+        // fundings are still outstanding, so a grant that lapsed while the
+        // process was down is recalled on the first cycle that observes it,
+        // and one recalled before the restart is not recalled again.
+        platform.requeue_capital_grant_operations()?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -6253,6 +6306,26 @@ impl Platform {
             ingestion.halted.is_none(),
             reported_at,
         );
+        // Every grant the plane recalled on this report has its funding
+        // recalled at the ledger (ADR 0123, Amendment 1): the centre has
+        // withdrawn the capital, and the ledger is the authority for where
+        // the capital is. Recorded here, at the seam the recall order was
+        // made, and once per grant — a second report that recalls the same
+        // grant finds no funding outstanding. A journal failure is a
+        // capture problem rather than a refusal of the report: the ingestion
+        // has already happened, the funding stays outstanding and is
+        // attempted again on the next recall order or at the grant's expiry,
+        // which is the backstop the recall model already relies on.
+        for order in &ingestion.recalls {
+            if let Err(error) = self.recall_revoked_capital_grant(order, now) {
+                self.capture_problems.push(format!(
+                    "the recall of {}'s grant at {} was not recorded at the ledger: {}",
+                    order.strategy,
+                    order.cell,
+                    error.message()
+                ));
+            }
+        }
         // Order/fill integrity, one observation per report that carried a
         // fill the settlement could grade: settled, or found to have no sent
         // order behind it. A report with no fills is evidence of nothing
@@ -8288,6 +8361,15 @@ impl Platform {
                 }
                 self.journal_record(entry.clone(), CAPITAL_GRANT_ORIGIN, now)?;
                 let (issued, _) = outcome?;
+                // A renewal: the plane holds one envelope per book, and the
+                // one it just replaced is no longer the grant in force, so
+                // its funding is recalled before the new window is funded
+                // (ADR 0123, Amendment 1). Recall then funding, in that order
+                // in the log, so the book's deployable capital at the ledger
+                // reads as the live grant's at every point and never as the
+                // two summed. A grant whose window had already ended is
+                // recalled as expired, which is what it is.
+                self.recall_superseded_capital_grant(&issued, now)?;
                 // The grant's deployable capital, funded into its book at the
                 // authoritative ledger (ADR 0123). After the entry, so the
                 // log reads decision, envelope, funding in the order the acts
@@ -15713,6 +15795,24 @@ impl Platform {
         for problem in problems {
             outcome = outcome.with_problem(problem);
         }
+        // ADR 0123, Amendment 1: a capital grant whose window has ended is
+        // recalled at the ledger on the cycle that observes it, in the same
+        // stage and for the same reason as the darkness review above — the
+        // expiry is a fact the passage of time makes, no report carries it,
+        // and this stage is the one whose consequence it has: from here the
+        // book's deployable capital at the ledger is the live grants' and
+        // nothing more.
+        let (recalled, problems) = self.recall_lapsed_capital_grants(now);
+        if recalled > 0 {
+            let detail = format!(
+                "{}; {recalled} capital grant(s) recalled at the ledger at expiry",
+                outcome.detail
+            );
+            outcome = StageOutcome { detail, ..outcome };
+        }
+        for problem in problems {
+            outcome = outcome.with_problem(problem);
+        }
         // §34.4's recorded session ends where the stage that issued the
         // orders ends. The boundary is drawn here and nowhere else because a
         // session has to be something a reader of the record can reproduce:
@@ -19207,10 +19307,11 @@ impl Platform {
             .to_string();
         let grant = capital_grant_of(envelope, &issued.allocation().venue, region)?;
         let chain = self.desk_ledger.chain().to_string();
-        let sequence = self.capital_grant_fundings_in_log()?.len() as u64 + 1;
+        let sequence = self.capital_grant_operations + 1;
+        let grant_id = grant.grant_id.clone();
         let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
             schema_version: 1,
-            operation_id: format!("{chain}:capital-grant-funded:{}", grant.grant_id),
+            operation_id: format!("{chain}:capital-grant-funded:{grant_id}"),
             origin: chain,
             sequence,
             recorded_at: now,
@@ -19229,34 +19330,233 @@ impl Platform {
             CAPITAL_GRANT_FUNDING_ORIGIN,
             now,
         )?;
+        self.capital_grant_operations += 1;
+        self.capital_grant_fundings
+            .insert(grant_id, operation.clone());
         self.desk_operations.push(operation);
         Ok(())
     }
 
-    /// Every capital-grant funding this log holds, in the order it was
-    /// written.
-    fn capital_grant_fundings_in_log(
-        &self,
-    ) -> Result<Vec<qip_contracts::ledger_operation::LedgerOperation>> {
-        let mut fundings = Vec::new();
-        for record in self.event_log.records() {
-            if record.event.lineage.producer != CAPITAL_GRANT_FUNDING_ORIGIN
-                || record.event.topic != CapitalGrantFunded::TOPIC
-            {
-                continue;
-            }
-            let frame = StreamEnvelope::from_frame(&record.event)?;
-            fundings.push(frame.decode::<CapitalGrantFunded>()?.body.operation);
-        }
-        Ok(fundings)
+    /// Recall, at the ledger, the deployable capital of a grant this log
+    /// funded and has not yet recalled (ADR 0123, Amendment 1): one
+    /// `CapitalGrantRecalled` operation — the funding's accounts swapped, for
+    /// the funding's own grant and so the funding's own amount — journalled
+    /// under [`CAPITAL_GRANT_RECALL_ORIGIN`] and queued on the desk's
+    /// operation path behind everything queued before it.
+    ///
+    /// Its id is `<chain>:capital-grant-recalled:<grant id>`: the grant's
+    /// identity and nothing else, so one grant has one recall whatever
+    /// prompted it, and a restart that replays the record re-sends the id and
+    /// the digest the first send carried. The cause is `inside` while the
+    /// grant is live at `now` and `Expired` otherwise: a recall order or a
+    /// renewal that reaches a grant whose window has already ended is
+    /// recording an expiry, and the contract refuses the other story.
+    ///
+    /// The grant is taken from the funding record, not from the plane's
+    /// envelope, because the ledger must be returned exactly what it was
+    /// given: the funding stated the grant once, and a recall that restated
+    /// it from an envelope could differ by a region learned since.
+    ///
+    /// Returns whether a recall was recorded: `false` where no funding for
+    /// the grant is outstanding, which is the once-only guarantee — a second
+    /// expiry cycle, a second recall order and a restart all find the map
+    /// empty of a grant whose recall is in the log.
+    fn recall_capital_grant(
+        &mut self,
+        grant_id: &str,
+        inside: qip_contracts::ledger_operation::CapitalRecallCause,
+        now: Timestamp,
+    ) -> Result<bool> {
+        use qip_contracts::ledger_operation::{
+            CapitalRecallCause, LedgerOperationFields, OperationKind,
+        };
+        let Some(funding) = self.capital_grant_fundings.get(grant_id) else {
+            return Ok(false);
+        };
+        let OperationKind::CapitalGrantFunded {
+            treasury,
+            cell,
+            unit,
+            grant,
+        } = &funding.kind
+        else {
+            return Err(Error::guard(format!(
+                "the outstanding funding of grant {grant_id} is not a CapitalGrantFunded \
+                 operation: {:?}",
+                funding.kind
+            )));
+        };
+        let cause = if grant.is_live(now) {
+            inside
+        } else {
+            CapitalRecallCause::Expired
+        };
+        let chain = self.desk_ledger.chain().to_string();
+        let operation = qip_contracts::validated::Validated::new(LedgerOperationFields {
+            schema_version: 1,
+            operation_id: format!("{chain}:capital-grant-recalled:{grant_id}"),
+            origin: chain,
+            sequence: self.capital_grant_operations + 1,
+            recorded_at: now,
+            settlement: qip_contracts::ledger::Settlement::Simulated,
+            kind: OperationKind::CapitalGrantRecalled {
+                treasury: treasury.clone(),
+                cell: cell.clone(),
+                unit: unit.clone(),
+                grant: grant.clone(),
+                cause,
+            },
+        })?;
+        self.journal_record(
+            CapitalGrantRecalled {
+                operation: operation.clone(),
+            },
+            CAPITAL_GRANT_RECALL_ORIGIN,
+            now,
+        )?;
+        // Only now, with the record in the log: a funding dropped before
+        // its recall was durable would be a recall that happened once in
+        // this process and never in the record.
+        self.capital_grant_operations += 1;
+        self.capital_grant_fundings.remove(grant_id);
+        self.desk_operations.push(operation);
+        Ok(true)
     }
 
-    /// Re-queue every capital-grant funding the log holds, as written, at
-    /// assembly. See [`CapitalGrantFunded`] for why the record and not the
-    /// grant is what is replayed.
-    fn requeue_capital_grant_fundings(&mut self) -> Result<()> {
-        let fundings = self.capital_grant_fundings_in_log()?;
-        self.desk_operations.extend(fundings);
+    /// The outstanding funding of the grant in force for `strategy`'s book
+    /// at `cell`, if the log holds one, by the identity the funding carries.
+    fn outstanding_capital_grant_for(&self, cell: &str, strategy: &StrategyId) -> Option<String> {
+        use qip_contracts::ledger_operation::OperationKind;
+        self.capital_grant_fundings
+            .iter()
+            .find(|(_, funding)| {
+                matches!(
+                    &funding.kind,
+                    OperationKind::CapitalGrantFunded { cell: funded_cell, grant, .. }
+                        if funded_cell == cell && &grant.strategy == strategy
+                )
+            })
+            .map(|(grant_id, _)| grant_id.clone())
+    }
+
+    /// Recall every outstanding funding whose grant's window has ended at
+    /// `now`: the expiry seam of ADR 0123, Amendment 1. Returns how many
+    /// were recalled and the problems of those that were not, for the stage
+    /// record; a problem leaves its funding outstanding, so the next cycle
+    /// tries again.
+    fn recall_lapsed_capital_grants(&mut self, now: Timestamp) -> (usize, Vec<String>) {
+        use qip_contracts::ledger_operation::{CapitalRecallCause, OperationKind};
+        let lapsed: Vec<String> = self
+            .capital_grant_fundings
+            .iter()
+            .filter(|(_, funding)| {
+                matches!(
+                    &funding.kind,
+                    OperationKind::CapitalGrantFunded { grant, .. } if now >= grant.expires_at
+                )
+            })
+            .map(|(grant_id, _)| grant_id.clone())
+            .collect();
+        let mut recalled = 0;
+        let mut problems = Vec::new();
+        for grant_id in lapsed {
+            match self.recall_capital_grant(&grant_id, CapitalRecallCause::Expired, now) {
+                Ok(true) => recalled += 1,
+                Ok(false) => {}
+                Err(error) => problems.push(format!(
+                    "the expired grant {grant_id} was not recalled at the ledger: {}",
+                    error.message()
+                )),
+            }
+        }
+        (recalled, problems)
+    }
+
+    /// Recall the funding of the grant a plane's recall order withdraws: the
+    /// revocation seam of ADR 0123, Amendment 1. Keyed on the order's book,
+    /// because the plane holds one envelope per book and the order names
+    /// that one; a book with no outstanding funding is nothing to recall.
+    fn recall_revoked_capital_grant(
+        &mut self,
+        order: &qip_capital::recall::RecallOrder,
+        now: Timestamp,
+    ) -> Result<bool> {
+        use qip_contracts::ledger_operation::CapitalRecallCause;
+        match self.outstanding_capital_grant_for(&order.cell, &order.strategy) {
+            Some(grant_id) => {
+                self.recall_capital_grant(&grant_id, CapitalRecallCause::Revoked, now)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Recall the funding of the grant a freshly issued one replaces on the
+    /// same book: the renewal seam of ADR 0123, Amendment 1. The replaced
+    /// grant is the outstanding funding for the issued envelope's cell and
+    /// strategy with a different identity; a funding under the issued
+    /// grant's own identity is not a renewal and is left for
+    /// [`Self::fund_capital_grant`] to re-state.
+    fn recall_superseded_capital_grant(
+        &mut self,
+        issued: &crate::central::plane::IssuedCapital,
+        now: Timestamp,
+    ) -> Result<bool> {
+        use qip_contracts::ledger_operation::CapitalRecallCause;
+        let envelope = issued.envelope();
+        let issued_id = format!(
+            "{}@{}@{}",
+            envelope.strategy().as_str(),
+            envelope.cell(),
+            envelope.granted_at().as_secs()
+        );
+        match self.outstanding_capital_grant_for(&issued.allocation().cell, envelope.strategy()) {
+            Some(grant_id) if grant_id != issued_id => {
+                self.recall_capital_grant(&grant_id, CapitalRecallCause::Superseded, now)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Re-queue every capital-grant funding and recall the log holds, as
+    /// written and in the order written, at assembly, and rebuild from the
+    /// same walk which fundings are still outstanding. See
+    /// [`CapitalGrantFunded`] and [`CapitalGrantRecalled`] for why the
+    /// records and not the grants are what is replayed.
+    fn requeue_capital_grant_operations(&mut self) -> Result<()> {
+        use qip_contracts::ledger_operation::OperationKind;
+        let mut operations = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.topic != CapitalGrantFunded::TOPIC {
+                continue;
+            }
+            let producer = record.event.lineage.producer.as_str();
+            if producer == CAPITAL_GRANT_FUNDING_ORIGIN {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                operations.push(frame.decode::<CapitalGrantFunded>()?.body.operation);
+            } else if producer == CAPITAL_GRANT_RECALL_ORIGIN {
+                let frame = StreamEnvelope::from_frame(&record.event)?;
+                operations.push(frame.decode::<CapitalGrantRecalled>()?.body.operation);
+            }
+        }
+        for operation in &operations {
+            match &operation.kind {
+                OperationKind::CapitalGrantFunded { grant, .. } => {
+                    self.capital_grant_fundings
+                        .insert(grant.grant_id.clone(), operation.clone());
+                }
+                OperationKind::CapitalGrantRecalled { grant, .. } => {
+                    self.capital_grant_fundings.remove(&grant.grant_id);
+                }
+                other => {
+                    return Err(Error::guard(format!(
+                        "a capital-grant record in the log holds a {other:?} operation, which \
+                         neither origin writes"
+                    )));
+                }
+            }
+        }
+        self.capital_grant_operations = operations.len() as u64;
+        self.desk_operations.extend(operations);
         Ok(())
     }
 

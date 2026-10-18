@@ -6886,8 +6886,8 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
 /// Mutation: in `Platform::fund_capital_grant`, journal the record but do
 /// not push the operation — the first `pending_desk_operations` count stays
 /// at one and the "the grant funded no book" assertion fails. Mutation: in
-/// `requeue_capital_grant_fundings`, extend with nothing — the restart holds
-/// no funding and the re-queue assertion fails.
+/// `requeue_capital_grant_operations`, extend with nothing — the restart
+/// holds no funding and the re-queue assertion fails.
 #[test]
 fn issuing_a_grant_queues_its_funding_for_the_ledger_and_a_restart_requeues_the_same_record()
 -> Result<()> {
@@ -7097,6 +7097,506 @@ fn a_grant_to_a_cell_the_centre_has_never_heard_from_is_funded_under_an_unknown_
     };
     assert_eq!(grant.region, "unknown");
     assert_ne!(grant.region, CELL);
+    Ok(())
+}
+
+// --- a capital grant's recall (ADR 0123, Amendment 1) ------------------------
+
+/// Two operators issue `id`'s grant through the platform's intent, signing
+/// at `first_at` and `second_at`; the entry the countersignature returned.
+fn issue_through_platform(
+    platform: &mut Platform,
+    id: &StrategyId,
+    first_at: Timestamp,
+    second_at: Timestamp,
+) -> Result<qip_kernel::platform::CapitalGrantEntry> {
+    platform.issue_capital(
+        id,
+        &operator("alice.chen", first_at),
+        first_at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        first_at,
+    )?;
+    let issued = platform.issue_capital(
+        id,
+        &operator("bram.oduya", second_at),
+        second_at,
+        "reviewed the allocation and the pilot evidence independently",
+        second_at,
+    )?;
+    assert_eq!(issued.outcome, "issued", "{issued:?}");
+    Ok(issued)
+}
+
+/// The capital-grant operations queued for the ledger, fundings and
+/// recalls, in queue order.
+fn grant_operations(platform: &Platform) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+    use qip_contracts::ledger_operation::OperationKind;
+    platform
+        .pending_desk_operations()
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.kind,
+                OperationKind::CapitalGrantFunded { .. }
+                    | OperationKind::CapitalGrantRecalled { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn recalls_queued(platform: &Platform) -> Vec<qip_contracts::ledger_operation::LedgerOperation> {
+    use qip_contracts::ledger_operation::OperationKind;
+    grant_operations(platform)
+        .into_iter()
+        .filter(|operation| matches!(operation.kind, OperationKind::CapitalGrantRecalled { .. }))
+        .collect()
+}
+
+/// The book's deployable capital at the ledger as the queued operations
+/// would leave it: fundings added, recalls subtracted, for one book.
+fn book_funded(platform: &Platform, cell: &str, id: &StrategyId) -> Decimal {
+    use qip_contracts::ledger_operation::OperationKind;
+    grant_operations(platform)
+        .iter()
+        .fold(Decimal::ZERO, |sum, operation| match &operation.kind {
+            OperationKind::CapitalGrantFunded {
+                cell: funded,
+                grant,
+                ..
+            } if funded == cell && &grant.strategy == id => sum + grant.deployable(),
+            OperationKind::CapitalGrantRecalled {
+                cell: recalled,
+                grant,
+                ..
+            } if recalled == cell && &grant.strategy == id => sum - grant.deployable(),
+            _ => sum,
+        })
+}
+
+/// ADR 0123, Amendment 1: the cycle that observes a grant's window has
+/// ended recalls the grant's deployable capital from its book at the ledger
+/// — one `CapitalGrantRecalled` operation, cause `expired`, the funding's
+/// accounts swapped for the funding's own grant, under the id the grant's
+/// identity alone makes and the next sequence on the chain — and a later
+/// cycle recalls nothing again, because the funding is no longer
+/// outstanding. A cycle before the expiry recalls nothing: the fact has not
+/// happened.
+///
+/// Mutation: in `Platform::recall_lapsed_capital_grants`, filter on nothing
+/// (`false`) — the cycle at expiry queues no recall and the first count
+/// fails. Mutation: in `Platform::recall_capital_grant`, do not remove the
+/// grant from `capital_grant_fundings` — the next cycle recalls it again
+/// and the once-only assertion fails.
+#[test]
+fn a_grant_whose_window_has_ended_is_recalled_at_the_ledger_once_by_the_cycle_that_observes_it()
+-> Result<()> {
+    use qip_contracts::ledger::{Account, Direction};
+    use qip_contracts::ledger_operation::{CapitalRecallCause, OperationKind};
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+    issue_through_platform(&mut platform, &id, first_at, second_at)?;
+    let funding = grant_operations(&platform)
+        .into_iter()
+        .next()
+        .ok_or_else(|| qip_core::Error::not_found("the grant's funding"))?;
+    let OperationKind::CapitalGrantFunded { grant, .. } = funding.kind.clone() else {
+        panic!("the first grant operation is not the funding: {funding:?}");
+    };
+    let expires_at = grant.expires_at;
+    assert!(
+        expires_at > second_at.saturating_add(Duration::from_hours(1)),
+        "premise: the window outlasts the cycle before expiry"
+    );
+
+    // Before the window ends: nothing to recall.
+    let before = second_at.saturating_add(Duration::from_hours(1));
+    platform.run_cycle(before);
+    assert!(
+        recalls_queued(&platform).is_empty(),
+        "a live grant was recalled: {:?}",
+        recalls_queued(&platform)
+    );
+    assert_eq!(book_funded(&platform, CELL, &id), grant.deployable());
+
+    // The cycle that observes the window has ended.
+    let report = platform.run_cycle(expires_at);
+    let recalls = recalls_queued(&platform);
+    assert_eq!(
+        recalls.len(),
+        1,
+        "the expired grant was not recalled: {:?}",
+        platform.pending_desk_operations()
+    );
+    let recall = &recalls[0];
+    let chain = platform.config().desk_chain.clone();
+    assert_eq!(
+        recall.operation_id,
+        format!("{chain}:capital-grant-recalled:{}", grant.grant_id),
+        "the recall's id is the grant's identity and nothing else"
+    );
+    assert_eq!(recall.origin, chain);
+    assert_eq!(
+        recall.sequence,
+        funding.sequence + 1,
+        "the chain's counter runs over fundings and recalls alike"
+    );
+    assert_eq!(recall.recorded_at, expires_at);
+    let OperationKind::CapitalGrantRecalled {
+        treasury,
+        cell,
+        unit,
+        grant: recalled,
+        cause,
+    } = &recall.kind
+    else {
+        panic!("not a CapitalGrantRecalled: {recall:?}");
+    };
+    assert_eq!(*cause, CapitalRecallCause::Expired);
+    assert_eq!(treasury, qip_kernel::platform::CENTRAL_TREASURY);
+    assert_eq!(cell, CELL);
+    assert_eq!(unit, qip_kernel::desk_ledger::DESK_QUOTE_UNIT);
+    assert_eq!(
+        *recalled, grant,
+        "the recall carries the grant the funding stated, not one restated"
+    );
+    let postings = recall.to_event()?.postings().to_vec();
+    assert_eq!(postings.len(), 2, "{postings:?}");
+    assert_eq!(postings[0].direction, Direction::Debit);
+    assert_eq!(
+        postings[0].account,
+        Account::Treasury {
+            treasury: qip_kernel::platform::CENTRAL_TREASURY.to_string(),
+        }
+    );
+    assert_eq!(postings[1].direction, Direction::Credit);
+    assert_eq!(
+        postings[1].account,
+        Account::Trading {
+            cell: CELL.to_string(),
+            strategy: id.as_str().to_string(),
+        }
+    );
+    assert_eq!(postings[1].amount, grant.deployable());
+    assert_eq!(
+        book_funded(&platform, CELL, &id),
+        Decimal::ZERO,
+        "the funding and its recall do not net the book to zero"
+    );
+    let act = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == qip_kernel::cycle::Stage::Act)
+        .ok_or_else(|| qip_core::Error::not_found("the ACT stage"))?;
+    assert!(
+        act.detail
+            .contains("1 capital grant(s) recalled at the ledger at expiry"),
+        "the stage record does not say what it did: {}",
+        act.detail
+    );
+    assert!(act.problems.is_empty(), "{:?}", act.problems);
+
+    // Once: the next cycle finds nothing outstanding.
+    platform.run_cycle(expires_at.saturating_add(Duration::from_hours(1)));
+    assert_eq!(
+        recalls_queued(&platform).len(),
+        1,
+        "the expired grant was recalled twice: {:?}",
+        recalls_queued(&platform)
+    );
+    Ok(())
+}
+
+/// ADR 0123, Amendment 1: a recall order the plane issues on a report — a
+/// concentration finding — recalls the grant's funding at the ledger on the
+/// same ingestion, with cause `revoked` and inside the window, and a second
+/// report that recalls the same grant recalls its funding no second time.
+///
+/// Mutation: in `Platform::ingest_cell_report`, skip the loop over
+/// `ingestion.recalls` — no recall is queued and the first count fails.
+/// Mutation: in `Platform::recall_capital_grant`, do not remove the grant
+/// from `capital_grant_fundings` — the second report queues a second
+/// recall and the once-only assertion fails.
+#[test]
+fn a_recall_order_on_a_report_recalls_the_grants_funding_at_the_ledger_once() -> Result<()> {
+    use qip_contracts::ledger_operation::{CapitalRecallCause, OperationKind};
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+    issue_through_platform(&mut platform, &id, first_at, second_at)?;
+    let funded = book_funded(&platform, CELL, &id);
+    assert!(funded.is_positive(), "premise: the grant funded the book");
+
+    // The whole book in one name breaches the instrument concentration and
+    // the plane recalls the grant.
+    let reported_at = second_at.saturating_add(Duration::from_mins(5));
+    let report = CellReport::new(CELL, reported_at).with_positions(vec![position(
+        CELL,
+        &id,
+        INSTRUMENT,
+        dec!("1000"),
+    )]);
+    let ingestion = platform.ingest_cell_report(report, reported_at)?;
+    assert_eq!(
+        ingestion.recalls.len(),
+        1,
+        "premise: the plane recalled the grant: {:?}",
+        ingestion.concentrations
+    );
+    let recalls = recalls_queued(&platform);
+    assert_eq!(
+        recalls.len(),
+        1,
+        "the recall order did not recall the funding: {:?}",
+        platform.pending_desk_operations()
+    );
+    let OperationKind::CapitalGrantRecalled { cause, grant, .. } = &recalls[0].kind else {
+        panic!("not a CapitalGrantRecalled: {:?}", recalls[0]);
+    };
+    assert_eq!(*cause, CapitalRecallCause::Revoked);
+    assert!(
+        grant.is_live(reported_at),
+        "premise: revoked inside the window"
+    );
+    assert_eq!(recalls[0].recorded_at, reported_at);
+    assert_eq!(book_funded(&platform, CELL, &id), Decimal::ZERO);
+
+    // The same finding on the next report: the plane issues its order
+    // again, the ledger hears nothing new.
+    let again_at = reported_at.saturating_add(Duration::from_mins(1));
+    let report = CellReport::new(CELL, again_at).with_positions(vec![position(
+        CELL,
+        &id,
+        INSTRUMENT,
+        dec!("1000"),
+    )]);
+    let ingestion = platform.ingest_cell_report(report, again_at)?;
+    assert_eq!(ingestion.recalls.len(), 1, "premise: recalled again");
+    assert_eq!(
+        recalls_queued(&platform).len(),
+        1,
+        "a second recall order recalled the funding twice: {:?}",
+        recalls_queued(&platform)
+    );
+    Ok(())
+}
+
+/// ADR 0123, Amendment 1: renewing a book's grant inside the old window
+/// recalls the old funding (cause `superseded`) and funds the new one, in
+/// that order, so the book's deployable capital at the ledger is the new
+/// grant's and never the two summed; and the renewal's expiry later recalls
+/// only the new grant.
+///
+/// Mutation: in `Platform::issue_capital`, skip
+/// `recall_superseded_capital_grant` — the book reads the two grants summed
+/// and the netting assertion fails.
+#[test]
+fn renewing_a_grant_recalls_the_old_funding_and_funds_the_new_so_the_book_nets_to_the_live_grant()
+-> Result<()> {
+    use qip_contracts::ledger_operation::{CapitalRecallCause, OperationKind};
+    let id = strategy();
+    let mut platform = platform_at_pilot(&id)?;
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+    issue_through_platform(&mut platform, &id, first_at, second_at)?;
+    let old = grant_operations(&platform)
+        .into_iter()
+        .next()
+        .ok_or_else(|| qip_core::Error::not_found("the first funding"))?;
+    let OperationKind::CapitalGrantFunded {
+        grant: old_grant, ..
+    } = old.kind.clone()
+    else {
+        panic!("not a funding: {old:?}");
+    };
+
+    let renew_first = start().saturating_add(Duration::from_hours(1));
+    let renew_second = renew_first.saturating_add(Duration::from_mins(2));
+    assert!(
+        old_grant.is_live(renew_second),
+        "premise: the renewal is inside the old window"
+    );
+    issue_through_platform(&mut platform, &id, renew_first, renew_second)?;
+    let operations = grant_operations(&platform);
+    assert_eq!(
+        operations.len(),
+        3,
+        "funding, recall, funding: {operations:?}"
+    );
+    let OperationKind::CapitalGrantRecalled {
+        grant: recalled,
+        cause,
+        ..
+    } = &operations[1].kind
+    else {
+        panic!("the second operation is not the old grant's recall: {operations:?}");
+    };
+    assert_eq!(
+        *recalled, old_grant,
+        "the recall names the grant it recalls"
+    );
+    assert_eq!(*cause, CapitalRecallCause::Superseded);
+    assert_eq!(operations[1].recorded_at, renew_second);
+    let OperationKind::CapitalGrantFunded {
+        grant: new_grant, ..
+    } = &operations[2].kind
+    else {
+        panic!("the third operation is not the new funding: {operations:?}");
+    };
+    assert_ne!(new_grant.grant_id, old_grant.grant_id);
+    assert_eq!(new_grant.granted_at, renew_second);
+    assert_eq!(
+        operations.iter().map(|o| o.sequence).collect::<Vec<_>>(),
+        vec![old.sequence, old.sequence + 1, old.sequence + 2]
+    );
+    assert_eq!(
+        book_funded(&platform, CELL, &id),
+        new_grant.deployable(),
+        "the book does not read as the live grant alone"
+    );
+
+    // The old window ends: nothing is left of it to recall. The new one
+    // ends an hour later and is recalled then.
+    platform.run_cycle(old_grant.expires_at);
+    assert_eq!(
+        recalls_queued(&platform).len(),
+        1,
+        "the old grant was recalled twice"
+    );
+    assert_eq!(book_funded(&platform, CELL, &id), new_grant.deployable());
+    platform.run_cycle(new_grant.expires_at);
+    let recalls = recalls_queued(&platform);
+    assert_eq!(recalls.len(), 2, "{recalls:?}");
+    let OperationKind::CapitalGrantRecalled { grant, cause, .. } = &recalls[1].kind else {
+        panic!("not a recall: {:?}", recalls[1]);
+    };
+    assert_eq!(grant, new_grant);
+    assert_eq!(*cause, CapitalRecallCause::Expired);
+    assert_eq!(book_funded(&platform, CELL, &id), Decimal::ZERO);
+    Ok(())
+}
+
+/// ADR 0123, Amendment 1: a restart over a log that holds a grant's funding
+/// and its recall re-queues both as written — the recall byte for byte, so
+/// the resend carries the digest the first send did — and recalls the grant
+/// no second time on the cycles after, because the replay rebuilt the
+/// outstanding set without it. A grant that lapsed while the process was
+/// down is the other half: its funding is outstanding after the replay and
+/// the first cycle recalls it, at that cycle's instant.
+///
+/// Mutation: in `Platform::requeue_capital_grant_operations`, rebuild a
+/// replayed recall with `recorded_at` one second later instead of pushing
+/// the record as written — the byte comparison fails. Mutation: in the same
+/// function, do not remove a recalled grant from `capital_grant_fundings` —
+/// the restarted platform recalls it again and the once-only assertion
+/// fails.
+#[test]
+fn a_restart_replays_a_grants_recall_as_written_and_recalls_it_no_second_time() -> Result<()> {
+    use qip_contracts::ledger_operation::{CapitalRecallCause, OperationKind};
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-grant-recall-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let id = strategy();
+    let other = StrategyId::new("central-reversal");
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+
+    let (recall, expires_at, other_grant) = {
+        let config = PlatformConfig::default().with_event_log_file(&path);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform =
+            Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+        register(platform.central_mut(), &id, CELL)?;
+        walk_to(platform.central_mut(), &id, GateStage::Pilot)?;
+        register(platform.central_mut(), &other, CELL)?;
+        walk_to(platform.central_mut(), &other, GateStage::Pilot)?;
+        issue_through_platform(&mut platform, &id, first_at, second_at)?;
+        // The second grant is issued later and so lapses later: it is the
+        // one still live when the first process stops.
+        let later_first = second_at.saturating_add(Duration::from_hours(2));
+        let later_second = later_first.saturating_add(Duration::from_mins(2));
+        issue_through_platform(&mut platform, &other, later_first, later_second)?;
+        let fundings = grant_operations(&platform);
+        assert_eq!(fundings.len(), 2, "premise: two fundings: {fundings:?}");
+        let OperationKind::CapitalGrantFunded { grant, .. } = &fundings[0].kind else {
+            panic!("{fundings:?}");
+        };
+        let OperationKind::CapitalGrantFunded {
+            grant: other_grant, ..
+        } = &fundings[1].kind
+        else {
+            panic!("{fundings:?}");
+        };
+        let expires_at = grant.expires_at;
+        platform.run_cycle(expires_at);
+        let recalls = recalls_queued(&platform);
+        assert_eq!(recalls.len(), 1, "premise: the first grant was recalled");
+        assert!(
+            other_grant.is_live(expires_at),
+            "premise: the second grant outlives the first process"
+        );
+        (recalls[0].clone(), expires_at, other_grant.clone())
+    };
+
+    // The restart, after the second grant has lapsed too.
+    let resumed_at = other_grant
+        .expires_at
+        .saturating_add(Duration::from_mins(7));
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let (context, _clock) = Context::deterministic(resumed_at, config.seed);
+    let mut restarted = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+    let replayed = grant_operations(&restarted);
+    assert_eq!(
+        replayed.len(),
+        3,
+        "funding, funding, recall, as written: {replayed:?}"
+    );
+    assert_eq!(
+        replayed[2], recall,
+        "the restart rebuilt the recall instead of replaying it"
+    );
+    assert_eq!(replayed[2].digest()?, recall.digest()?);
+    assert_eq!(replayed[2].recorded_at, expires_at);
+
+    // The cycles after: the recalled grant stays recalled, and the one
+    // that lapsed while the process was down is recalled now, at this
+    // cycle's instant rather than at an expiry nobody observed.
+    restarted.run_cycle(resumed_at);
+    let recalls = recalls_queued(&restarted);
+    assert_eq!(
+        recalls.len(),
+        2,
+        "the first cycle after the restart should recall the lapsed grant and nothing else: \
+         {recalls:?}"
+    );
+    assert_eq!(recalls[0], recall, "the replayed recall was recalled again");
+    let OperationKind::CapitalGrantRecalled { grant, cause, .. } = &recalls[1].kind else {
+        panic!("{:?}", recalls[1]);
+    };
+    assert_eq!(*grant, other_grant);
+    assert_eq!(*cause, CapitalRecallCause::Expired);
+    assert_eq!(recalls[1].recorded_at, resumed_at);
+    assert_eq!(
+        recalls[1].sequence, 4,
+        "fundings 1 and 2, recall 3, recall 4"
+    );
+    restarted.run_cycle(resumed_at.saturating_add(Duration::from_hours(1)));
+    assert_eq!(
+        recalls_queued(&restarted).len(),
+        2,
+        "a restart recalled a grant twice: {:?}",
+        recalls_queued(&restarted)
+    );
+    assert_eq!(book_funded(&restarted, CELL, &id), Decimal::ZERO);
+    assert_eq!(book_funded(&restarted, CELL, &other), Decimal::ZERO);
     Ok(())
 }
 

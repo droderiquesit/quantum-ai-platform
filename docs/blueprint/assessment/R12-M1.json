@@ -4406,13 +4406,14 @@
   {
     "id": "R12-LEDGER-1197",
     "status": "PARTIAL",
-    "current": "Cell fills reach ledgerd and post balanced double-entry (CentralPlane::settle -> outcomes stream). Treasury linkage exists: every desk's treasury funding and every capital grant's funding reach ledgerd as ledger operations (ADR 0123 decisions 5 and 6) and credit treasury:central. Settlement and inventory do not: the simulated broker books cash at the fill and reports no settlement, the desk's T+1 settlement register (Platform::register_settlement) holds a calendar projection used for survival sizing and never observes a settlement, and the commerce inventory ledger runs only under a deep-brain breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN, set in no committed environment) and never reaches ledgerd.",
+    "current": "Cell fills reach ledgerd and post balanced double-entry (CentralPlane::settle -> outcomes stream). Treasury linkage exists: every desk's treasury funding and every capital grant's funding reach ledgerd as ledger operations (ADR 0123 decisions 5 and 6) and credit treasury:central, and a grant's funding is recalled to the treasury once when the grant expires, is revoked or is renewed (ADR 0123 Amendment 1). Settlement and inventory do not: the simulated broker books cash at the fill and reports no settlement, the desk's T+1 settlement register (Platform::register_settlement) holds a calendar projection used for survival sizing and never observes a settlement, and the commerce inventory ledger runs only under a deep-brain breadth plan (QIP_DEEPBRAIN_BREADTH_PLAN, set in no committed environment) and never reaches ledgerd.",
     "evidence": [
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit",
       "backend/crates/runtime/qip-kernel/src/central/plane.rs settle",
       "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::queue_treasury_funding",
       "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::fund_capital_grant",
-      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts"
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_funding_reaches_the_ledger_once_across_restarts",
+      "backend/crates/tests/qip-acceptance/tests/vertical_slice_ship.rs::a_capital_grants_recall_returns_its_book_to_the_treasury_at_expiry_across_restarts"
     ],
     "gap": "Settlement and inventory linkage. No producer observes a venue settlement (the simulated venue settles at the fill and the desk's settlement register is a projection), and the commerce inventory ledger is reachable only under a breadth plan no environment commits, so neither has an honest operation to record (ADR 0123 'Consequences': each kind needs a producer that observes the fact).",
     "implemented": true,
@@ -4425,7 +4426,7 @@
     "verification": "cargo test -p qip-ledgerd; cargo test -p qip-kernel --test central",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Three of four named destinations are absent. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination is now met and the gap names the two that are not and why."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Three of four named destinations are absent. Re-graded 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination is now met and the gap names the two that are not and why. Re-graded 2026-10-18 by the lane that gave grant fundings a recall (ADR 0123 Amendment 1), after cargo test --workspace --no-fail-fast and the mutations named in each test's doc comment fired: PARTIAL->PARTIAL; the treasury destination now holds in both directions and the gap is unchanged."
   },
   {
     "id": "R12-MODEL-1198",
