@@ -41,15 +41,16 @@ fn draft(class: GoalClass) -> GoalSpecDraft {
         prohibited_side_effects: list(&["public_statement"]),
         prohibited_methods: list(&["wash_trade"]),
         stop_conditions: list(&["spread widens"]),
+        rollback_conditions: list(&["restore the prior quote width"]),
     }
 }
 
 // ---- AGENCY-003 / 041 ------------------------------------------------------
 
 #[test]
-fn a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field() {
+fn a_goal_missing_any_one_of_its_thirteen_declarations_is_refused_naming_that_field() {
     type Wipe = fn(&mut GoalSpecDraft);
-    let wipes: [(&str, Wipe); 12] = [
+    let wipes: [(&str, Wipe); 13] = [
         ("target_state", |g| g.target_state = None),
         ("entities_affected", |g| g.entities_affected = None),
         ("time_horizon_secs", |g| g.time_horizon_secs = None),
@@ -66,6 +67,7 @@ fn a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_fiel
         }),
         ("prohibited_methods", |g| g.prohibited_methods = None),
         ("stop_conditions", |g| g.stop_conditions = None),
+        ("rollback_conditions", |g| g.rollback_conditions = None),
     ];
     assert!(
         draft(GoalClass::Financial).build().is_ok(),
