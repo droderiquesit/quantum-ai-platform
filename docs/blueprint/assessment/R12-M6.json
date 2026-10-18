@@ -869,12 +869,12 @@
   {
     "id": "R12-EXPAND-6040",
     "status": "PARTIAL",
-    "current": "Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in a ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window.",
+    "current": "Tournament/lattice Scorecards in kernel. Hosted-model error rate (lane L20, 2026-10-18): language::assemble wraps the installed hosted adapter in qip_ai::language::ReplyTally that counts served, refused (any provider error) and malformed (no structured output for a schema, output the schema or NumericGuard rejects, or a schema/guard error) replies without changing them; main.rs hands the tally to ResearchLoop::with_reply_tally, and sweep_over, once MODEL_REPLIES_MIN (20) replies have accumulated, raises qip_expansion::detectors::model_error_rate: one GapTrigger::Surprise observation wanting a specialist when the refused-or-malformed share exceeds MODEL_ERROR_RATE (0.2), then starts a fresh window.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:271 GapSignal",
       "backend/crates/runtime/qip-kernel/src/platform.rs:15155",
       "backend/crates/services/qip-training/src/estimators.rs degraded_models",
-      "backend/crates/apps/qip-deepbrain/src/language.rs:100 ReplyTally, :148 CountedModel::complete, :361 the installed adapter is wrapped",
+      "backend/crates/libs/qip-ai/src/language.rs:614 ReplyTally, :673 CountedModel::complete (beside the port, so ADR 0117's implementation list is unchanged); backend/crates/apps/qip-deepbrain/src/language.rs:255 the installed adapter is wrapped",
       "backend/crates/services/qip-expansion/src/detectors.rs:242 model_error_rate",
       "backend/crates/apps/qip-deepbrain/src/main.rs:862 the tally reaches the research loop",
       "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs:935 a_model_whose_replies_are_refused_past_the_rate_raises_one_error_rate_gap"
@@ -890,7 +890,7 @@
     "verification": "cargo test -p qip-deepbrain --test expansion_rows",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: counting and the error-rate gap added. Mutation: an Err reply counted as served in CountedModel::complete; the test raised no signal (0 vs 1); restored by byte compare. Kept PARTIAL because the behaviour depends on a hosted adapter no deployment installs; that is an operator act (ADR 0037), not code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L20 2026-10-18: counting and the error-rate gap added. Mutation: an Err reply counted as served in CountedModel::complete; the test raised no signal (0 vs 1); restored by byte compare. Kept PARTIAL because the behaviour depends on a hosted adapter no deployment installs; that is an operator act (ADR 0037), not code. The wrapper first lived in qip-deepbrain/src/language.rs, which made qip-acceptance model_gateway_boundary fail twice (a new LanguageModel implementation and call site outside ADR 0117's list); it was moved into qip-ai/src/language.rs and the mutation re-run there (fired, 0 vs 1)."
   },
   {
     "id": "R12-EXPAND-6041",
@@ -1054,13 +1054,15 @@
   {
     "id": "R12-EXPAND-6048",
     "status": "PARTIAL",
-    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for fills eleven inputs and passes the detector's economic_value through. detectors.rs::repeated_vetoes_priced measures a veto gap's economic value as the summed positive counterfactual earnings of the gate's regretted declines; the deployed sweep still calls the unpriced repeated_vetoes, so on the default path the value is zero, and urgency is stated Some(0.0).",
+    "current": "backend/crates/services/qip-expansion/src/desk.rs criteria_for fills eleven inputs and passes the detector's economic_value through. Since 2026-10-18 the deployed sweep prices every repeated-veto gap: ResearchLoop::sweep_over hands each DeclinedScore's (gate, regret, would_have_earned) to veto_observations, which crosses the counterfactual through as_f64_for_statistics (refusing a figure with no decimal form) and calls repeated_vetoes_priced, so a veto gap's economic value is the summed positive earnings its gate's regretted declines forwent.",
     "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1170 the sweep calls veto_observations",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2605 veto_observations",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2886 a_repeated_veto_gap_carries_the_earnings_its_gate_forwent (mutation: call the unpriced repeated_vetoes; the gap prices at zero and the test fails)",
       "backend/crates/services/qip-expansion/src/detectors.rs:223 repeated_vetoes_priced",
-      "backend/crates/services/qip-expansion/tests/expansion.rs:780 a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
       "backend/crates/services/qip-expansion/src/desk.rs:142 urgency: Some(0.0) stated, never measured"
     ],
-    "gap": "Default path not wired: apps/qip-deepbrain/src/research.rs::sweep_over must call repeated_vetoes_priced with each DeclinedScore's would_have_earned (crossed via as_f64_for_statistics) instead of repeated_vetoes; residual gaps carry no notional so slippage cost is unmeasurable from FillObservation; urgency needs a signal age the desk does not hold (signal_ttl lives in ResearchConfig) and stays a stated zero.",
+    "gap": "Veto pricing is on the default path. Still open: residual gaps carry no notional, so slippage cost is unmeasurable from FillObservation; and the desk's criteria_for states urgency Some(0.0) — the research loop now measures urgency from a gap's deadline for its information requests (R12-AMBIENT-3106) but the desk's curriculum criteria do not receive it, a change in qip-expansion desk.rs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1068,10 +1070,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test expansion a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_repeated_veto_gap_carries_the_earnings_its_gate_forwent && cargo +1.94.1 test -p qip-expansion --test expansion a_gap_with_measured_regret_outranks_an_equal_gap_with_none",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. 2026-10-18 lane L18: the priced detector and its mutated test landed (mutation: skip assigning economic_value, the test fails on the 800 assertion); the research.rs call site belongs to lanes L03/L20 and the patch is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site landed (veto_observations), mutation-verified; status PARTIAL on the two remaining inputs."
   },
   {
     "id": "R12-EXPAND-6049",

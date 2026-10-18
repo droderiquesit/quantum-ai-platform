@@ -51,18 +51,22 @@
 //! threshold, a direction gate per region — and never a message at
 //! execution time. A cell's graph holds the cell's own venues (ADR 0008), so
 //! every cycle the desk can see today is path 1, 2 or 7, executed alone. And
-//! the cell can place but not cancel, so a cycle whose later leg a venue
-//! refuses is recorded and halts the cell rather than being unwound; the
-//! coordinator that would unwind it needs a fill path the cell does not yet
-//! have.
+//! A cycle whose later leg a venue refuses still halts the cell, but no
+//! longer leaves what filled standing: [`unwind_plan`] turns the legs the
+//! venue reported filled into the offsetting orders that close them, and the
+//! cell sends those through its own order path before it halts. The fill
+//! path that sentence once said the cell lacked is the order-entry channel's
+//! execution reports.
 
 use crate::scan::Opportunity;
 use qip_contracts::edge::LegStep;
 use qip_contracts::intent::CycleLeg;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
+use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
-use qip_core::{Decimal, Timestamp};
+use qip_core::{Decimal, ObjectId, Timestamp};
+use std::collections::BTreeMap;
 
 impl Opportunity {
     /// A reproducible identity for this cycle at this instant.
@@ -157,5 +161,104 @@ fn signed_size(step: &LegStep) -> Decimal {
     match step.side {
         BookSide::Ask => step.quantity,
         BookSide::Bid => -step.quantity,
+    }
+}
+
+/// One order that closes what a broken cycle's filled legs left open at one
+/// venue on one instrument: `side` is the book it takes from (a buy takes
+/// the ask), `quantity` is positive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnwindOrder {
+    pub venue: VenueId,
+    pub object_id: ObjectId,
+    pub side: BookSide,
+    pub quantity: Decimal,
+}
+
+/// The offsetting orders that return a broken cycle's filled legs to flat.
+///
+/// `filled` is each leg the venue reported filling — venue, instrument, the
+/// side the leg took, and the quantity filled — and nothing planned: a leg
+/// that went out and never filled is a resting order to withdraw, not a
+/// position to offset, and offsetting a planned size would open the very
+/// position the unwind exists to close. Fills are netted per venue and
+/// instrument first, so two legs that traded the same book in opposite
+/// directions offset each other rather than producing two orders, and a
+/// book whose fills net to zero produces none. The result is in
+/// `(venue, instrument)` order so a replay sends the same orders in the
+/// same order.
+pub fn unwind_plan(
+    filled: impl IntoIterator<Item = (VenueId, ObjectId, BookSide, Decimal)>,
+) -> Vec<UnwindOrder> {
+    let mut net: BTreeMap<(VenueId, ObjectId), Decimal> = BTreeMap::new();
+    for (venue, object_id, side, quantity) in filled {
+        let signed = match side {
+            BookSide::Ask => quantity,
+            BookSide::Bid => -quantity,
+        };
+        *net.entry((venue, object_id)).or_insert(Decimal::ZERO) += signed;
+    }
+    net.into_iter()
+        .filter(|(_, held)| !held.is_zero())
+        .map(|((venue, object_id), held)| UnwindOrder {
+            venue,
+            object_id,
+            // Long is closed by selling into the bid, short by buying the ask.
+            side: if held.is_positive() {
+                BookSide::Bid
+            } else {
+                BookSide::Ask
+            },
+            quantity: held.abs(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod unwind_tests {
+    use super::*;
+
+    fn d(literal: &str) -> Decimal {
+        Decimal::parse(literal).unwrap_or(Decimal::ZERO)
+    }
+
+    #[test]
+    fn filled_legs_net_per_book_and_each_open_book_gets_one_opposite_order() {
+        let x = VenueId::new("X");
+        let eth = ObjectId::from_string("ETHUSDT");
+        let btc = ObjectId::from_string("BTCUSDT");
+        let plan = unwind_plan([
+            (x.clone(), eth.clone(), BookSide::Ask, d("2")),
+            (x.clone(), btc.clone(), BookSide::Bid, d("0.1")),
+            (x.clone(), eth.clone(), BookSide::Bid, d("0.5")),
+        ]);
+        assert_eq!(
+            plan,
+            vec![
+                UnwindOrder {
+                    venue: x.clone(),
+                    object_id: btc,
+                    side: BookSide::Ask,
+                    quantity: d("0.1"),
+                },
+                UnwindOrder {
+                    venue: x,
+                    object_id: eth,
+                    side: BookSide::Bid,
+                    quantity: d("1.5"),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn fills_that_net_to_flat_need_no_order() {
+        let x = VenueId::new("X");
+        let eth = ObjectId::from_string("ETHUSDT");
+        let plan = unwind_plan([
+            (x.clone(), eth.clone(), BookSide::Ask, d("1")),
+            (x, eth, BookSide::Bid, d("1")),
+        ]);
+        assert!(plan.is_empty(), "{plan:?}");
     }
 }
