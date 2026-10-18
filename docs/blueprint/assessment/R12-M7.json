@@ -2259,27 +2259,27 @@
   },
   {
     "id": "R12-RES-7101",
-    "status": "PARTIAL",
-    "current": "Drift detector and fallback are on the deep brain production path: LearningDesk measures population stability per model and records it with ModelRegistry::record_drift; EvolutionEngine runs LearningDesk::roll_back_degraded after the promote stage each learning round, which calls Platform::rollback_model to retire a production model past its drift_threshold and reactivate the predecessor it displaced, journaled as a ModelPromotion; ModelCard::decision_eligibility refuses a drifted card a decision. Capital is not shrunk on drift: central_degradation reads only the self-model, causal-graph and belief freshness rows, so a rollback or a drifted card leaves the central sizing multiplier unchanged.",
+    "status": "COMPLETE",
+    "current": "Drift detector and fallback are on the deep brain production path: LearningDesk measures population stability per model and records it with ModelRegistry::record_drift; EvolutionEngine runs LearningDesk::roll_back_degraded after the promote stage each learning round, which calls Platform::rollback_model to retire a production model past its drift_threshold and reactivate the predecessor it displaced, journaled as a ModelPromotion. The round then tells the platform which production models are still drifted (Platform::observe_model_drift), and Platform::central_degradation reads any of them as the self-model row going no better than stale, so the centre's sizing multiplier narrows (0.375 to 0.28125 on a fed self-model) until a recovered or retired card clears it.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs record_drift in the drift measurement pass and LearningDesk::roll_back_degraded",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs round.rolled_back = self.learning.roll_back_degraded(platform, now)",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs Platform::rollback_model",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs a_production_model_that_drifts_past_its_threshold_is_retired_and_the_one_it_displaced_returns",
-      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::central_degradation reads no drift input"
+      "backend/crates/apps/qip-deepbrain/src/learning.rs LearningDesk::roll_back_degraded calls platform.observe_model_drift",
+      "backend/crates/runtime/qip-kernel/src/platform.rs observe_model_drift / drifted_models / central_degradation self_model_freshness",
+      "backend/crates/runtime/qip-kernel/src/platform.rs central_sizing_tests::a_drifted_production_model_narrows_the_central_multiplier_until_the_registry_stops_naming_it",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_drifted_model_with_nothing_to_return_to_still_narrows_the_centre_until_it_recovers",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_production_model_that_drifts_past_its_threshold_is_retired_and_the_one_it_displaced_returns"
     ],
-    "gap": "Capital shrink on drift only: no sizing multiplier, mandate cap or reservation narrows when a model drifts or is rolled back. Closing needs a degradation input for model drift read by Platform::central_degradation (or the sizing path) on the process that sizes, with a kernel test that a drifted model narrows the multiplier and a mutation dropping the input.",
+    "gap": "",
     "implemented": true,
     "tested": false,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --bin qip-deepbrain a_production_model_that_drifts_past_its_threshold_is_retired_and_the_one_it_displaced_returns",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_drifted_production_model && cargo +1.94.1 test -p qip-deepbrain --lib a_drifted_model_with_nothing",
     "work_item": "",
     "size": "L",
-    "notes": "Corrected 2026-10-18 (lane L01): the current text said no drift-triggered fallback exists; the deep brain evolution round does roll back drifted models. Kept PARTIAL on the missing capital shrink. Read, not run, by this lane."
+    "notes": "Corrected 2026-10-18 (lane L01): the current text said no drift-triggered fallback exists; the deep brain evolution round does roll back drifted models. Kept PARTIAL on the missing capital shrink. Read, not run, by this lane. Closed 2026-10-18 (lane L01). Mutations: forcing the self-model row to ignore the drifted set failed the kernel test at 'did not narrow the self-model row to its stale factor'; removing the end-of-round observe_model_drift call failed the deepbrain test at 'the drifted model is not named to the platform'; both restored byte-for-byte and pass. The shrink is the self-model row's stale factor, which the cells do not receive (a cell never holds a self-model); the edge's own floor is unchanged."
   },
   {
     "id": "R12-RES-7102",
