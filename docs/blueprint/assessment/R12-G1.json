@@ -2541,7 +2541,8 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:258 the_venue_credential_is_unreadable_where_live_trading_is_impossible",
       "infrastructure/terraform/modules/execution-node/main.tf:238 venue_credential IAM",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1103 only_the_edge_cell_itself_holds_an_order_manager",
-      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::the_cloud_run_module_refuses_an_execution_plane_and_no_catalogue_workload_hosts_the_edge_node"
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::the_cloud_run_module_refuses_an_execution_plane_and_no_catalogue_workload_hosts_the_edge_node",
+      "infrastructure/terraform/modules/cloudrun/tests/plane.tftest.hcl"
     ],
     "gap": "",
     "implemented": true,
@@ -2551,10 +2552,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity",
+    "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity; cd infrastructure/terraform/modules/cloudrun && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "S",
-    "notes": "Tested 2026-10-18 by an acceptance scan of modules/cloudrun/variables.tf's plane validation and of catalogue.tf. A terraform test file for the validation was not added: terraform is not installed in this lane's container, so it could not be run. Mutations, restored: `execution` added to the admitted planes; the first catalogue binary renamed qip-edge-node."
+    "notes": "Tested 2026-10-18 by an acceptance scan of modules/cloudrun/variables.tf's plane validation and of catalogue.tf, and by a terraform test that plans the refusal (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`; with `execution` added to the admitted planes the refusal run failed). Mutations, restored: `execution` admitted; the first catalogue binary renamed qip-edge-node."
   },
   {
     "id": "R12-GCP-8115",
