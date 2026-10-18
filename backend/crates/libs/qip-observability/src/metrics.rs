@@ -1452,6 +1452,12 @@ pub mod names {
     /// Promoted model packages, by whether the artifact the promotion names
     /// was written where serving reads it (`written`, `failed`).
     pub const MODEL_PACKAGES: &str = "qip_model_packages_total";
+    /// Requests to serve a model artifact through the platform's provider, by
+    /// whether the provider served it (`served`) or refused it (`refused`).
+    /// Recorded in `Platform::serve_model`, the one seam every consumer of a
+    /// served score goes through, so a provider that refuses every artifact
+    /// reads as a model-serving objective failing rather than as silence.
+    pub const MODEL_SERVES: &str = "qip_model_serves_total";
     /// Seconds since the deep brain last promoted a model package: the
     /// central plane's model freshness, beside the edge's capability
     /// freshness. Absent, not zero, until a first package is promoted —

@@ -3861,13 +3861,15 @@
   },
   {
     "id": "R12-MODEL-10171",
-    "status": "PARTIAL",
-    "current": "Tournament, synthetic-credit forecast market and eight-critic verifier society run in the kernel cycle; no named phase-12 exit test.",
+    "status": "COMPLETE",
+    "current": "Tournament, synthetic-credit forecast market and the verifier society run in the kernel cycle; qip-acceptance phase12_exit.rs is the phase's exit test: one Platform::run_cycle opens a tournament question (forecasters are detector:<class> and analyst:<agent>, formed per hypothesis in production REASON), a later cycle's LEARN settles it through the forecast market, and twelve misfilled fills make adversary_review journal a venue posture.",
     "evidence": [
       "backend/crates/services/qip-prediction/src/scoring.rs",
-      "backend/crates/runtime/qip-kernel/src/adversary_review.rs"
+      "backend/crates/runtime/qip-kernel/src/adversary_review.rs",
+      "backend/crates/tests/qip-acceptance/tests/phase12_exit.rs::a_cycle_opens_a_tournament_question_and_a_later_learn_settles_it_through_the_market",
+      "backend/crates/tests/qip-acceptance/tests/phase12_exit.rs::twelve_fills_the_twin_misprices_make_the_adversary_review_journal_a_posture"
     ],
-    "gap": "A phase exit test; production forecaster population.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3877,10 +3879,10 @@
       "R12-MODEL-10092"
     ],
     "blocked_by": "",
-    "verification": "per-deliverable checks above",
+    "verification": "cd backend && cargo test -p qip-acceptance --test phase12_exit",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Regraded 2026-10-18 by lane RT-B after running phase12_exit: test result: ok. 2 passed; 0 failed. Both tests drive Platform::run_cycle. The exit test's mutations (delete tournament.learn; delete adversary_review::review) are documented in its header and were not re-run here."
   },
   {
     "id": "R12-TICK-10172",

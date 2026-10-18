@@ -62,6 +62,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, Topic};
+use qip_observability::metrics::{labels, names};
 use qip_quantum::foundry::{FamilyKind, FamilyStatus, Foundry};
 use qip_strategy::model::DistilledModel;
 use qip_streaming::envelope::StreamEnvelope;
@@ -72,6 +73,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// the `model.evaluated` topic they share with the deep brain's evaluation
 /// records the way the venue review's records are picked out by origin.
 pub const MODEL_PROMOTION_ORIGIN: &str = "kernel/model-promotion";
+
+/// The `outcome` label values of `qip_model_serves_total`: the provider served
+/// the artifact, or refused it. Constants, so the label stays a fixed pair
+/// however many sites record it.
+pub const SERVE_SERVED: &str = "served";
+pub const SERVE_REFUSED: &str = "refused";
 
 /// Who produced a promotion candidate (blueprint section 10, MODEL-067).
 ///
@@ -580,8 +587,25 @@ impl Platform {
     /// The one call every consumer of a served score goes through, so a
     /// process assembled without a provider refuses here with the null
     /// provider's own sentence rather than anywhere downstream.
+    ///
+    /// Counted on `qip_model_serves_total` by outcome, at the call and not at
+    /// the consumer: a provider that refuses every artifact would otherwise
+    /// leave the model-serving objective unmeasured, which reads as no
+    /// problem. Promotion's own serve goes through the same count.
     pub fn serve_model(&self, artifact: &ModelArtifact) -> Result<Box<dyn ServedModel>> {
-        self.model_provider.serve(artifact)
+        let served = self.model_provider.serve(artifact);
+        self.telemetry.metrics.count(
+            names::MODEL_SERVES,
+            labels([(
+                "outcome",
+                if served.is_ok() {
+                    SERVE_SERVED
+                } else {
+                    SERVE_REFUSED
+                },
+            )]),
+        );
+        served
     }
 
     /// Every promotion this process holds, by reference, in reference order.
@@ -755,7 +779,7 @@ impl Platform {
                 artifact.reference, first.artifact_digest, artifact.digest
             )));
         }
-        let served = self.model_provider.serve(artifact).map_err(|error| {
+        let served = self.serve_model(artifact).map_err(|error| {
             Error::denied(format!(
                 "{} is not promoted: {}",
                 artifact.reference,
