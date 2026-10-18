@@ -3109,14 +3109,17 @@
   },
   {
     "id": "R12-FINOPS-10140",
-    "status": "PARTIAL",
-    "current": "model-gateway.mjs requires a per-run max-calls budget and enforces daily/monthly/build/tool budgets when set (tested); daily/monthly are optional (unset means unlimited).",
+    "status": "COMPLETE",
+    "current": "scripts/model-gateway.mjs refuses to configure (exit 78, nothing sent) unless ALGORIK_WORKER_MAX_CALLS, ALGORIK_WORKER_DAILY_CALLS, ALGORIK_WORKER_MONTHLY_CALLS, ALGORIK_WORKER_BUILD_CALLS and ALGORIK_WORKER_TOOL_CALLS are all positive numbers; an unset budget is the same refusal as zero. Each budget is enforced from the ledger and a spent one refuses the call with an audit line (refused:daily-budget, refused:monthly-budget). The fleet worker passes all four explicitly; its cross-task day stays bounded in dollars by its ceiling refusal (ADR 0102).",
     "evidence": [
-      "scripts/model-gateway.mjs:258-280",
-      "scripts/model-gateway.test.mjs:469",
-      ".github/workflows/ci.yml:474 runs gateway tests"
+      "scripts/model-gateway.mjs:270 daily/monthly/build/tool budgets mandatory",
+      "scripts/model-gateway.mjs:623 spent daily budget refuses and audits",
+      "scripts/model-gateway.test.mjs:449 without a daily, a monthly, a build and a tool budget the gateway is not configured, and the first call against it is never sent",
+      "scripts/model-gateway.test.mjs:512 a spent daily budget refuses further calls",
+      "scripts/fleet/worker.mjs:732 worker passes the four budgets",
+      ".github/workflows/ci.yml:656 runs gateway tests"
     ],
-    "gap": "Make daily/monthly budgets mandatory.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3124,10 +3127,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "node --test scripts/model-gateway.test.mjs",
+    "verification": "node --test scripts/model-gateway.test.mjs scripts/fleet/worker.test.mjs",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: budgets made mandatory. Mutations: restoring the optional 'dailyCallBudget &&' guard makes ALGORIK_WORKER_DAILY_CALLS unset draw no problem and the test fails; the same on toolBudget fails at ALGORIK_WORKER_TOOL_CALLS unset. Restored, 77/77 pass across the two files. Throttling independently of production runtime: the gateway is a dev/research tool with its own ledger and is not on any platform binary's path."
   },
   {
     "id": "R12-FINOPS-10141",
