@@ -2262,13 +2262,13 @@
   {
     "id": "R12-TICK-10103",
     "status": "PARTIAL",
-    "current": "score_filled records venue fill error (bps histogram) and counterfactuals are scored in LEARN; qip-twin holds counterfactual scoring. Not from Fabric history.",
+    "current": "Every filled order the twin prices in LEARN yields a FillScore whose trade_error_bps is the signed residual of the twin's simulated entry against the venue's fill on the side taken (platform.rs::score_filled, fill_error_bps). The score is charted by venue (VENUE_FILL_ERROR_BPS), fed to the per-venue fill calibration, and journaled whole in each cycle record through CounterfactualJournal::fill_outcomes. Resolved theses become Episodes in the same stage (remember_resolved). session_replay::replay reads the sealed ACT sessions (instruction against venue answer) and reports reconciliation breaks only; it prices nothing and has no predicted side.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17136 evaluate_alternatives",
-      "backend/crates/services/qip-twin/tests/twin.rs"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::score_filled (fill_error_bps, fill_calibration.observe, fill_scores.push)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::CounterfactualJournal::fill_outcomes",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs::the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue"
     ],
-    "gap": "Episode/residual emission from journal replay.",
+    "gap": "The record carries the residual in basis points and nothing else of the comparison: not the predicted price, not the actual price, not a slippage figure against the arrival, and not the twin's simulated P&L against the realised outcome. The omission of the predicted price is structural, not an oversight: FillScore deliberately carries no money figure and qip_twin::Simulated<T> exposes no Decimal, so nothing simulated can reach a realised line. The closure proposed (session_replay::replay emitting a per-order Episode with predicted fill) cannot be met there because RecordedInstruction holds no price and a replay has no twin. What would close it: a decision to journal the twin's simulated entry as a statistic (f64, labelled simulated) beside the fill price, and a LEARN-stage comparison of simulated against realised P&L at the horizon.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2279,7 +2279,7 @@
     "verification": "cargo test -p qip-kernel --test learning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. Verified in the code that the residual is journaled per cycle (cycle record counterfactuals, platform.rs:11255) and that session_replay has no predicted fill."
   },
   {
     "id": "R12-MODEL-10104",

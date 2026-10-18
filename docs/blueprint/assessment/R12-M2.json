@@ -1108,7 +1108,7 @@
       "backend/crates/services/qip-twin/tests/twin.rs:753 every_captured_outcome_carries_a_trace_id_and_the_chain_reconstructs",
       "backend/crates/runtime/qip-desk-ship/src/lib.rs::DeskShipper"
     ],
-    "gap": "Queue estimates, hedge legs, tick-lake write; desk shipping not deployed.",
+    "gap": "Three named elements, none of them a field to add in the twin: (1) queue estimates and (2) hedge legs have no producer on the desk path, and the P1 record they would ride is qip_contracts::reflex::OutcomeRecord { cell, session, journal_sequence, journal_digest, entry: JournalEntry } (not a qip-twin type), whose JournalEntry is a hash-chained, versioned wire body (ChainVersion v1/v2): a new field changes sealed bytes and needs a chain version, a codec ADR and a decision on what a v2 verifier does with an entry that lacks it. Queue position exists only in the order book and quoting lane (qip-orderbook, quote_loop.rs), not in DeskLedgerFeed's inputs. (3) No tick-lake write beside market events; desk shipping is loopback-tested only and nothing is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1119,7 +1119,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Named elements missing."
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected; no code or test changed. The triage closure named qip-twin OutcomeRecord; the type is qip-contracts reflex.rs:997 and the change is a chained-wire change, not a twin field."
   },
   {
     "id": "R12-TICK-2048",
