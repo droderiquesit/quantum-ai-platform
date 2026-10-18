@@ -1743,6 +1743,12 @@ variable "event_fabric_broker" {
     dns_domain           = string
     machine_type         = optional(string, "c3-standard-4")
     journal_disk_size_gb = optional(number, 100)
+    # The journal disk's provisioned performance (FABRIC-8097). The
+    # defaults are Hyperdisk Balanced's floor, which the module also
+    # defaults to, so an environment that names neither gets the disk it
+    # got before these existed; the module refuses values outside the range.
+    journal_provisioned_iops             = optional(number, 3000)
+    journal_provisioned_throughput_mibps = optional(number, 140)
     # ADR 0111: up to two more instances in the region, which the module
     # admits only beside `managed_log` — the Spanner lease that makes three
     # machines one leader and its followers rather than three writers.
