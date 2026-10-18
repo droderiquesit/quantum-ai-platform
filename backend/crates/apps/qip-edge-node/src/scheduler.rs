@@ -68,7 +68,7 @@ use crate::feed::{SIMULATED_FEED, SimulatedFeed};
 use crate::gateway::NodeGateway;
 use crate::health::HealthSnapshot;
 use crate::mesh::{MeshHealth, MeshWorker, apply_inbound};
-use crate::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use crate::pass::{DetachedSink, PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use crate::reprice::Requoter;
 use crate::rollback::{RollbackOutcome, RollbackWire};
 use crate::share::RegionShareStatus;
@@ -274,6 +274,9 @@ pub struct DecisionLoop {
     drain: Option<DrainThread>,
     meter: Option<PassMeter>,
     pass_log: PassLog,
+    /// Where `pass_log` writes: stderr behind a bounded handoff, so a
+    /// stalled log reader never holds the decision thread (OBS-9142).
+    log_sink: DetachedSink,
     stats: PassStats,
     last_report: WorkReport,
     last_pressure: Option<JournalPressure>,
@@ -283,6 +286,11 @@ pub struct DecisionLoop {
     refused_flushes: u64,
     turns: u64,
 }
+
+/// Log lines the decision loop holds for the stderr writer thread. Sixteen
+/// is three windows of the pass log's sample rate: a reader behind by more
+/// than that has stopped, and the lines past it are dropped and counted.
+const LOG_LINES_IN_FLIGHT: usize = 16;
 
 impl DecisionLoop {
     /// A loop over `cell` and `gateway`, journaling through `outbox` under
@@ -336,6 +344,7 @@ impl DecisionLoop {
             drain: None,
             meter: None,
             pass_log: PassLog::new(5, qip_core::Duration::from_secs(10))?,
+            log_sink: DetachedSink::spawn(std::io::stderr(), LOG_LINES_IN_FLIGHT)?,
             stats: PassStats::default(),
             last_report: WorkReport::default(),
             last_pressure: None,
@@ -392,6 +401,13 @@ impl DecisionLoop {
     }
 
     #[must_use]
+    /// Write the pass log through `sink` instead of stderr, so a test can
+    /// stand a slow reader behind the loop.
+    pub fn with_log_sink(mut self, sink: DetachedSink) -> Self {
+        self.log_sink = sink;
+        self
+    }
+
     pub fn with_mesh(mut self, worker: MeshWorker) -> Self {
         self.mesh = Some(worker);
         self
@@ -492,7 +508,7 @@ impl DecisionLoop {
                 Some(meter) => meter.measure(pass),
                 None => pass(),
             };
-            self.pass_log.write(now, &outcome, &mut std::io::stderr());
+            self.pass_log.write(now, &outcome, &mut self.log_sink);
             match outcome {
                 Ok(PassOutcome::Ran { report, .. }) => {
                     self.last_report = *report;

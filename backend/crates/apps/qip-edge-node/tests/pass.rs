@@ -37,7 +37,7 @@ use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::mesh::{MeshLink, MeshSettings};
 use qip_edge_node::mirror::{StoreMirror, batches};
-use qip_edge_node::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use qip_edge_node::pass::{DetachedSink, PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{Requote, Requoter};
 use qip_edge_node::share::RegionShareStatus;
@@ -3303,6 +3303,29 @@ const LINES_PER_WINDOW: u32 = 5;
 /// The span is fixed and the pass count is the variable, because that is the
 /// shape of the claim: a busier market in the same wall-clock window.
 fn stderr_lines_for_a_requote_storm(passes: i64) -> Result<(usize, usize)> {
+    let mut sink: Vec<u8> = Vec::new();
+    let (outcomes, written, _) = requote_storm_through(passes, &mut sink)?;
+    let text = String::from_utf8(sink).expect("the log is text");
+    assert_eq!(
+        text.lines().count(),
+        written,
+        "the count returned is not the count of lines that reached the sink"
+    );
+    assert!(
+        text.lines()
+            .all(|line| line.starts_with("qip-edge-node: requote: ")),
+        "{text}"
+    );
+    Ok((outcomes, written))
+}
+
+/// The storm of [`stderr_lines_for_a_requote_storm`] with the pass log
+/// writing into `sink`, returning `(requote outcomes, lines written, the
+/// wall-clock time spent inside the log writes alone)`.
+fn requote_storm_through(
+    passes: i64,
+    sink: &mut dyn std::io::Write,
+) -> Result<(usize, usize, std::time::Duration)> {
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
     let mut requoter = requoter(&node)?;
@@ -3326,9 +3349,9 @@ fn stderr_lines_for_a_requote_storm(passes: i64) -> Result<(usize, usize)> {
     assert_eq!(report.orders[0].price, dec!("200"), "resting at the mid");
 
     let mut log = PassLog::new(LINES_PER_WINDOW, Duration::from_secs(10))?;
-    let mut sink: Vec<u8> = Vec::new();
     let mut outcomes = 0usize;
     let mut written = 0usize;
+    let mut writing = std::time::Duration::ZERO;
     for pass in 0..passes {
         let now = at_ms(20_000 + pass * 9_000 / passes);
         // Somebody bids one whole unit above the last bid: a hundred ticks
@@ -3347,20 +3370,11 @@ fn stderr_lines_for_a_requote_storm(passes: i64) -> Result<(usize, usize)> {
             Ok(PassOutcome::Ran { requotes, .. }) => outcomes += requotes.len(),
             other => panic!("pass {pass} of the storm did not run: {other:?}"),
         }
-        written += log.write(now, &outcome, &mut sink);
+        let began = std::time::Instant::now();
+        written += log.write(now, &outcome, sink);
+        writing += began.elapsed();
     }
-    let text = String::from_utf8(sink).expect("the log is text");
-    assert_eq!(
-        text.lines().count(),
-        written,
-        "the count returned is not the count of lines that reached the sink"
-    );
-    assert!(
-        text.lines()
-            .all(|line| line.starts_with("qip-edge-node: requote: ")),
-        "{text}"
-    );
-    Ok((outcomes, written))
+    Ok((outcomes, written, writing))
 }
 
 /// OBS-021's own check: the same nine seconds, eight passes and then eighty,
@@ -3420,8 +3434,19 @@ fn the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log()
         "the scan is not reading the loop that runs the pass"
     );
     assert!(
-        turn.contains("self.pass_log.write(now, &outcome, &mut std::io::stderr());"),
-        "the decision loop no longer hands its pass outcome to PassLog"
+        turn.contains("self.pass_log.write(now, &outcome, &mut self.log_sink);"),
+        "the decision loop no longer hands its pass outcome to PassLog through its detached sink"
+    );
+    // OBS-9142: stderr reaches the loop only behind the bounded handoff. A
+    // turn writing to `std::io::stderr()` itself waits on whoever reads the
+    // pipe, which is what the detached sink exists to stop.
+    assert!(
+        !turn.contains("std::io::stderr()"),
+        "the decision loop's turn writes to stderr directly, and a stalled reader holds the pass"
+    );
+    assert!(
+        scheduler.contains("log_sink: DetachedSink::spawn(std::io::stderr(), "),
+        "the decision loop's log sink is no longer stderr behind a DetachedSink"
     );
     assert!(
         scheduler.contains(&format!("PassLog::new({LINES_PER_WINDOW}, ")),
@@ -3637,5 +3662,232 @@ fn every_pass_that_decided_and_only_those_is_timed_into_the_decision_latency_ser
         .histogram(names::EDGE_DECISION_LATENCY_MS, &Labels::new())
         .expect("two passes decided, so the decision latency histogram exists");
     assert_eq!(decided.count, 2, "the refused pass was timed as a decision");
+    Ok(())
+}
+
+// --- OBS-9142: a slow log reader does not delay a pass ----------------------
+
+/// A log reader that takes `delay` over every write, as stderr does when the
+/// collector behind its pipe has stalled, and keeps what it was given.
+struct SlowReader {
+    delay: std::time::Duration,
+    received: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for SlowReader {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        std::thread::sleep(self.delay);
+        if let Ok(mut received) = self.received.lock() {
+            received.extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_log_reader_that_takes_a_quarter_second_per_line_adds_nothing_like_it_to_the_passes()
+-> Result<()> {
+    // OBS-9142: the loop handed the pass log stderr itself, and a stalled
+    // collector fills the pipe and blocks the write on the decision thread,
+    // between the pass and the journal flush. Behind the detached sink the
+    // same storm, writing to a reader that sleeps a quarter second per line,
+    // spends a small fraction of one line's delay in the writes in total,
+    // and every line still reaches the reader.
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reader = SlowReader {
+        delay: DELAY,
+        received: Arc::clone(&received),
+    };
+    let mut sink = DetachedSink::spawn(reader, 16)?;
+    let (outcomes, written, writing) = requote_storm_through(80, &mut sink)?;
+    // Premise: the storm offered lines and the sampler let several through,
+    // so a blocking write would have cost at least `written` delays.
+    assert!(
+        outcomes >= 80,
+        "premise: the storm minted outcomes ({outcomes})"
+    );
+    assert!(written >= 2, "premise: lines reached the sink ({written})");
+    assert!(
+        writing < DELAY / 5,
+        "{written} log lines to a slow reader held the passes for {writing:?}; a blocking write \
+         holds them for at least {:?}",
+        DELAY * u32::try_from(written).unwrap_or(u32::MAX)
+    );
+    assert_eq!(
+        sink.dropped(),
+        0,
+        "sixteen in flight holds a sampled window"
+    );
+    let waited = std::time::Instant::now();
+    loop {
+        let lines = received
+            .lock()
+            .map(|text| text.iter().filter(|byte| **byte == b'\n').count())
+            .unwrap_or(0);
+        if lines == written {
+            break;
+        }
+        assert!(
+            waited.elapsed() < std::time::Duration::from_secs(10),
+            "the reader received {lines} of {written} lines"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_log_reader_that_has_stopped_costs_dropped_lines_and_never_a_wait() -> Result<()> {
+    // The other half of OBS-9142: with the reader gone for good the handoff
+    // fills, and past it a line is dropped and counted rather than waited
+    // for. Three lines into room for one, behind a reader that sleeps far
+    // longer than the test.
+    let reader = SlowReader {
+        delay: std::time::Duration::from_secs(600),
+        received: Arc::new(std::sync::Mutex::new(Vec::new())),
+    };
+    let mut sink = DetachedSink::spawn(reader, 1)?;
+    // The writes run beside the test, so a write that waits fails this
+    // assertion instead of hanging the binary for ten minutes.
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let began = std::time::Instant::now();
+        for line in ["one\n", "two\n", "three\n"] {
+            std::io::Write::write_all(&mut sink, line.as_bytes())
+                .expect("a detached write never fails");
+        }
+        let _ = done.send((began.elapsed(), sink.dropped()));
+    });
+    let (took, dropped) = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("three log writes to a stopped reader waited on it");
+    assert!(
+        dropped >= 1,
+        "three lines fit room for one and a stuck reader"
+    );
+    assert!(
+        took < std::time::Duration::from_millis(100),
+        "writing to a stopped reader took {took:?}"
+    );
+    assert!(
+        DetachedSink::spawn(std::io::sink(), 0).is_err(),
+        "a sink with no room drops everything and must be refused"
+    );
+    Ok(())
+}
+
+// --- OBS-10204: a scrape that stalls does not delay a pass ------------------
+
+#[test]
+fn a_scrape_client_that_connects_and_never_speaks_holds_the_health_thread_and_not_the_passes()
+-> Result<()> {
+    // OBS-10204: the register said the node rendered scrapes on the thread
+    // that runs the pass, so a scrape client that stalled delayed the next
+    // pass. `main.rs` now serves health through `health::spawn`, on its own
+    // thread, and the decision thread only reads the registry it shares.
+    // Here a client connects and sends nothing, holding the health thread
+    // in its read for the whole request timeout, and the passes recording
+    // into the scraped registry keep running at their own speed meanwhile.
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    let (mut node, mut gateway, mut feed) =
+        node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(60))?)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let metrics = Arc::clone(node.scrape_registry());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| Error::io(format!("bind: {error}")))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| Error::io(format!("address: {error}")))?;
+
+    // A health surface that served on the calling thread would never return
+    // from `spawn`, and a test that never returns reports nothing: past the
+    // deadline the watchdog says why and aborts the binary.
+    let (disarm, armed) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            armed.recv_timeout(std::time::Duration::from_secs(20))
+        {
+            eprintln!("watchdog: health::spawn served on the calling thread and never returned");
+            std::process::abort();
+        }
+    });
+    let handle = qip_edge_node::health::spawn(
+        listener,
+        Arc::clone(&metrics),
+        qip_edge_node::health::HealthSnapshot::new("{}"),
+        TIMEOUT,
+    )?;
+    let _ = disarm.send(());
+    assert_eq!(
+        handle.thread().name(),
+        Some(qip_edge_node::health::HEALTH_THREAD),
+        "the health surface runs on its named thread"
+    );
+
+    let stall = std::net::TcpStream::connect(address)
+        .map_err(|error| Error::io(format!("connect: {error}")))?;
+    let stalled_at = std::time::Instant::now();
+    // Give the health thread time to accept and sit in its read.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let mut stats = PassStats::default();
+    let mut longest = std::time::Duration::ZERO;
+    for pass in 0..20 {
+        let began = std::time::Instant::now();
+        let outcome = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            None,
+            &mut stats,
+            t(10 + pass),
+        )?;
+        longest = longest.max(began.elapsed());
+        assert!(
+            matches!(outcome, PassOutcome::Ran { .. }),
+            "pass {pass} did not run: {outcome:?}"
+        );
+    }
+    let during = stalled_at.elapsed();
+    // Premise: every pass ran while the stalled request still held the
+    // health thread, or the test proved nothing about a stall.
+    assert!(
+        during < TIMEOUT,
+        "the passes took {during:?}, past the {TIMEOUT:?} the stall holds the health thread"
+    );
+    assert!(
+        longest < TIMEOUT / 4,
+        "a pass took {longest:?} while a scrape client stalled"
+    );
+    assert_eq!(
+        metrics.snapshot().counter(names::EDGE_WORK_PASSES, &base()),
+        20,
+        "the passes recorded into the registry the stalled surface serves"
+    );
+
+    // And the surface recovers: once the stall times out, a scrape is
+    // answered with the passes it counted.
+    let mut scrape = std::net::TcpStream::connect(address)
+        .map_err(|error| Error::io(format!("connect: {error}")))?;
+    scrape
+        .set_read_timeout(Some(TIMEOUT * 3))
+        .map_err(|error| Error::io(format!("timeout: {error}")))?;
+    std::io::Write::write_all(&mut scrape, b"GET /metrics HTTP/1.1\r\nHost: node\r\n\r\n")
+        .map_err(|error| Error::io(format!("write: {error}")))?;
+    let mut answer = String::new();
+    let _ = std::io::Read::read_to_string(&mut scrape, &mut answer);
+    assert!(
+        answer
+            .lines()
+            .any(|line| line.starts_with(names::EDGE_WORK_PASSES) && line.ends_with(" 20")),
+        "the scrape after the stall did not carry the twenty passes: {answer}"
+    );
+    drop(stall);
     Ok(())
 }
