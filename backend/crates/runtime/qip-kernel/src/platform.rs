@@ -876,6 +876,14 @@ pub struct Platform {
     /// Records absorbed under a lineage beyond that bound this cycle: logged
     /// under their own correlation id, but not listed in the journal entry.
     sensed_unlisted: u64,
+    /// Records received since assembly whose lineage reached the event log,
+    /// and records received with none — handed to [`Self::observe`] bare, or
+    /// whose log append failed. The two halves of
+    /// `qip_data_lineage_records_total`, kept here as well so the
+    /// completeness gauge is the ratio of what was counted rather than a
+    /// second estimate of it.
+    lineage_linked: u64,
+    lineage_unlinked: u64,
     /// The desk's fills as the P1 records `qip-ledgerd` books, chained and
     /// de-duplicated; see [`crate::desk_ledger`]. A fill enters the book
     /// only through this, so the book and the ledger cannot disagree about
@@ -5249,6 +5257,8 @@ impl Platform {
             capture_problems: Vec::new(),
             sensed_pending: Vec::new(),
             sensed_unlisted: 0,
+            lineage_linked: 0,
+            lineage_unlinked: 0,
             desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
             desk_operations: Vec::new(),
             capital_grant_fundings: BTreeMap::new(),
@@ -5768,6 +5778,15 @@ impl Platform {
             names::CENTRAL_OUTCOME_BACKLOG,
             "orders reported sent whose fills the central plane has not yet booked; rises while \
              outcomes are outstanding and returns to zero when they are booked",
+        );
+        metrics.describe(
+            names::DATA_LINEAGE_RECORDS,
+            "records the platform received, by whether their lineage reached the event log \
+             (linked) or they arrived with none or could not be logged (unlinked)",
+        );
+        metrics.describe(
+            names::DATA_LINEAGE_COMPLETENESS,
+            "the fraction of records received since assembly whose lineage reached the event log",
         );
         metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
@@ -10135,11 +10154,16 @@ impl Platform {
     /// Returns the number of records taken in, as `observe` does.
     pub fn observe_with_lineage(&mut self, inputs: Vec<SensedInput>, now: Timestamp) -> usize {
         let mut records = Vec::with_capacity(inputs.len());
+        let mut linked = 0u64;
         for input in inputs {
-            self.log_sensed(&input, now);
+            if self.log_sensed(&input, now) {
+                linked = linked.saturating_add(1);
+            }
             records.push(input.record);
         }
-        self.observe(records)
+        let unlinked = (records.len() as u64).saturating_sub(linked);
+        self.count_lineage(linked, unlinked);
+        self.absorb_records(records)
     }
 
     /// [`Self::observe`] for a caller with no bus: each record starts its own
@@ -10170,8 +10194,10 @@ impl Platform {
     }
 
     /// Append one received record to the event log and queue its reference
-    /// for the next cycle's journal entry.
-    fn log_sensed(&mut self, input: &SensedInput, now: Timestamp) {
+    /// for the next cycle's journal entry. Returns whether the record is in
+    /// the log, which is what lineage completeness counts: a record past the
+    /// journal entry's bound is still findable by its correlation id.
+    fn log_sensed(&mut self, input: &SensedInput, now: Timestamp) -> bool {
         let event_id = self.context.ids().generate::<EventKind>(now);
         let logged = input
             .record
@@ -10184,17 +10210,57 @@ impl Platform {
                 input.lineage.correlation_id.as_str(),
                 error.message()
             ));
-            return;
+            return false;
         }
         if self.sensed_pending.len() >= MAX_SENSED_REFS_PER_CYCLE {
             self.sensed_unlisted = self.sensed_unlisted.saturating_add(1);
-            return;
+            return true;
         }
         self.sensed_pending.push(SensedRef {
             correlation_id: input.lineage.correlation_id.as_str().to_string(),
             event_id: event_id.as_str().to_string(),
             topic: input.record.topic().name().to_string(),
         });
+        true
+    }
+
+    /// Count received records by whether their lineage reached the event log
+    /// (R12-OBS-7129), at the seam where that becomes known.
+    ///
+    /// `qip_data_lineage_records_total{outcome}` is what the
+    /// `data-provenance-lineage-completeness` critical path is evaluated on,
+    /// and `qip_data_lineage_completeness` is the same two counts as a ratio
+    /// for a chart. Until this, the gauge was described and given an
+    /// objective and nothing in any binary wrote it, so the objective read
+    /// unmeasured forever — and a deep brain absorbing connector records
+    /// with no lineage at all looked no different from one that logged each.
+    fn count_lineage(&mut self, linked: u64, unlinked: u64) {
+        let metrics = &self.telemetry.metrics;
+        if linked > 0 {
+            metrics.increment(
+                names::DATA_LINEAGE_RECORDS,
+                labels([("outcome", "linked")]),
+                linked,
+            );
+        }
+        if unlinked > 0 {
+            metrics.increment(
+                names::DATA_LINEAGE_RECORDS,
+                labels([("outcome", "unlinked")]),
+                unlinked,
+            );
+        }
+        self.lineage_linked = self.lineage_linked.saturating_add(linked);
+        self.lineage_unlinked = self.lineage_unlinked.saturating_add(unlinked);
+        let total = self.lineage_linked.saturating_add(self.lineage_unlinked);
+        if total > 0 {
+            // A statistic, not money: a ratio of two record counts.
+            metrics.gauge(
+                names::DATA_LINEAGE_COMPLETENESS,
+                labels([]),
+                self.lineage_linked as f64 / total as f64,
+            );
+        }
     }
 
     /// Feed observations in. The SENSE stage's input.
@@ -10236,7 +10302,18 @@ impl Platform {
     /// Returns the number of records taken in. A malformed depth observation
     /// (negative depth, crossed book) is refused by the topology; the refusal
     /// is surfaced as a LEARN-stage problem rather than swallowed.
+    ///
+    /// A record handed here carries no lineage, so it is counted
+    /// `unlinked` under `qip_data_lineage_records_total`; a caller with one
+    /// uses [`Self::observe_with_lineage`].
     pub fn observe(&mut self, records: Vec<SensedRecord>) -> usize {
+        self.count_lineage(0, records.len() as u64);
+        self.absorb_records(records)
+    }
+
+    /// The body of [`Self::observe`], shared with the lineage path so a
+    /// record is counted once, by whichever door it came in.
+    fn absorb_records(&mut self, records: Vec<SensedRecord>) -> usize {
         let mut absorbed = 0;
         // Bars are batched: history typically arrives newest-first, and one
         // merge per series is linear where per-bar sorted inserts are

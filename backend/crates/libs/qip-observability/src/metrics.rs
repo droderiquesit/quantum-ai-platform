@@ -662,10 +662,16 @@ pub mod names {
     /// and here rather than returned as the error that stopped the node
     /// loop until 2026-09-12. Recorded in `qip_deepbrain::campaign`.
     pub const RESEARCH_CAMPAIGNS_REFUSED: &str = "qip_research_campaigns_refused_total";
-    /// Fraction of records with complete lineage metadata, recorded as a gauge.
-    /// 1.0 means all records have full lineage, 0.0 means none do. Recorded in
-    /// Platform::record_reference when data is processed.
+    /// Fraction of received records whose lineage reached the event log, as a
+    /// gauge: the ratio of [`DATA_LINEAGE_RECORDS`]' two outcomes since the
+    /// platform was assembled. Recorded in `Platform::count_lineage`.
     pub const DATA_LINEAGE_COMPLETENESS: &str = "qip_data_lineage_completeness";
+    /// Records the platform received, by `outcome`: `linked` when the record
+    /// was appended to the event log under its ingestion correlation id,
+    /// `unlinked` when it arrived with no lineage or its append failed. The
+    /// series the `data-provenance-lineage-completeness` critical path is
+    /// evaluated on. Recorded in `Platform::count_lineage`.
+    pub const DATA_LINEAGE_RECORDS: &str = "qip_data_lineage_records_total";
     /// Delay in minutes between when an archive was written to GCS and when
     /// the platform became aware of it. A histogram recording the observed lag
     /// for each archive. Recorded when archive ingestion completes.
