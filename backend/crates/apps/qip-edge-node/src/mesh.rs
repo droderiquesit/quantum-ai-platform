@@ -443,6 +443,28 @@ pub struct MeshInbound {
     policy: std::result::Result<PolicyBatch, String>,
 }
 
+impl MeshInbound {
+    /// Apply this poll's halt commands to `cell` now and keep its capital
+    /// and policy for later, returning how many halts applied.
+    ///
+    /// The decision loop holds new control while the fabric cannot journal
+    /// it (RES-7113), and a halt is the one control that may never wait for
+    /// that: holding a halt is the one way holding control could make the
+    /// cell less safe. What remains goes through [`apply_inbound`] once the
+    /// fabric recovers, with no halts left in it to apply twice.
+    pub fn apply_halts(&mut self, cell: &mut Cell, now: Timestamp) -> usize {
+        let Ok(batch) = self.policy.as_mut() else {
+            return 0;
+        };
+        let halts = std::mem::take(&mut batch.halts);
+        let applied = halts.len();
+        for halt in halts {
+            cell.apply_halt(halt, now);
+        }
+        applied
+    }
+}
+
 /// Apply what one poll brought back: capital first, then halts, then policy,
 /// then the desk installer — the order and routing a tick always used.
 ///
@@ -676,8 +698,15 @@ impl MeshWorker {
     /// Every poll waiting, oldest first, at most the channel's capacity.
     /// Never waits.
     pub fn take_inbound(&self) -> Vec<MeshInbound> {
+        self.take_inbound_at_most(self.capacity)
+    }
+
+    /// [`Self::take_inbound`], taking at most `limit` polls. What is left
+    /// stays in the channel, and once the channel is full the worker waits
+    /// on its own thread: nothing is dropped. Never waits.
+    pub fn take_inbound_at_most(&self, limit: usize) -> Vec<MeshInbound> {
         let mut taken = Vec::new();
-        while taken.len() < self.capacity {
+        while taken.len() < limit.min(self.capacity) {
             match self.inbound.try_recv() {
                 Ok(inbound) => taken.push(inbound),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
