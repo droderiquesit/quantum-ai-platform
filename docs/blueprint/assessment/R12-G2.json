@@ -3407,23 +3407,27 @@
   },
   {
     "id": "R12-OBS-9151",
-    "status": "PARTIAL",
-    "current": "Capability freshness per policy slot recorded on the edge (qip_edge_capability_freshness); no model-freshness metric centrally.",
+    "status": "COMPLETE",
+    "current": "Edge capability freshness per policy slot (qip_edge_capability_freshness), and since lane L20 (2026-10-18) central model freshness: qip_model_package_age_seconds, the seconds since the deep brain last promoted a model package. node::run_with tells Operations::observe whether this iteration's learning round published a promotion; the operations loop (on by default in qip-deepbrain main) records the gauge every iteration once a package exists, so it ages between promotions and resets on the next; it is absent, not zero, before the first. The written/failed counter qip_model_packages_total beside it says whether serving received the artifact.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs:950"
+      "backend/crates/libs/qip-observability/src/metrics.rs:950",
+      "backend/crates/libs/qip-observability/src/metrics.rs:1418 MODEL_PACKAGE_AGE",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs:369 Operations::observe records the age",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:630 package_promoted from the learning round's published promotion",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:809 a_promoted_model_package_resets_the_freshness_gauge_and_it_ages_between_promotions"
     ],
-    "gap": "Central model freshness.",
+    "gap": "None for the requirement; not deployed, and like every central series not yet shown scraped (modules/observability/NOT-SCRAPED.md).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test for the recording crate",
+    "verification": "cargo test -p qip-deepbrain --test research",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L20 2026-10-18: recorded in the deep brain's operations loop rather than at the artifact write in main.rs, because that write sits in main's cycle closure where no test reaches it; the gauge measures the promotion, the existing counter the write. The fast brain's pack load records nothing new. Mutation: the package_promoted_at assignment removed from Operations::observe; the gauge never appeared (None vs Some(0.0)); restored by byte compare. The node::run_with derivation of package_promoted is read, not exercised by a node-level test."
   },
   {
     "id": "R12-OBS-9152",

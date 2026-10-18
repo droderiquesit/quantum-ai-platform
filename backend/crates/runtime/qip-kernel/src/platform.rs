@@ -13620,6 +13620,17 @@ impl Platform {
             formed_at: hypothesis.formed_at,
             horizon: hypothesis.horizon,
             moves,
+            settlement: self
+                .asset_classes
+                .get(subject.as_str())
+                .and_then(|class| self.asset_class_registry.get(*class))
+                .and_then(|record| match record.settlement() {
+                    crate::asset_class_registry::ClassSettlement::Exchange(convention) => Some((
+                        convention.as_str().to_string(),
+                        Duration::from_days(i64::from(convention.days())),
+                    )),
+                    crate::asset_class_registry::ClassSettlement::PeriodicStatement => None,
+                }),
         };
         let derivation = {
             let world = self.world.read();

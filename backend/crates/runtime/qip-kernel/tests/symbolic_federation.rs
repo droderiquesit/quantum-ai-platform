@@ -581,6 +581,7 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
         formed_at: now,
         horizon: Duration::from_days(5),
         moves: BTreeMap::from([("kestrel".to_string(), -0.05)]),
+        settlement: None,
     };
     let derivation = derive(input, &causal, now);
     // Premise: abduction named Kestrel, seen to move, so there is a cause to
@@ -660,6 +661,21 @@ fn a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refu
     assert!(
         derivation.temporal.inputs.is_some(),
         "the record keeps the instants its timeline was built from"
+    );
+    // R12-REASON-3055: the platform hands the subject's settlement
+    // convention from its asset-class record, and the timeline poses it
+    // against the deadline.
+    let settlement = derivation
+        .temporal
+        .inputs
+        .as_ref()
+        .and_then(|inputs| inputs.settlement.clone())
+        .expect("the platform handed the subject's settlement convention");
+    let posed = format!("settlement:{}:{}", settlement.0, derivation.hypothesis_id);
+    assert!(
+        derivation.temporal.links.iter().any(|l| l.cause == posed),
+        "{:?}",
+        derivation.temporal.links
     );
     assert_eq!(
         derivation.temporal.anomaly_to_hypothesis,

@@ -101,6 +101,10 @@ pub struct SymbolicInput {
     pub horizon: Duration,
     /// The latest observed return of each instrument, for abduction.
     pub moves: BTreeMap<String, f64>,
+    /// The subject's settlement convention and its lag (REASON-3055), from
+    /// the asset-class record the platform registered it under; `None` for
+    /// a class with no delivery cycle or a subject with no record.
+    pub settlement: Option<(String, Duration)>,
 }
 
 /// A part that ran, or the reasoner's refusal.
@@ -157,6 +161,15 @@ pub struct TemporalInputs {
     pub horizon: Duration,
     /// The linked catalyst's id and the instant it became knowable.
     pub catalyst: Option<(String, Timestamp)>,
+    /// The subject's settlement convention and lag (REASON-3055). A trade
+    /// entered when the hypothesis formed settles that long after it, and
+    /// the timeline is asked to hold settlement before the deadline: a
+    /// claim that resolves before its trade could settle is refused as a
+    /// link. The lag counts calendar days, so the settlement instant is the
+    /// earliest the convention allows — a weekend only makes it later.
+    /// Absent on a record written before the field existed.
+    #[serde(default)]
+    pub settlement: Option<(String, Duration)>,
 }
 
 /// The temporal part.
@@ -483,6 +496,7 @@ fn temporal(input: &SymbolicInput, now: Timestamp) -> TemporalDerivation {
             formed_at: input.formed_at,
             horizon: input.horizon,
             catalyst: input.catalyst.clone(),
+            settlement: input.settlement.clone(),
         },
         now,
     )
@@ -518,12 +532,24 @@ fn timeline_of(hypothesis_id: &str, input: TemporalInputs, now: Timestamp) -> Te
     ];
     let mut chain = vec![
         (anomaly.clone(), hypothesis.clone()),
-        (hypothesis.clone(), deadline_id),
+        (hypothesis.clone(), deadline_id.clone()),
     ];
     if let Some((id, known_at)) = &input.catalyst {
         let catalyst = format!("catalyst:{id}");
         recorded.push(record(&mut timeline, &catalyst, *known_at, *known_at));
         chain.insert(0, (catalyst, anomaly.clone()));
+    }
+    if let Some((convention, lag)) = &input.settlement {
+        let settlement = format!("settlement:{convention}:{hypothesis_id}");
+        // Known the instant the claim is made, like the deadline: the
+        // convention is reference data, not something learned later.
+        recorded.push(record(
+            &mut timeline,
+            &settlement,
+            input.formed_at.saturating_add(*lag),
+            input.formed_at,
+        ));
+        chain.push((settlement, deadline_id.clone()));
     }
     for result in recorded {
         if let Err(error) = result {
@@ -953,6 +979,7 @@ mod tests {
             catalyst: None,
             formed_at: at(10),
             horizon: Duration::from_days(1),
+            settlement: None,
             moves: BTreeMap::new(),
         }
     }
@@ -1017,6 +1044,54 @@ mod tests {
             .expect("the anomaly link was claimed");
         assert!(matches!(link.admitted, Step::Refused(_)), "{link:?}");
         assert_eq!(d.temporal.anomaly_to_hypothesis, Order::After);
+    }
+
+    #[test]
+    fn a_claim_that_resolves_before_its_trade_could_settle_records_the_settlement_link_as_refused()
+    {
+        // R12-REASON-3055. The failure this guards: the timeline ordered the
+        // anomaly, the hypothesis and its deadline, and never the trade's
+        // settlement, so a one-day claim on a T+2 instrument read as
+        // coherent although no position entered on it could have settled
+        // before reality answered.
+        let at = |days: i64| Timestamp::from_secs(1_700_000_000 + days * 86_400);
+        let mut t2 = input();
+        t2.settlement = Some(("T+2".into(), Duration::from_days(2)));
+        let derivation = derive(t2.clone(), &CausalGraph::new(), at(5));
+        let settlement = format!("settlement:T+2:{}", t2.hypothesis_id);
+        let deadline = format!("deadline:{}", t2.hypothesis_id);
+        let link = derivation
+            .temporal
+            .links
+            .iter()
+            .find(|l| l.cause == settlement && l.effect == deadline)
+            .expect("the settlement was posed against the deadline");
+        assert!(matches!(link.admitted, Step::Refused(_)), "{link:?}");
+        let token = format!("link {settlement} -> {deadline}: ");
+        assert!(
+            derivation
+                .violated_assumptions
+                .iter()
+                .any(|v| v.starts_with(&token)),
+            "{:?}",
+            derivation.violated_assumptions
+        );
+        // The same claim on a same-day convention settles inside its
+        // horizon and the link is admitted, so the refusal above is the
+        // lag's and not the link's existence.
+        let mut t0 = input();
+        t0.settlement = Some(("T+0".into(), Duration::ZERO));
+        let same_day = derive(t0.clone(), &CausalGraph::new(), at(5));
+        let admitted = same_day
+            .temporal
+            .links
+            .iter()
+            .find(|l| l.cause == format!("settlement:T+0:{}", t0.hypothesis_id))
+            .expect("posed");
+        assert!(
+            matches!(admitted.admitted, Step::Derived(())),
+            "{admitted:?}"
+        );
     }
 
     #[test]
