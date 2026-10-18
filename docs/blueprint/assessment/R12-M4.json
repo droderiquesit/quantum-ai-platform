@@ -314,7 +314,7 @@
       "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 assemble",
       "backend/crates/apps/qip-deepbrain/src/main.rs:608-640 learning rounds through the campaign"
     ],
-    "gap": "Retained internal episodes (episodic memory) are not a campaign input; external references are market streams only.",
+    "gap": "Retained internal episodes are not a campaign input, and naming one in the manifest alone would be false: campaign::assemble builds the window from the subject's bars (or the platform's fallback bars) and LearningDesk::learn fits only bars, so an episode set listed in the manifest would describe data the fit never read. Closing this needs the learning dataset to admit episode-derived rows (learning.rs, lane L20's file) and then an episode-set DataReference hashed into the FetchCampaign manifest; external references remain market streams only.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -325,7 +325,7 @@
     "verification": "cargo test -p qip-deepbrain campaign",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the triage closure proposed hashing an OutcomeCapture export into the manifest, which would name an input the window does not contain."
   },
   {
     "id": "R12-MODEL-4016",

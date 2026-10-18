@@ -7,7 +7,8 @@
 use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::source_alpha::{
-    HISTORY_BOUND, SourceAlphaHistory, incremental_information_gain, realised_contribution,
+    HISTORY_BOUND, SourceAlphaHistory, incremental_information_gain,
+    incremental_information_gain_over, realised_contribution,
 };
 
 /// A deterministic pseudo-random series in `[-1, 1)`, so the replay is the
@@ -95,5 +96,34 @@ fn a_sources_scores_are_recorded_over_time_within_a_bound() -> Result<()> {
             .score("  ", Timestamp::from_secs(0), &signal, &incumbent, &outcome)
             .is_err()
     );
+    Ok(())
+}
+
+/// R12-DATA-2022. The gain over several incumbents is the pairwise gain when
+/// there is one, near zero for a candidate that is a combination of them,
+/// and an incumbent that copies an earlier one exactly is left out rather than
+/// making the fit singular. Mutation: delete the `COLLINEAR_R_SQUARED`
+/// check in `incremental_information_gain_over`, so every incumbent is kept
+/// — the duplicate column makes the normal equations singular and the
+/// three-incumbent call is refused.
+#[test]
+fn the_gain_over_every_held_series_matches_the_pairwise_one_and_survives_a_duplicate_incumbent()
+-> Result<()> {
+    let own = noise(1, 60);
+    let other = noise(2, 60);
+    let candidate = noise(3, 60);
+    let single = incremental_information_gain_over(&candidate, std::slice::from_ref(&own))?;
+    assert!((single - incremental_information_gain(&candidate, &own)?).abs() < 1e-12);
+
+    let combination: Vec<f64> = own.iter().zip(&other).map(|(a, b)| a - 2.0 * b).collect();
+    let pairwise = incremental_information_gain(&combination, &own)?;
+    assert!(
+        pairwise > 0.5,
+        "premise: against one series the mix looks new ({pairwise})"
+    );
+    let duplicate = own.clone();
+    let over = incremental_information_gain_over(&combination, &[own, duplicate, other])?;
+    assert!(over < 1e-9, "a combination of held series earned {over}");
+    assert!(incremental_information_gain_over(&candidate, &[]).is_err());
     Ok(())
 }

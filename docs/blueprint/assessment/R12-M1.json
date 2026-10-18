@@ -864,7 +864,7 @@
     "verification": "cargo test -p qip-kernel --test references",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Driver built; not called from any root. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1038",
@@ -889,7 +889,7 @@
     "verification": "cargo test -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-DATA-1039",
@@ -961,7 +961,7 @@
     "verification": "inspection + size metric",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measured on every poll but never stored. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-GOV-1042",
@@ -2461,7 +2461,7 @@
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:68",
       "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk"
     ],
-    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; no global Scout Fabric beyond one deep brain's arms.",
+    "gap": "The result is not recorded in the event log, and no test shows disabling it changes a recorded outcome; recording it needs a kernel journaling seam for a deep-brain-owned record (Platform has journal_campaign for campaigns, nothing generic a binary may call). Even recorded, it would reach no deployed process: QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY is deliberately unset (qip-acceptance manifest_wiring.rs THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON) and deepbrain_connector is null in every environment's terraform.tfvars (protected path). No global Scout Fabric beyond one deep brain's arms.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2472,7 +2472,7 @@
     "verification": "cargo test -p qip-data-finder; cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Gap corrected 2026-10-18 by lane L04 (not closed): the closure's 'commit the cadence' half would select a desk with nothing to read until an operator names a connector in a tfvars file, which a lane may not edit. The incumbent the desk scores against now spans every held arm (R12-DATA-2022)."
   },
   {
     "id": "R12-DATA-1106",
@@ -2515,7 +2515,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1108",
@@ -2536,7 +2536,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1109",
@@ -2557,7 +2557,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1110",
@@ -2578,7 +2578,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1111",
@@ -2598,7 +2598,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-1112",
@@ -2620,7 +2620,7 @@
     "verification": "cargo test -p qip-reasoning-engine -p qip-data-finder",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EXPAND-1113",
@@ -3551,7 +3551,7 @@
     "verification": "inspection + crate tests per scope item",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-WORLD-1155",

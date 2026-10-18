@@ -27,7 +27,7 @@
     "current": "GoalSpec::decompose lives in qip-contracts expansion.rs and is tested (qip-agency tests/agency.rs); no non-test caller anywhere.",
     "evidence": [
       "backend/crates/services/qip-agency/src/goal.rs:132 GoalSpec::decompose",
-      "backend/crates/services/qip-agency/tests/agency.rs:50 a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field",
+      "backend/crates/services/qip-agency/tests/agency.rs:51 a_goal_missing_any_one_of_its_thirteen_declarations_is_refused_naming_that_field",
       "backend/crates/apps/qip-cli/src/agency.rs:1-40 shadow-only CLI entry",
       "backend/crates/libs/qip-contracts/src/expansion.rs::GoalSpec::decompose"
     ],
@@ -158,23 +158,27 @@
   {
     "id": "R12-DATA-3008",
     "status": "PARTIAL",
-    "current": "Kernel source_discovery joins knowledge gaps and forecast errors into discovery targets.",
+    "current": "Kernel source_discovery joins knowledge gaps and forecast errors into discovery targets; the deep brain's DiscoveryDesk reads them at the start of every pass, and dev commits the pass's cadence.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/source_discovery.rs:1-20 targets_from wiring",
-      "backend/crates/runtime/qip-kernel/tests/source_discovery.rs"
+      "backend/crates/runtime/qip-kernel/tests/source_discovery.rs",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs:327 platform.discovery_targets(now) before any candidate",
+      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
+      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12",
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value"
     ],
-    "gap": "Targets feed the data finder; acquisition itself is offline (no deployed egress).",
+    "gap": "Targets are produced on the committed dev path; e2e needs a dev apply with the deep brain serving (control plane suspended, ADR 0093). Acting on a target still needs a mounted candidate catalogue (owner decision).",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test source_discovery",
+    "verification": "cargo test -p qip-kernel --test source_discovery && cargo +1.94.1 test -p qip-acceptance --test gitops every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test."
   },
   {
     "id": "R12-MODEL-3009",
@@ -587,12 +591,13 @@
   {
     "id": "R12-AMBIENT-3027",
     "status": "PARTIAL",
-    "current": "AttentionRouter (the Ambient Attention Brain) is built by ResearchLoop::new and runs every deep-brain sweep, combining surprise/opportunity/risk/assumption signals and waking specialists.",
+    "current": "AttentionRouter (the Ambient Attention Brain) is built by ResearchLoop::new and runs every deep-brain sweep, combining surprise/opportunity/risk/assumption signals and waking specialists; its attention events are on every ResearchRound. It is registered as `ambient/attention` in the deep brain's Brain Registry (brains.rs), built at start-up, and it is the only entry covering the `attention-routing` scope.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter (only consumer outside crate is an acceptance test)",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:148 a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed"
+      "backend/crates/libs/qip-contracts/src/ambient.rs AttentionRouter",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, AMBIENT_ATTENTION",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not constructed in the production Organisation (qip-investment-agents roster); no test shows removing it drops its scope from coverage.",
+    "gap": "Not an agent of the production Organisation (qip-investment-agents standard_agents): it emits attention events, not Organisation findings, so coverage::covered_scopes, which reads findings, cannot count it; removing it drops its scope from the Brain Registry only.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -603,19 +608,18 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Narrowed 2026-10-18 by lane L04: registry entry and the scope-drop test added (mutation: giving a NOW specialist the attention-routing domain keeps the scope after removal and the test fails). Kept PARTIAL: rostering it as an Organisation agent needs an Agent impl producing Findings."
   },
   {
     "id": "R12-AGENCY-3028",
     "status": "PARTIAL",
-    "current": "qip-agency stages via CLI shadow; ambient intake drafts in deepbrain.",
+    "current": "AmbientAgency in qip-deepbrain runs qip-agency plans over every activated ambient signal on the default node path and journals each draft and its learning beside the outbox. It is registered as `ambient/causal-agency` in the deep brain's Brain Registry (brains.rs), built at start-up, and it is the only entry covering the `intervention-planning` scope.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/engine.rs",
-      "backend/crates/services/qip-agency/src/affordance.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs:189-344",
-      "backend/crates/apps/qip-cli/src/agency.rs:1-16"
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::route",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs ambient_specs, CAUSAL_AGENCY",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_an_ambient_brain_drops_its_scope_from_the_registry"
     ],
-    "gap": "Not constructed as a specialist in the production organisation emitting findings; no cycle integration.",
+    "gap": "Not an agent of the production Organisation emitting Findings; removing it drops its scope from the Brain Registry only, and coverage::covered_scopes cannot count it.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -626,7 +630,7 @@
     "verification": "cargo test -p qip-investment-agents --test organisation",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Narrowed 2026-10-18 by lane L04 (registry entry and scope-drop test). Kept PARTIAL for the same reason as R12-AMBIENT-3027."
   },
   {
     "id": "R12-GOV-3029",

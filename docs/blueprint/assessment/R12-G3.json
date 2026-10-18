@@ -956,13 +956,13 @@
   },
   {
     "id": "R12-MODEL-10044",
-    "status": "PARTIAL",
-    "current": "qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. Vertex Model Registry is not used; the pause-on-unavailable behaviour is not tested.",
+    "status": "COMPLETE",
+    "current": "qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. The registry is in-process (Vertex Model Registry is not used), so 'unavailable' is concretely a registry that does not hold the candidate's card, which is the state the deep brain's registry is in after a restart. Platform::promote_model refuses that with NotFound before journaling, applying or changing the manifest; the package already promoted keeps being issued by model_manifest, and the same promotion succeeds once the registry holds the card again, so promotion pauses rather than wedges.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:552 promote",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:595 promote_model; :619 promote_model_from"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::promote_model_from (card lookup before journal_record and apply_promotion)",
+      "backend/crates/runtime/qip-kernel/tests/promotion_durability.rs::a_promotion_against_a_registry_without_its_card_pauses_while_the_promoted_package_is_still_issued"
     ],
-    "gap": "No test that registry loss pauses promotion without affecting serving.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -970,10 +970,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel model_serving",
+    "verification": "cargo test -p qip-kernel --test promotion_durability",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: PARTIAL->COMPLETE. Mutation: clear the promoted set ahead of the card lookup -> the promoted-set assertion fails (left {}); restored and passing. A hosted registry's network outage is not modelled because no hosted registry exists."
   },
   {
     "id": "R12-CICD-10045",
@@ -2339,7 +2339,7 @@
     "verification": "cargo test -p qip-acceptance --test infrastructure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-EVID-10107",
@@ -2362,7 +2362,7 @@
     "verification": "cargo test -p qip-world-model",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "L-SWITCH 2026-10-18: deepbrain_connector is not a cost-free switch, although the frankfurter-ecb-reference-rates manifest is licensing public with auth none. The deep brain runs in the cognition trust zone, dev sets external_egress = {} (infrastructure/environments/dev/terraform.tfvars), and modules/trust-zones/main.tf sanctioned_egress_purposes lets only ingestion-discovery reach an information-source, so a poll from this workload meets the default-deny egress rule. Reaching api.frankfurter.dev needs a placement or zone-policy change and a Cloud NAT gateway, which bills hourly. Owner decision."
   },
   {
     "id": "R12-AMBIENT-10108",
