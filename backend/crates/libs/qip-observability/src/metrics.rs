@@ -1373,6 +1373,17 @@ pub mod names {
     pub const LEDGER_UNBALANCED_REFUSED: &str = "qip_ledger_unbalanced_refused_total";
     pub const LEDGER_LAG: &str = "qip_ledger_lag_records";
     pub const LEDGER_STORE_RETRIES: &str = "qip_ledger_store_retries_total";
+    /// How long the longest-parked cell has been parked, in seconds. A park
+    /// is the ledger's reconciliation mismatch: a record it could not book
+    /// honestly, held until a gap fills or an operator releases it.
+    pub const LEDGER_MISMATCH_AGE_SECONDS: &str = "qip_ledger_mismatch_age_seconds";
+    /// Each reading of the outcome-to-ledger lag, judged against the
+    /// `ledger-lag` objective's ceiling: `outcome` is `within` or `over`.
+    pub const LEDGER_LAG_CHECKS: &str = "qip_ledger_lag_checks_total";
+    /// Each reading of the mismatch age, judged against the
+    /// `ledger-mismatch-age` objective's ceiling: `outcome` is `within` or
+    /// `over`.
+    pub const LEDGER_MISMATCH_AGE_CHECKS: &str = "qip_ledger_mismatch_age_checks_total";
 
     // The deep brain's research, ambient and operations loops
     // (`qip-deepbrain/src/{research,operations}.rs`). Every label is an enum

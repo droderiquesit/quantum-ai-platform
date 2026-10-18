@@ -3692,11 +3692,11 @@
   {
     "id": "R12-COVERAGE-7164",
     "status": "PARTIAL",
-    "current": "Cash/positions double-entry now run in ledgerd; obligations, collateral and inventory accounts absent.",
+    "current": "Cash/positions double-entry run in ledgerd. Account::Obligation/Collateral/Inventory exist and ledger_operation.rs posts them through CollateralPledge, MarginRequirement, Commitment, InventoryReservation and PhysicalInventory, which LedgerStore::record_operation books and qip-capital's LedgerObligations reads back; the only production producers of operations are the kernel's TreasuryAllocation and CapitalGrantFunded/Recalled (platform.rs).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent::new"
     ],
-    "gap": "Obligations, collateral, physical inventory.",
+    "gap": "No production producer posts a collateral pledge, a margin requirement, a commitment or a physical-inventory movement: the kernel emits only treasury allocation and capital-grant funding/recall. A producer needs a source of truth for the fact, and none is named: margin has the risk engine's cross-margin requirement but no booking seam, collateral has survival.rs reading it and nothing writing it, and a paper platform holds no physical inventory to move. Each is a design decision about which event books it, not a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3707,7 +3707,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Constituents unmet."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits: constituents unmet. Gap corrected 2026-10-18 by lane L15 from platform.rs's OperationKind sites and ledger_operation.rs; nothing in the code changed."
   },
   {
     "id": "R12-COVERAGE-7165",

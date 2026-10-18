@@ -1524,7 +1524,7 @@
       "backend/crates/libs/qip-contracts/src/reflex.rs:359",
       "backend/crates/apps/qip-ledgerd/src/store.rs:729"
     ],
-    "gap": "Cycle-completion record and a netting test.",
+    "gap": "CycleCommitted is journaled on the P2 lane only: qip-edge-node's event_fabric/writer.rs::is_outcome returns false for it because ADR 0100 §5's P1 row names six kinds and the cycle kinds are not among them, and qip-ledgerd consumes the P1 outcomes stream, so a cycle-completion record cannot reach the ledger without widening that row by a new ADR. The cell also keeps no per-cycle fill tally to decide 'every leg filled' (observe_cycle_leg watches legs as they are sent). Then qip-contracts reflex.rs needs the new Decision variant, store.rs a balanced cycle event over the leg fills, and an acceptance test that the cycle's cash nets and that dropping one leg's posting breaks it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1537,7 +1537,7 @@
     "verification": "acceptance test cycle -> ledger",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Individual fills can reach the ledger, but the requirement's cycle-level record does not exist. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Unchanged by the commits."
+    "notes": "Round-2 independent audit, 2026-10-11: CycleCommitted means 'all legs sent', not 'completed'. Re-graded 2026-10-17: unchanged. Gap corrected 2026-10-18 by lane L15 from writer.rs::is_outcome and cell.rs's CycleCommitted sites; nothing in the code changed."
   },
   {
     "id": "R12-CAPITAL-5067",
