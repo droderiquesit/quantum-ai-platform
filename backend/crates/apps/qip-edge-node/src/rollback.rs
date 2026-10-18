@@ -121,8 +121,69 @@ fn parse(bytes: &[u8]) -> RollbackReading {
 pub enum RollbackOutcome {
     /// The cell now serves `to`, having left `from`.
     RolledBack { from: u64, to: u64 },
-    /// The cell refused to roll away from `from`, and why.
-    Refused { from: u64, reason: String },
+    /// The cell refused to roll away from `from`: `refusal` is the class
+    /// the node logs, `reason` the cell's own words, kept for a caller that
+    /// records it and never written to stderr (see [`RollbackRefusal`]).
+    Refused {
+        from: u64,
+        refusal: RollbackRefusal,
+        reason: String,
+    },
+}
+
+/// Why the cell refused a rollback, as a closed set the node may log.
+///
+/// The decision loop logged the cell's refusal message itself, and CodeQL's
+/// rust/cleartext-logging traced that message, a string built from the
+/// held payload, into stderr (main's SAST, ci run 1044). A log line drawn
+/// from this enum carries only fixed text and the sequence number, and the
+/// operator can still tell the four refusals apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RollbackRefusal {
+    /// No previous payload is held.
+    NothingHeld,
+    /// The centre has halted the cell; a rollback cannot release a halt.
+    CentreHalted,
+    /// The previous payload is itself a halt.
+    PreviousIsHalt,
+    /// The previous payload is outside its validity window.
+    PreviousExpired,
+    /// A refusal the node does not classify; the journal holds the cell's
+    /// account.
+    Other,
+}
+
+impl RollbackRefusal {
+    /// Classify the cell's refusal by its error class and fixed opening.
+    fn of(error: &qip_core::error::Error) -> Self {
+        let message = error.message();
+        match error.code() {
+            "invalid" if message.starts_with("no previous policy payload") => Self::NothingHeld,
+            "denied" if message.starts_with("the cell is halted by the centre") => {
+                Self::CentreHalted
+            }
+            "denied" if message.starts_with("the previous payload is a halt") => {
+                Self::PreviousIsHalt
+            }
+            "denied" if message.starts_with("the previous payload (sequence") => {
+                Self::PreviousExpired
+            }
+            _ => Self::Other,
+        }
+    }
+
+    /// The fixed text the node logs for this refusal.
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::NothingHeld => {
+                "no previous payload is held; the centre must ship a corrected one"
+            }
+            Self::CentreHalted => "the centre has halted the cell and a rollback cannot release it",
+            Self::PreviousIsHalt => "the previous payload is a halt",
+            Self::PreviousExpired => "the previous payload is outside its validity window",
+            Self::Other => "the cell refused for another reason; its journal holds the detail",
+        }
+    }
 }
 
 /// The request file, read on its own thread, and the decision thread's
@@ -203,6 +264,7 @@ impl RollbackWire {
             Ok(to) => RollbackOutcome::RolledBack { from, to },
             Err(error) => RollbackOutcome::Refused {
                 from,
+                refusal: RollbackRefusal::of(&error),
                 reason: error.message().to_string(),
             },
         })

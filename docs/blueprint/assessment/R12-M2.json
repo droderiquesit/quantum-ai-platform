@@ -833,18 +833,16 @@
   {
     "id": "R12-EVID-2036",
     "status": "PARTIAL",
-    "current": "Production evidence now declares its feed-sequence predecessor as cause, so the event-ordering check fires (runtime-level test) alongside postdating and impossible-timeline checks; verdicts are held on the record.",
+    "current": "Production evidence declares its feed-sequence predecessor as cause, so the event-ordering check fires alongside postdating and impossible-timeline checks; verdicts are held on the record. Since 2026-10-18 a connector can declare the source's own order for an event the record does not number (SourceConnector::feed_sequence, default None), and the shipped Coinbase connector declares trade_id, which Coinbase assigns per product in print order, so a print numbered later and dated earlier names its predecessor as cause and fails the check. An ordering violation is flagged and the record released, as the kernel's evidence_intake test requires; it is not made inadmissible.",
     "evidence": [
       "backend/crates/libs/qip-evidence/src/evidence.rs:189-250",
-      "backend/crates/libs/qip-evidence/src/fabric.rs:646-653",
-      "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:957-962",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs:170-196",
-      "qip-evidence/src/evidence.rs::tests::a_claim_dated_after_its_source_was_published_is_flagged",
-      "qip-evidence/src/evidence.rs::tests::a_claim_that_precedes_its_cause_names_the_cause",
-      "qip-evidence/src/evidence.rs::tests::a_claim_ingested_before_its_source_published_violates_the_physical_timeline",
-      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::sequence_predecessor"
+      "backend/crates/services/qip-market-ingestion/src/connector/mod.rs:225 SourceConnector::feed_sequence",
+      "backend/crates/services/qip-market-ingestion/src/connectors/coinbase_ticker.rs:195 Coinbase declares trade_id",
+      "backend/crates/services/qip-market-ingestion/src/connector/evidence.rs::feed_sequence_with",
+      "backend/crates/services/qip-market-ingestion/tests/evidence_stage.rs:366 a_coinbase_print_numbered_after_another_but_dated_before_it_violates_event_ordering",
+      "qip-kernel/tests/evidence_intake.rs::production::a_feed_message_dated_before_its_numbered_predecessor_violates_event_ordering"
     ],
-    "gap": "The cause comes only from the feed's own sequence, and the shipped connectors (Coinbase, Kalshi) set sequence None, so ordering cannot fire for them; results are in-memory only.",
+    "gap": "Kalshi's market list carries no vendor sequence (only updated_time), so ordering cannot fire for it, and it is a refused candidate source in any case. Results are in-memory only. Making an ordering violation inadmissible was tried and reverted: it quarantines out-of-order prints, contradicting the kernel test's premise that both are released and soak.rs's quarantine bound; that is a decision to take deliberately, not a side effect.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -854,10 +852,10 @@
       "R12-EVID-2031"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --lib evidence",
+    "verification": "cargo test -p qip-market-ingestion --test evidence_stage && cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: COMPLETE->PARTIAL: the prior COMPLETE overlooked that the 'before its declared cause' half is vacuous on the production path, the same reason EVID-2037 is PARTIAL. A PrecedesCause result is recorded but does not make a claim inadmissible (fabric.rs:648-651). Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: mutation fired - Coinbase's feed_sequence forced to None left the second print's caused_by empty."
   },
   {
     "id": "R12-EVID-2037",
@@ -1124,13 +1122,13 @@
   {
     "id": "R12-TICK-2048",
     "status": "PARTIAL",
-    "current": "MarketEvent carries event, receive and normalized time plus clock uncertainty; qip-sequencing::align orders events only beyond combined uncertainty. Align is not called outside its crate.",
+    "current": "MarketEvent carries event, receive and normalized time plus clock uncertainty; qip-sequencing::align orders events only beyond combined uncertainty. Since 2026-10-18 align runs on a production path inside CaptureStream on the edge node's drain (backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs LakeSink::deliver), and each lake line carries arrival_order against the previous tick of the same venue feed partition ('before', 'after' or 'unordered').",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/market_event.rs:37-56",
       "backend/crates/edge/qip-sequencing/src/align.rs:51-120",
       "backend/crates/edge/qip-sequencing/tests/align.rs:90"
     ],
-    "gap": "Alignment and region/clock-source metadata are not applied on any production path.",
+    "gap": "Alignment is computed only within one venue feed partition: nothing places ticks of two venues or two regions against each other, and no tick is stamped with its region or clock source. Cross-venue alignment before the feature engine would run on the decision thread inside qip-edge's cell (feed application), not in qip-edge-node.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1141,7 +1139,7 @@
     "verification": "cargo test -p qip-twin --test twin",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: within-stream alignment now on the drain (tests/decision_loop.rs::a_normalized_time_and_uncertainty_on_the_lake_line_come_from_the_disciplined_clock checks arrival_order through the corrections equality); cross-venue and region metadata not reached."
   },
   {
     "id": "R12-TICK-2049",
@@ -1174,7 +1172,7 @@
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:498 raw_retention_permitted: false",
       "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs::parse_retention"
     ],
-    "gap": "No production writer stores venue-native raw bytes under a permitting right.",
+    "gap": "No production writer stores venue-native raw bytes under a permitting right. The drain cannot: the spool's MARKET_EVENT_APPLIED records carry the decoded MarketEvent and its source_hash, never the wire frame, so LakeSink::deliver has no raw bytes to pass to Lake::write_segment (drain.rs, the trailing None). Closing it needs the applied record to carry the frame (a schema bump on that topic, through the schema gate) where the dataset's right permits raw retention, or a separate raw-capture writer on the feed side.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1187,7 +1185,7 @@
     "verification": "cargo test -p qip-storage --test lake",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure (hand the wire frame to LakeSink::deliver) needs the frame on the spool first; that schema change was not attempted in this lane."
   },
   {
     "id": "R12-TICK-2051",

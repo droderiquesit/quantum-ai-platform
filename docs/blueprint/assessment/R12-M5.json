@@ -1547,7 +1547,7 @@
       "backend/crates/services/qip-mesh/src/rebalance.rs:27",
       "backend/crates/services/qip-mesh/tests/rebalance.rs:40"
     ],
-    "gap": "Consumer in treasury/kernel.",
+    "gap": "Consumer in the saga: the only non-mesh holder of OpportunityEpoch is qip-peer-link's saga (Lane 1), which does not depend on qip-mesh, where rebalancing_tasks lives (a service). Wiring it needs either the function moved into the pure qip-peer library or a qip-peer-link dependency on qip-mesh, an architecture call the mesh_lane and lane_placement suites constrain, plus a journal record for the tasks.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1558,7 +1558,7 @@
     "verification": "cargo test -p qip-mesh --test rebalance",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: the closure (saga.rs calls rebalancing_tasks) is blocked by the crate graph; not attempted."
   },
   {
     "id": "R12-MESH-5068",
