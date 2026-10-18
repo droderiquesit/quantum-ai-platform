@@ -3179,7 +3179,7 @@
       "backend/crates/apps/qip-api/src/main.rs:366-368",
       "backend/crates/apps/qip-edge-node/src/telemetry.rs"
     ],
-    "gap": "OTLP from the remaining binaries; proof of ingestion.",
+    "gap": "A fourth and fifth copy of the drain is the wrong first step and the closure's last clause is refused by a standing test: qip-api, qip-fastbrain and qip-deepbrain each carry a ~780-line copy of openobserve.rs (deepbrain's module doc argues three copies of a credential parser are already a liability and pins the copies byte-identical in tests/openobserve.rs), so the drain should first move to a shared home (it needs qip-transport's HttpClient and qip-observability's Snapshot::to_otlp_metrics, and no app may depend on an app) before qip-fabricd and qip-ledgerd adopt it. Setting QIP_OPENOBSERVE_URL on the three that already drain contradicts manifest_wiring.rs's argued-unset entries and infrastructure/terraform/modules/openobserve/main.tf: no collector is vendored or attested and infrastructure/egress/envoy.yaml has no OpenObserve listener, so nothing may point at one yet. Ingestion is unproven for the same reason.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3190,7 +3190,7 @@
     "verification": "cargo test -p qip-api",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L17 from the three existing openobserve.rs copies, manifest_wiring.rs and the egress bootstrap; nothing in the code changed."
   },
   {
     "id": "R12-OBS-9141",
@@ -3661,12 +3661,14 @@
   {
     "id": "R12-OBS-9162",
     "status": "PARTIAL",
-    "current": "Ledger commit latency and lag recorded (qip-ledgerd), outcome backlog recorded centrally; no mismatch-age or abort-rate SLO; ledger is not Spanner.",
+    "current": "Ledger commit latency and lag recorded (qip-ledgerd), outcome backlog recorded centrally. Since 2026-10-18 qip_observability::critical_paths::ledger_objectives declares ledger-lag (backlog ceiling 1000 records, 99%/hour), ledger-mismatch-age (ceiling 300 s, 99%/hour) and ledger-abort-rate (commits not refused or in conflict, 99.9%/day) beside the catalogue's ledger-commit; qip-ledgerd records each reading against that declaration's own ceiling (qip_ledger_lag_checks_total, qip_ledger_mismatch_age_checks_total, qip_ledger_mismatch_age_seconds) and evaluates all four on every applied batch and every idle poll. A running ledger fed a booked fill and a live fill reads all three measured.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/telemetry.rs:34",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:5240 CENTRAL_OUTCOME_BACKLOG"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs::ledger_objectives",
+      "backend/crates/apps/qip-ledgerd/src/telemetry.rs::LedgerTelemetry::{lag,mismatch_age_seconds,check}",
+      "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_mismatch_age",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_ledger_with_a_booked_fill_and_a_parked_cell_measures_lag_mismatch_age_and_abort_rate"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "Ingestion is unproven: nothing scrapes or exports the ledger's registry (no deployed ledger, qip-ledgerd has no OTLP drain, workload_metrics_exist is false). The 1000-record and 300-second ceilings and the targets are declared, not measured against a healthy ledger, and the deep brain still evaluates ledger-commit against a registry that never holds its series (the three new objectives are kept out of the critical-path catalogue, which a test holds at eight, so only qip-ledgerd evaluates them). The mismatch age is aged from this process's first sight of a park, so a park inherited across a restart reads younger than it is until the persisted Park carries its own time.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3674,10 +3676,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-ledgerd --test fabric a_ledger_with_a_booked_fill_and_a_parked_cell",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Objectives declared and recorded 2026-10-18 by lane L15; mutation-verified (dropping the lag check call; emptying the abort objective's bad outcomes; never stamping the park time)."
   },
   {
     "id": "R12-OBS-9163",
