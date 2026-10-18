@@ -2766,23 +2766,25 @@
   {
     "id": "R12-OBS-7123",
     "status": "PARTIAL",
-    "current": "stale-book-age-max and market-ingestion-latency SLOs defined.",
+    "current": "The market-data-freshness critical path now reads qip_edge_book_age_ms (EDGE_BOOK_AGE_MS), a per-venue histogram of milliseconds since the cell last heard the venue feed, recorded by Cell::work every pass before the halt check, with SourceRule::LatencyUnder (1000 ms) and service edge-node, so the node evaluates it at every /metrics scrape. stale-book-age-max and market-ingestion-latency SLOs remain defined.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs; backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs market-data-freshness on names::EDGE_BOOK_AGE_MS, EDGE_NODE_SERVICE",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::work book_age loop over feed_heard",
+      "backend/crates/edge/qip-edge/src/telemetry.rs CellMetrics::book_age",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs a_scrape_after_a_pass_evaluates_the_market_data_freshness_objective_from_the_books_age"
     ],
-    "gap": "market-data-freshness (critical_paths.rs) reads EDGE_CAPABILITY_FRESHNESS under SourceRule::NotCountable, so it evaluates unmeasured in every process. No series records the age of the book a pass decides on: the cell keeps feed_heard per venue (silence detection) but exposes no book age, and the node's simulated feed publishes at the pass instant, so the age after publication is zero by construction while the silence before it is the pass interval (1 s), which sits on the objective's 1000 ms threshold. A countable rule needs a defined measurement first: the age of the newest venue data the pass's decisions used, recorded per pass beside EDGE_DECISION_LATENCY_MS.",
+    "gap": "The measurement is real but vacuous in the only binary that records it: qip-edge-node feeds the cell from the simulated venue, whose feed_heartbeat is stamped at the pass instant, so the age Cell::work reads is zero on every node pass and the objective can only be met. It becomes informative when a feed whose heartbeat can lag the pass (a vendor or venue adapter) is attached, and no such feed exists in a binary. No execution node is deployed either.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-edge-node --test pass a_scrape_after_a_pass_evaluates_the_market_data_freshness_objective_from_the_books_age; cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "S",
-    "notes": "Gap corrected 2026-10-18 by lane L22 after reading critical_paths.rs, qip-edge-node pass.rs/feed.rs and Cell::feed_heartbeat; no code changed. The decision-latency half of the same evaluator now runs on the node (R12-OBS-7124), so a book-age histogram recorded in pass.rs and bound with SourceRule::LatencyUnder would be evaluated by the same scrape-time evaluation without further wiring."
+    "notes": "2026-10-18 L22: recording site, rule and test added. Mutations: delete the book_age loop in Cell::work (scrape reads zero observations, test fails); record Duration::ZERO instead of the age (a ten-second-old book consumes no budget, test fails). Kept PARTIAL, not COMPLETE, because an objective that is met by construction on the only feed that can drive it is not evidence about market data."
   },
   {
     "id": "R12-OBS-7124",

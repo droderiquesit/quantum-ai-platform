@@ -2693,12 +2693,13 @@
   {
     "id": "R12-TICK-10121",
     "status": "PARTIAL",
-    "current": "qip-twin counterfactual/regret and qip-simulation-engine; no candidate-world propagation to counterparties.",
+    "current": "qip-twin FutureTree::portfolio_outcomes(&positions) (futures.rs) weights each live branch impact_bps by signed position and renormalised probability into a PortfolioOutcome distribution; counterfactual/regret and qip-simulation-engine as before. Tested by tests/futures.rs::a_scenario_world_yields_a_portfolio_outcome_distribution_whose_weights_sum_to_one (mutations: drop the /mass renormalisation, drop the position weight - both fail). No caller feeds it positions yet.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/counterfactual.rs",
+      "backend/crates/services/qip-twin/src/futures.rs",
+      "backend/crates/services/qip-twin/tests/futures.rs",
       "backend/crates/services/qip-simulation-engine"
     ],
-    "gap": "Scenario tree to portfolio propagation.",
+    "gap": "qip-deepbrain tick_desk.rs grows the tree but has no portfolio-position input, so portfolio_outcomes runs only in test; counterparty propagation absent. Feed the desk the platform book and journal the distribution to close.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2706,10 +2707,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-twin",
+    "verification": "cargo test -p qip-twin --test futures",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 L22: method + test added; kept PARTIAL because no binary calls it."
   },
   {
     "id": "R12-CAPITAL-10122",
