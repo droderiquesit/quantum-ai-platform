@@ -1254,13 +1254,14 @@
   {
     "id": "R12-DATA-9054",
     "status": "PARTIAL",
-    "current": "qip_mesh::bigquery::BigQueryWarehouse streams rows and runs queries; enable_bigquery=false in dev; resolved-outcome writes not wired.",
+    "current": "qip_mesh::bigquery::BigQueryWarehouse streams rows and runs queries. qip-deepbrain now constructs it: warehouse::OutcomeSink::from_lookup (called from main.rs) resolves QIP_BIGQUERY_PROJECT/DATASET plus QIP_GCP_ENDPOINT and one credential, refuses a half-named or unreachable target, and node::run_with ships every graded thesis in Platform::evaluations() to the resolved_outcomes table each cycle, keyed by hypothesis id, holding rejected rows for the next cycle. With no project or dataset named (every environment: enable_bigquery=false in dev/test/stage/prod, no QIP_BIGQUERY_* in catalogue.tf) the sink is None and the banner says off.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/gcp/mod.rs:3-12",
-      "backend/crates/services/qip-mesh/src/bigquery.rs",
-      "infrastructure/terraform/modules/data/main.tf:85"
+      "backend/crates/apps/qip-deepbrain/src/warehouse.rs:OutcomeSink",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:loops.warehouse",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:OutcomeSink::from_lookup",
+      "backend/crates/apps/qip-deepbrain/tests/warehouse.rs:the_run_loop_ships_a_graded_thesis_to_the_warehouse"
     ],
-    "gap": "Wire outcome/tournament writes; enable dataset.",
+    "gap": "Deployment, not code: set enable_bigquery=true in an environment tfvars (infrastructure/environments/**, protected), create the resolved_outcomes table with the columns warehouse::row writes, and give qip-deepbrain QIP_BIGQUERY_PROJECT, QIP_BIGQUERY_DATASET, QIP_GCP_ENDPOINT (the egress proxy) and one credential in infrastructure/terraform/catalogue.tf. Tournament (evolution trial) outcomes are not streamed; only graded theses.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1268,10 +1269,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-deepbrain --test warehouse",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Mutations: skipping the insert in OutcomeSink::ship failed the streaming and retry tests; marking rejected rows shipped failed the retry test; making the node.rs warehouse arm unreachable failed the_run_loop_ships_a_graded_thesis_to_the_warehouse. The tests run against a loopback socket standing in for the TLS-terminating proxy; nothing has reached BigQuery."
   },
   {
     "id": "R12-DATA-9055",

@@ -412,6 +412,7 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
             permissions: None,
             ambient: None,
             agency: None,
+            warehouse: None,
         },
         |outcome| {
             assert!(
