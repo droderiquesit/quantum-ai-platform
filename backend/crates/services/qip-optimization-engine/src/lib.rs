@@ -159,7 +159,7 @@ pub mod universe;
 
 pub use compute::{
     CompiledTask, ComputeDecision, Formulation, InformationValue, Substrate, SubstrateRole,
-    SubstrateVerdict, TaskClass, TaskSpec,
+    SubstrateVerdict, TaskClass, TaskSpec, TaskStructure,
 };
 pub use families::{
     Diagnostics, FamilyAssignment, FamilyClustering, FamilyId, Linkage, StrategyReturns,

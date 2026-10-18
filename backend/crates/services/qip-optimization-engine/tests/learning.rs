@@ -15,7 +15,7 @@ use qip_optimization_engine::router::{
 };
 use qip_optimization_engine::{
     AdvantageBoundary, AdvantageEvidence, ComputeDecision, MeasurementOutcome, ResearchDomain,
-    Substrate, SubstrateRole,
+    SolverMeasurement, Substrate, SubstrateRole,
 };
 use qip_quantum::provider::{ProviderCapabilities, QuantumProvider};
 use qip_quantum::qaoa::{QaoaResult, QaoaSettings};
@@ -406,5 +406,238 @@ fn every_routed_task_names_its_research_domain_and_carries_that_domains_classica
         "{:?}",
         record.task.verification
     );
+    Ok(())
+}
+
+/// A device with a declared price that ties the baseline when it answers.
+#[derive(Debug)]
+struct PricedTie {
+    cost_per_job_micros: u64,
+}
+
+impl QuantumProvider for PricedTie {
+    fn name(&self) -> &str {
+        "priced-tie"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            max_qubits: 64,
+            simulated: false,
+            noisy: true,
+            typical_queue: qip_core::time::Duration::ZERO,
+            cost_per_job_micros: self.cost_per_job_micros,
+        }
+    }
+    fn solve_qubo(&self, _qubo: &Qubo, _settings: &QaoaSettings) -> Result<QaoaResult> {
+        Err(Error::denied("not asked in this test"))
+    }
+}
+
+/// R12-QUANT-4051: a job is sent only where its expected information value
+/// justifies its cost. Before this the price was compared only with a fixed
+/// per-job cap, so a job inside the cap was sent however little it was
+/// likely to bring.
+///
+/// At an untried size the win probability is one half and the margin 1%, so
+/// the expected gain is 0.005: at 100,000,000 micro-USD per unit of gain that
+/// is worth 500,000, a third of the 1,500,000 the job costs.
+///
+/// Mutation: in `ComputeRouter::estimate`, delete the
+/// `expected_value_micros < cost_micros` arm — the job is sent and the
+/// declined assertion fires.
+#[test]
+fn a_job_whose_expected_gain_is_not_worth_its_price_is_declined_and_the_comparison_is_journaled()
+-> Result<()> {
+    let problem = discrete(12, 4)?;
+    let priced = RoutingPolicy {
+        max_quantum_job_cost_micros: 1_500_000,
+        quantum_spend_budget_micros: 1_500_000,
+        value_per_unit_gain_micros: 100_000_000,
+        ..heuristic_policy()
+    };
+    let device = Arc::new(PricedTie {
+        cost_per_job_micros: 1_500_000,
+    });
+    let declined = ComputeRouter::classical(1)
+        .with_policy(priced)?
+        .with_quantum(device.clone())?
+        .solve(&problem)?;
+    let estimate = compute(&declined)?
+        .information_value
+        .clone()
+        .ok_or_else(|| Error::invalid("no estimate was recorded"))?;
+    assert_eq!(estimate.expected_value_micros, 500_000);
+    assert_eq!(estimate.cost_micros, 1_500_000);
+    assert!(
+        !estimate.cleared && declined.quantum_dispatch.submitted.is_none(),
+        "a job worth a third of its price was sent"
+    );
+    let qpu = compute(&declined)?
+        .verdict(Substrate::Qpu)
+        .ok_or_else(|| Error::invalid("no QPU verdict"))?;
+    assert_eq!(qpu.role, SubstrateRole::Declined);
+    assert!(qpu.reason.contains("not worth its price"), "{}", qpu.reason);
+
+    // Premise: valued at ten times as much, the same job clears every bar,
+    // so the refusal above was the value comparison and nothing else.
+    let sent = ComputeRouter::classical(1)
+        .with_policy(RoutingPolicy {
+            value_per_unit_gain_micros: 1_000_000_000,
+            ..priced
+        })?
+        .with_quantum(device)?
+        .solve(&problem)?;
+    assert!(sent.quantum_dispatch.submitted.is_some());
+    assert_eq!(compute(&sent)?.quantum_billed_micros, 1_500_000);
+    Ok(())
+}
+
+/// One recorded QPU trial: verified, beat the baseline, latency in cycles,
+/// and the win probability the router had predicted for it.
+type Trial = (bool, bool, u32, f64);
+
+/// One gate's case: its name, the history that trips it, the phrase its
+/// refusal carries, and a policy with that gate opened.
+type GateCase<'a> = (&'a str, &'a [Trial], &'a str, RoutingPolicy);
+
+/// A recorded history of QPU trials at size twelve, as a journal would hold
+/// it, carried on a real decision so `replay` folds it as it folds the log.
+fn history(template: &ComputeDecision, trials: &[Trial]) -> ComputeDecision {
+    let mut decision = template.clone();
+    decision.measurements = trials
+        .iter()
+        .map(
+            |&(verified, beat_baseline, latency_cycles, predicted)| SolverMeasurement {
+                solver: Solver::Quantum.as_str().to_string(),
+                substrate: Substrate::Qpu,
+                problem_size: 12,
+                outcome: if verified {
+                    MeasurementOutcome::Answered
+                } else {
+                    MeasurementOutcome::Refused
+                },
+                verified,
+                beat_baseline,
+                used: false,
+                quality: if beat_baseline { 0.02 } else { 0.0 },
+                cost_micros: 0,
+                latency_cycles,
+                predicted_win_probability: Some(predicted),
+            },
+        )
+        .collect();
+    decision
+}
+
+/// R12-QUANT-4047: routing is learned from measured repeatability, latency
+/// and calibration as well as win rate. Before this the three were recorded
+/// on every estimate and gated nothing, so a substrate whose win rate held up
+/// was paid for however rarely it answered, however late, and however badly
+/// the router had predicted it.
+///
+/// Each history below clears the win-rate floor on its own; each premise
+/// replays the same history under a policy with that one gate opened and
+/// shows a job is then sent, so the refusal is the gate and nothing else.
+///
+/// Mutations, one per gate, in `ComputeRouter::measured_shortfall`: make the
+/// repeatability comparison `repeatability < 0.0` — the first case submits;
+/// make the latency comparison `latency > f64::MAX` — the second submits;
+/// replace `overconfidence > 0.0` with `overconfidence > 1.0` — the third
+/// submits.
+#[test]
+fn a_substrate_that_wins_but_answers_rarely_late_or_against_its_estimate_stops_being_tried()
+-> Result<()> {
+    let problem = discrete(12, 4)?;
+    let baseline = ComputeRouter::classical(1)
+        .with_policy(heuristic_policy())?
+        .solve(&problem)?;
+    let template = compute(&baseline)?.clone();
+    let tie: Vec<u8> = baseline
+        .weights
+        .iter()
+        .map(|w| u8::from(w.abs() > 1e-9))
+        .collect();
+    let provider = Arc::new(Tying { assignment: tie });
+
+    let unrepeatable = [
+        (true, true, 1, 0.5),
+        (true, true, 1, 0.5),
+        (false, false, 1, 0.5),
+        (false, false, 1, 0.5),
+        (false, false, 1, 0.5),
+        (false, false, 1, 0.5),
+    ];
+    let late = [(true, true, 8, 0.6); 5];
+    let over_promised = [
+        (true, false, 1, 0.9),
+        (true, false, 1, 0.9),
+        (true, false, 1, 0.9),
+        (true, false, 1, 0.9),
+        (true, true, 1, 0.9),
+    ];
+    let cases: [GateCase<'_>; 3] = [
+        (
+            "repeatability",
+            &unrepeatable,
+            "a repeatability of",
+            RoutingPolicy {
+                minimum_repeatability: 0.0,
+                ..heuristic_policy()
+            },
+        ),
+        (
+            "latency",
+            &late,
+            "cycle(s) on average",
+            RoutingPolicy {
+                maximum_latency_share: 0.9,
+                ..heuristic_policy()
+            },
+        ),
+        (
+            "calibration",
+            &over_promised,
+            "scored a Brier of",
+            RoutingPolicy {
+                maximum_calibration_brier: 0.99,
+                ..heuristic_policy()
+            },
+        ),
+    ];
+    for (gate, trials, reason, opened) in cases {
+        let recorded = [history(&template, trials)];
+
+        let gated = ComputeRouter::classical(1)
+            .with_policy(heuristic_policy())?
+            .with_quantum(provider.clone())?;
+        gated.replay(recorded.iter())?;
+        let record = gated.learned_record(Substrate::Qpu, 12)?;
+        assert!(
+            record.win_probability() >= heuristic_policy().minimum_win_probability,
+            "premise ({gate}): the history clears the win-rate floor on its own: {record:?}"
+        );
+        let decision = gated.solve(&problem)?;
+        assert!(
+            decision.quantum_dispatch.submitted.is_none(),
+            "the {gate} gate did not stop a job: {record:?}"
+        );
+        let qpu = compute(&decision)?
+            .verdict(Substrate::Qpu)
+            .ok_or_else(|| Error::invalid("no QPU verdict"))?;
+        assert_eq!(qpu.role, SubstrateRole::Declined);
+        assert!(qpu.reason.contains(reason), "{gate}: {}", qpu.reason);
+
+        let open = ComputeRouter::classical(1)
+            .with_policy(opened)?
+            .with_quantum(provider.clone())?;
+        open.replay(recorded.iter())?;
+        assert!(
+            open.solve(&problem)?.quantum_dispatch.submitted.is_some(),
+            "premise ({gate}): with that one gate opened the same history sends a job"
+        );
+    }
     Ok(())
 }
