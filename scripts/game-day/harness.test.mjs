@@ -12,6 +12,10 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkScenario, get, isLoopbackUrl, parsePrometheus, runScenario, sumSeries, validateResult } from "./harness.mjs";
+import { attempts, main as escalationMain, runDrill, validateRecord as validateEscalation } from "./agent-escalation.mjs";
+import { readFileSync as readFileForDrill, readdirSync as readdirForDrill } from "node:fs";
+import { join as joinForDrill } from "node:path";
+import { fileURLToPath as urlToPathForDrill } from "node:url";
 
 async function withScratch(fn) {
   const root = mkdtempSync(join(tmpdir(), "game-day-test-"));
@@ -191,4 +195,70 @@ test("the harness probes loopback only and refuses any other host before fetchin
     assert.equal(result.status, 0);
     assert.match(result.error, /not a loopback http address/);
   }
+});
+
+// --- R12-SEC-10157: the agent-authority drill (scripts/game-day/agent-escalation.mjs) ---
+const POLICY_PATH = new URL("../agent-policy.json", import.meta.url);
+const policy = () => JSON.parse(readFileForDrill(POLICY_PATH, "utf8"));
+const RESULTS = urlToPathForDrill(new URL("../../docs/ops/game-days/agent-escalation/", import.meta.url));
+
+// Premise first: the control is admitted, so a clean sweep below is selective
+// refusal and not closed judges. Mutation: make `judgeChange` or `validate`
+// refuse everything — the control's `held` goes false.
+test("the committed judges admit the control and refuse every escalation attempt", () => {
+  const record = runDrill({ policy: policy(), policyPath: urlToPathForDrill(POLICY_PATH), commit: "test" });
+  const control = record.attempts.filter((a) => a.expect === "admitted");
+  const attacks = record.attempts.filter((a) => a.expect === "refused");
+  assert.equal(control.length, 1);
+  assert.ok(attacks.length >= 10, `${attacks.length} attacks`);
+  assert.equal(control[0].outcome, "admitted", JSON.stringify(control[0]));
+  for (const attack of attacks) assert.equal(attack.outcome, "refused", attack.attempt);
+  assert.equal(record.verdict, "held");
+  assert.deepEqual(validateEscalation(record), []);
+});
+
+// The drill can fail. Mutation: record `held: true` for every attempt in
+// `runDrill` — the relaxed policy below then reads as held and this fails.
+test("a policy that stops protecting the workflows is reported as breached, naming what got through", () => {
+  const relaxed = policy();
+  relaxed.protected_paths.globs = [];
+  const record = runDrill({ policy: relaxed, policyPath: urlToPathForDrill(POLICY_PATH), commit: "test" });
+  assert.equal(record.verdict, "breached");
+  const breached = record.attempts.filter((a) => !a.held).map((a) => a.attempt);
+  assert.ok(breached.includes("edit a deploy workflow with no approval"), breached.join("; "));
+  assert.ok(breached.includes("edit a deploy workflow with a bot's approval of the head"), breached.join("; "));
+  assert.deepEqual(validateEscalation(record), []);
+});
+
+test("a record claiming held over a breached attempt, or with no control, is refused", () => {
+  const record = runDrill({ policy: policy(), policyPath: urlToPathForDrill(POLICY_PATH), commit: "test" });
+  const lying = structuredClone(record);
+  lying.attempts[1].outcome = "admitted";
+  lying.attempts[1].held = false;
+  assert.ok(validateEscalation(lying).some((p) => /held with an attempt/.test(p)));
+  const noControl = structuredClone(record);
+  noControl.attempts = noControl.attempts.filter((a) => a.expect !== "admitted");
+  assert.ok(validateEscalation(noControl).some((p) => /no control attempt/.test(p)));
+});
+
+test("every attempt names its own input, so a renamed judge cannot leave one silently empty", () => {
+  const names = attempts(policy(), { problem: "none" }).map((a) => a.name);
+  assert.equal(new Set(names).size, names.length);
+});
+
+test("every committed drill record is in the committed format and held", () => {
+  const files = readdirForDrill(RESULTS).filter((f) => f.endsWith(".json"));
+  assert.ok(files.length >= 1, "no drill record is committed");
+  for (const file of files) {
+    const record = JSON.parse(readFileForDrill(joinForDrill(RESULTS, file), "utf8"));
+    assert.deepEqual(validateEscalation(record), [], file);
+    assert.equal(record.verdict, "held", file);
+  }
+});
+
+test("the command runs, exits zero on a held drill, and refuses an unknown mode", () => {
+  const lines = [];
+  assert.equal(escalationMain(["run"], { out: (l) => lines.push(l), err: () => {} }), 0);
+  assert.match(lines.at(-1), /verdict: held/);
+  assert.equal(escalationMain(["nonsense"], { out: () => {}, err: () => {} }), 64);
 });

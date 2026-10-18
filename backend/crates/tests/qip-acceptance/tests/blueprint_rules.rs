@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 45] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 44] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -181,7 +181,6 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 45] = [
     // it is Node for the reason they are; Rust would have to shell out to
     // them and could not import the functions it is testing.
     "scripts/game-day/agent-escalation.mjs",
-    "scripts/game-day/agent-escalation.test.mjs",
     "scripts/game-day/fixtures/fake-service.mjs",
     "scripts/game-day/harness.mjs",
     "scripts/game-day/harness.test.mjs",
