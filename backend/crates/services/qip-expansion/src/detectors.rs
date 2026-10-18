@@ -98,6 +98,8 @@ fn observe(
         // No detector here measures money. Zero is stated, not defaulted:
         // the curriculum refuses a missing value and ranks a zero honestly.
         economic_value: Decimal::ZERO,
+        // Nor exposure, for the same reason: stated, not defaulted.
+        risk_value: Decimal::ZERO,
     }
 }
 
@@ -680,6 +682,7 @@ pub fn anomaly_clusters(
                     .collect(),
                 severity: mean,
                 economic_value: Decimal::ZERO,
+                risk_value: Decimal::ZERO,
             }
         })
         .collect())
