@@ -1844,14 +1844,14 @@
   },
   {
     "id": "R12-TICK-2078",
-    "status": "PARTIAL",
-    "current": "qip-arbitrage discovers 2..20-leg cycles deterministically with a configurable max; qip-mesh MAX_LEGS=20; venue-outage conditions exist in the simulator. No replay of legging, reservation, path decay, unwind or capital across regions.",
+    "status": "COMPLETE",
+    "current": "A MultiLegPlan can carry max_path_decay_bps (a legging window) and region_reservations (capital reserved to the plan per region). Before each leg after the first is sent, ReplaySession::refusal_before refuses the remaining legs when the adverse touch movement summed over the sent legs exceeds the window, or when the next leg's estimated notional (quantity at the touch read when the first leg arrived) would take its region's open capital past the reservation. The legs left open are flattened by the same unwind a failed fill gets, and MultiLegOutcome names refused_legs and the refusal. Open capital per region and path decay were already accumulated per leg.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/tests/leg_limit.rs:1-8 cycle of 2..20 legs refused whole beyond max",
-      "backend/crates/services/qip-mesh/src/peer.rs:57 MAX_LEGS",
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:140 VenueOutage"
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs refusal_before, unwind_open_legs, MultiLegPlan::max_path_decay_bps, region_reservations",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_plan_whose_path_decayed_past_its_window_refuses_the_remaining_legs_and_flattens_the_open_ones",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_leg_that_would_take_a_region_past_the_capital_reserved_to_it_is_refused"
     ],
-    "gap": "Build multi-leg replay harness.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1861,10 +1861,10 @@
       "R12-TICK-2067"
     ],
     "blocked_by": "",
-    "verification": "a qip-acceptance multi-leg replay suite",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Register text was half stale: the three-leg unwind (a_three_leg_plan_whose_second_venue_fails_unwinds_the_first_leg_and_charges_the_cost) already existed. Mutations, each fired and restored: the decay comparison replaced by false sends the third leg (decay test fails); the reservation comparison replaced by false sends the over-reserved leg (reservation test fails). Both tests assert their premise first: with no window or a covering reservation the same plan completes and the decay is above 1000 bp. qip-simulation-engine: every suite ok; qip-acceptance replay_queue_and_unwind ok. New plan fields are skipped when empty, so the checkpoint and input digests of existing plans do not move. The simulator is the product of this crate; no deployed process runs a MultiLegPlan."
   },
   {
     "id": "R12-TICK-2079",

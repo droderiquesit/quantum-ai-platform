@@ -283,6 +283,18 @@ impl Service {
                 BATCH_SCHEMA_VERSION,
                 stream_shape(&declaration.topics),
             )?;
+            // A stream declared with no topic list admits any, as it always
+            // has; one that names topics admits exactly those.
+            if !declaration.topics.is_empty() {
+                self.broker.register_body_topics(
+                    name,
+                    declaration
+                        .topics
+                        .iter()
+                        .map(|topic| topic.name().to_string())
+                        .collect(),
+                )?;
+            }
             classes.insert(name.clone(), policy.qos_class());
         }
         *self.classes.write().unwrap_or_else(|e| e.into_inner()) = classes;

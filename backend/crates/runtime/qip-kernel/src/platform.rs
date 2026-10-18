@@ -12125,6 +12125,18 @@ impl Platform {
                     );
                 }
             }
+            // The calibration objective, judged each cycle from the same card.
+            if let Some(breached) = crate::lattice_stage::calibration_slo_breached(
+                &card,
+                crate::lattice_stage::CALIBRATION_BRIER_BOUND,
+                crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
+            ) {
+                self.telemetry.metrics.gauge(
+                    crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
+                    labels([("horizon", horizon.as_str())]),
+                    if breached { 1.0 } else { 0.0 },
+                );
+            }
         }
         for inconsistency in &lattice.inconsistencies {
             self.telemetry.metrics.count(

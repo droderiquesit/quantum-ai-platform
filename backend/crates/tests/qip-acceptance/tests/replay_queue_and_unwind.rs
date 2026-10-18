@@ -112,6 +112,8 @@ fn a_replayed_order_waits_its_turn_in_the_queue_while_a_plan_whose_third_leg_fai
             leg("obj-GAMA", "us-east4"),
         ],
         leg_interval: Duration::from_millis(5),
+        max_path_decay_bps: None,
+        region_reservations: Default::default(),
     };
     let model = ExecutionModel {
         latency: Duration::from_millis(1),

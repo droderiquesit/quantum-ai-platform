@@ -622,3 +622,93 @@ fn forecasts_resolved_in_two_regimes_are_scored_under_each_and_the_journal_rebui
         "premise: the regimes differ in score, so a merged card would be wrong"
     );
 }
+
+/// R12-WORLD-10170: the calibration objective is judged from the card, and only
+/// once the card has enough resolutions to judge. Mutations: compare with `<`
+/// (the breached case reads met); ignore the minimum (the short card is judged).
+#[test]
+fn a_horizon_is_judged_against_the_brier_bound_only_once_it_has_enough_resolutions() {
+    use qip_kernel::lattice_stage::{
+        CALIBRATION_BRIER_BOUND, CALIBRATION_MIN_RESOLVED, calibration_slo_breached,
+    };
+    use qip_world_model::lattice::Scorecard;
+
+    let card = |resolved: u64, brier: f64| Scorecard {
+        resolved,
+        brier_sum: brier * resolved as f64,
+        pinball_sum: 0.0,
+        covered: 0,
+    };
+    let bound = CALIBRATION_BRIER_BOUND;
+    let enough = CALIBRATION_MIN_RESOLVED;
+    assert_eq!(
+        calibration_slo_breached(&card(enough, bound + 0.1), bound, enough),
+        Some(true)
+    );
+    assert_eq!(
+        calibration_slo_breached(&card(enough, bound - 0.1), bound, enough),
+        Some(false)
+    );
+    assert_eq!(
+        calibration_slo_breached(&card(enough - 1, bound + 0.4), bound, enough),
+        None,
+        "a card one resolution short was judged"
+    );
+    assert!(
+        bound > 0.25,
+        "premise: the bound must sit above the 0.25 a forecast of one half always scores"
+    );
+}
+
+/// R12-WORLD-10170's exit test: one run records the NOW state, the forecast
+/// contracts and the calibration objective's gauge. The objective is silent
+/// while a horizon has too few resolutions and then written every cycle with the
+/// verdict; a calm tape forecast at one half scores 0.25, inside the bound, so
+/// the gauge reads 0. Mutation: never write the gauge (the final assertion
+/// fails).
+#[test]
+fn a_run_records_the_now_state_the_forecasts_and_the_calibration_objective_gauge() {
+    use qip_kernel::lattice_stage::{CALIBRATION_MIN_RESOLVED, LATTICE_CALIBRATION_SLO_BREACHED};
+    use qip_observability::metrics::labels;
+
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let gauge = |platform: &Platform| {
+        platform.telemetry().metrics.snapshot().gauge(
+            LATTICE_CALIBRATION_SLO_BREACHED,
+            &labels([("horizon", "hours_days")]),
+        )
+    };
+    assert_eq!(
+        gauge(&platform),
+        None,
+        "premise: nothing is resolved after one cycle"
+    );
+
+    let mut days = 0_i64;
+    while platform
+        .lattice()
+        .calibrator()
+        .scorecard(LatticeHorizon::HoursDays)
+        .is_none_or(|card| card.resolved < CALIBRATION_MIN_RESOLVED)
+    {
+        days += 1;
+        assert!(days < 60, "premise: the card never reached the minimum");
+        platform.observe(SYMBOLS.iter().map(|s| bar(s, day(days), 100.1)).collect());
+        platform.run_cycle(day(days));
+    }
+
+    let now: NowReview = last(&platform, "now:");
+    assert!(!now.deltas.is_empty(), "the NOW state was not recorded");
+    let lattice: LatticeReview = last(&platform, "lattice:");
+    assert!(
+        !lattice.issued.is_empty(),
+        "no forecast contract was issued"
+    );
+    assert_eq!(
+        gauge(&platform),
+        Some(0.0),
+        "the objective is met and the gauge says so"
+    );
+}
