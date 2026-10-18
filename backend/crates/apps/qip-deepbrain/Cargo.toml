@@ -106,6 +106,8 @@ qip-optimization-engine.workspace = true
 # The research tests build the evidence records a connector would forward,
 # to prove a poisoned feed in the world fabric reaches the research loop.
 qip-world-model.workspace = true
+# The decline-observation sweep test builds the refused order a gate vetoes.
+qip-execution-engine.workspace = true
 
 [lints]
 workspace = true
