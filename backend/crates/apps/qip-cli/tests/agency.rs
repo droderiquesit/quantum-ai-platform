@@ -148,6 +148,21 @@ fn request(window: u64) -> Value {
 fn acting(window: u64) -> Value {
     let mut document = request(window);
     document["act_as"] = json!("market");
+    // A pass acts only over a plan simulated against counterfactual
+    // branches (R12-MODEL-4014): the desk's structural model, two scenarios.
+    document["structural"] = json!({
+        "models": [{
+            "name": "desk",
+            "links": [{"cause": "quote_size", "effect": "spread", "coefficient": -0.6}],
+            "intercepts": {"spread": 6.0}
+        }],
+        "scenarios": [
+            {"name": "calm", "exogenous": {}},
+            {"name": "stressed", "exogenous": {"spread": 3.0}}
+        ],
+        "objective": {"variable": "spread", "direction": "decrease"},
+        "actuation": {"quoter": 10.0}
+    });
     document["widening"] = json!({
         "class": "market",
         "approver": {"name": "risk-officer", "authorities": ["agency:widen-autonomy"]},
@@ -341,6 +356,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::Executed { .. } => "executed",
             AgencyRecord::ToolDecision { .. } => "tool",
             AgencyRecord::VoiceReleased { .. } => "voice",
+            AgencyRecord::IntentRecorded { .. } => "intent",
             AgencyRecord::Learned { .. } => "learned",
             AgencyRecord::LearningWithheld { .. } => "learning withheld",
             AgencyRecord::PassConcluded { .. } => "concluded",
@@ -356,6 +372,8 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             "goal",
             "plan",
             "executed",
+            // R12-CONTRACT-7082: the §27 intent of the cleared step.
+            "intent",
             "tool",
             // R12-AGENCY-1064: what the admitted step said, as whom, so a
             // restart still knows who said it.

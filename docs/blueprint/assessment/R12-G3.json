@@ -1092,9 +1092,10 @@
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3268 every_deployable_has_its_own_cloud_run_identity",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2354 no_workload_runs_as_the_projects_default_compute_identity",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_service_account_terraform_creates_runs_something_or_signs_something",
+      "backend/crates/tests/qip-acceptance/tests/workload_identity.rs::every_workload_identity_holds_only_the_roles_its_allow_list_names"
     ],
-    "gap": "Per-workload identity is enforced; grant minimality ('only the grants it uses') is not tested per workload.",
+    "gap": "The role allow lists for the Cloud Run workload module, the execution node, qip-ledgerd and the fabric broker are committed in workload_identity.rs and compared for equality, so a widened identity is a diff to a test (2026-10-18). Not covered: the CI, infra, build, image-bake, console, landing, model-pack-publisher and GitOps control-plane accounts, and any evidence that each held role is actually used (a pinned list is a ceiling, not a use measurement).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1102,10 +1103,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test workload_identity",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Identity separation is tested (thinly); 'only the grants it uses' per workload has no assertion."
+    "notes": "Mutations 2026-10-18, restored: a roles/editor binding appended to the ledgerd module failed the allow-list test naming the file; the scan is also run on mutated copies adding roles/owner and roles/storage.objectAdmin to each listed file."
   },
   {
     "id": "R12-SEC-10051",
@@ -1132,14 +1133,14 @@
   },
   {
     "id": "R12-SEC-10052",
-    "status": "PARTIAL",
-    "current": "KMS key ring/keys with rotation and destroy protection, tested; attestor signs with KMS. No test proves the running package needs no KMS call.",
+    "status": "COMPLETE",
+    "current": "Neither qip-edge nor qip-edge-node names Cloud KMS in any source file or manifest, so a running cell's pass needs no key service: it verifies packages against the committed trust bundle (public keys only) and signing happens in the centre. security_controls.rs::the_edge_decision_path_names_no_kms_client refuses a KMS mention in either crate.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs the_edge_decision_path_names_no_kms_client",
       "infrastructure/terraform/modules/secrets/main.tf:28 google_kms_key_ring platform",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3499 every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3499 every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed"
     ],
-    "gap": "Runtime-independence-from-KMS test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1147,10 +1148,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure --test security_controls",
+    "verification": "cd backend && cargo test -p qip-acceptance --test security_controls -- the_edge_decision_path_names_no_kms_client",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutation: a comment naming qip_transport::kms::KmsSigner appended to qip-edge/src/cell.rs failed the test naming that file; restored byte for byte. The scan is textual and includes comments by design; a KMS call reached only through a crate the cell depends on would pass, and the dependency tests on the edge graph are what hold that. The edge node is not deployed in any environment."
   },
   {
     "id": "R12-SEC-10053",
@@ -1310,14 +1311,16 @@
   },
   {
     "id": "R12-ARCH-10061",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "catalogue.tf holds one entry per Cloud Run workload (binary, plane, trust zone, traffic, variables, secrets) with acceptance tests on parity; no degraded-mode or scaling-model field, and VMs/managed stores are outside it.",
     "evidence": [
       "infrastructure/terraform/catalogue.tf:1-30 workload catalogue",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_deployable_binary_in_the_workspace_has_a_workload",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held",
+      "infrastructure/terraform/catalogue.tf state_owner/scaling/degraded_mode on api, fastbrain, deepbrain",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::every_catalogue_workload_states_its_state_owner_its_scaling_and_its_degraded_mode"
     ],
-    "gap": "Add state owner, protocol, scaling and degraded-mode fields and cover non-Cloud-Run services.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1325,10 +1328,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "verification": "cd backend && cargo test -p qip-acceptance --test infrastructure -- state_owner pinned_to_one blanked_contract; cd infrastructure/terraform && terraform init -backend=false && terraform validate",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18: the three fields are written on every Cloud Run catalogue entry, a second test refuses prose that contradicts max_instances (capped at one yet described as horizontal, or the reverse), and a third runs the scan on mutated copies. `terraform validate` on the root: `Success! The configuration is valid.` Mutation, restored: fastbrain's degraded_mode blanked failed the first test naming the workload. OpenObserve is instantiated outside the catalogue and is not covered."
   },
   {
     "id": "R12-FABRIC-10062",
@@ -1380,12 +1383,14 @@
   {
     "id": "R12-MODEL-10064",
     "status": "PARTIAL",
-    "current": "qip-training builds Vertex job specs and has a cadence; no Spot/preemptible scheduling found.",
+    "current": "Every TrainingSpec carries JobScheduling (queue, Capacity OnDemand|Spot, JobPriority Critical|Standard), validated by TrainingSpec::validate, which refuses a critical job on Spot. VertexAiProvider writes jobSpec.scheduling.strategy SPOT for an interruptible custom-container job and STANDARD otherwise, refuses Spot for an AutoML workload, and with_quotas(QueueQuotas) refuses a submit into a full or undeclared queue before any request is sent. No deployment submits to Vertex: enable_vertex_ai is false in every environment and the deep brain fits in process with LocalTrainer.",
     "evidence": [
-      "backend/crates/services/qip-training/src/vertex.rs",
-      "backend/crates/services/qip-training/src/cadence.rs"
+      "backend/crates/services/qip-training/src/job.rs JobScheduling::validate, QueueQuotas::admit",
+      "backend/crates/services/qip-training/src/vertex.rs request_body scheduling.strategy; submit quota and AutoML-Spot refusals",
+      "backend/crates/services/qip-training/tests/vertex.rs an_interruptible_job_asks_vertex_for_spot_and_a_critical_one_is_never_placed_there",
+      "backend/crates/services/qip-training/tests/vertex.rs a_submit_beyond_its_queue_quota_is_refused_before_any_request"
     ],
-    "gap": "Spot scheduling and quota awareness.",
+    "gap": "No deployed provider submits a job: enable_vertex_ai=false everywhere and the deep brain's learning desk fits with LocalTrainer, so Spot placement and quota refusal are proven against a local Vertex stand-in only, not in a committed deployment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1395,10 +1400,10 @@
       "R12-MODEL-10043"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-training",
+    "verification": "cargo test -p qip-training --test vertex --test training",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations: Spot mapped to STANDARD fails the strategy assertion; `active > limit` in QueueQuotas::admit admits a second job into a queue of one. Closing needs a deployment that enables Vertex (enable_vertex_ai, a protected tfvars change) and a production caller of VertexAiProvider."
   },
   {
     "id": "R12-MODEL-10065",
@@ -1632,12 +1637,14 @@
   {
     "id": "R12-FABRIC-10076",
     "status": "PARTIAL",
-    "current": "Writer is wired in main (stale gap text), non-blocking ship tested, mTLS selectable via link_source; transport is HTTP over TLS not QUIC and control acknowledgments are not journaled.",
+    "current": "The node journals ticks, decisions, outcomes and control acknowledgments to the regional Fabric off the decision thread: the cell records PolicyApplied, HaltChanged, CapitalRenewed and RegionShareApplied journal entries, the JournalRelay carries them to the SpoolWriter, and the spool ships them on REFLEX_JOURNAL_RECORDED (P2MarketJournal). The fabric link is mutual TLS from workload certificate files or the CA-issued identity (backend/crates/apps/qip-edge-node/src/main.rs:1052-1076); plaintext only where link_source returns None, which is the local deployment that asked for it. ship returns without waiting on a stalled writer.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:1050-1090 LinkSecurity",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1052 link_source / LinkSecurity::MutualTls",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs::ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
     ],
-    "gap": "Control acknowledgments as fabric records; plaintext still allowed locally; QUIC.",
+    "gap": "QUIC only: the transport is HTTP/1.1 over mTLS, and ADR 0112 §4 admits QUIC only for a hop with a committed measurement, of which none exists. Not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1647,10 +1654,10 @@
       "R12-FABRIC-10027"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; a main-level wiring test",
+    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; cargo test -p qip-edge-node --test decision_loop acknowledged_on_the_fabric_spool",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Statement lists control acks, which are missing."
+    "notes": "Re-graded 2026-10-18 by lane L09: 'control acknowledgments are not journaled' was stale (policy acks reach the spool since e3d7bebb). Added the halt half; mutation: removing the HaltChanged record from Cell::apply_polled_halt made the new test abort on its watchdog; restored byte for byte. Kept PARTIAL because the statement names QUIC and the accepted ADR declines it for now; closing it is an ADR or measurement decision, not code."
   },
   {
     "id": "R12-FABRIC-10077",
@@ -2794,13 +2801,14 @@
   {
     "id": "R12-RES-10126",
     "status": "PARTIAL",
-    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry; the Fabric-keeps-journaling half is unwired; no cross-region cover.",
+    "current": "Node-level tests prove identical passes when the centre stops answering and stepwise narrowing to stop at envelope expiry (degraded.rs). Since 2026-10-18 the Fabric half is proven through the node's decision loop: with a centre that accepts and never answers, the cell keeps placing orders, applies no new policy, and its OrderSent journal entries reach the fabric spool the drain ships from; the drain to the regional broker is a separate thread and endpoint (fabric_envelope.rs).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342"
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs::a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_envelope_expires",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_the_sink_sends_is_read_back_from_the_broker_as_the_same_envelopes"
     ],
-    "gap": "Fabric journaling during outage; deployment.",
+    "gap": "Other regions covering eligible functions is deployment work (cross-region cover needs deployed cells); no execution node is deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2810,10 +2818,10 @@
       "R12-RES-10124"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage",
+    "verification": "cargo test -p qip-edge-node --test degraded --test reasoning_outage; cargo test -p qip-edge-node --test decision_loop a_cell_whose_centre_has_gone_silent",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the 'Fabric journaling during outage' half is now tested. Mutation: skipping Cell::flush in DecisionLoop::turn until the mesh worker has a health reading (which a silent centre never gives) made the test abort on its watchdog; restored byte for byte. Kept PARTIAL for cross-region cover."
   },
   {
     "id": "R12-RES-10127",
@@ -3956,16 +3964,16 @@
   },
   {
     "id": "R12-ARCH-10176",
-    "status": "PARTIAL",
-    "current": "DecisionLoop with MeshWorker thread and outbox relay decouples mesh/journal from the pass; tests show stalled journal store and unreachable peer do not hold the decision thread.",
+    "status": "COMPLETE",
+    "current": "DecisionLoop runs the pass on the decision thread and reaches every remote only through a bounded non-blocking seam: the centre through MeshWorker on its own qip-mesh-link thread (backend/crates/apps/qip-edge-node/src/main.rs:1236, take_inbound try_recv at src/mesh.rs:681), other regions through qip_peer_link's ReflexPort, and the journal's store through the JournalRelay thread. No warm service, Spanner, Bigtable, Redis, BigQuery or model call exists on the node's turn. With a centre and a peer that accept and never answer and the journal store stalled, all at once, forty turns run passes that place local orders in bounded time.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:919-947 flush and mesh exchange_with_installers run before run_pass on the same thread",
-      "backend/crates/apps/qip-edge-node/src/main.rs:955-965 run_pass",
-      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs:342",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_contracting.rs:92 fabric_003 (tautological)",
-      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread"
+      "backend/crates/apps/qip-edge-node/src/main.rs:1236 with_mesh(MeshWorker::spawn)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:681 take_inbound try_recv",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal"
     ],
-    "gap": "No test stalling the central exchange (hanging centre) or all remote dependencies at once with bounded pass latency.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3973,10 +3981,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "a qip-edge-node test with a stalled mesh peer measuring pass latency",
+    "verification": "cargo test -p qip-edge-node --test decision_loop a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn",
     "work_item": "",
     "size": "M",
-    "notes": "Doc comments elsewhere say the scrape/flush is 'not the order path'; in main.rs the pass shares that loop. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L09; the evidence citing main.rs:919-947 as an inline exchange was stale. The test's longest turn is held under 250 ms against a 15 s transport read timeout, and it asserts the passes placed orders: the file's rig grant had no exposure bounds, so every turn in decision_loop.rs was refused at envelope_unbounded until the grant was bounded as tests/pass.rs bounds it (R12-CAPITAL-4088); all eleven decision_loop tests pass with it. Mutation: MeshWorker::take_inbound try_recv -> blocking recv made the test abort on the drive watchdog (SIGABRT); restored byte for byte."
   },
   {
     "id": "R12-FABRIC-10177",
@@ -4639,14 +4647,15 @@
   },
   {
     "id": "R12-OBS-10204",
-    "status": "PARTIAL",
-    "current": "PassLog bounds per-event stderr to 5 per 10 s and metrics are in-memory; but the edge node renders scrapes on the same single thread that runs the pass, so a slow scrape client delays the next pass.",
+    "status": "COMPLETE",
+    "current": "Per-event stderr is sampled by PassLog (5 lines per 10 s) and written through a non-blocking DetachedSink; metrics are an in-memory registry. The register's 'scrapes render on the pass thread' was stale: main.rs runs the first turn, then health::spawn (backend/crates/apps/qip-edge-node/src/health.rs:69) serves probes and scrapes on its own qip-health thread (main.rs:1251) while DecisionLoop::turn runs on the main thread, sharing only the Metrics registry and a try_lock HealthSnapshot.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:874",
-      "backend/crates/apps/qip-edge-node/src/main.rs:878-1000 single-threaded loop serving probes and passes",
-      "backend/crates/libs/qip-observability/src/metrics.rs"
+      "backend/crates/apps/qip-edge-node/src/health.rs:69 spawn on HEALTH_THREAD",
+      "backend/crates/apps/qip-edge-node/src/main.rs:1251 health::spawn after the first turn",
+      "backend/crates/apps/qip-edge-node/src/pass.rs PassLog, DetachedSink",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_scrape_client_that_connects_and_never_speaks_holds_the_health_thread_and_not_the_passes"
     ],
-    "gap": "Move pass off the health-serving thread.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4656,10 +4665,10 @@
       "R12-ARCH-10176"
     ],
     "blocked_by": "",
-    "verification": "test with a slow scrape client measuring pass cadence",
+    "verification": "cargo test -p qip-edge-node --test pass a_scrape_client_that_connects_and_never_speaks",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09: the earlier gap was stale. The test holds a scrape connection silent for the 3 s request timeout and runs twenty passes into the scraped registry meanwhile, asserting every pass ran inside the stall, none took a quarter of the timeout, and the scrape after it carries the twenty. Mutation: serving the listener inline in health::spawn before spawning the thread made the test abort on its watchdog (SIGABRT); restored byte for byte."
   },
   {
     "id": "R12-REFLEX-10205",

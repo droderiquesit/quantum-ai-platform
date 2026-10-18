@@ -164,3 +164,115 @@ run "a_single_region_archive_is_refused_before_any_retention_class_is_planned" {
 
   expect_failures = [var.bucket_location]
 }
+
+# --- The regional segment store and the simulation bucket ------------------
+#
+#
+# R12-DATA-8124 asks for a regional store for sealed tick and internal replay
+# segments; R12-DATA-7013 asks for a bucket per artifact class with retention
+# set, naming simulation outputs and reproducible campaign datasets. Both are
+# plan checks, so the provider is mocked. `condition` and `action` are set
+# blocks and cannot be indexed; the assertions iterate them, as the runs
+# above do and for the reason the header gives.
+#
+# The file-level variables below apply to every run in the file, and a run's
+# own variables override them; the runs above set every variable they read,
+# so only the runs below take these values.
+
+variables {
+  project_id           = "test-project"
+  environment          = "test"
+  region               = "us-central1"
+  enable_cloud_storage = true
+  enable_bigquery      = false
+  enable_alloydb       = false
+  enable_memorystore   = false
+  key_ring_id          = "/projects/test-project/locations/us-central1/keyRings/test"
+  network_id           = "projects/test-project/global/networks/default"
+  labels               = {}
+}
+
+run "the_segment_store_is_regional_keyed_and_expires_what_it_holds" {
+  command = plan
+
+  assert {
+    condition     = upper(google_storage_bucket.segments[0].location) == upper(var.region)
+    error_message = "The segment store must sit in the deployment's region, not a multi-region (R12-DATA-8124)."
+  }
+
+  # The key reference is unknown under a mocked provider, so the CMEK half is
+  # held by qip-acceptance's security_controls suite, which reads the file.
+
+  assert {
+    condition     = google_storage_bucket.segments[0].retention_policy[0].retention_period == 604800
+    error_message = "The segment store must hold each segment at least seven days, so compaction reads it before anyone can delete it."
+  }
+
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.segments[0].lifecycle_rule : rule
+      if anytrue([for c in rule.condition : c.age == 30]) && anytrue([for a in rule.action : a.type == "Delete"])
+    ]) == 1
+    error_message = "The segment store must expire segments at 30 days; it is a regional copy, not the record."
+  }
+}
+
+run "the_simulation_bucket_bounds_outputs_and_keeps_campaigns_and_manifests" {
+  command = plan
+
+  assert {
+    condition     = google_storage_bucket.simulation[0].retention_policy[0].retention_period == 2592000
+    error_message = "The simulation bucket must carry a thirty-day retention policy (R12-DATA-7013)."
+  }
+
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.simulation[0].lifecycle_rule : rule
+      if anytrue([for c in rule.condition : contains(coalesce(c.matches_prefix, []), "outputs/") && c.age == 90]) &&
+      anytrue([for a in rule.action : a.type == "Delete"])
+    ]) == 1
+    error_message = "Simulation outputs must be deleted at 90 days (R12-DATA-7013)."
+  }
+
+  # A campaign dataset is what makes a result reproducible: no rule naming
+  # its prefix may delete it, and one must move it to a colder class.
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.simulation[0].lifecycle_rule : rule
+      if anytrue([for c in rule.condition : contains(coalesce(c.matches_prefix, []), "campaigns/")]) &&
+      anytrue([for a in rule.action : a.type == "Delete"])
+    ]) == 0
+    error_message = "No lifecycle rule may delete a campaign dataset (R12-DATA-7013)."
+  }
+
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.simulation[0].lifecycle_rule : rule
+      if anytrue([for c in rule.condition : contains(coalesce(c.matches_prefix, []), "campaigns/")]) &&
+      anytrue([for a in rule.action : a.type == "SetStorageClass"])
+    ]) == 1
+    error_message = "Campaign datasets must carry a storage-class rule, so retention is set rather than absent."
+  }
+
+  assert {
+    condition = length([
+      for rule in google_storage_bucket.simulation[0].lifecycle_rule : rule
+      if anytrue([for c in rule.condition : contains(coalesce(c.matches_prefix, []), "manifests/")]) &&
+      anytrue([for a in rule.action : a.type == "Delete"])
+    ]) == 0
+    error_message = "No lifecycle rule may delete a manifest; it names exactly what ran."
+  }
+}
+
+run "cloud_storage_disabled_plans_neither_bucket" {
+  command = plan
+
+  variables {
+    enable_cloud_storage = false
+  }
+
+  assert {
+    condition     = length(google_storage_bucket.segments) == 0 && length(google_storage_bucket.simulation) == 0
+    error_message = "Neither bucket may be planned with Cloud Storage disabled."
+  }
+}

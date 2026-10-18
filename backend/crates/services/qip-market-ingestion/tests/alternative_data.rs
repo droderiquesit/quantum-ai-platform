@@ -1269,3 +1269,38 @@ fn a_record_cap_above_the_ceiling_is_refused_at_construction_and_the_ceiling_is_
         "the ceiling itself was refused"
     );
 }
+
+/// R12-DATA-2014: an alternative-data fetch distils the vendor's body into
+/// readings and keeps no copy of it — the more so because these feeds are
+/// licensed tightly. A canary sent beside the reading, in a field no decoder
+/// reads, must reach no record, in debug or serialised form, and nothing the
+/// adapter holds. The premise half proves the canary crossed the socket
+/// inside the served bytes. Mutated by writing the whole body into the
+/// reading's `metric`; the record then carries the canary.
+#[test]
+fn a_canary_in_an_alternative_data_body_is_found_in_no_record_the_adapter_emits() {
+    const CANARY: &str = "CANARY-77e0b4d5-not-for-retention";
+    let body = READING.replacen('{', &format!("{{\"note\": \"{CANARY}\", "), 1);
+    assert!(body.contains(CANARY) && !READING.contains(CANARY));
+    let (server, mut adapter) = adapter_serving(&body);
+
+    let records = adapter.poll(poll_instant()).expect("the poll succeeds");
+
+    assert_eq!(server.served(), 1, "premise: the body crossed a socket");
+    assert_eq!(records.len(), 1, "premise: the reading was distilled");
+    assert!(
+        !format!("{records:?}").contains(CANARY),
+        "a record carried the body"
+    );
+    for record in &records {
+        let json = serde_json::to_string(record).expect("a record serialises");
+        assert!(
+            !json.contains(CANARY),
+            "a serialised record carried the body"
+        );
+    }
+    assert!(
+        !format!("{adapter:?}").contains(CANARY),
+        "the adapter retained the body"
+    );
+}

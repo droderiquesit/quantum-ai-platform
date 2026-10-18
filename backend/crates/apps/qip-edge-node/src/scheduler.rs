@@ -67,8 +67,8 @@ use crate::event_fabric::writer::PassInputs;
 use crate::feed::{SIMULATED_FEED, SimulatedFeed};
 use crate::gateway::NodeGateway;
 use crate::health::HealthSnapshot;
-use crate::mesh::{MeshHealth, MeshWorker, apply_inbound};
-use crate::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use crate::mesh::{MAX_INBOUND_CAPACITY, MeshHealth, MeshInbound, MeshWorker, apply_inbound};
+use crate::pass::{DetachedSink, PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use crate::reprice::Requoter;
 use crate::rollback::{RollbackOutcome, RollbackWire};
 use crate::share::RegionShareStatus;
@@ -264,6 +264,12 @@ pub struct DecisionLoop {
     poller: Option<Poller>,
     rollback: Option<RollbackWire>,
     mesh: Option<MeshWorker>,
+    /// Polls whose capital and policy the loop is holding because the
+    /// fabric could not journal their application (RES-7113). Their halts
+    /// were applied on arrival. Bounded by [`MAX_INBOUND_CAPACITY`]: past it
+    /// the loop stops taking from the worker, which then waits on its own
+    /// thread, so nothing the centre sent is dropped.
+    held_control: std::collections::VecDeque<MeshInbound>,
     mesh_health: Option<MeshHealth>,
     peers: Option<ReflexPort>,
     peer_series: Option<PeerSeries>,
@@ -276,6 +282,9 @@ pub struct DecisionLoop {
     drain: Option<DrainThread>,
     meter: Option<PassMeter>,
     pass_log: PassLog,
+    /// Where `pass_log` writes: stderr behind a bounded handoff, so a
+    /// stalled log reader never holds the decision thread (OBS-9142).
+    log_sink: DetachedSink,
     stats: PassStats,
     last_report: WorkReport,
     last_pressure: Option<JournalPressure>,
@@ -285,6 +294,11 @@ pub struct DecisionLoop {
     refused_flushes: u64,
     turns: u64,
 }
+
+/// Log lines the decision loop holds for the stderr writer thread. Sixteen
+/// is three windows of the pass log's sample rate: a reader behind by more
+/// than that has stopped, and the lines past it are dropped and counted.
+const LOG_LINES_IN_FLIGHT: usize = 16;
 
 impl DecisionLoop {
     /// A loop over `cell` and `gateway`, journaling through `outbox` under
@@ -329,6 +343,7 @@ impl DecisionLoop {
             poller: None,
             rollback: None,
             mesh: None,
+            held_control: std::collections::VecDeque::new(),
             mesh_health: None,
             peers: None,
             peer_series: None,
@@ -339,6 +354,7 @@ impl DecisionLoop {
             drain: None,
             meter: None,
             pass_log: PassLog::new(5, qip_core::Duration::from_secs(10))?,
+            log_sink: DetachedSink::spawn(std::io::stderr(), LOG_LINES_IN_FLIGHT)?,
             stats: PassStats::default(),
             last_report: WorkReport::default(),
             last_pressure: None,
@@ -395,6 +411,13 @@ impl DecisionLoop {
     }
 
     #[must_use]
+    /// Write the pass log through `sink` instead of stderr, so a test can
+    /// stand a slow reader behind the loop.
+    pub fn with_log_sink(mut self, sink: DetachedSink) -> Self {
+        self.log_sink = sink;
+        self
+    }
+
     pub fn with_mesh(mut self, worker: MeshWorker) -> Self {
         self.mesh = Some(worker);
         self
@@ -502,7 +525,7 @@ impl DecisionLoop {
                 Some(meter) => meter.measure(pass),
                 None => pass(),
             };
-            self.pass_log.write(now, &outcome, &mut std::io::stderr());
+            self.pass_log.write(now, &outcome, &mut self.log_sink);
             match outcome {
                 Ok(PassOutcome::Ran { report, .. }) => {
                     self.last_report = *report;
@@ -647,7 +670,41 @@ impl DecisionLoop {
         let Some(mesh) = &self.mesh else {
             return;
         };
-        for inbound in mesh.take_inbound() {
+        // RES-7113: on fabric loss new control changes stop. A spool that
+        // reads exhausted — full, unwritable, stale or fenced — cannot
+        // journal the PolicyApplied or CapitalRenewed entry an application
+        // would write, and a control change nobody can later read back is a
+        // change the event log cannot replay. So the loop holds the poll's
+        // capital and policy, applies its halts at once (a halt never waits),
+        // and applies the held remainder in arrival order once the spool
+        // reads anything but exhausted.
+        let frozen = state_of(self.outbox.gauge.read().pressure) == PressureState::Exhausted;
+        if !frozen {
+            while let Some(held) = self.held_control.pop_front() {
+                let tick = apply_inbound(
+                    &mut self.cell,
+                    held,
+                    now,
+                    self.installer.as_mut(),
+                    self.strategies.as_mut(),
+                );
+                if !tick.is_quiet() {
+                    eprintln!("qip-edge-node: held mesh control applied: {tick:?}");
+                }
+            }
+        }
+        let room = if frozen {
+            MAX_INBOUND_CAPACITY.saturating_sub(self.held_control.len())
+        } else {
+            MAX_INBOUND_CAPACITY
+        };
+        for mut inbound in mesh.take_inbound_at_most(room) {
+            if frozen {
+                inbound.apply_halts(&mut self.cell, now);
+                self.telemetry.control_refused("fabric_exhausted");
+                self.held_control.push_back(inbound);
+                continue;
+            }
             let tick = apply_inbound(
                 &mut self.cell,
                 inbound,
@@ -659,6 +716,11 @@ impl DecisionLoop {
                 eprintln!("qip-edge-node: mesh exchange: {tick:?}");
             }
         }
+    }
+
+    /// Polls whose capital and policy are held until the fabric recovers.
+    pub fn held_control(&self) -> usize {
+        self.held_control.len()
     }
 
     fn apply_plan(&mut self, now: Timestamp) {

@@ -128,6 +128,36 @@ variable "enable_spanner" {
   default     = false
 }
 
+variable "spanner_min_processing_units" {
+  description = <<-EOT
+    The autoscaler's floor for the ledger's Spanner instance.
+
+    Refused below 1000 (one node): the ledger's peak is the close, when
+    reconciliation reads every book at once, and an autoscaler that starts
+    from a sliver of a node scales after the commits have already queued.
+    Whole nodes only, because above 1000 Spanner accepts processing units in
+    multiples of 1000 and a plan carrying 1500 is refused at apply instead.
+  EOT
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = var.spanner_min_processing_units >= 1000 && var.spanner_min_processing_units % 1000 == 0
+    error_message = "spanner_min_processing_units must be a whole number of nodes (a multiple of 1000) and at least 1000; the ledger's floor is sized for the close, not for a quiet hour."
+  }
+}
+
+variable "spanner_max_processing_units" {
+  description = "The autoscaler's ceiling for the ledger's Spanner instance, in processing units (a multiple of 1000, at least the floor)."
+  type        = number
+  default     = 3000
+
+  validation {
+    condition     = var.spanner_max_processing_units >= var.spanner_min_processing_units && var.spanner_max_processing_units % 1000 == 0
+    error_message = "spanner_max_processing_units must be a multiple of 1000 and at least spanner_min_processing_units; a ceiling below the floor leaves the autoscaler nothing to do."
+  }
+}
+
 variable "memorystore_transit_encryption" {
   description = <<-EOT
     Whether the cache requires TLS in transit.

@@ -447,3 +447,55 @@ fn gate_failures_method_returns_only_failures() {
     assert!(failures.iter().any(|f| f.check_name == "identity"));
     assert!(failures.iter().any(|f| f.check_name == "factual_support"));
 }
+
+/// R12-AGENCY-6099: a coordination pattern with no listed phrase anywhere
+/// in it is still blocked, because the gate reads the pattern rather than
+/// the vocabulary. Three shapes, each clean word for word: the same message
+/// re-cased and re-punctuated under a second identity (one voice posing as
+/// two), the same message flooded above the per-pass rate, and an action
+/// whose method is manipulative behind an innocent draft. The cross-pass
+/// form of the first is the guard's, proven in
+/// `tests/agency.rs::the_same_message_released_under_a_second_identity_in_a_later_pass_is_withheld_as_fake_consensus`.
+/// Mutation: in `checks::check_coordinated_voices`, key voices on the raw
+/// `content` instead of its `words` — the re-cased copy reads as a
+/// different message and the first assertion fails.
+#[test]
+fn a_coordination_pattern_with_no_listed_phrase_is_still_blocked() {
+    use qip_contracts::action::Method;
+    let gate = basic_gate();
+    let first = compliant_draft();
+    let mut second = compliant_draft();
+    second.id = "draft-002".to_string();
+    second.sender_identity = "exec_speaker".to_string();
+    second.content = "QUARTERLY earnings show -- stable growth!".to_string();
+    for draft in [&first, &second] {
+        assert!(
+            gate.can_release(draft),
+            "premise: each draft alone breaches no rule and no phrase"
+        );
+    }
+    let failed = gate.campaign_failures(&[&first, &second]);
+    assert!(
+        failed
+            .iter()
+            .any(|(id, f)| id == "*" && f.check_name == "coordinated_voices"),
+        "{failed:?}"
+    );
+
+    let face = |method| StepConduct {
+        tool: "press-release",
+        method,
+        draft: &first,
+    };
+    let flood = vec![face(Method::Communication); MAX_RELEASES_PER_MESSAGE + 1];
+    assert!(
+        gate.step_failure(&flood[..MAX_RELEASES_PER_MESSAGE])
+            .is_none()
+    );
+    let refused = gate.step_failure(&flood).expect("a flood is refused");
+    assert_eq!(refused.check_name, "step_conduct");
+    let refused = gate
+        .step_failure(&[face(Method::PumpAndDump)])
+        .expect("a manipulative method is refused behind a clean draft");
+    assert!(refused.reason.unwrap_or_default().contains("PumpAndDump"));
+}

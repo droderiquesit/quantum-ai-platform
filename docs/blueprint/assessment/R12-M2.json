@@ -302,13 +302,16 @@
   {
     "id": "R12-DATA-2014",
     "status": "PARTIAL",
-    "current": "ConnectorFeed's poll path keeps only the digest; a canary test proves the body reaches no journal, record or digest. The tick lake's RecordClass has no world-document variant.",
+    "current": "ConnectorFeed's poll path keeps only the digest; a canary test proves the body reaches no journal, record or digest. Since 2026-10-18 the narrative, REST and alternative-data adapters each have the equivalent proof: a canary in the served body (an article body; a field no decoder reads) crosses the socket and reaches no emitted record, debug or serialised, and nothing the adapter holds. The tick lake's RecordClass has no world-document variant.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:850-880 a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll",
-      "backend/crates/libs/qip-storage/src/lake.rs:1-6 closed RecordClass (market, internal)",
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:1015 a_canary_in_the_fetched_body_is_found_in_no_digest_record_or_journal_after_the_poll",
+      "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs:1499 a_canary_in_a_narrative_body_is_found_in_no_record_the_adapter_emits",
+      "backend/crates/services/qip-market-ingestion/tests/rest_feed.rs:999 a_canary_in_a_rest_body_is_found_in_no_record_the_adapter_emits",
+      "backend/crates/services/qip-market-ingestion/tests/alternative_data.rs:1281 a_canary_in_an_alternative_data_body_is_found_in_no_record_the_adapter_emits",
+      "backend/crates/apps/qip-fastbrain/src/feed.rs:201 the REST adapter's production construction",
       "backend/crates/libs/qip-storage/tests/lake.rs:28 a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes"
     ],
-    "gap": "Only the connector runtime path is canary-tested; the narrative, REST and alternative-data adapters have no equivalent proof.",
+    "gap": "The REST adapter runs in qip-fastbrain; the narrative and alternative-data adapters are constructed by no binary (only qip-cli's demo), so their proof stands at the adapter's record boundary and no deployed journal downstream of them exists to check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -316,10 +319,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --lib connector_feed",
+    "verification": "cargo test -p qip-market-ingestion --lib connector_feed && cargo test -p qip-market-ingestion --test narrative_feed --test rest_feed --test alternative_data a_canary",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - news headline built from headline plus wire body; whole REST body written into the trade's trade_id; whole alternative-data body written into the reading's metric: each failed 'a record carried the body'."
   },
   {
     "id": "R12-DATA-2015",
@@ -1544,7 +1547,7 @@
       "backend/crates/apps/qip-deepbrain/src/learning.rs:19-24 assemble step",
       "backend/crates/services/qip-lifecycle/src/evidence.rs:38,50 LeakageAudit"
     ],
-    "gap": "No structural guard that a feature row's knowable time precedes its label anchor across the tick pipeline.",
+    "gap": "The tick labelling pipeline has no production caller: qip-training microstructure::build_examples is called only from tests (the deep brain's tick desk replays decisions without labelling), so there is no default-path tick dataset to guard. build_examples sorts each instrument's observations by knowable instant before windowing, so a feature later than its label anchor is structurally unreachable there and a refusal could never fire. The bar pipeline on the default path already refuses look-ahead (qip-deepbrain learning.rs audit_features_as_of).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1557,7 +1560,7 @@
     "verification": "cargo test -p qip-training --test labels",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18: the triage closure (refuse a BookObservation knowable after the anchor in build_examples) was not implemented, because sorting makes that refusal unable to fire, which is a control that reads as protection and is not. Closing needs a production tick-labelling path (e.g. the tick desk building MicroExamples) and a guard on whatever field could carry a later instant there."
   },
   {
     "id": "R12-TICK-2067",
@@ -1734,12 +1737,14 @@
   {
     "id": "R12-TICK-2074",
     "status": "PARTIAL",
-    "current": "DelayedFeed, Latency and LatencySpike conditions are monotonically adverse; tapes release by known_at. Not driven by measured latency.",
+    "current": "Data-arrival delay is driven by measurement on the default path: the kernel's capacity probe runs behind Platform::calibrated_feed_delay, the largest mean of the publication delays the real sources have shown, as a DelayedFeed condition. The simulator can now calibrate both conditions from samples: MarketCondition::latency_from_measured centres the uniform latency band on the measured median (half-width the nearer of its distances to p10 and p90) and delayed_feed_from_measured takes the median; both refuse an empty or negative sample set. Decision latency is still not driven by measurement anywhere, because nothing measures it: SimulatedBroker stamps a configured acknowledgement latency and venue_measurement refuses it as untimed.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:151-157",
-      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs"
+      "backend/crates/services/qip-simulation-engine/src/conditions.rs MarketCondition::latency_from_measured, delayed_feed_from_measured",
+      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs conditions_calibrated_from_measured_samples_reproduce_the_sample_median",
+      "backend/crates/runtime/qip-kernel/src/platform.rs calibrated_feed_delay and the capacity probe's DelayedFeed",
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs the_desks_own_simulated_broker_crosses_the_port_and_is_refused_on_its_untimed_latency"
     ],
-    "gap": "Calibrate arrival/decision latency from captured telemetry.",
+    "gap": "No binary measures decision-to-arrival latency (the paper venue stamps a declared latency, which venue_measurement refuses as untimed), so latency_from_measured has no production sample set to calibrate from; closing needs a timed acknowledgement path and a caller passing its samples into the replay or capacity probe.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1750,7 +1755,7 @@
     "verification": "cargo test -p qip-simulation-engine --test market_conditions",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: a p10-to-p90 band moves the skewed samples' simulated median from 3.225ms to 12.8ms; a 0.9-quantile feed delay fails the feed assertion. The feed half was already measurement-driven before this lane (calibrated_feed_delay)."
   },
   {
     "id": "R12-TICK-2075",
@@ -1850,15 +1855,15 @@
   },
   {
     "id": "R12-TICK-2079",
-    "status": "PARTIAL",
-    "current": "Typed counterparty agents (passive, informed, momentum, competitor, maker) and conditions (illiquidity, venue outage, flash event, volatility spike, crossed market) exist, seeded and deterministic; kernel uses the synthetic market. No manipulation-pattern agent (spoofing/layering).",
+    "status": "COMPLETE",
+    "current": "The agent-based simulator models manipulation patterns: AgentKind::Spoofer shows one order of a stated size behind the calm touch on a seeded coin-flipped side and AgentKind::Layerer stacks two or more such orders step_bps apart, each cancelled in the step it was shown and recorded as FlowAction::Cancelled. Both draw from the agent's own seeded stream, withdraw under any injected condition, carry NOT_CALIBRATED_STATEMENT in their run-record rule, and are covered by the run digest. A cancelled layer is never rested in the book an order fills against. Passive, informed, momentum, competitor and maker agents and the condition set are unchanged; the kernel's capacity probe composes passive and maker agents only.",
     "evidence": [
-      "backend/crates/services/qip-simulation-engine/src/agents.rs:328-455",
-      "backend/crates/services/qip-simulation-engine/src/conditions.rs:96-165",
-      "backend/crates/services/qip-simulation-engine/tests/agents.rs:204",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13457-13465"
+      "backend/crates/services/qip-simulation-engine/src/agents.rs Behaviour::Spoofer, Behaviour::Layerer, CounterpartyAgent::show_and_cancel",
+      "backend/crates/services/qip-simulation-engine/src/market.rs FlowAction::Cancelled in the run digest and apply_flow",
+      "backend/crates/services/qip-simulation-engine/tests/agents.rs a_spoofing_agent_generates_the_same_cancelled_layers_from_the_same_seed",
+      "backend/crates/runtime/qip-kernel/src/platform.rs capacity probe with_agents"
     ],
-    "gap": "Add manipulation agents; agents are explicitly uncalibrated (NOT_CALIBRATED_STATEMENT).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1869,7 +1874,7 @@
     "verification": "cargo test -p qip-simulation-engine --test agents",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: placing every layer at step_bps collapses the ladder onto one price; drawing the side coin from a fresh seed puts every layer on one side. The layers are not added to the kernel's capacity probe because a cancelled layer never rests and so cannot change that probe's fills."
   },
   {
     "id": "R12-TICK-2080",
