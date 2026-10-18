@@ -3643,25 +3643,28 @@
   },
   {
     "id": "R12-OBS-9161",
-    "status": "PARTIAL",
-    "current": "Golden-signal names (service requests/errors/latency/saturation) registered and recorded by deepbrain; mesh circuit state recorded on edge; workloads are Cloud Run.",
+    "status": "COMPLETE",
+    "current": "Four service objectives are declared in critical_paths::service_objectives and evaluated at runtime: service-request-latency (p99 under 1000 ms over a day, SERVICE_LATENCY_MS), service-error-rate (99 percent, SERVICE_REQUESTS less SERVICE_ERRORS through the new SourceRule::TotalLessCounter) and service-saturation (readings at or under 0.8 of capacity, SERVICE_SATURATION_CHECKS counted in GoldenSignals::saturation) are evaluated by the deep brain against the registry that records the golden signals; mesh-circuit-closed (99 percent, EDGE_MESH_CIRCUIT_CHECKS counted in MeshSeries::observe) is evaluated by the node on every /metrics scrape. Pod disruption is named not applicable to Cloud Run in NOT_APPLICABLE_SERVICE_OBJECTIVES.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs:852-856",
-      "backend/crates/apps/qip-deepbrain/src/node.rs",
-      "backend/crates/libs/qip-observability/src/golden.rs"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs service_objectives, SourceRule::TotalLessCounter, NOT_APPLICABLE_SERVICE_OBJECTIVES, evaluate_where",
+      "backend/crates/libs/qip-observability/src/golden.rs GoldenSignals::saturation counts SERVICE_SATURATION_CHECKS",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs MeshSeries::observe counts EDGE_MESH_CIRCUIT_CHECKS",
+      "backend/crates/apps/qip-deepbrain/src/operations.rs evaluates every non-edge-node objective into the platform registry",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs the_mesh_circuit_objective_is_measured_from_judged_readings_of_the_circuit"
     ],
-    "gap": "Declare the missing objectives, record them, and prove ingestion.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-acceptance --test slo the_service_objectives_are_declared_on_the_golden_signals_and_measured_when_their_series_move; cargo test -p qip-edge-node --lib mesh_circuit; cargo test -p qip-observability --test critical_paths",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22. The targets (0.99, 1000 ms, 0.8) are declared, not measured; nothing has run long enough to say what a healthy deep brain does. Mutations that fired: stop subtracting errors in TotalLessCounter (error-rate reads 1.0); delete the SERVICE_SATURATION_CHECKS count (saturation stays unmeasured); count every circuit reading as closed (mesh test reads 1.0). critical_paths::evaluate now returns the service objectives after the eight critical paths, so tests/critical_paths.rs asserts the sum. No ingestion of these series is shown anywhere: workload_metrics_exist is still false and the node is not deployed."
   },
   {
     "id": "R12-OBS-9162",
