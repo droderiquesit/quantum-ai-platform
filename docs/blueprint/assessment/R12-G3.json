@@ -2304,13 +2304,16 @@
   },
   {
     "id": "R12-REFLEX-10105",
-    "status": "PARTIAL",
-    "current": "Cells apply policy payloads by sequence and refuse lower sequences; ModelPack names a rollback_parent but nothing in edge or apps uses ModelPack; no activation epoch.",
+    "status": "COMPLETE",
+    "current": "A package is the compiled plan a verified policy payload names by digest. PlanCompiler reads and compiles it off the decision thread and hands it across a bounded Handoff; Handoff::boundary activates it only at a pass boundary (StrategyInstaller::activate, then install_compiled, which deploys only the plan the fresh payload names and refuses a digest or count mismatch). Since 2026-10-18 the installer keeps the plan it replaced resident as its parent (backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller.parent), and a payload naming the parent, as Cell::roll_back_policy produces for the operator's rollback wire, redeploys it at the next install with no file read or compile; the plan rolled away from becomes the parent in turn.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:295-311 ModelPack.rollback_parent (unused by edge)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:623 StrategyInstaller"
+      "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::activate, install_compiled, parent_digest",
+      "backend/crates/apps/qip-edge-node/src/control.rs Handoff::boundary",
+      "backend/crates/apps/qip-edge-node/src/rollback.rs rollback wire",
+      "backend/crates/apps/qip-edge-node/tests/control.rs::a_package_is_read_and_compiled_off_the_decision_thread_and_activated_at_a_pass_boundary",
+      "backend/crates/apps/qip-edge-node/tests/strategies.rs::a_rollback_to_the_previous_payload_redeploys_its_plan_from_memory_at_the_next_install"
     ],
-    "gap": "Epoch-based atomic activation and rollback.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2320,10 +2323,10 @@
       "R12-REFLEX-10085"
     ],
     "blocked_by": "",
-    "verification": "unit tests in qip-edge",
+    "verification": "cargo test -p qip-edge-node --test strategies --test control",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09. The earlier text looked for ModelPack.rollback_parent; the reflex package the node runs is the compiled plan, and its rollback rides the policy payload's. Mutation: removing the parent/compiled swap in install_compiled left the rollback blocked ('the compiled plan in hand is <B> and the fresh payload names <A>') with nothing on disk to recompile from, failing the test; restored byte for byte."
   },
   {
     "id": "R12-EVID-10106",

@@ -944,7 +944,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:628",
       "backend/crates/apps/qip-edge-node/tests/strategies.rs"
     ],
-    "gap": "opportunity_definitions slot not consumed; not deployed.",
+    "gap": "Opportunity detectors do not exist as a concept to consume: PolicyPayload::opportunity_definitions (qip-contracts policy.rs:1016, OpportunityManifest at :626, id to definition digest) is never read outside qip-contracts, nothing produces it, and neither qip-strategy's compiled plan nor qip-edge names a detector (no 'detector' identifier in qip-strategy/src, qip-edge/src or qip-edge-node/src). Closing it needs a detector definition in the compiled plan, a centre producer for the manifest, and the installer gating on it; that is a contract design (an ADR), not a wiring change. Not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -955,7 +955,7 @@
     "verification": "cargo test -p qip-edge-node --test strategies",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: the triage closure ('StrategyInstaller consumes OpportunityManifest so a plan's detectors deploy only when the manifest names them') presupposed detectors in the plan; there are none, so gating them would gate nothing. The compiled-strategy half of the statement is met by StrategyInstaller and tests/strategies.rs."
   },
   {
     "id": "R12-MESH-5042",
