@@ -429,6 +429,23 @@ pub enum Decision {
     /// the usual answer, and the answer belongs in the chain, not in the
     /// node's log.
     StrategyWithdrawn { strategy: String },
+    /// A venue's feed began, or stopped, stamping its messages ahead of the
+    /// cell's own clock by more than the cell tolerates.
+    ///
+    /// A venue time later than the instant the cell captured the message is
+    /// not latency, which is never negative: one of the two clocks is wrong,
+    /// and the cell cannot tell which from one venue alone. Recorded on the
+    /// transition only, in the register of [`Self::FeedSilent`] and
+    /// [`Self::FeedReconciled`], so the chain says when orders to the venue
+    /// stopped and when they resumed. `skew_ms` is the largest the venue led
+    /// by in the batch that moved the state and `limit_ms` the bound it was
+    /// judged against, so the entry can be checked from itself.
+    ClockSkew {
+        venue: String,
+        skewed: bool,
+        skew_ms: i64,
+        limit_ms: i64,
+    },
     /// A strategy's plan was admitted to the cell, with the identity of
     /// everything it will run: the plan's own digest and the digest of each
     /// learned model it carries.
@@ -702,6 +719,7 @@ impl Decision {
             Self::CycleAbandoned { .. } => "cycle_abandoned",
             Self::StrategyWithdrawn { .. } => "strategy_withdrawn",
             Self::PlanAdmitted { .. } => "plan_admitted",
+            Self::ClockSkew { .. } => "clock_skew",
             Self::RegionShareApplied { .. } => "region_share_applied",
             Self::RegionOutlookChanged { .. } => "region_outlook_changed",
             Self::ReconciliationRequired { .. } => "reconciliation_required",

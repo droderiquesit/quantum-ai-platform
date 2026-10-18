@@ -28,7 +28,7 @@ use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::{ArbitrageDesk, MAX_CYCLES_PER_PASS};
-use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, ExecutionReport, GATE_CLOCK_SKEW, Placer, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{Granularity, VenueModel};
 use qip_edge::policy::VerifiedPolicy;
@@ -36,6 +36,8 @@ use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_orderbook::venue::VenueState;
+use qip_protocols::FeedKey;
+use qip_protocols::decoder::{Decoder, Diagnostics};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -1433,6 +1435,85 @@ fn a_three_leg_cycle_whose_third_leg_is_refused_sends_one_offsetting_order_per_f
     assert!(
         cell.is_halted(),
         "the cell kept trading after a broken cycle"
+    );
+    Ok(())
+}
+
+/// A feed that repeats ETHUSDT's best bid exactly as the book holds it, so the
+/// book is unchanged, stamped `lead` ahead of the cell's capture instant.
+#[derive(Debug)]
+struct LeadingDecoder {
+    lead: Duration,
+    diagnostics: Diagnostics,
+}
+
+impl Decoder for LeadingDecoder {
+    fn decode(&mut self, _bytes: &[u8], captured_at: Timestamp) -> Result<Vec<MarketMessage>> {
+        Ok(vec![MarketMessage::new(
+            object("ETHUSDT"),
+            Origin::new(venue(), "feed-a", 0, 1),
+            MessageBody::LevelSet {
+                side: BookSide::Bid,
+                price: d("3000"),
+                quantity: d("200"),
+                order_count: None,
+            },
+            captured_at.saturating_add(self.lead),
+            captured_at,
+        )])
+    }
+    fn protocol(&self) -> &str {
+        "leading"
+    }
+    fn consumed(&self) -> usize {
+        1
+    }
+    fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+}
+
+fn desk_cell_hearing(lead: Duration) -> Result<Cell> {
+    let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    cell.protocols_mut().register(
+        venue(),
+        "feed-a",
+        Box::new(LeadingDecoder {
+            lead,
+            diagnostics: Diagnostics::default(),
+        }),
+    )?;
+    cell.on_bytes(&FeedKey::new(venue(), "feed-a"), b"x", t(9))?;
+    Ok(cell)
+}
+
+#[test]
+fn the_desk_opens_no_cycle_while_a_venues_clock_cannot_be_placed_against_the_cells() -> Result<()> {
+    // The failure this prevents: a cycle is a claim about the order two
+    // venues' prices stood in at one instant, and with a venue's clock ahead
+    // of the cell's that order is unknown. §6.2's clock row switches off the
+    // strategies that depend on it.
+    let mut level = desk_cell_hearing(Duration::ZERO)?;
+    let mut gateway = RecordingGateway::default();
+    let report = level.work(t(10), &mut gateway)?;
+    // Premise: with the clock level the same books and the same desk send the
+    // triangle, so the pause below is the clock's doing and not the books'.
+    assert_eq!(report.orders.len(), 3, "the premise failed: {report:?}");
+
+    let mut skewed = desk_cell_hearing(Duration::from_secs(2))?;
+    let mut gateway = RecordingGateway::default();
+    let report = skewed.work(t(10), &mut gateway)?;
+    assert!(
+        report.orders.is_empty() && gateway.placed.is_empty(),
+        "a cycle went out on a clock the cell could not place: {report:?}"
+    );
+    let refusals = refusals_under(&report, GATE_CLOCK_SKEW);
+    assert!(
+        refusals
+            .iter()
+            .any(|reason| reason.contains("the arbitrage desk pauses while a venue's clock")),
+        "the desk did not pause on the clock row: {:?}",
+        report.refusals
     );
     Ok(())
 }

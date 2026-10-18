@@ -541,7 +541,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3293",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node"
     ],
-    "gap": "Calibration of micro forecasts and outcome storage.",
+    "gap": "No predicted edge exists to calibrate: qip_contracts::signal::Signal carries a conviction, a desired quantity and inputs, not an expected edge or return, and the cell sees a fill (a venue fact about quantity and price) but never the realised outcome of the position, which is marked to market elsewhere. A tally of conviction against fill would measure execution, not forecast skill, and calling it calibration would be the overclaim the row exists to avoid. Closing it needs an expected-edge field on Signal produced by qip-strategy's runtime (the same contract change R12-RISK-5044 names) and a realised-outcome signal back to the cell; outcome storage stays out of scope until a storage ADR.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -552,7 +552,7 @@
     "verification": "cargo test -p qip-edge",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L11, 2026-10-18: graded, gap corrected, PARTIAL kept, no code. The triage closure's 'predicted edge against the venue-confirmed fill' compares two things that are not both in the cell: no edge is predicted and a fill is not an outcome."
   },
   {
     "id": "R12-WORLD-9024",
