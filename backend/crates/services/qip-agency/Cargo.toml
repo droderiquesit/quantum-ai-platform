@@ -16,8 +16,8 @@ qip-compliance.workspace = true
 # The hash-chained log the act stage's approvals and decisions are journaled
 # on (R12-GOV-6124).
 qip-events.workspace = true
-
-[dev-dependencies]
+# The canonical payload text a §27 ActionIntent digests (R12-CONTRACT-7082);
+# already the workspace's one serialisation, not a new crate.
 serde_json.workspace = true
 
 [lints]

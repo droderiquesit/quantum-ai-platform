@@ -1820,25 +1820,30 @@
   },
   {
     "id": "R12-CONTRACT-7082",
-    "status": "PARTIAL",
-    "current": "backend/crates/libs/qip-contracts/src/action_intent.rs:88 ActionIntent = Validated<ActionIntentFields>, deny_unknown_fields decode and invariant checks",
+    "status": "COMPLETE",
+    "current": "qip-agency constructs a §27 qip_contracts::action_intent::ActionIntent for every step ActionGuard::preflight clears (guard.rs::intent :550, built at :470 only after every check passes): actor and on-whose-behalf (the goal approver), channel, the step's canonical JSON payload and its digest, provenance (cited evidence ids, goal and plan approval ids), the draft's disclosures, the four policies that admitted it, an idempotency key over plan id, index and payload digest, and the audit lineage. engine::execute carries them to Report::intents in shadow and when acting, and journal::record_pass writes each as AgencyRecord::IntentRecorded, decoded strictly when read back; PassLineage::verify refuses an intent that cites no plan approval the pass made. On qip-cli agency (main.rs -> agency::run -> record_pass) every pass the guard clears journals its intents; qip-deepbrain's ambient door builds them in the same preflight.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action_intent.rs:88 type",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1086 a_section_27_action_intent_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/services/qip-agency/src/guard.rs:470",
+      "backend/crates/services/qip-agency/src/guard.rs:550",
+      "backend/crates/services/qip-agency/src/journal.rs:143",
+      "backend/crates/services/qip-agency/src/journal.rs:408",
+      "backend/crates/services/qip-agency/src/journal.rs:623",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_shadow_pass_yields_a_decodable_action_intent_and_an_edited_payload_is_refused",
+      "backend/crates/apps/qip-cli/tests/agency.rs::every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and_invocations",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1102 a_section_27_action_intent_refuses_each_broken_invariant_including_an_edited_payload"
     ],
-    "gap": "No production seam constructs or consumes ActionIntent (grep of ActionIntentFields outside qip-contracts finds nothing).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test action",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test agency a_shadow_pass_yields_a_decodable_action_intent && cargo +1.94.1 test -p qip-cli --test agency",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded INCORRECT->MISSING on 2026-10-11 by an independent spot-check: action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ActionIntent exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Closed 2026-10-18 (lane L10). Mutations fired: digesting a constant instead of the payload in guard::intent makes ActionIntent::new refuse and the shadow pass is withheld (test fails at its Shadowed premise); writing no IntentRecorded in record_pass fails the qip-cli journal-kinds assertion. The ambient door does not journal its intents (its outbox record is the draft); nothing in the tree consumes an ActionIntent as an input yet. qip-cli is an operator tool, not a deployed image."
   },
   {
     "id": "R12-CONTRACT-7083",
