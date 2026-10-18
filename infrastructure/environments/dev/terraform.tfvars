@@ -776,19 +776,13 @@ dns_record_ttl_seconds = 300
 deepbrain_quantum_provider = "simulated"
 deepbrain_quantum_inspired = "on"
 
-# The source-discovery pass (QIP_DEEPBRAIN_DISCOVER_EVERY), every twelve
-# research cycles — hourly at the 300-second `cycle_interval_seconds` above.
-# Set without `source_candidates_file`, and that is not the knob with no
-# effect this file once called it: `DiscoveryDesk::maybe_run` reads
-# `Platform::discovery_targets` before it looks at a single candidate, so
-# each pass turns the forecast-error spikes and knowledge gaps the platform
-# has no source for into named targets on the deep brain's cycle line
-# (R12-DATA-3008). What the pass cannot do without a candidate list is
-# assess, register, score, throttle, quarantine or retire anything, and it
-# makes no outbound call — no probe runs against an empty catalogue, so this
-# costs no egress and needs no credential. The candidate list stays unset
-# for a reason the cadence does not share: a second committed file needs its
-# own Secret Manager container, a seed in `infra.yml` and an item in the
-# manifest's volume, because the RunService CRD mounts nothing else
-# (`main.tf`, `local.secret_names`), and none of that exists yet.
-deepbrain_discover_every = "12"
+# deepbrain_discover_every stays null in dev, as in test, stage and prod.
+# Turned on here alone on 2026-10-18 (53340778) on the argument that a pass
+# with an empty candidate catalogue names targets and makes no outbound call;
+# two minutes later `blueprint_arch`'s
+# dev_declares_no_more_data_sources_than_any_later_environment (37644866,
+# R12-GCP-10144) pinned dev to declaring no data-source key a later
+# environment lacks, and counts this one. Each landed green alone; together
+# they turned main's ci red on ec1c81ce. The guard is the restrictive half
+# and stays; turning the cadence on is a reviewed change that either sets it
+# in the later environments too or narrows the guard with an argument.

@@ -23,26 +23,31 @@
   },
   {
     "id": "R12-AGENCY-3002",
-    "status": "PARTIAL",
-    "current": "GoalSpec::decompose lives in qip-contracts expansion.rs and is tested (qip-agency tests/agency.rs); no non-test caller anywhere.",
+    "status": "COMPLETE",
+    "current": "GoalSpec::decompose now has a production caller. qip-deepbrain's run loop opens AmbientAgency (main.rs:884), whose cycle calls AmbientIntake::admit (ambient_agency.rs:422) -> submit -> attempt, and attempt decomposes the door's standing GoalSpec into the one sub-goal this draft serves and the remainder (ambient_intake.rs:476, AmbientIntake::sub_goal :587, parent.decompose :616): one unit of budget, no exposure, the parent's identity, jurisdictions and every prohibition (inherited by decompose), and a horizon ending at the signal's expiry. The guard's preflight runs against the sub-goal, not the standing goal (:649), and the outbox record carries it (OutboxDraft::sub_goal, outbox.rs:84). A malformed part — a signal admitted at its very expiry leaves the sub-goal no horizon — is withheld terminally with nothing written and nothing charged.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/goal.rs:132 GoalSpec::decompose",
-      "backend/crates/services/qip-agency/tests/agency.rs:51 a_goal_missing_any_one_of_its_thirteen_declarations_is_refused_naming_that_field",
-      "backend/crates/apps/qip-cli/src/agency.rs:1-40 shadow-only CLI entry",
-      "backend/crates/libs/qip-contracts/src/expansion.rs::GoalSpec::decompose"
+      "backend/crates/apps/qip-deepbrain/src/main.rs:884",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs:422",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:476",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:587",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:616",
+      "backend/crates/services/qip-agency/src/ambient_intake.rs:649",
+      "backend/crates/services/qip-agency/src/outbox.rs:84",
+      "backend/crates/libs/qip-contracts/src/expansion.rs::GoalSpec::decompose",
+      "backend/crates/services/qip-agency/tests/ambient_intake.rs::each_draft_serves_a_validated_sub_goal_and_one_that_cannot_decompose_is_withheld"
     ],
-    "gap": "No production caller.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-agency --test ambient_intake each_draft_serves_a_validated_sub_goal",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 (lane L10). Mutation fired: guarding against `self.goal` in AmbientIntake::attempt instead of the decomposed sub-goal fails the test at `one draft's worth of budget` (budget 100000 recorded, not 1). The CLI path (qip-cli agency) still plans against the operator's goal undecomposed; the clause asks for a production caller, which the deepbrain ambient door now is."
   },
   {
     "id": "R12-REASON-3003",
@@ -158,27 +163,25 @@
   {
     "id": "R12-DATA-3008",
     "status": "PARTIAL",
-    "current": "Kernel source_discovery joins knowledge gaps and forecast errors into discovery targets; the deep brain's DiscoveryDesk reads them at the start of every pass, and dev commits the pass's cadence.",
+    "current": "Kernel source_discovery joins knowledge gaps and forecast errors into discovery targets; the deep brain's DiscoveryDesk reads them at the start of every pass. No environment commits the pass's cadence.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/source_discovery.rs:1-20 targets_from wiring",
       "backend/crates/runtime/qip-kernel/tests/source_discovery.rs",
       "backend/crates/apps/qip-deepbrain/src/discovery.rs:327 platform.discovery_targets(now) before any candidate",
-      "infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"",
-      "infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value"
     ],
-    "gap": "Targets are produced on the committed dev path; e2e needs a dev apply with the deep brain serving (control plane suspended, ADR 0093). Acting on a target still needs a mounted candidate catalogue (owner decision).",
+    "gap": "The pass is off in every environment: dev's cadence (53340778) was withdrawn because blueprint_arch's R12-GCP-10144 guard pins dev to no data-source key a later environment lacks. Turning it on needs an owner decision: set it in the later environments too, or narrow the guard with an argument. Acting on a target still needs a mounted candidate catalogue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
     "verification": "cargo test -p qip-kernel --test source_discovery && cargo +1.94.1 test -p qip-acceptance --test gitops every_switch_an_environment_commits_reaches_its_run_service_with_the_committed_value",
     "work_item": "",
     "size": "M",
-    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test."
+    "notes": "L-SWITCH 2026-10-18: dev commits the discovery cadence (infrastructure/environments/dev/terraform.tfvars:794 deepbrain_discover_every = \"12\"; infrastructure/gitops/envs/dev/deepbrain.yaml:68 QIP_DEEPBRAIN_DISCOVER_EVERY=12), so the pass runs every twelve cycles in the committed dev deep brain and names targets, but with an empty catalogue it assesses nothing and makes no outbound call. Mutation: deleting the manifest line, or changing it to '6', fails the gitops test. Orchestrator 2026-10-18 18:10: withdrawn from dev; main's ci on ec1c81ce failed dev_declares_no_more_data_sources_than_any_later_environment with the cadence set."
   },
   {
     "id": "R12-MODEL-3009",

@@ -148,8 +148,8 @@ pub use cadence::{AuthorisedUpdate, TrainingCadence, UpdatePayload, UpdateScope}
 pub use dataset::TrainingDataset;
 pub use distill::{Distillation, FidelityPolicy, FidelityReport, StudentForm, distil};
 pub use job::{
-    JobState, LocalTrainingProvider, TrainingArtifact, TrainingJob, TrainingProvider, TrainingSpec,
-    run_to_completion,
+    Capacity, DEFAULT_QUEUE, JobPriority, JobScheduling, JobState, LocalTrainingProvider,
+    QueueQuotas, TrainingArtifact, TrainingJob, TrainingProvider, TrainingSpec, run_to_completion,
 };
 pub use local::{
     Calibration, FitDiagnostics, LocalTrainer, ModelFamily, SkillPolicy, Stump, TeacherForm,

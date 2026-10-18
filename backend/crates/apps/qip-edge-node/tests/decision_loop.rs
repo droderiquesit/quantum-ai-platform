@@ -127,9 +127,20 @@ fn grant() -> Result<VerifiedEnvelope> {
             signature,
         )
     };
+    // Bounded as the centre's issuer bounds every grant (R12-CAPITAL-4088):
+    // the cell `assemble` builds refuses an envelope without exposure bounds
+    // at `envelope_unbounded`, and until 2026-10-18 this rig's grant had
+    // none, so no turn in this file ever placed an order and a test timing
+    // "a venue event to a local order" timed a refusal instead.
     let unsigned = build("unsigned")?;
-    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(1))
+    let capital = unsigned.gross_limit();
+    let unsigned = unsigned.with_exposure(qip_contracts::capital::ExposureBounds::bounded(
+        2_500,
+        qip_core::Decimal::ONE,
+        capital,
+    )?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
 
 fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
@@ -1184,6 +1195,149 @@ fn a_decision_loop_refuses_a_cell_built_without_the_journal_wire() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn a_decision_loop_refuses_a_cell_that_keeps_shipped_journal_entries() -> Result<()> {
+    // REFLEX-5032: the journal is append-only and hash-chained, and it is
+    // bounded in memory only because `Cell::flush` drops what it shipped.
+    // `main.rs` arms the trim; what keeps it armed is that the loop refuses
+    // a cell without it, so a node whose journal grows with uptime cannot be
+    // composed. Premise: the same rig with the trim armed assembles.
+    let wired = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64);
+    assert!(wired.is_ok(), "premise: the trimmed rig assembles");
+    let untrimmed = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_journal_wire();
+    match rig_with(untrimmed, Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64) {
+        Ok(_) => panic!("a decision loop accepted a cell that keeps shipped journal entries"),
+        Err(error) => assert!(
+            error
+                .message()
+                .contains("keeps every shipped entry in memory"),
+            "refused for the wrong reason: {}",
+            error.message()
+        ),
+    }
+    Ok(())
+}
+
+/// A peer that accepts every connection and never says a word: the hanging
+/// centre or region, as against the refusing one. Counts what it accepted
+/// and holds each stream open until the process ends.
+fn silent_peer() -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let address = listener.local_addr().expect("a bound address");
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&accepted);
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            held.push(stream);
+        }
+    });
+    (address, accepted)
+}
+
+#[test]
+fn a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_turn() -> Result<()> {
+    // ARCH-10176: no synchronous call to warm services or another region
+    // between a venue event and a local order. The refusing peer above is
+    // the easy half: a refused connect returns at once wherever it runs. A
+    // centre that accepts and then hangs is the half that would hold a turn
+    // for the transport's whole timeout if the exchange ran inline, so both
+    // the centre and the one peer here accept and stay silent.
+    use qip_peer_link::{DEFAULT_CLOCK_BOUND, PeerSettings};
+    use qip_transport::tls::LinkSecurity;
+    use std::collections::BTreeMap;
+    let (centre, centre_accepted) = silent_peer();
+    let (peer, peer_accepted) = silent_peer();
+    let listen = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|probe| probe.local_addr())
+        .expect("a loopback port");
+    let (port, _) = qip_peer_link::spawn(
+        &PeerSettings {
+            node: CELL.to_string(),
+            listen,
+            peers: BTreeMap::from([("tokyo-1".to_string(), peer)]),
+            security: LinkSecurity::plaintext_for_tests(),
+            clock_bound: DEFAULT_CLOCK_BOUND,
+        },
+        Arc::new(qip_core::SystemClock),
+    )?;
+    // The journal's store hangs too, so the centre, the region and the
+    // durable record are all stalled at once.
+    let store = StallingStore::stalled();
+    let rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: format!("http://{centre}"),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    let mut decisions = rig.decisions.with_peers(port).with_mesh(worker);
+
+    // Premise: the worker is inside a request the centre will never answer
+    // before the turns are timed, or the timing proves nothing about a hang.
+    let waited = std::time::Instant::now();
+    while centre_accepted.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the mesh worker never reached the silent centre"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let hanging_since = std::time::Instant::now();
+    let (longest, _, _) = drive(&mut decisions, 10, 40);
+    let waited = std::time::Instant::now();
+    while store.attempts() == 0 {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the relay never reached the stalled store"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let during = hanging_since.elapsed();
+    assert!(
+        decisions.stats().passes >= 20,
+        "premise: the forty turns ran passes: {:?}",
+        decisions.stats()
+    );
+    // The venue event became a local order with every remote stalled.
+    assert!(
+        decisions.stats().orders > 0,
+        "the venue's touch produced no order beside the stalled dependencies: {:?}",
+        decisions.stats()
+    );
+    assert!(
+        longest < std::time::Duration::from_millis(250),
+        "a turn took {longest:?} while the centre held a request open"
+    );
+    // Forty turns inside the window the centre was hanging: a turn that
+    // waited on it would have taken at least the transport's timeout.
+    assert!(
+        during < std::time::Duration::from_secs(5),
+        "forty turns took {during:?} beside a silent centre"
+    );
+    // The peer wire dials on its own thread and schedule, so its reaching
+    // the silent peer is not required here; the centre half carries the
+    // hang. Whatever it did, it held no turn.
+    drop(peer_accepted);
+    store.release();
+    Ok(())
+}
+
 /// The turn feeds the peer link's measured round trip to the scrape
 /// registry: two linked nodes, the first held by a decision loop that was
 /// given a `PeerSeries`, and the gauge appears from turns alone. Without the
@@ -1250,4 +1404,222 @@ fn the_decision_loop_publishes_the_peer_round_trip_it_reads_from_the_port() -> R
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+#[test]
+fn a_halt_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
+    // FABRIC-10076: control acknowledgments reach the regional Fabric, and a
+    // halt is the control whose acknowledgment matters most — the centre
+    // must be able to read that the cell stopped, not infer it from
+    // silence. The policy half is the test above; this is the halt half,
+    // through the same journal relay and spool writer the node runs.
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_edge::cell::PolledHalt;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let acknowledged = |spool: &SegmentLog| -> Result<bool> {
+        Ok(writer::records(spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .any(|record| {
+                writer::journal_entry(&record.event).is_ok_and(|entry| {
+                    matches!(entry.decision, Recorded::HaltChanged { halted: true, .. })
+                })
+            }))
+    };
+    // Premise: a running cell whose spool holds no halt yet.
+    drive(&mut rig.decisions, 10, 2);
+    assert!(!rig.decisions.cell().is_halted(), "premise: a running cell");
+    assert!(!acknowledged(&rig.spool)?, "premise: no halt on the spool");
+
+    rig.decisions.cell_mut().apply_polled_halt(
+        PolledHalt::Unreadable("the operator's halt flag".to_string()),
+        t(20),
+    );
+    assert!(rig.decisions.cell().is_halted(), "premise: the halt held");
+
+    let _watchdog = Watchdog::arm("the halt acknowledgement reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 21;
+    while !acknowledged(&rig.spool)? {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the halt acknowledgement never reached the fabric spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_cell_whose_centre_has_gone_silent_keeps_journaling_its_orders_to_the_fabric_spool()
+-> Result<()> {
+    // RES-10126: with the regional warm services lost the cell keeps
+    // executing locally and the Fabric keeps journaling. The centre here
+    // accepts and never answers, so no new policy or capital reaches the
+    // cell, and the orders its passes place still reach the spool the drain
+    // ships from — the outbox does not wait on the centre and is not routed
+    // through it.
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    let (centre, centre_accepted) = silent_peer();
+    let rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64)?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: format!("http://{centre}"),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    let mut decisions = rig.decisions.with_mesh(worker);
+    let spool = rig.spool;
+    let sent_on_spool = || -> Result<usize> {
+        Ok(writer::records(&spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .filter(|record| {
+                writer::journal_entry(&record.event)
+                    .is_ok_and(|entry| matches!(entry.decision, Recorded::OrderSent { .. }))
+            })
+            .count())
+    };
+    let waited = std::time::Instant::now();
+    while centre_accepted.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the mesh worker never reached the silent centre"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(sent_on_spool()?, 0, "premise: nothing journaled yet");
+    let policy_before = decisions.cell().policy_sequence();
+
+    let _watchdog = Watchdog::arm("orders reaching the spool beside a silent centre");
+    let mut second = 10;
+    while sent_on_spool()? == 0 {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "no order reached the fabric spool while the centre was silent: {:?}",
+            decisions.stats()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        decisions.stats().orders > 0,
+        "premise: the cell placed orders"
+    );
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        policy_before,
+        "a silent centre delivered new authority"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_policy_the_centre_publishes_while_the_fabric_is_fenced_is_held_and_not_applied() -> Result<()>
+{
+    // RES-7113: on fabric loss new control changes stop. A fenced producer
+    // reads exhausted, so the spool cannot journal the PolicyApplied entry
+    // an application would write, and a control change the event log cannot
+    // replay is one the desk could never attribute afterwards. The centre's
+    // policy reaches the loop through the real worker and is held; the cell
+    // keeps the sequence it already had and keeps deciding under it.
+    let mut rig = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64)?;
+    let inbox = MeshInbox::new("london-1-inbox", 64, 256)?;
+    let centre = CentreServer::spawn(MeshEndpoint::new(inbox.clone()))?;
+    let link = MeshLink::connect_with(
+        &MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: centre.url(),
+            seed: 3,
+        },
+        ENVELOPE_KEY,
+        Arc::new(SystemClock),
+        Arc::new(RecordingSleeper::new()),
+    )?;
+    let worker = MeshWorker::spawn(
+        link,
+        None,
+        Arc::new(SystemClock),
+        std::time::Duration::from_millis(5),
+        8,
+    )?;
+    rig.drain_publisher
+        .as_mut()
+        .expect("the rig hands back the drain's publisher")
+        .mark_fenced();
+    let mut decisions = rig.decisions.with_mesh(worker);
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "premise: the rig applied sequence 1 and nothing newer"
+    );
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(10));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(10),
+    );
+    let frame = policy_frame(payload.signed(ENVELOPE_KEY)?, t(10))?;
+    let admission = inbox.accept(&MeshMessage {
+        key: frame.event_id.as_str().to_string(),
+        attempt: 1,
+        frame,
+    });
+    assert!(
+        matches!(admission, Admission::Accepted(_)),
+        "premise: the centre's inbox took the policy: {admission:?}"
+    );
+
+    let _watchdog = Watchdog::arm("the held policy reaching the loop");
+    let waited = std::time::Instant::now();
+    let mut second = 10;
+    // Premise: the worker has polled the centre that holds the policy.
+    while centre.served() == 0 {
+        decisions.turn(t(second))?;
+        second += 1;
+        assert!(
+            waited.elapsed() < PATIENCE / 2,
+            "the worker's polls never reached the fenced loop"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // Long enough that an unheld policy would have applied: the outage test
+    // above applies one within a handful of turns.
+    for _ in 0..40 {
+        decisions.turn(t(second))?;
+        second += 1;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        decisions.cell().policy_sequence(),
+        Some(1),
+        "the cell applied a policy the fenced fabric could not journal"
+    );
+    assert!(
+        decisions.held_control() > 0,
+        "the loop let go of what it held"
+    );
+    Ok(())
 }

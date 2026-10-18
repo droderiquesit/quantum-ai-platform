@@ -41,12 +41,15 @@ use crate::comparison::ComparisonDraft;
 use crate::generate::{Simulated, Structural, StructuralDecl};
 use crate::goal::GoalSpec;
 use crate::guard::{ActionGuard, ApprovalChain, GuardDecl, PassDecl, Voice};
-use crate::memory::{ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, Observed};
+use crate::memory::{
+    ActionOutcome, ActionOutcomeDraft, ActionOutcomeMemory, FailureEpisode, Observed,
+};
 use crate::plan::{
     ActingIdentity, Candidate, InterventionPlan, PlanNode, Proposal, Selection, Step, select,
 };
 use qip_compliance::eligibility::{EligibilityRegister, Subject};
 use qip_contracts::action::{Method, ToolAudit};
+use qip_contracts::action_intent::ActionIntent;
 use qip_core::{Decimal, Error, Timestamp};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -272,6 +275,10 @@ pub struct Acted {
     /// The voices the guard admitted this pass: one per step sent, so the
     /// journal can carry what was said under which name (R12-AGENCY-1064).
     pub released: Vec<Voice>,
+    /// One §27 [`ActionIntent`] per step the guard cleared, in shadow as
+    /// when acting (R12-CONTRACT-7082); empty when no guard ran or it
+    /// refused.
+    pub intents: Vec<ActionIntent>,
 }
 
 /// A plan that has cleared the gate, and the context it is executed in.
@@ -281,6 +288,10 @@ pub struct Gated<'a> {
     pub graph: &'a AffordanceGraph,
     pub plan: &'a InterventionPlan,
     pub facts: &'a BTreeSet<String>,
+    /// The chosen plan's simulation, one result per (model, scenario)
+    /// branch, when a structural model was declared. Authority to act is
+    /// used only over a plan every branch agrees helps (R12-MODEL-4014).
+    pub simulated: Option<&'a Simulated>,
 }
 
 /// The only caller of an [`Adapter`].
@@ -323,6 +334,17 @@ pub fn execute(
         Some(policy) if policy.authority() == Authority::NarrowReversible => Some(policy),
         _ => None,
     };
+    if acting.is_some()
+        && let Err(refusal) = counterfactually_supported(gated.simulated)
+    {
+        log.fail(Stage::Act)?;
+        return Ok(Acted {
+            execution: Execution::Withheld(refusal.message().to_string()),
+            approvals: None,
+            released: Vec::new(),
+            intents: Vec::new(),
+        });
+    }
     let mut priced = Vec::with_capacity(steps.len());
     for step in &steps {
         let edge = gated
@@ -352,7 +374,7 @@ pub fn execute(
                 )));
             }
         }
-        priced.push((step.clone(), edge.cost));
+        priced.push((step.clone(), edge.cost, edge.method));
     }
 
     let Some(guard) = guard else {
@@ -367,6 +389,7 @@ pub fn execute(
             execution: Execution::Shadow(steps),
             approvals: None,
             released: Vec::new(),
+            intents: Vec::new(),
         });
     };
     let (mut chain, cleared) = match guard.preflight(gated.goal, &priced) {
@@ -377,15 +400,18 @@ pub fn execute(
                 execution: Execution::Withheld(refusal.message().to_string()),
                 approvals: None,
                 released: Vec::new(),
+                intents: Vec::new(),
             });
         }
     };
+    let intents: Vec<ActionIntent> = cleared.iter().map(|c| c.intent.clone()).collect();
     if acting.is_none() {
         log.shadow_act()?;
         return Ok(Acted {
             execution: Execution::Shadow(steps),
             approvals: Some(chain),
             released: Vec::new(),
+            intents,
         });
     }
 
@@ -404,6 +430,7 @@ pub fn execute(
                 },
                 approvals: Some(chain),
                 released: guard.voices().skip(voices_from).cloned().collect(),
+                intents,
             });
         }
     }
@@ -412,7 +439,42 @@ pub fn execute(
         execution: Execution::Executed(steps),
         approvals: Some(chain),
         released: guard.voices().skip(voices_from).cloned().collect(),
+        intents,
     })
+}
+
+/// R12-MODEL-4014 / R12-COVERAGE-7186: authority to act is used only over a
+/// plan simulated against counterfactual branches — every (model,
+/// scenario) the structural models declare, each comparing the world with
+/// the action to the same world without it — and only when every branch
+/// says the action moves the objective toward the goal. A plan nobody
+/// simulated is acted on by nothing; a plan the competing models disagree
+/// on is weakly identified, and a weakly identified effect is a reason to
+/// experiment, not to act. Shadow is not gated here: it sends nothing.
+fn counterfactually_supported(simulated: Option<&Simulated>) -> Result<(), Error> {
+    let results = simulated.map_or(&[][..], |s| s.results.as_slice());
+    if results.is_empty() {
+        return Err(Error::denied(
+            "authority to act is used only over a plan simulated against counterfactual \
+             branches, and this plan was simulated against none; declare a structural model",
+        ));
+    }
+    let against: Vec<String> = results
+        .iter()
+        .filter(|r| !(r.effect.is_finite() && r.effect > 0.0))
+        .map(|r| format!("{}/{} ({})", r.model, r.scenario, r.effect))
+        .collect();
+    if !against.is_empty() {
+        return Err(Error::denied(format!(
+            "the plan is weakly identified: {} of {} counterfactual branches do not move the \
+             objective toward the goal ({}); competing models that disagree are a reason to \
+             experiment, not to act",
+            against.len(),
+            results.len(),
+            against.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// R12-AGENCY-6103: a policy gains authority by this path only, and the
@@ -473,11 +535,13 @@ pub fn learn(
     outcome: ActionOutcomeDraft,
     attribution: &EffectAttribution,
 ) -> Result<Authority, Error> {
-    learn_outcome(log, steps, policy, memory, outcome, attribution).map(|(authority, _)| authority)
+    learn_outcome(log, steps, policy, memory, outcome, attribution)
+        .map(|(authority, _, _)| authority)
 }
 
 /// [`learn`], also returning the outcome as kept, so a caller can journal
-/// the record the memory holds rather than the draft it was given.
+/// the record the memory holds rather than the draft it was given, and the
+/// failure episode the memory filed when the outcome drifted.
 fn learn_outcome(
     log: &mut StageLog,
     steps: &[Step],
@@ -485,7 +549,7 @@ fn learn_outcome(
     memory: &mut ActionOutcomeMemory,
     outcome: ActionOutcomeDraft,
     attribution: &EffectAttribution,
-) -> Result<(Authority, ActionOutcome), Error> {
+) -> Result<(Authority, ActionOutcome, Option<FailureEpisode>), Error> {
     log.expect(Stage::ObserveEffect)?;
     let outcome = match outcome.build() {
         Ok(outcome) => outcome,
@@ -534,9 +598,17 @@ fn learn_outcome(
         .ok_or_else(|| Error::numeric("attributed effect overflowed"))?;
     let side_effects = outcome.side_effects.clone();
     memory.keep(outcome.clone());
+    // R12-RES-7111: a drift does not only narrow the policy; it files the
+    // plan that failed, how, and the stop and roll-back it calls for.
+    let before = policy.authority();
+    let drift = policy.drift(effect, &side_effects);
     let authority = policy.observe(effect, &side_effects);
+    let failure = FailureEpisode::of(policy.class(), &outcome, effect, drift, (before, authority));
+    if let Some(episode) = &failure {
+        memory.keep_failure(episode.clone());
+    }
     log.pass(Stage::Update)?;
-    Ok((authority, outcome))
+    Ok((authority, outcome, failure))
 }
 
 /// What one learning left: the record the memory kept, the attribution it
@@ -553,6 +625,8 @@ pub struct Learned {
     pub predicted_side_effects: BTreeSet<String>,
     pub before: Authority,
     pub after: Authority,
+    /// The failure episode, when the effect drifted (R12-RES-7111).
+    pub failure: Option<FailureEpisode>,
 }
 
 /// How a learning ended.
@@ -618,7 +692,7 @@ pub fn learn_shadowed(
     };
     let before = policy.authority();
     let outcome = match learn_outcome(&mut log, steps, policy, memory, outcome, attribution) {
-        Ok((after, outcome)) => LearningOutcome::Learned(Box::new(Learned {
+        Ok((after, outcome, failure)) => LearningOutcome::Learned(Box::new(Learned {
             effect: outcome
                 .actual_observations
                 .checked_sub(outcome.no_action_counterfactual)
@@ -629,6 +703,7 @@ pub fn learn_shadowed(
             predicted_side_effects: policy.predicted_side_effects().clone(),
             before,
             after,
+            failure,
         })),
         Err(refusal) => LearningOutcome::Withheld(refusal.message().to_string()),
     };
@@ -787,6 +862,9 @@ pub struct Report {
     /// The voices the guard admitted this pass, one per step sent
     /// (R12-AGENCY-1064). Empty in shadow and when nothing was sent.
     pub released: Vec<Voice>,
+    /// The §27 intent of every step the guard cleared, in shadow as when
+    /// acting (R12-CONTRACT-7082).
+    pub intents: Vec<ActionIntent>,
     /// A label per candidate, in index order: `proposal N` for the
     /// operator's, the steps for a generated one.
     pub candidates: Vec<String>,
@@ -820,6 +898,7 @@ fn report(
         approvals: None,
         audit: Vec::new(),
         released: Vec::new(),
+        intents: Vec::new(),
         candidates: Vec::new(),
         simulations: Vec::new(),
         eligibility: Vec::new(),
@@ -1167,6 +1246,9 @@ fn stages(
         graph: &graph,
         plan: &plan,
         facts: &request.observed_facts,
+        simulated: chosen
+            .as_ref()
+            .and_then(|c| simulations.iter().find(|s| s.label == c.label)),
     };
     let mut guard = guard;
     let acted = execute(&mut log, policy, gated, guard.as_deref_mut(), adapter)?;
@@ -1179,6 +1261,7 @@ fn stages(
     let mut done = finish(log, levers, refused, outcome);
     done.approvals = acted.approvals;
     done.released = acted.released;
+    done.intents = acted.intents;
     done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
     done.chosen = chosen;
     Ok(done)

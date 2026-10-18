@@ -167,6 +167,15 @@ impl BlobStore for Faulty {
         }
         self.inner.put(key, bytes)
     }
+    // A lake seals with a conditional write, so the refusal must reach that
+    // seam too or the fault never fires.
+    fn put_if_absent(&self, key: &str, bytes: Vec<u8>) -> Result<bool> {
+        if self.refusals.load(Ordering::Relaxed) > 0 {
+            self.refusals.fetch_sub(1, Ordering::Relaxed);
+            return Err(Error::io("the lake is unreachable"));
+        }
+        self.inner.put_if_absent(key, bytes)
+    }
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.inner.get(key)
     }

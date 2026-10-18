@@ -618,6 +618,51 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
     Ok(())
 }
 
+/// R12-MODEL-6016: a world-model federation member is scored after its
+/// outcome resolves, charged to its own component in the self-model, as a
+/// detector or an analyst is. The federation kept its own Brier record and
+/// the self-model never heard of a world model. Mutation: dropping the
+/// charge loop in `Platform`'s federation pass leaves every member's
+/// component absent.
+#[test]
+fn a_resolved_federation_forecast_is_charged_to_its_world_model_in_the_self_model() -> Result<()> {
+    use qip_learning_engine::self_model::{ComponentKey, ComponentKind};
+
+    let cycles: u64 = 8;
+    let mut platform = platform()?;
+    let total = 120 + cycles as usize;
+    let end = start().saturating_add(Duration::from_days(cycles as i64));
+    let mut aaa = tape("AAA", total, end);
+    let later = aaa.split_off(120);
+    platform.observe(aaa);
+    for (step, a) in later.into_iter().enumerate() {
+        platform.observe(vec![a]);
+        platform.run_cycle(start().saturating_add(Duration::from_days(step as i64 + 1)));
+    }
+
+    // Premise: reality answered forecasts that named the members who made
+    // them, on a side each took.
+    let reviews = federation_stage::replay(&platform)?;
+    let mut charged: std::collections::BTreeMap<String, usize> = Default::default();
+    for resolution in reviews.iter().flat_map(|r| &r.resolved) {
+        for (member, probability) in &resolution.forecasts {
+            if probability.total_cmp(&0.5).is_ne() {
+                *charged.entry(member.clone()).or_default() += 1;
+            }
+        }
+    }
+    assert!(!charged.is_empty(), "no resolved forecast named a member");
+
+    for (member, count) in &charged {
+        let key = ComponentKey::new(ComponentKind::WorldModel, member.as_str())?;
+        let estimate = platform.self_model().get(&key).unwrap_or_else(|| {
+            panic!("{member} resolved {count} forecast(s) and holds no estimate")
+        });
+        assert_eq!(estimate.sample_count(), *count, "{member}");
+    }
+    Ok(())
+}
+
 /// The one journaled derivation of the fixture every replay test reads, and
 /// the platform whose causal graph re-runs its intervention.
 fn journaled_derivation() -> Result<(Platform, symbolic_stage::SymbolicDerivation)> {

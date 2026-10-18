@@ -1195,15 +1195,14 @@ const THE_AMBIENT_JOURNAL_FOLLOWS_THE_EVENT_LOG: &str = "Unset, the ambient \
      the default exists to prevent. The entry ends when the deep brain gets \
      a volume, which is a decision of its own.";
 
-/// Discovery profiles, which shape queries no environment has a catalogue for.
-const PROFILES_HAVE_NO_CANDIDATE_CATALOGUE_TO_QUERY: &str = "The entity \
+/// Discovery profiles, which only shape a pass no environment runs.
+const PROFILES_FEED_A_DISCOVERY_PASS_NO_ENVIRONMENT_RUNS: &str = "The entity \
      profiles turn each discovery target into tagged queries for the \
-     source-discovery pass (R12-DATA-2016), and a query is answered only from \
-     the candidate catalogue. Dev runs the pass on a cadence \
-     (`deepbrain_discover_every`), which names targets, but \
-     `source_candidates_file` is null in all four tfvars, so no query would \
-     find a candidate to locate. A mount offered here would be a knob with no \
-     effect — profiles loaded, validated and never answered — reading in the \
+     source-discovery pass (R12-DATA-2016), and that pass is off in every \
+     environment: `deepbrain_discover_every` and `source_candidates_file` are \
+     null in all four tfvars, and `variables.tf` calls turning either on alone \
+     a knob with no effect. A mount offered here would be a third such knob — \
+     profiles loaded, validated and never asked a question — reading in the \
      banner as a capability the node does not exercise. Wiring it is a \
      `config_files` arm from a `data/`-path root variable, made in the same \
      reviewed change that turns discovery on, with the cadence and the \
@@ -1788,7 +1787,7 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH",
-        PROFILES_HAVE_NO_CANDIDATE_CATALOGUE_TO_QUERY,
+        PROFILES_FEED_A_DISCOVERY_PASS_NO_ENVIRONMENT_RUNS,
     ),
     (
         "qip-deepbrain",
@@ -2114,6 +2113,18 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          can never buy a quantum result with nothing to compare it to. \
          Leaving it unset is the fail-closed posture; a negative value is \
          refused.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS",
+        "Unset, no research agent holds a budget of its own and the market \
+         bounds every agent by the per-resource budgets, as it did before the \
+         variable existed. A value names reputation cells \
+         (domain/horizon/regime) whose regime is the platform's runtime \
+         classification, so a deployment value written before an operator \
+         has watched which cells the market actually bids in would bound \
+         cells that never appear and miss the ones that do. A malformed \
+         entry or a cell named twice is refused at start-up.",
     ),
     (
         "qip-deepbrain",
