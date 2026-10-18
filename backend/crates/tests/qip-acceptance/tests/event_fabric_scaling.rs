@@ -524,23 +524,22 @@ fn fabric_083_gap_mirroring_is_refused_for_every_class_so_there_is_nothing_to_th
 }
 
 #[test]
-fn fabric_084_gap_the_broker_instances_share_one_zone_on_a_c3_class_machine_with_no_instance_group()
-{
-    // GAP PIN. FABRIC-084 asks for five C4D/C4-class broker VMs across three
-    // zones per production region. The module now creates its brokers from the
-    // template (`google_compute_instance_from_template`, one per address in
-    // `local.brokers`, two or three of them), so "creates no broker VM" is no
-    // longer true; an earlier version of this pin said it, and passed only
-    // because its resource filter ended in a quote that the `_from_template`
-    // name does not match. What is still short of the requirement, and what
-    // this asserts: every instance sits in the one `var.zone`, the default
-    // machine type is a C3 class, and there is no instance group to spread or
-    // replace them. Any of those changing fails this, and it should then
-    // assert the requirement.
+fn fabric_084_gap_brokers_are_one_per_zone_on_a_c4_shape_but_capped_at_three_with_no_instance_group()
+ {
+    // GAP PIN, narrowed. FABRIC-084 asks for five C4D/C4-class broker VMs
+    // across three zones per production region. Since lane L22 (2026-10-18)
+    // each broker runs in the zone `broker_zones` names for its address,
+    // two in one zone are refused at plan, and `machine_type` defaults to
+    // and is validated as a C4/C4D shape — this pin asserted the opposite of
+    // all three until then (one `var.zone`, a C3 default). What is still
+    // short: a region holds at most three brokers (ADR 0111's lease
+    // ceiling), not five, and there is no instance group to replace one.
     //
-    // Mutation: add a `google_compute_region_instance_group_manager`, or give
-    // the instance block a zone other than `var.zone`, or set the default
-    // machine to a C4 type; the matching assertion fires.
+    // Mutation: put the instance block back on `zone = var.zone`, drop the
+    // one-per-zone precondition, or default the machine to `c3-standard-4`;
+    // the matching assertion fires. Add a
+    // `google_compute_region_instance_group_manager`; the group assertion
+    // fires.
     let main = qip_acceptance::read("infrastructure/terraform/modules/event-fabric-broker/main.tf");
     let variables =
         qip_acceptance::read("infrastructure/terraform/modules/event-fabric-broker/variables.tf");
@@ -570,7 +569,8 @@ fn fabric_084_gap_the_broker_instances_share_one_zone_on_a_c3_class_machine_with
         "an instance group now exists ({resources:?}) — assert how it spreads and replaces brokers"
     );
 
-    // Every broker instance is in the one zone the module is given.
+    // Each broker instance takes its own address's zone, and two in one zone
+    // are refused.
     let block: Vec<String> = main
         .lines()
         .skip_while(|line| !line.contains("resource \"google_compute_instance_from_template\""))
@@ -579,23 +579,46 @@ fn fabric_084_gap_the_broker_instances_share_one_zone_on_a_c3_class_machine_with
         .collect();
     assert!(!block.is_empty(), "premise: the instance block was found");
     assert!(
-        block.iter().any(|line| line == "zone = var.zone"),
-        "the instances no longer all take var.zone: {block:?}"
+        block
+            .iter()
+            .any(|line| line == "zone = local.broker_zone[each.value]"),
+        "the instances no longer take their own address's zone: {block:?}"
     );
     assert!(
-        !block
-            .iter()
-            .any(|line| line.contains("zones") || line.contains("distribution")),
-        "the instances are spread across zones now — assert three zones: {block:?}"
+        block.iter().any(|line| line
+            == "condition = length(distinct([for address in local.brokers : local.broker_zone[address]])) == length(local.brokers)"),
+        "nothing refuses two brokers in one zone: {block:?}"
     );
 
     let machine = variables
         .lines()
         .skip_while(|line| !line.starts_with("variable \"machine_type\""))
+        .take_while(|line| *line != "}")
         .map(norm)
-        .find(|line| line.starts_with("default ="))
-        .expect("premise: machine_type has a default");
-    assert_eq!(machine, "default = \"c3-standard-4\"", "not a C4/C4D class");
+        .collect::<Vec<_>>();
+    assert!(
+        machine
+            .iter()
+            .any(|line| line == "default = \"c4-standard-4\""),
+        "the default broker shape is not C4: {machine:?}"
+    );
+    assert!(
+        machine
+            .iter()
+            .any(|line| line.starts_with("condition = can(regex(\"^c4d?-")),
+        "nothing refuses a non-C4 broker shape: {machine:?}"
+    );
+
+    // GAP: three per region, not five.
+    let addresses = hcl_block(&variables, "variable \"broker_internal_addresses\" {")
+        .expect("premise: the address variable exists");
+    assert!(
+        has_line(
+            &addresses,
+            "condition = length(var.broker_internal_addresses) <= 3"
+        ),
+        "the ceiling moved: assert five brokers across three zones: {addresses:#?}"
+    );
 }
 
 #[test]
@@ -1592,30 +1615,32 @@ fn fabric_098_a_replacement_broker_catches_up_to_the_full_log_and_the_deposed_le
 // --- FABRIC-101 --------------------------------------------------------------
 
 /// GAP PIN. FABRIC-101 asks for headroom to absorb the loss of one zone and
-/// one broker under maintenance at peak. The broker module places every
-/// machine in the single zone the root names (`zone = var.zone`; the module's
-/// own comment: "all share `var.zone` today — spreading them across zones is
-/// a variable this module does not have yet"), caps a region at three
-/// addresses, and carries no capacity or headroom figure: the catalogue's
-/// `peak_bytes_per_second` sizes a stream, not a fleet. So a zone loss is the
-/// loss of every broker the region has. The earlier version computed
-/// `9 - 3 - 1 > 0` over a struct it had built.
+/// one broker under maintenance at peak. Since lane L22 (2026-10-18) each
+/// broker runs in the zone its address is named into and two in one zone are
+/// refused, so a zone loss is one broker rather than the region's whole
+/// fleet — this pin asserted the single shared `var.zone` until then. What is
+/// still open: a region caps at three addresses, and nothing carries a
+/// capacity or headroom figure — the catalogue's `peak_bytes_per_second`
+/// sizes a stream, not a fleet — so whether two brokers carry the peak is a
+/// number nobody computed. The earlier version computed `9 - 3 - 1 > 0` over
+/// a struct it had built.
 ///
-/// Mutation: set the machine's `zone` to a list or a per-address zone map —
-/// the single-zone assertion fires. Mutation: raise the address ceiling above
-/// three — the ceiling assertion fires.
+/// Mutation: put the machine back on `zone = var.zone` — the spread assertion
+/// fires. Mutation: raise the address ceiling above three — the ceiling
+/// assertion fires.
 #[test]
-fn fabric_101_gap_every_broker_shares_one_zone_so_a_zone_loss_has_no_headroom() {
+fn fabric_101_gap_brokers_are_spread_one_per_zone_but_no_fleet_declares_headroom_for_a_zone_loss() {
     let main = broker_module("main.tf");
     let machine = hcl_block(
         &main,
         "resource \"google_compute_instance_from_template\" \"event_fabric_broker\" {",
     )
     .expect("premise: the machine resource exists");
+    // Since lane L22 each broker is in a zone of its own, so a zone loss is
+    // one broker, not all of them; the headroom half below is still open.
     assert!(
-        has_line(&machine, "zone = var.zone"),
-        "the machines are no longer all in one zone — assert the spread and the headroom: \
-         {machine:#?}"
+        has_line(&machine, "zone = local.broker_zone[each.value]"),
+        "the machines no longer take their own address's zone: {machine:#?}"
     );
     assert!(
         !main.lines().any(|line| {
@@ -1626,11 +1651,9 @@ fn fabric_101_gap_every_broker_shares_one_zone_so_a_zone_loss_has_no_headroom() 
     );
 
     let variables = broker_module("variables.tf");
-    let zone = hcl_block(&variables, "variable \"zone\" {").expect("premise: the zone variable");
-    assert!(
-        has_line(&zone, "type = string"),
-        "the zone is no longer one string — assert the spread: {zone:#?}"
-    );
+    let zones = hcl_block(&variables, "variable \"broker_zones\" {")
+        .expect("premise: the per-address zone variable");
+    assert!(has_line(&zones, "type = map(string)"), "{zones:#?}");
     let addresses = hcl_block(&variables, "variable \"broker_internal_addresses\" {").unwrap();
     assert!(
         addresses

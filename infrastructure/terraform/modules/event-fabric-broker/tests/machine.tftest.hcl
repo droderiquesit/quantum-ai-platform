@@ -115,6 +115,11 @@ run "three_brokers_behind_the_spanner_lease_are_three_machines" {
     managed_log = {
       spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
     }
+    broker_zones = {
+      "10.0.20.10" = "us-east4-a"
+      "10.0.20.11" = "us-east4-b"
+      "10.0.20.12" = "us-east4-c"
+    }
   }
 
   assert {
@@ -270,6 +275,11 @@ run "each_broker_address_is_a_reserved_internal_address_the_machine_takes" {
     managed_log = {
       spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
     }
+    broker_zones = {
+      "10.0.20.10" = "us-east4-a"
+      "10.0.20.11" = "us-east4-b"
+      "10.0.20.12" = "us-east4-c"
+    }
   }
 
   assert {
@@ -295,4 +305,68 @@ run "each_broker_address_is_a_reserved_internal_address_the_machine_takes" {
     ])
     error_message = "A broker machine is not on its reserved address, or has an external one."
   }
+}
+
+# FABRIC-008/7011: three brokers behind the lease sit in three zones, so one
+# zone's outage leaves two of them.
+run "three_brokers_are_placed_in_three_zones" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = ["10.0.20.10", "10.0.20.11", "10.0.20.12"]
+    managed_log = {
+      spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
+    }
+    broker_zones = {
+      "10.0.20.10" = "us-east4-a"
+      "10.0.20.11" = "us-east4-b"
+      "10.0.20.12" = "us-east4-c"
+    }
+  }
+
+  assert {
+    condition = (
+      length(google_compute_instance_from_template.event_fabric_broker) == 3
+      && length(distinct([for machine in google_compute_instance_from_template.event_fabric_broker : machine.zone])) == 3
+      && google_compute_instance_from_template.event_fabric_broker["10.0.20.11"].zone == "us-east4-b"
+    )
+    error_message = "Three brokers were named into three zones and the plan does not place one in each."
+  }
+}
+
+# Two brokers in one zone are refused: the zone's loss would be both.
+run "two_brokers_in_one_zone_are_refused" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = ["10.0.20.10", "10.0.20.11"]
+    managed_log = {
+      spanner_database = "projects/test-project/instances/qip-dev/databases/fabric"
+    }
+  }
+
+  expect_failures = [google_compute_instance_from_template.event_fabric_broker]
+}
+
+run "a_broker_zone_outside_the_region_is_refused" {
+  command = plan
+
+  variables {
+    broker_zones = {
+      "10.0.20.10" = "europe-west2-a"
+    }
+  }
+
+  expect_failures = [google_compute_instance_from_template.event_fabric_broker]
+}
+
+# FABRIC-8096: the broker shape is C4 or C4D.
+run "a_c3_broker_shape_is_refused" {
+  command = plan
+
+  variables {
+    machine_type = "c3-standard-4"
+  }
+
+  expect_failures = [var.machine_type]
 }

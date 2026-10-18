@@ -80,12 +80,15 @@ run "neither_is_provisioned_unless_an_environment_names_it" {
 }
 
 # The admitting half: named, both plan to the end.
+# The brokers' zones are the root's default region's (europe-west2): the module
+# refuses a broker zone outside var.region (FABRIC-008), and this harness
+# leaves the region at its default because its trust bundle is keyed to it.
 run "a_named_broker_and_ledger_are_provisioned_in_their_zones" {
   command = plan
 
   variables {
     event_fabric_broker = {
-      zone             = "us-east4-a"
+      zone             = "europe-west2-a"
       boot_image       = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address = "10.0.36.10"
       dns_domain       = "fabric.qip-dev.internal"
@@ -141,7 +144,7 @@ run "a_broker_and_ledger_with_no_certificate_authority_are_refused" {
   variables {
     certificate_authority = null
     event_fabric_broker = {
-      zone             = "us-east4-a"
+      zone             = "europe-west2-a"
       boot_image       = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address = "10.0.36.10"
       dns_domain       = "fabric.qip-dev.internal"
@@ -165,7 +168,7 @@ run "a_broker_with_no_client_to_admit_is_refused" {
 
   variables {
     event_fabric_broker = {
-      zone             = "us-east4-a"
+      zone             = "europe-west2-a"
       boot_image       = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address = "10.0.36.10"
       dns_domain       = "fabric.qip-dev.internal"
@@ -182,10 +185,11 @@ run "three_brokers_behind_the_spanner_lease_are_provisioned" {
 
   variables {
     event_fabric_broker = {
-      zone                 = "us-east4-a"
+      zone                 = "europe-west2-a"
       boot_image           = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address     = "10.0.36.10"
       additional_addresses = ["10.0.36.11", "10.0.36.12"]
+      additional_zones     = ["europe-west2-b", "europe-west2-c"]
       dns_domain           = "fabric.qip-dev.internal"
       managed_log = {
         spanner_database = "projects/fabric-plan-harness/instances/qip-dev/databases/fabric"
@@ -203,6 +207,40 @@ run "three_brokers_behind_the_spanner_lease_are_provisioned" {
     condition     = length(module.event_fabric_broker) == 1
     error_message = "Three brokers behind the managed log were not planned."
   }
+
+  # FABRIC-008: the root's zones reach the machines, one broker per zone.
+  assert {
+    condition     = length(distinct(values(module.event_fabric_broker[0].broker_zones))) == 3
+    error_message = "The three brokers do not sit in three zones."
+  }
+}
+
+# Three addresses and one additional zone: a broker with no zone of its own
+# is refused rather than stacked into `zone`.
+run "additional_brokers_without_a_zone_each_are_refused" {
+  command = plan
+
+  variables {
+    event_fabric_broker = {
+      zone                 = "europe-west2-a"
+      boot_image           = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
+      internal_address     = "10.0.36.10"
+      additional_addresses = ["10.0.36.11", "10.0.36.12"]
+      additional_zones     = ["europe-west2-b"]
+      dns_domain           = "fabric.qip-dev.internal"
+      managed_log = {
+        spanner_database = "projects/fabric-plan-harness/instances/qip-dev/databases/fabric"
+      }
+    }
+    ledgerd = {
+      zone             = "us-east4-a"
+      boot_image       = "projects/fabric-plan-harness/global/images/qip-ledgerd-20261011"
+      internal_address = "10.0.38.10"
+      account_id       = "paper-book"
+    }
+  }
+
+  expect_failures = [terraform_data.event_fabric_broker_is_placed]
 }
 
 # The refusing halves.
@@ -218,7 +256,7 @@ run "a_broker_outside_a_declared_control_fabric_zone_is_refused" {
       "ledger"               = { region = "us-east4", subnet_cidr = "10.0.38.0/24" }
     }
     event_fabric_broker = {
-      zone             = "us-east4-a"
+      zone             = "europe-west2-a"
       boot_image       = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address = "10.0.36.10"
       dns_domain       = "fabric.qip-dev.internal"
@@ -262,7 +300,7 @@ run "a_public_discovery_domain_is_refused" {
 
   variables {
     event_fabric_broker = {
-      zone             = "us-east4-a"
+      zone             = "europe-west2-a"
       boot_image       = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address = "10.0.36.10"
       dns_domain       = "fabric.algorik.ai"
@@ -281,7 +319,7 @@ run "the_three_socket_owning_binaries_and_only_they_may_request_certificates" {
 
   variables {
     event_fabric_broker = {
-      zone             = "us-east4-a"
+      zone             = "europe-west2-a"
       boot_image       = "projects/fabric-plan-harness/global/images/qip-fabricd-20261011"
       internal_address = "10.0.36.10"
       dns_domain       = "fabric.qip-dev.internal"
