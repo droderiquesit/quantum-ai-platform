@@ -101,6 +101,12 @@ pub const REQUEST_BUDGET_SHARE_BP: u32 = 1_000;
 /// close, which is what every instrument proposition is about.
 pub const REQUEST_DEADLINE: Duration = Duration::from_days(1);
 
+/// Live branches the stage keeps at once. A branch mirrors the member it
+/// follows, so without a ceiling a persistently split panel would add one
+/// duplicate voice per pass and the arbitration would drift toward whichever
+/// member kept dissenting.
+pub const FEDERATION_MAX_LIVE_BRANCHES: usize = 8;
+
 /// One instrument as the platform has observed it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentView {
@@ -327,6 +333,14 @@ pub struct FederationStage {
     views: BTreeMap<String, BTreeMap<String, f64>>,
     /// The previous cycle's slowest stage ([`Self::observe_cycle`]).
     slowest_stage: Option<Duration>,
+    /// Each branch the stage opened, mapped to the member whose reading it
+    /// follows: a branch is fed whatever that member is fed, so it holds a
+    /// forecast on every proposition until an outcome closes it (WORLD-3041).
+    /// Entries leave when the federation closes or merges the branch.
+    branches: BTreeMap<String, String>,
+    /// Ids already spent on branches and merges; the federation never
+    /// reuses an id.
+    serial: u64,
 }
 
 /// Hand one view to `model`; true when the federation took it. A refusal is
@@ -338,15 +352,41 @@ fn feed(
     fed: &mut BTreeSet<String>,
     refused: &mut Vec<(String, String)>,
     views: &mut BTreeMap<String, BTreeMap<String, f64>>,
+    branches: &BTreeMap<String, String>,
 ) -> bool {
     let (proposition, probability) = (assessment.proposition.clone(), assessment.probability);
+    let followers: Vec<(&String, Assessment)> = branches
+        .iter()
+        .filter(|(_, source)| source.as_str() == model)
+        .map(|(branch, _)| (branch, assessment.clone()))
+        .collect();
     match federation.assess(model, assessment) {
         Ok(()) => {
             fed.insert(model.to_string());
             views
-                .entry(proposition)
+                .entry(proposition.clone())
                 .or_default()
                 .insert(model.to_string(), probability);
+            for (branch, mirrored) in followers {
+                // A branch the federation already closed or merged is no
+                // longer fed; its record stays readable and says why.
+                if !matches!(
+                    federation.status(branch),
+                    Ok(qip_world_model::federation::Status::Live)
+                ) {
+                    continue;
+                }
+                match federation.assess(branch, mirrored) {
+                    Ok(()) => {
+                        fed.insert(branch.clone());
+                        views
+                            .entry(proposition.clone())
+                            .or_default()
+                            .insert(branch.clone(), probability);
+                    }
+                    Err(error) => refused.push((branch.clone(), error.message().to_string())),
+                }
+            }
             true
         }
         Err(error) => {
@@ -842,6 +882,7 @@ impl FederationStage {
                     &mut fed,
                     &mut refused,
                     &mut self.views,
+                    &self.branches,
                 );
             }
             if any {
@@ -900,6 +941,7 @@ impl FederationStage {
             &mut fed,
             &mut refused,
             &mut self.views,
+            &self.branches,
         ) {
             self.pending.insert(
                 proposition.clone(),
@@ -931,6 +973,7 @@ impl FederationStage {
                 &mut fed,
                 &mut refused,
                 &mut self.views,
+                &self.branches,
             ) {
                 self.pending.insert(
                     proposition.clone(),
@@ -991,6 +1034,11 @@ impl FederationStage {
             }
         }
 
+        // Decisions are acted on after every arbitration of the pass is
+        // recorded, so a branch opened or a merge made for one proposition
+        // cannot change which views another proposition's arbitration saw.
+        self.act_on_decisions(&arbitrations, now, &mut fed, &mut refused);
+
         let live = self.federation.live_specs(now);
         let population: Vec<MemberStanding> = live
             .iter()
@@ -1038,6 +1086,130 @@ impl FederationStage {
         }
     }
 
+    /// Act on the `Branch` and `Merge` decisions the pass reached
+    /// (WORLD-1181, WORLD-3041); until now they were only labelled in the
+    /// review, so "preserve multiple live branches until an outcome resolves
+    /// them" held for no branch the cycle ever opened.
+    ///
+    /// A `Branch` decision means the top two scored views are too close to
+    /// pick between and too far apart to average: the runner-up's reading is
+    /// opened as a branch of the leader, fed whatever the runner-up is fed,
+    /// and scored when the proposition resolves, at which point the
+    /// federation closes it if it forecast the wrong side. A `Merge` decision
+    /// folds the two best branches into one. **Only branches are merged**: a
+    /// merge marks both parents merged and the federation stops feeding them,
+    /// so merging two roots would silence two members of the population the
+    /// stage is required to keep covered.
+    fn act_on_decisions(
+        &mut self,
+        arbitrations: &[Arbitration],
+        now: Timestamp,
+        fed: &mut BTreeSet<String>,
+        refused: &mut Vec<(String, String)>,
+    ) {
+        use qip_world_model::federation::ScoredView;
+        let by_standing = |views: &[ScoredView]| {
+            let mut ranked: Vec<ScoredView> = views.to_vec();
+            ranked.sort_by(|a, b| {
+                b.composite
+                    .unwrap_or(0.0)
+                    .total_cmp(&a.composite.unwrap_or(0.0))
+                    .then_with(|| a.model.cmp(&b.model))
+            });
+            ranked
+        };
+        for a in arbitrations {
+            match a.decision {
+                Decision::Branch => {
+                    let live = self
+                        .branches
+                        .keys()
+                        .filter(|id| {
+                            matches!(
+                                self.federation.status(id),
+                                Ok(qip_world_model::federation::Status::Live)
+                            )
+                        })
+                        .count();
+                    let ranked = by_standing(&a.disagreement.views);
+                    let (Some(leader), Some(rival)) = (ranked.first(), ranked.get(1)) else {
+                        continue;
+                    };
+                    // One branch per followed reading: a second branch of
+                    // the same member would be the same voice twice.
+                    if live >= FEDERATION_MAX_LIVE_BRANCHES
+                        || self.branches.values().any(|source| *source == rival.model)
+                        || self.branches.contains_key(&rival.model)
+                    {
+                        continue;
+                    }
+                    self.serial += 1;
+                    let root = leader.model.split('~').next().unwrap_or(&leader.model);
+                    let id = format!("{root}~branch-{}", self.serial);
+                    let hypothesis = format!(
+                        "follows {} at {:.3} against {} at {:.3}",
+                        rival.model, rival.probability, leader.model, leader.probability
+                    );
+                    let trigger = format!("{}: {}", a.proposition, a.reason);
+                    if let Err(error) =
+                        self.federation
+                            .branch(&leader.model, &id, &hypothesis, &trigger, now)
+                    {
+                        refused.push((id, error.message().to_string()));
+                        continue;
+                    }
+                    let seeded = self.federation.assess(
+                        &id,
+                        Assessment {
+                            proposition: a.proposition.clone(),
+                            probability: rival.probability,
+                            evidence_fit: rival.evidence_fit,
+                            causal_coherence: rival.causal_coherence,
+                            uncertainty: rival.uncertainty,
+                            at: now,
+                        },
+                    );
+                    match seeded {
+                        Ok(()) => {
+                            fed.insert(id.clone());
+                            self.views
+                                .entry(a.proposition.clone())
+                                .or_default()
+                                .insert(id.clone(), rival.probability);
+                            self.branches.insert(id, rival.model.clone());
+                        }
+                        Err(error) => refused.push((id, error.message().to_string())),
+                    }
+                }
+                Decision::Merge => {
+                    let ranked: Vec<ScoredView> = by_standing(&a.disagreement.views)
+                        .into_iter()
+                        .filter(|v| self.branches.contains_key(&v.model))
+                        .collect();
+                    let (Some(first), Some(second)) = (ranked.first(), ranked.get(1)) else {
+                        continue;
+                    };
+                    self.serial += 1;
+                    let id = format!("merge-{}", self.serial);
+                    match self
+                        .federation
+                        .merge(&first.model, &second.model, &id, &a.reason, now)
+                    {
+                        Ok(()) => {
+                            let followed = self.branches.remove(&first.model);
+                            self.branches.remove(&second.model);
+                            if let Some(source) = followed {
+                                self.branches.insert(id, source);
+                            }
+                        }
+                        Err(error) => refused.push((id, error.message().to_string())),
+                    }
+                }
+                Decision::Abstain | Decision::RequestMoreInformation(_) => {}
+            }
+        }
+    }
+
     /// Score every pending forecast reality has answered; abandon the ones it
     /// cannot or did not answer in time.
     fn resolve(
@@ -1080,6 +1252,9 @@ impl FederationStage {
             match answer {
                 Some(Some(outcome)) => {
                     let closed = self.federation.resolve(&proposition, outcome, now);
+                    for id in &closed {
+                        self.branches.remove(id);
+                    }
                     let forecasts = self.views.remove(&proposition).unwrap_or_default();
                     resolved.push(Resolution {
                         proposition,
@@ -1449,6 +1624,169 @@ mod tests {
         let json = serde_json::to_value(&review).unwrap();
         let back: FederationReview = serde_json::from_value(json).unwrap();
         assert_eq!(back.information_requests, review.information_requests);
+    }
+
+    /// A tape every drifting member reads as rising, so the panel splits and
+    /// the rival to the leader holds a one-sided view a falling close refutes.
+    fn rising(cycle: u64, close: f64, through: Timestamp) -> FederationInputs {
+        let mut i = inputs(cycle, close, through, None);
+        i.instruments[0].returns = series(40, 0.01);
+        i
+    }
+
+    fn branch_ids(stage: &FederationStage, now: Timestamp) -> Vec<String> {
+        stage
+            .federation()
+            .live_specs(now)
+            .iter()
+            .map(|s| s.id().to_string())
+            .filter(|id| id.contains("~branch-"))
+            .collect()
+    }
+
+    /// WORLD-1181 / WORLD-3041: a `Branch` decision was only labelled, so the
+    /// cycle never held a competing hypothesis. Mutation: skip the
+    /// `Federation::branch` call in `act_on_decisions` — the population stays
+    /// nine and no `Branched` event is journaled.
+    #[test]
+    fn a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage() {
+        let mut stage = FederationStage::new();
+        let first = stage.run(&rising(1, 100.0, day(0)), day(0));
+        // Premise: nine members, no branch, and nothing scored yet to decide on.
+        assert_eq!(first.population.len(), 9);
+        assert!(branch_ids(&stage, day(0)).is_empty());
+        let second = stage.run(&rising(2, 101.0, day(1)), day(1));
+        let instrument = &second.arbitrations[0];
+        // Premise: the pass reached the decision under test.
+        assert_eq!(instrument.decision, Decision::Branch, "{instrument:?}");
+        let branches = branch_ids(&stage, day(1));
+        assert_eq!(branches.len(), 1, "{branches:?}");
+        assert_eq!(second.population.len(), 10);
+        let lineage = stage.federation().lineage(&branches[0]).expect("lineage");
+        assert_eq!(lineage.parents.len(), 1);
+        assert!(branches[0].starts_with(&lineage.parents[0]));
+        assert!(
+            second.events.iter().any(|e| matches!(
+                e,
+                qip_world_model::federation::Event::Branched { id, .. } if *id == branches[0]
+            )),
+            "{:?}",
+            second.events
+        );
+        // The same split persisting does not stack a second branch on the
+        // member that is already followed.
+        let third = stage.run(&rising(3, 101.5, day(2)), day(2));
+        assert_eq!(branch_ids(&stage, day(2)).len(), 1);
+        assert!(!third.silent.contains(&branches[0]), "{:?}", third.silent);
+    }
+
+    /// WORLD-3041: the branch holds a forecast until reality answers, and the
+    /// federation closes it with its Brier score when it forecast the wrong
+    /// side. Mutation: never branch — there is nothing to close and the
+    /// `expect` below fails.
+    #[test]
+    fn a_branch_that_forecast_the_wrong_side_is_closed_with_its_score_when_the_close_answers() {
+        let mut stage = FederationStage::new();
+        stage.run(&rising(1, 100.0, day(0)), day(0));
+        stage.run(&rising(2, 101.0, day(1)), day(1));
+        let branch = branch_ids(&stage, day(1))
+            .pop()
+            .expect("a branch was opened");
+        // The rival it follows read the tape as certain to rise; the close
+        // falls.
+        let third = stage.run(&rising(3, 100.0, day(2)), day(2));
+        let answered = third
+            .resolved
+            .iter()
+            .find(|r| r.proposition == instrument_proposition("AAA", 2))
+            .expect("the cycle-2 proposition resolves");
+        assert!(!answered.outcome);
+        assert!(answered.closed.contains(&branch), "{answered:?}");
+        assert!(matches!(
+            stage.federation().status(&branch),
+            Ok(qip_world_model::federation::Status::Closed { score, .. }) if (*score - 1.0).abs() < 1e-9
+        ));
+        assert!(!branch_ids(&stage, day(2)).contains(&branch));
+        // A closed branch is no longer fed or reported silent.
+        assert!(third.refused.is_empty(), "{:?}", third.refused);
+    }
+
+    /// WORLD-1181: a `Merge` folds two branches into one and never two roots.
+    /// Mutation: drop the `branches.contains_key` filter — the roots are
+    /// merged and the roots-kept assertion fails.
+    #[test]
+    fn a_merge_decision_folds_two_branches_into_one_and_leaves_the_roots_alone() {
+        use qip_world_model::federation::{Disagreement, ScoredView, ViewLineage};
+        let mut stage = FederationStage::new();
+        stage.run(&rising(1, 100.0, day(0)), day(0));
+        let roots: Vec<String> = stage
+            .federation()
+            .live_specs(day(0))
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
+        for (n, source) in [(1, MOMENTUM), (2, REVERSION)] {
+            let id = format!("{STANDING_ASIDE}~branch-{n}");
+            stage
+                .federation
+                .branch(STANDING_ASIDE, &id, "test", "test", day(0))
+                .expect("branch");
+            stage.branches.insert(id, source.to_string());
+        }
+        let view = |model: &str, parents: Vec<String>| ScoredView {
+            model: model.to_string(),
+            probability: 0.6,
+            evidence_fit: 0.5,
+            predictive_performance: Some(0.5),
+            causal_coherence: 0.5,
+            uncertainty: 0.3,
+            composite: Some(0.5),
+            lineage: ViewLineage {
+                depth: parents.len(),
+                parents,
+                trigger: None,
+            },
+        };
+        let mut views: Vec<ScoredView> = roots.iter().map(|r| view(r, Vec::new())).collect();
+        views.extend(
+            stage
+                .branches
+                .keys()
+                .map(|b| view(b, vec![STANDING_ASIDE.to_string()])),
+        );
+        let arbitration = Arbitration {
+            proposition: "AAA:next-close-up@1".into(),
+            at: day(0),
+            decision: Decision::Merge,
+            reason: "views agree".into(),
+            disagreement: Disagreement { views, spread: 0.0 },
+            arbitrated_probability: Some(0.6),
+            expired: Vec::new(),
+            research: None,
+        };
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 11);
+        let (mut fed, mut refused) = (BTreeSet::new(), Vec::new());
+        stage.act_on_decisions(
+            std::slice::from_ref(&arbitration),
+            day(0),
+            &mut fed,
+            &mut refused,
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        // 11 live, two branches merged away, one result: 10, every root kept.
+        let live: Vec<String> = stage
+            .federation()
+            .live_specs(day(0))
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
+        assert_eq!(live.len(), 10, "{live:?}");
+        assert!(roots.iter().all(|r| live.contains(r)));
+        assert_eq!(stage.branches.len(), 1);
+        // Replaying the same decision has no live pair left to fold.
+        stage.act_on_decisions(&[arbitration], day(0), &mut fed, &mut refused);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(stage.federation().live_specs(day(0)).len(), 10);
     }
 
     #[test]

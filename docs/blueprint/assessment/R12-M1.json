@@ -4109,14 +4109,14 @@
   {
     "id": "R12-WORLD-1181",
     "status": "PARTIAL",
-    "current": "Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information.",
+    "current": "Federation arbitration in the cycle compares views, preserves minority views, scores calibration and decides branch/merge/abstain/request-information. A Branch decision is now executed (FederationStage::act_on_decisions opens a branch of the leader following the runner-up and journals its lineage; R12-WORLD-3041). A Merge decision folds the two best branches through Federation::merge and never two roots, because a merge stops the federation feeding both parents.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:252 InformationRequest",
-      "backend/crates/services/qip-world-model/src/federation.rs:258 Decision",
-      "backend/crates/runtime/qip-kernel/src/federation_stage.rs::FederationStage::run",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1103 act_on_decisions (Branch and Merge arms)",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1652 a_branch_decision_opens_one_live_branch_of_the_leader_and_journals_its_lineage",
+      "backend/crates/runtime/qip-kernel/src/federation_stage.rs:1716 a_merge_decision_folds_two_branches_into_one_and_leaves_the_roots_alone",
       "backend/crates/runtime/qip-kernel/src/platform.rs::understand_federation"
     ],
-    "gap": "Decisions are recorded only: no branch or merge is executed, and contradiction detection is not a distinct mechanism.",
+    "gap": "The Merge arm is proven only by handing act_on_decisions a hand-built Merge arbitration over two seeded branches: no default-path scenario yet produces a Merge decision while two branches hold views, so the arm has not run from a real pass. Contradiction detection is still not a distinct mechanism.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4124,10 +4124,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection + crate tests per scope item",
+    "verification": "cargo test -p qip-kernel --lib federation_stage",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05, kept PARTIAL. Mutation fired: dropping the branches filter on the Merge arm merges roots and a_merge_decision_folds_two_branches... fails."
   },
   {
     "id": "R12-AGENCY-1182",
