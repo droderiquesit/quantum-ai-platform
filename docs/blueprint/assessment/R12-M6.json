@@ -47,16 +47,16 @@
   },
   {
     "id": "R12-MODEL-6003",
-    "status": "PARTIAL",
-    "current": "Platform::attribute marks each fill from its order's arrival price to the instrument's latest close. Slippage is split into the spread quoted at release and impact, and the per-fill sum is reconciled against the book (runtime/qip-kernel/src/platform.rs:16434-16520; attribution.rs:1-50). The result is joined to seven keys stamped at hypothesis formation and order acceptance: strategy, model/forecaster, belief/hypothesis, evidence source, capital policy, risk rule set and execution path (services/qip-learning-engine/src/keyed_attribution.rs). The joined result is journaled under kernel/attribution in LEARN, which every cycle-running binary drives.",
+    "status": "COMPLETE",
+    "current": "Platform::attribute marks each fill from its order's arrival price to the instrument's latest close, splits slippage into quoted spread and impact, and reconciles the per-fill sum against the book (runtime/qip-kernel/src/platform.rs:16434-16520; attribution.rs:1-50). The result is joined to seven keys stamped at hypothesis formation and order acceptance: strategy, model/forecaster, belief/hypothesis, evidence source, capital policy, risk rule set and execution path. observe_hypothesis (REASON) writes the lineage through AttributionLineage::note_hypothesis and note_release stamps each accepted order from it, so an order citing a hypothesis a cycle formed carries the detector that raised it under Dimension::Model and the origin of its evidence under Dimension::EvidenceSource. The joined result is journaled under kernel/attribution in LEARN, which every cycle-running binary drives.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16434",
-      "backend/crates/runtime/qip-kernel/src/attribution.rs:1",
-      "backend/crates/services/qip-learning-engine/src/keyed_attribution.rs:356",
-      "runtime/qip-kernel/tests/model_tournament.rs::a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys",
-      "services/qip-learning-engine/src/keyed_attribution.rs::tests::every_dimension_groups_the_same_book_and_each_closes"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:13719",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs:145",
+      "backend/crates/runtime/qip-kernel/src/attribution.rs:188",
+      "runtime/qip-kernel/tests/model_tournament.rs::an_order_citing_a_hypothesis_a_cycle_formed_is_attributed_its_model_and_evidence_source",
+      "runtime/qip-kernel/tests/model_tournament.rs::a_filled_order_is_attributed_its_marked_pnl_under_all_seven_keys"
     ],
-    "gap": "No test proves model and evidence-source attribution keys are populated from a formed hypothesis; the cited test asserts Model == UNATTRIBUTED.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -64,10 +64,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning (new: attribution carries all seven keys)",
+    "verification": "cd backend && cargo test -p qip-kernel --test model_tournament",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: The old note 'realised_pnl/spread/impact are ZERO' is no longer true. The 'risk rule' key is the risk rule set in force, not the specific rule that bounded the order. A fill whose order lineage was evicted is attributed under 'unattributed' and counted. Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Five of seven keys are proven populated; model and evidence-source keys are only proven to degrade to 'unattributed'."
+    "notes": "Lane L07, 2026-10-18: closed. The cycle forms a hypothesis, an order citing it fills, and the attribution names a detector: model key and a non-unattributed evidence-source key. Mutation: deleting the note_hypothesis call in observe_hypothesis -> model keys [\"unattributed\"], the new test fails; restored and passing (model_tournament: 9 passed). The risk-rule key is still the rule set in force, not the specific rule that bounded the order; a fill whose lineage was evicted is attributed under unattributed and counted."
   },
   {
     "id": "R12-MODEL-6004",
