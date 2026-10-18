@@ -1679,14 +1679,15 @@
   {
     "id": "R12-FABRIC-8076",
     "status": "PARTIAL",
-    "current": "qip-transport Producer has idempotent producer id/epoch/sequence, retry/breaker policy and an explicit AckProfile; production caller is qip-edge-node FabricSink when a fabric URL is configured. The strongest profile is Archived (single broker + archive), so no quorum acknowledgement exists to report.",
+    "current": "qip-transport Producer has idempotent producer id/epoch/sequence, retry/breaker policy and an explicit AckProfile; its production caller is qip-edge-node FabricSink when a fabric URL is configured. The sink is driven against a served broker: batches read back as the same envelopes with a dense sequence (fabric_envelope.rs), and since 2026-10-18 a batch whose acknowledgement was lost after the broker appended it is retried under the same sequence, verified as a duplicate by the broker's producer table (qip-streaming event_fabric/producer.rs), and held once. The strongest ack profile is Archived (single broker + archive), so no quorum acknowledgement exists to report; qip-fabricd's managed producer refuses a majority acknowledgement from a local broker.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/outbox.rs:144 FabricSettings::sink builds two Producers with class.ack_floor()",
-      "backend/crates/apps/qip-edge-node/src/main.rs:812 sink pushed only when fabric configured",
-      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:397 Archived ack waits for archived_through",
-      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs:434 a_consumer_killed_after_committing_n_resumes_at_n_plus_one"
+      "backend/crates/apps/qip-edge-node/src/outbox.rs FabricSettings::sink",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_the_sink_sends_is_read_back_from_the_broker_as_the_same_envelopes",
+      "backend/crates/apps/qip-edge-node/tests/fabric_envelope.rs::a_batch_whose_acknowledgement_was_lost_is_retried_and_held_once",
+      "backend/crates/services/qip-streaming/src/event_fabric/producer.rs Admission::Duplicate",
+      "backend/crates/apps/qip-fabricd/tests/managed.rs::a_managed_majority_producer_refuses_an_acknowledgement_from_a_local_broker"
     ],
-    "gap": "No quorum ack exists (see FABRIC-8086); no test drives FabricSink against a broker.",
+    "gap": "No quorum acknowledgement exists to report (no replicated managed log is deployed; see FABRIC-8086); 'reports quorum only when durable' holds only in the sense that quorum is never reported.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1694,10 +1695,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-transport --test event_fabric_client",
+    "verification": "cargo test -p qip-transport --test event_fabric_client; cargo test -p qip-edge-node --test fabric_envelope",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Gained a production caller; \"quorum only when durable\" cannot hold without replication."
+    "notes": "Re-graded 2026-10-18 by lane L09: 'no test drives FabricSink against a broker' was stale. Added the retry test (a 503 returned after the broker appended the first batch). Mutation: admitting a base sequence below the expected one as a fresh append in ProducerTable made the stream hold evt-1, evt-2 twice and the test fail with 'a lost acknowledgement duplicated or dropped a record'; restored byte for byte."
   },
   {
     "id": "R12-FABRIC-8077",
@@ -2936,13 +2937,15 @@
   },
   {
     "id": "R12-LEDGER-8132",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "google_spanner_instance.global pins edition = \"ENTERPRISE_PLUS\" with the nam-eur-asea multi-region config and 100 processing units; terraform validate and the module tftests pass with the attribute; the acceptance suite refuses its absence or a regional config. Still gated by enable_spanner, false in every environment, so no plan renders it.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:380-402 (edition at :395)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration",
+      "infrastructure/terraform/modules/data/tests/spanner_edition.tftest.hcl",
+      "infrastructure/terraform/modules/data/main.tf google_spanner_instance.global edition"
     ],
-    "gap": "enable_spanner is false in every committed environment, so the plan the check asks for renders no instance; enabling it is a paid-resource decision for the owner (and the ledger adapter against a live instance is unproven).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2950,10 +2953,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration; cd infrastructure/terraform/modules/data && terraform validate && terraform test",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_edition.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 (lane L02): edition added; terraform 1.9.8 validate: Success; terraform test: 6 passed, 0 failed. Mutation: deleted the edition line; the test failed \"does not pin edition\"; restored byte-for-byte. Kept PARTIAL because the check is a plan and nothing plans the instance."
+    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run."
   },
   {
     "id": "R12-LEDGER-8133",
