@@ -121,9 +121,9 @@ use qip_core::lineage::{Lineage, TraceId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
 use qip_cost_router::{
-    ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism,
-    DeterministicRouting, Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router,
-    Routing, TierCharge, VolatilityRegime,
+    Attribution as CostAttribution, ComputeLedger, Conditions, CostEngine, DataCostModel,
+    DataReads, DecisionContext, Determinism, DeterministicRouting, Horizon, IntelligenceTier,
+    MarketRegime, Region as CostRegion, Router, Routing, TierCharge, VolatilityRegime,
 };
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
@@ -10990,9 +10990,12 @@ impl Platform {
             }
         }
 
+        // Attributed to the platform's region and to no strategy or source: a
+        // cycle's compute serves every strategy it looked at, and billing it
+        // to one would be a number nobody computed (R12-FINOPS-10136).
         let mut ledger =
             match ComputeLedger::new(format!("cycle {}", self.cycle), Budget::research_default()) {
-                Ok(ledger) => ledger,
+                Ok(ledger) => ledger.with_attribution(CostAttribution::region(HOME_REGION)),
                 Err(error) => return vec![format!("the compute ledger refused to open: {error}")],
             };
         let mut problems = Vec::new();

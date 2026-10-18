@@ -1154,3 +1154,95 @@ fn a_cell_that_cannot_withdraw_from_a_failed_venue_says_so_in_the_chain_once_rat
     assert!(!cell.is_halted());
     Ok(())
 }
+
+/// The venues each `VenueChosen` entry for `instrument` compared, and the
+/// one it chose, in journal order.
+fn venue_choices(cell: &Cell, instrument: &str) -> Vec<(String, Vec<String>)> {
+    journaled(cell, |decision, _| match decision {
+        Decision::VenueChosen {
+            object,
+            venue,
+            candidates,
+        } if object == instrument => Some((
+            venue.clone(),
+            candidates.iter().map(|(name, _)| name.clone()).collect(),
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+fn an_order_that_would_have_gone_to_a_silent_venue_is_placed_at_the_healthy_venue_listing_the_same_instrument()
+-> Result<()> {
+    // The failure this prevents: a cell that refuses at the venue it cannot
+    // see, but does not go elsewhere, stops trading an instrument that a
+    // second venue it reaches is still quoting. Refusing protects the
+    // order; only rerouting keeps the flow. The quarantine test above shows
+    // a rerouted order once; this one proves it is the *same* intent moved,
+    // by naming the venue the choice would otherwise have made.
+    let mut cell = fed_cell(&[(XLON, "obj-ACME")])?;
+    cell.track(VenueState::aggregated(
+        object("obj-ACME"),
+        venue(XPAR),
+        VenueStatus::Open,
+    ));
+    let mut gateway = Gateway::default();
+    // XLON quotes the tighter spread, so it is the venue the cell prefers.
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99.5\t500\n2\tobj-ACME\tA\t100.5\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-ACME\tB\t99\t500\n2\tobj-ACME\tA\t101\t400",
+        t(10),
+    )?;
+
+    // Premise: with both feeds heard the order goes to XLON, chosen over
+    // XPAR from a candidate set holding both.
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XLON, "obj-ACME")],
+        "the premise failed: {:?}",
+        report.refusals
+    );
+    let choices = venue_choices(&cell, "obj-ACME");
+    assert_eq!(
+        choices.last(),
+        Some(&(XLON.to_string(), vec![XLON.to_string(), XPAR.to_string()])),
+        "the premise failed: XLON was not chosen over XPAR"
+    );
+    let at_xlon = gateway.attempts_at(XLON);
+
+    // XLON goes silent past the five-second limit while XPAR is still
+    // heard. The same strategy's order now goes to XPAR, nothing is
+    // refused, and XLON is absent from the set the choice was made from.
+    cell.feed_heartbeat(&venue(XPAR), t(16));
+    let report = cell.work(t(16), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XPAR, "obj-ACME")],
+        "the order was not rerouted to the venue still heard: {:?}",
+        report.refusals
+    );
+    assert!(
+        report.refusals.is_empty(),
+        "a rerouted order was also refused: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        venue_choices(&cell, "obj-ACME").last(),
+        Some(&(XPAR.to_string(), vec![XPAR.to_string()])),
+        "the silent venue was still a candidate"
+    );
+    assert_eq!(
+        gateway.attempts_at(XLON),
+        at_xlon,
+        "an order reached the venue the cell cannot see"
+    );
+    Ok(())
+}

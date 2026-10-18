@@ -1536,6 +1536,8 @@ fn a_job_priced_above_the_budget_is_not_sent() -> Result<()> {
     let funded = ComputeRouter::classical(1)
         .with_policy(RoutingPolicy {
             max_quantum_job_cost_micros: 1_500_000,
+            quantum_spend_budget_micros: 1_500_000,
+            value_per_unit_gain_micros: 1_000_000_000_000,
             ..policy
         })?
         .with_quantum(Arc::new(Priced))?;
@@ -1563,5 +1565,424 @@ fn every_routing_decision_accounts_for_every_declared_substrate() -> Result<()> 
         // The continuous problem compiles with no quantum formulation at all.
         assert_eq!(compute.task.quantum.is_some(), problem.is_discrete());
     }
+    Ok(())
+}
+
+/// A device that declares a price per job and refuses every job it is sent,
+/// so each harvest is a trial without a win and the slot frees for the next.
+#[derive(Debug)]
+struct Billed {
+    cost_per_job_micros: u64,
+}
+
+impl QuantumProvider for Billed {
+    fn name(&self) -> &str {
+        "billed"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            max_qubits: 64,
+            simulated: false,
+            noisy: true,
+            typical_queue: qip_core::time::Duration::ZERO,
+            cost_per_job_micros: self.cost_per_job_micros,
+        }
+    }
+    fn solve_qubo(&self, _qubo: &Qubo, _settings: &QaoaSettings) -> Result<QaoaResult> {
+        Err(qip_core::error::Error::denied(
+            "the billed device answers nothing",
+        ))
+    }
+}
+
+/// R12-QUANT-10068 and 9046: the quantum arm runs in a budgeted queue. A
+/// per-job cap bounds one bill and not the sum, so before the ceiling a
+/// router sending one capped job per cycle spent without limit; and a ledger
+/// held only in memory would let every rollout spend the budget again.
+///
+/// Mutation: in `ComputeRouter::estimate`, delete the
+/// `spent_micros.saturating_add(cost_micros) > quantum_spend_budget_micros`
+/// arm — the third cycle submits and the ceiling assertion fires. In
+/// `ComputeRouter::replay`, delete the `quantum_billed_micros` fold — the
+/// restarted router reads zero spent and submits again, and the restart
+/// assertion fires.
+#[test]
+fn the_quantum_arm_stops_at_its_cumulative_spend_ceiling_and_a_restart_does_not_reset_it()
+-> Result<()> {
+    let problem = discrete(12, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 2,
+        max_quantum_job_cost_micros: 1_500_000,
+        quantum_spend_budget_micros: 3_000_000,
+        value_per_unit_gain_micros: 1_000_000_000_000,
+        ..RoutingPolicy::default()
+    };
+    let device = Arc::new(Billed {
+        cost_per_job_micros: 1_500_000,
+    });
+    let live = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .with_quantum(device.clone())?;
+
+    let mut decisions = Vec::new();
+    for cycle in 0..2 {
+        let decision = live.solve(&problem)?;
+        assert!(
+            decision.quantum_dispatch.submitted.is_some(),
+            "premise: cycle {cycle} is inside the budget and sends a job: {:?}",
+            decision
+                .compute
+                .as_ref()
+                .map(|c| c.verdict(qip_optimization_engine::Substrate::Qpu))
+        );
+        wait_for_quantum_job(&live)?;
+        decisions.push(decision.compute.expect("a compute record"));
+    }
+    assert_eq!(live.quantum_spend_micros()?, 3_000_000);
+
+    let third = live.solve(&problem)?;
+    assert!(
+        third.quantum_dispatch.submitted.is_none(),
+        "a job that would pass the cumulative ceiling was sent"
+    );
+    assert!(!third.chosen.is_quantum());
+    assert!(approx_eq(third.objective, third.classical_objective, 0.0));
+    let estimate = third
+        .compute
+        .as_ref()
+        .and_then(|c| c.information_value.clone())
+        .expect("the declined dispatch still records its estimate");
+    assert!(!estimate.cleared);
+    assert_eq!(estimate.spent_before_micros, 3_000_000);
+    assert_eq!(
+        live.quantum_spend_micros()?,
+        3_000_000,
+        "nothing more was billed"
+    );
+    decisions.push(third.compute.clone().expect("a compute record"));
+
+    let restarted = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .with_quantum(device)?;
+    assert_eq!(
+        restarted.quantum_spend_micros()?,
+        0,
+        "premise: a fresh ledger"
+    );
+    restarted.replay(decisions.iter())?;
+    assert_eq!(restarted.quantum_spend_micros()?, 3_000_000);
+    let after_restart = restarted.solve(&problem)?;
+    assert!(
+        after_restart.quantum_dispatch.submitted.is_none(),
+        "a rollout reset the spend ledger and the arm spent the budget again"
+    );
+    Ok(())
+}
+
+/// A per-job cap the total can never pay is refused rather than carried.
+#[test]
+fn a_per_job_cap_above_the_cumulative_budget_is_refused() {
+    let policy = RoutingPolicy {
+        max_quantum_job_cost_micros: 2,
+        quantum_spend_budget_micros: 1,
+        ..RoutingPolicy::default()
+    };
+    let refusal = policy
+        .validate()
+        .expect_err("an unpayable cap was admitted");
+    assert!(
+        refusal.message().contains("quantum_spend_budget_micros 1:"),
+        "{}",
+        refusal.message()
+    );
+    RoutingPolicy {
+        quantum_spend_budget_micros: 2,
+        ..policy
+    }
+    .validate()
+    .expect("a budget equal to the cap is admitted");
+}
+
+/// A device that answers with a chosen assignment, but only once the test
+/// releases it — a queue whose latency the test controls.
+#[derive(Debug)]
+struct LateWinner {
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    assignment: Vec<u8>,
+    returned: std::sync::atomic::AtomicUsize,
+}
+
+impl QuantumProvider for LateWinner {
+    fn name(&self) -> &str {
+        "late-winner"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            max_qubits: 64,
+            simulated: false,
+            noisy: true,
+            typical_queue: qip_core::time::Duration::ZERO,
+            cost_per_job_micros: 0,
+        }
+    }
+    fn solve_qubo(&self, qubo: &Qubo, _settings: &QaoaSettings) -> Result<QaoaResult> {
+        if let Ok(release) = self.release.lock() {
+            let _ = release.recv();
+        }
+        self.returned
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(QaoaResult {
+            energy: qubo.evaluate(&self.assignment),
+            assignment: self.assignment.clone(),
+            expectation: 0.0,
+            success_probability: 1.0,
+            layers: 1,
+            angles: vec![0.0, 0.0],
+            evaluations: 1,
+        })
+    }
+}
+
+/// Twelve names, six to hold, with uneven variances and returns: an instance
+/// the seed-one annealer leaves short of the exhaustive optimum, so a better
+/// answer exists for a candidate to bring.
+fn rugged() -> Result<PortfolioProblem> {
+    let n = 12;
+    let covariance: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    if i == j {
+                        0.04 + 0.003 * (i % 5) as f64
+                    } else {
+                        0.012 * (1.0 + ((i * 7 + j * 7) % 3) as f64 * 0.2)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    Ok(PortfolioProblem::new(assets(n), covariance)?
+        .with_objective(Objective::MeanVariance)
+        .with_expected_returns(
+            (0..n)
+                .map(|i| 0.05 + 0.013 * ((i * 5) % 7) as f64)
+                .collect(),
+        )
+        .with_risk_aversion(5.0)
+        .with_bounds(vec![0.0; n], vec![0.4; n])
+        .fully_invested(1.0)
+        .with_cardinality(6))
+}
+
+/// R12-QUANT-4045: a quantum answer that wins on the objective but arrives
+/// past the latency budget — `quantum_patience_cycles` — is not used, and the
+/// classical answer ships. The same answer inside the budget is adopted, so
+/// the refusal is the latency and not the answer.
+///
+/// Mutation: in `QuantumGateway::poll` (qip-quantum), never return
+/// `Abandoned` (compare `polls >= u32::MAX`) — the job is still pending past
+/// its one cycle of patience and the "outlived its patience" assertion
+/// fires; without it the released answer would be harvested and adopted.
+#[test]
+fn a_quantum_answer_that_wins_on_objective_but_exceeds_the_latency_budget_is_not_used() -> Result<()>
+{
+    let problem = rugged()?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 2,
+        quantum_margin: 0.0001,
+        ..RoutingPolicy::default()
+    };
+    let baseline = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .solve(&problem)?;
+    let encoding = QuboEncoding::equal_weight_bounded(6, 1.0, 0.4);
+    let mut winner: Option<(Vec<u8>, f64)> = None;
+    for mask in 0u32..(1 << 12) {
+        if mask.count_ones() != 6 {
+            continue;
+        }
+        let assignment: Vec<u8> = (0..12).map(|i| u8::from(mask & (1 << i) != 0)).collect();
+        let objective = problem.objective_at(&encoding.to_weights(&assignment));
+        if winner.as_ref().is_none_or(|(_, best)| objective < *best) {
+            winner = Some((assignment, objective));
+        }
+    }
+    let (assignment, best) = winner.expect("twelve choose six is not empty");
+    assert!(
+        best < baseline.classical_objective - 1e-9,
+        "premise: the annealer's baseline {} leaves room for a better answer than {best}",
+        baseline.classical_objective
+    );
+
+    // Inside the budget: released before the next cycle, harvested, adopted.
+    let (prompt, held) = std::sync::mpsc::channel::<()>();
+    let router = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .with_quantum(Arc::new(LateWinner {
+            release: std::sync::Mutex::new(held),
+            assignment: assignment.clone(),
+            returned: std::sync::atomic::AtomicUsize::new(0),
+        }))?;
+    assert!(router.solve(&problem)?.quantum_dispatch.submitted.is_some());
+    prompt
+        .send(())
+        .map_err(|_| qip_core::error::Error::invalid("the provider hung up"))?;
+    wait_for_quantum_job(&router)?;
+    let timely = router.solve(&problem)?;
+    assert_eq!(
+        timely.chosen,
+        Solver::Quantum,
+        "premise: inside the latency budget the same answer wins: {}",
+        timely.rationale
+    );
+
+    // Past the budget: one cycle of patience, abandoned, then released.
+    let (late, held) = std::sync::mpsc::channel::<()>();
+    let provider = Arc::new(LateWinner {
+        release: std::sync::Mutex::new(held),
+        assignment,
+        returned: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let router = ComputeRouter::classical(1)
+        .with_policy(RoutingPolicy {
+            quantum_patience_cycles: 1,
+            ..policy
+        })?
+        .with_quantum(provider.clone())?;
+    let asked = router.solve(&problem)?;
+    assert!(asked.quantum_dispatch.submitted.is_some());
+    let gave_up = router.solve(&problem)?;
+    assert!(
+        gave_up.quantum_dispatch.abandoned.is_some(),
+        "premise: the job outlived its patience: {:?}",
+        gave_up.quantum_dispatch
+    );
+    drop(late);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while provider.returned.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the provider never returned"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let after = router.solve(&problem)?;
+    for decision in [&asked, &gave_up, &after] {
+        assert!(
+            !decision.chosen.is_quantum(),
+            "a winning answer past the latency budget was used: {}",
+            decision.rationale
+        );
+        assert!(approx_eq(
+            decision.objective,
+            decision.classical_objective,
+            0.0
+        ));
+    }
+    assert_ne!(
+        after.quantum_dispatch.harvested, asked.quantum_dispatch.submitted,
+        "the abandoned job's answer was harvested"
+    );
+    Ok(())
+}
+
+/// R12-QUANT-4057: a quantum allocation is checked against transaction cost.
+/// The candidate below beats the classical baseline before turnover is
+/// priced and is adopted; once the problem carries the book's current
+/// holdings and a cost per unit of turnover, the same candidate is re-scored
+/// with that cost and loses, so the classical answer ships.
+///
+/// Mutation: in `PortfolioProblem::objective_at`, drop
+/// `+ self.turnover_penalty * turnover` — the candidate is adopted against
+/// the costed problem and the costed assertion fires. In `validate`, delete
+/// the zero-penalty-with-holdings refusal — the refusal assertion fires.
+#[test]
+fn a_quantum_allocation_that_wins_only_by_ignoring_transaction_cost_is_refused() -> Result<()> {
+    let free = rugged()?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 2,
+        quantum_margin: 0.0001,
+        ..RoutingPolicy::default()
+    };
+    let held = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .solve(&free)?;
+    let encoding = QuboEncoding::equal_weight_bounded(6, 1.0, 0.4);
+    let mut winner: Option<(Vec<u8>, f64)> = None;
+    for mask in 0u32..(1 << 12) {
+        if mask.count_ones() != 6 {
+            continue;
+        }
+        let assignment: Vec<u8> = (0..12).map(|i| u8::from(mask & (1 << i) != 0)).collect();
+        let objective = free.objective_at(&encoding.to_weights(&assignment));
+        if winner.as_ref().is_none_or(|(_, best)| objective < *best) {
+            winner = Some((assignment, objective));
+        }
+    }
+    let (assignment, _) = winner.expect("twelve choose six is not empty");
+
+    // Premise: with turnover unpriced the candidate wins and is used.
+    let uncosted = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(
+            assignment.clone(),
+            false,
+        )))?;
+    let adopted = solve_across_two_cycles(&uncosted, &free)?;
+    assert_eq!(adopted.chosen, Solver::Quantum, "{}", adopted.rationale);
+
+    // The book holds the baseline's allocation, and turnover costs 5% per
+    // unit: the candidate changes holdings to win, and the change is priced.
+    let costed = rugged()?.with_turnover_penalty(held.weights.clone(), 0.05);
+    let router = ComputeRouter::classical(1)
+        .with_policy(policy)?
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(
+            assignment.clone(),
+            false,
+        )))?;
+    let decision = solve_across_two_cycles(&router, &costed)?;
+    let quantum = decision
+        .run_for(Solver::Quantum)
+        .expect("premise: the candidate was judged");
+    assert!(
+        approx_eq(
+            quantum.objective,
+            costed.objective_at(&encoding.to_weights(&assignment)),
+            1e-12
+        ),
+        "the candidate was not scored with its transaction cost"
+    );
+    assert!(
+        !decision.chosen.is_quantum(),
+        "a candidate that wins only before transaction cost was used: {}",
+        decision.rationale
+    );
+    assert!(approx_eq(
+        decision.objective,
+        decision.classical_objective,
+        0.0
+    ));
+
+    // Holdings declared without a cost are refused, not scored as free.
+    let refusal = rugged()?
+        .with_turnover_penalty(held.weights, 0.0)
+        .validate()
+        .expect_err("holdings with no transaction cost were admitted");
+    assert!(
+        refusal
+            .message()
+            .contains("declared with a zero turnover penalty"),
+        "{}",
+        refusal.message()
+    );
     Ok(())
 }

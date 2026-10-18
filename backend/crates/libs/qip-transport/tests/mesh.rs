@@ -7,8 +7,8 @@
 //!
 //! The last test in this file is the one that matters for the architecture: a
 //! forty-line adapter makes this transport a `qip_streaming::Publisher` and
-//! `qip_streaming::Subscriber`, so it is a drop-in for `pubsub.rs` — which
-//! refuses — without either side knowing about the other.
+//! `qip_streaming::Subscriber`, so it is a drop-in beside the local and durable
+//! transports without either side knowing about the other.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
@@ -673,7 +673,7 @@ fn a_full_inbox_refuses_and_the_publisher_backs_off_rather_than_losing_the_messa
 /// `qip-streaming` is a service and `qip-transport` is a library, and
 /// `a_library_never_depends_on_a_service_or_an_application` in the acceptance
 /// suite enforces that direction. So the port adapter belongs beside the other
-/// transports in `qip-streaming` — next to `pubsub.rs`, `local.rs` and
+/// transports in `qip-streaming` — next to `local.rs` and
 /// `durable.rs` — and this is the proof that it is the forty lines below and
 /// nothing more.
 #[derive(Debug)]
@@ -778,8 +778,7 @@ fn the_mesh_is_a_drop_in_for_the_streaming_transport_ports() -> Result<()> {
     assert!(descriptor.available);
     assert!(
         !descriptor.durable,
-        "the mesh must not claim a durability it does not have; that is the mistake pubsub.rs \
-         refuses to make in the other direction"
+        "the mesh must not claim a durability it does not have"
     );
     assert!(descriptor.production_requirement.is_some());
 

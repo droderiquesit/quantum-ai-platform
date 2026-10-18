@@ -1,8 +1,10 @@
 //! Choosing a transport by name, and knowing what you chose before you use it.
 //!
-//! Four transports implement [`Publisher`] and [`Subscriber`]: [`crate::local`]
-//! in process, [`crate::durable`] on the hash-chained log, [`crate::mesh`] over
-//! the in-tree HTTP mesh, and [`crate::pubsub`], which refuses. A caller that
+//! Three transports implement [`Publisher`] and [`Subscriber`]: [`crate::local`]
+//! in process, [`crate::durable`] on the hash-chained log, and [`crate::mesh`]
+//! over the in-tree HTTP mesh. There is no managed Pub/Sub kind: §19.1 puts no
+//! managed broker on an internal path, so the name `pubsub` is refused as
+//! unknown rather than carried as a kind that only fails. A caller that
 //! names one of those types in its own code is a caller that has to be edited
 //! to change its mind. This module is how a deployment states the choice as
 //! configuration instead.
@@ -13,7 +15,7 @@
 //!
 //! There is no fallback. Asking for a transport that cannot work in this build
 //! returns an error naming what is missing, and never quietly hands back one
-//! that does work. [`crate::pubsub`] documents why at length: a service that
+//! that does work. The reason is the one `qip-storage` gives: a service that
 //! silently served a local queue instead of the bus it was configured for
 //! would pass every smoke test, publish to nothing, and be discovered by
 //! whoever was waiting for the messages a week later. A registry is exactly
@@ -41,7 +43,6 @@ use crate::durable::DurableLogTransport;
 use crate::local::LocalQueue;
 use crate::mesh::MeshTransport;
 use crate::ports::{Publisher, Subscriber, TransportDescriptor};
-use crate::pubsub::PubSubBinding;
 use crate::routing::{RoutingClass, TransportPath};
 use qip_core::SystemClock;
 use qip_core::error::{Error, Result};
@@ -64,20 +65,16 @@ pub enum TransportKind {
     Durable,
     /// The in-tree HTTP mesh between cells and the central plane.
     Mesh,
-    /// Google Pub/Sub. Present so that configuring it fails with a legible
-    /// reason rather than an unknown-name error, which would read as a typo.
-    PubSub,
 }
 
 impl TransportKind {
-    pub const ALL: [Self; 4] = [Self::Local, Self::Durable, Self::Mesh, Self::PubSub];
+    pub const ALL: [Self; 3] = [Self::Local, Self::Durable, Self::Mesh];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Durable => "durable",
             Self::Mesh => "mesh",
-            Self::PubSub => "pubsub",
         }
     }
 
@@ -134,17 +131,6 @@ impl TransportKind {
                 available: true,
                 production_requirement: None,
             },
-            Self::PubSub => TransportDescriptor {
-                name: "pubsub".to_string(),
-                path: TransportPath::Durable,
-                durable: true,
-                available: false,
-                production_requirement: Some(
-                    "a gRPC client, a TLS stack and a Google auth flow, none of which this \
-                     build has; ADR 0011 replaced this transport with the in-tree mesh"
-                        .to_string(),
-                ),
-            },
         }
     }
 
@@ -171,9 +157,6 @@ pub struct TransportConfig {
     /// `host:port` of the peer, for [`TransportKind::Mesh`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer: Option<String>,
-    /// Topic and subscription, for [`TransportKind::PubSub`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding: Option<PubSubBinding>,
 }
 
 /// How many exhausted envelopes the default sink keeps.
@@ -195,7 +178,6 @@ impl TransportConfig {
             name: name.into(),
             capacity: default_capacity(),
             peer: None,
-            binding: None,
         }
     }
 
@@ -214,7 +196,6 @@ pub fn publisher(config: &TransportConfig) -> Result<Box<dyn Publisher>> {
         TransportKind::Local => Ok(Box::new(LocalQueue::new(&config.name, config.capacity)?)),
         TransportKind::Durable => Ok(Box::new(DurableLogTransport::in_memory(&config.name))),
         TransportKind::Mesh => Ok(Box::new(mesh_transport(config)?)),
-        TransportKind::PubSub => Err(unreachable_transport(config.kind)),
     }
 }
 
@@ -225,7 +206,6 @@ pub fn subscriber(config: &TransportConfig) -> Result<Box<dyn Subscriber>> {
         TransportKind::Local => Ok(Box::new(LocalQueue::new(&config.name, config.capacity)?)),
         TransportKind::Durable => Ok(Box::new(DurableLogTransport::in_memory(&config.name))),
         TransportKind::Mesh => Ok(Box::new(mesh_transport(config)?)),
-        TransportKind::PubSub => Err(unreachable_transport(config.kind)),
     }
 }
 
