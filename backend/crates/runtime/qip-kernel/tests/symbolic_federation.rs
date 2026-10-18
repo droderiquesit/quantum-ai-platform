@@ -527,3 +527,92 @@ fn competing_world_models_are_scored_against_reality_and_a_material_disagreement
     }
     Ok(())
 }
+
+/// REASON-3056: a derivation explains the surprise counterfactually, not
+/// only by naming a cause. The failure this guards: `CausalGraph::intervene`
+/// ran in REASON and said what the subject reaches, while
+/// `CausalGraph::counterfactual` existed with no caller, so no record ever
+/// said what the subject would have done had its abduced cause stayed flat.
+///
+/// Kestrel supplies Northwind at strength 0.5 and confidence 0.8 (transmission
+/// 0.4) and fell 5%; Northwind was expected flat and fell 4%. Had Kestrel not
+/// moved, the graph implies Northwind at -0.04 - (-0.05) * 0.4 = -0.02.
+#[test]
+fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_stayed_flat()
+-> Result<()> {
+    use qip_kernel::symbolic_stage::{AnomalyFacts, SymbolicInput, derive};
+    use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism};
+    use std::collections::BTreeMap;
+
+    let now = start();
+    let recorded = now.saturating_sub(Duration::from_days(10));
+    let mut causal = CausalGraph::new();
+    causal.add(
+        CausalEdge::new(
+            "kestrel",
+            "northwind",
+            Mechanism::SupplyChain,
+            0.5,
+            Duration::from_days(1),
+            recorded,
+        )?
+        .with_confidence(0.8)?
+        .with_evidence(vec!["ev-supply".into()]),
+    );
+    let input = SymbolicInput {
+        cycle: 1,
+        hypothesis_id: "hyp-1-northwind".into(),
+        subject: "northwind".into(),
+        status: "draft".into(),
+        confidence: 0.6,
+        contested: false,
+        dissenters: 0,
+        evidence_items: 1,
+        kill_switch: false,
+        live_authority: false,
+        anomaly: AnomalyFacts {
+            detector: "zscore".into(),
+            detected_at: now,
+            observed: -0.04,
+            expected: 0.0,
+            confidence: 0.9,
+        },
+        catalyst: None,
+        formed_at: now,
+        horizon: Duration::from_days(5),
+        moves: BTreeMap::from([("kestrel".to_string(), -0.05)]),
+    };
+    let derivation = derive(input, &causal, now);
+    // Premise: abduction named Kestrel, seen to move, so there is a cause to
+    // hold flat; and the intervention step itself ran.
+    let abduction = derivation
+        .abduction
+        .derived()
+        .ok_or_else(|| qip_core::error::Error::invalid("abduction refused"))?;
+    assert_eq!(
+        abduction.best().map(|c| c.edge.cause.as_str()),
+        Some("kestrel"),
+        "premise: kestrel is the abduced cause"
+    );
+    let intervention = derivation
+        .intervention
+        .derived()
+        .ok_or_else(|| qip_core::error::Error::invalid("intervention refused"))?;
+    assert_eq!(intervention.counterfactuals.len(), 1, "{intervention:?}");
+    let cf = &intervention.counterfactuals[0];
+    assert_eq!(cf.cause, "kestrel");
+    assert!((cf.observed_move + 0.05).abs() < 1e-12);
+    assert!((cf.observed_subject + 0.04).abs() < 1e-12);
+    assert!((cf.total_effect - 0.4).abs() < 1e-12, "{cf:?}");
+    assert!(
+        (cf.counterfactual_subject + 0.02).abs() < 1e-12,
+        "had kestrel stayed flat, northwind reads -0.02: {cf:?}"
+    );
+    assert_eq!(cf.paths, 1);
+    // The record round-trips, and one written before the field existed
+    // still decodes, as none rather than a refusal.
+    let json = serde_json::to_value(&derivation)?;
+    let back: qip_kernel::symbolic_stage::SymbolicDerivation = serde_json::from_value(json)?;
+    assert_eq!(back, derivation);
+    Ok(())
+}

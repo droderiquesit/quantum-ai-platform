@@ -255,6 +255,22 @@ pub struct ScoredView {
     pub uncertainty: f64,
     /// Mean of the four, with uncertainty counted as `1 - uncertainty`.
     pub composite: Option<f64>,
+    /// Where the member came from (WORLD-1130): the parents it branched or
+    /// merged from and how many branches deep it sits below a root. Carried
+    /// on the arbitration record itself, because a reader of a disagreement
+    /// needs to know whether two far-apart views are siblings of one root
+    /// (one hypothesis, forked) or independent models, and the journal that
+    /// could answer that is not what the record hands them.
+    pub lineage: ViewLineage,
+}
+
+/// A member's ancestry as arbitration carries it. A root has no parents and
+/// depth zero; a branch or merge is one deeper than its deepest parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewLineage {
+    pub parents: Vec<String>,
+    pub trigger: Option<String>,
+    pub depth: usize,
 }
 
 /// Every live view, minority included, and how far apart they are.
@@ -732,11 +748,56 @@ impl Federation {
             .collect()
     }
 
+    /// Branch depth of every node: zero for a root, one more than the
+    /// deepest parent otherwise. Resolved by walking each node's parents
+    /// with a memo, because the register is keyed by id and not by
+    /// insertion order, and two nodes created at one instant (two branches
+    /// of one root in the same cycle) have no order a sort could trust. A
+    /// parent the register does not hold is read as a root rather than
+    /// refused, because lineage is a description and not a gate.
+    fn branch_depths(&self) -> BTreeMap<String, usize> {
+        fn depth_of(
+            nodes: &BTreeMap<String, Node>,
+            id: &str,
+            memo: &mut BTreeMap<String, usize>,
+            walking: &mut BTreeSet<String>,
+        ) -> usize {
+            if let Some(d) = memo.get(id) {
+                return *d;
+            }
+            // A parent that is unknown, or already on the walk (a cycle
+            // the register never admits, guarded anyway), counts as a root.
+            let Some(node) = nodes.get(id) else {
+                return 0;
+            };
+            if !walking.insert(id.to_string()) {
+                return 0;
+            }
+            let depth = node
+                .lineage
+                .parents
+                .iter()
+                .map(|p| depth_of(nodes, p, memo, walking) + 1)
+                .max()
+                .unwrap_or(0);
+            walking.remove(id);
+            memo.insert(id.to_string(), depth);
+            depth
+        }
+        let mut memo = BTreeMap::new();
+        let mut walking = BTreeSet::new();
+        for id in self.nodes.keys() {
+            depth_of(&self.nodes, id, &mut memo, &mut walking);
+        }
+        memo
+    }
+
     /// Compare every live, unexpired view on `proposition`.
     ///
     /// A model whose expiry is at or before `now` is excluded and the
     /// exclusion is journaled once as an expiry; renewing it brings it back.
     pub fn arbitrate(&mut self, proposition: &str, now: Timestamp) -> Result<Arbitration> {
+        let depths = self.branch_depths();
         let mut expired = Vec::new();
         let mut views = Vec::new();
         for (id, node) in &mut self.nodes {
@@ -773,6 +834,11 @@ impl Federation {
                 composite: performance.map(|p| {
                     (a.evidence_fit + p + a.causal_coherence + (1.0 - a.uncertainty)) / 4.0
                 }),
+                lineage: ViewLineage {
+                    parents: node.lineage.parents.clone(),
+                    trigger: node.lineage.trigger.clone(),
+                    depth: depths.get(id).copied().unwrap_or(0),
+                },
             });
         }
         let (lo, hi) = views
