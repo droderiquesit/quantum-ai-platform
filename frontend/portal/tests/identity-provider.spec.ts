@@ -37,8 +37,13 @@ const PASSWORD = "a-long-development-passphrase";
 test("with a project named and no key, sign-in is refused as unavailable and the credential is never judged", async ({
   page,
 }) => {
-  await page.goto("/sign-in");
-  // The CSRF pair, primed the way the pages prime it.
+  // No navigation before the calls below. The sign-in form's mount effect
+  // fetches `/api/auth/csrf` itself and that GET rotates the cookie, so a test
+  // that loaded the page and then fetched its own token held a header for one
+  // cookie while the page's late fetch installed another; under a loaded
+  // runner the route then refused the pair with 403 before the provider was
+  // ever consulted (ci run 994 on 38e9ea7d, both attempts). The property here
+  // is the provider's refusal, so the pair is primed once, by this test alone.
   const primed = await page.request.get("/api/auth/csrf");
   const token = ((await primed.json()) as { token?: string }).token;
   expect(token, "the csrf endpoint issued no token, so nothing below is a test of sign-in").toBeTruthy();
