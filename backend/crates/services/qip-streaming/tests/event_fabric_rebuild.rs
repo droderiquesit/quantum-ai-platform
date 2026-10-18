@@ -60,7 +60,7 @@ fn policy() -> StreamPolicy {
 /// reproduce on a rebuilt disk.
 fn broker_on(label: &str, clock: &Arc<ManualClock>, store: &Arc<MemoryBlobStore>) -> Broker {
     let as_clock: Arc<dyn Clock> = clock.clone();
-    let broker = Broker::open(&temp_dir(label), as_clock.clone())
+    let broker = Broker::open(temp_dir(label), as_clock.clone())
         .unwrap()
         .with_archive_reader(store.clone());
     broker
