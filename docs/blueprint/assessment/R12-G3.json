@@ -4279,25 +4279,29 @@
   },
   {
     "id": "R12-AMBIENT-10189",
-    "status": "PARTIAL",
-    "current": "Allocations carry rationale; record_outcome logs realised per-unit value, gauge qip_meta_marginal_value_bp.",
+    "status": "COMPLETE",
+    "current": "Realised value is the uncertainty a granted window was observed to remove: the grant snapshots the question's Uncertainty (a fill-bias item's bias-estimate standard error at its venue; any other item's calibration hit rate on its belief class) and measure_last_round reads it again, realised = expected x reduction, recorded through MetaIntelligence::record_outcome. A class whose calibration did not move and a window that gathered no new residual realise zero.",
     "evidence": [
-      "backend/crates/services/qip-cost-router/src/router.rs:161-168"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:233-299 Uncertainty, reduction_from, standard_error",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1684-1711 uncertainty_of",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1773-1783 the measurement",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2491 a_grant_whose_class_calibration_did_not_move_realises_zero (mutation: return 1.0 for an unmoved calibration; fails)",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:370 a_second_unit_that_realises_nothing_records_zero_marginal_value (a window that narrowed nothing records zero)"
     ],
-    "gap": "Realised value is expected x progress proxy, measured only for fill-bias items; not a measured information value.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
-    "e2e": false,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-AMBIENT-10094"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-cost-router",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --lib a_grant_whose_class_calibration_did_not_move_realises_zero && cargo +1.94.1 test -p qip-deepbrain --test research_market a_second_unit_that_realises_nothing_records_zero_marginal_value",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed. A calibration that moves between sweeps needs resolved beliefs a test platform does not produce, so the moved case is proven at the unit (reduction_from) and the unmoved case from a node sweep."
   },
   {
     "id": "R12-QUANT-10190",
