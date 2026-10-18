@@ -2230,12 +2230,15 @@ impl ResearchLoop {
             let cost = request.criteria().acquisition_cost_bp;
             if cost <= remaining {
                 remaining -= cost;
+                // The rank it was launched at, read before the purchase
+                // shrinks the value still on offer.
+                let rank_bp = request.criteria().net_value_bp();
                 request.record_acquisition(cost)?;
                 round.info_launched += 1;
                 round.scouted.push(ScoutRequest {
                     request_id: id.clone(),
                     question: request.decision_id().to_string(),
-                    rank_bp: request.criteria().net_value_bp(),
+                    rank_bp,
                     entities: entities.remove(id).unwrap_or_default(),
                 });
                 let source = sources.get(id).copied().unwrap_or("acquisition");
