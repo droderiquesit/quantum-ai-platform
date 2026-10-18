@@ -181,6 +181,12 @@ pub struct PollReport {
     /// The evidence each admitted record was checked as, in admission
     /// order and one per record in `admitted`. See [`super::evidence`].
     pub evidence: Vec<CheckedEvidence>,
+    /// Each admitted claim as the §27 evidence packet another brain
+    /// receives, in the same order and one per entry of `evidence`
+    /// (R12-COVERAGE-7152). A claim whose packet cannot be formed is
+    /// quarantined, so no claim leaves this connector without its source,
+    /// licence terms and content hash.
+    pub packets: Vec<qip_contracts::evidence_packet::EvidencePacket>,
     /// Evidence the fabric checked and the runtime then refused to release:
     /// a claim on an impossible timeline, or one from a body that did not
     /// match the digest its own source declared. The records are
@@ -213,6 +219,7 @@ impl PollReport {
             digest: None,
             unreferenced: false,
             evidence: Vec::new(),
+            packets: Vec::new(),
             refused_evidence: Vec::new(),
             knowledge_delta: KnowledgeDelta::default(),
             knowledge_pack: None,
@@ -911,10 +918,27 @@ impl ConnectorRuntime {
             }
         };
 
+        let packet = match checked.packet(&self.manifest) {
+            Ok(packet) => packet,
+            Err(error) => {
+                self.hold(
+                    &event.key,
+                    QuarantineReason::ValidationFailure {
+                        issues: vec![format!("evidence packet refused: {}", error.message())],
+                    },
+                    &event.body.to_string(),
+                    at,
+                    report,
+                );
+                return false;
+            }
+        };
+
         match MarketEventEnvelope::new(&self.manifest, event, record, at, quality) {
             Ok(envelope) => {
                 report.admitted.push(envelope);
                 report.evidence.push(checked);
+                report.packets.push(packet);
             }
             Err(error) => self.hold(
                 &event.key,
