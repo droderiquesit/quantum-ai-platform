@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 498 | 32.8% |
+| Blueprint completion (COMPLETE) | 499 | 32.9% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1226 | 80.8% |
 | Integrated (reached from a composition root) | 872 | 57.4% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 498 |
-| PARTIAL | 873 |
+| COMPLETE | 499 |
+| PARTIAL | 872 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -38,7 +38,7 @@ register (ADR 0099), and there is no second one.
 | [CAPITAL](#capital) | 38 | 4 | 30 | 2 | 2 | 0 | 33 | 33 | 1 |
 | [ASSET](#asset) | 15 | 2 | 13 | 0 | 0 | 0 | 14 | 14 | 0 |
 | [LEDGER](#ledger) | 50 | 16 | 26 | 5 | 3 | 0 | 41 | 33 | 0 |
-| [DATA](#data) | 95 | 20 | 65 | 10 | 0 | 0 | 83 | 74 | 1 |
+| [DATA](#data) | 95 | 21 | 64 | 10 | 0 | 0 | 83 | 74 | 1 |
 | [EVID](#evid) | 25 | 3 | 22 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 22 | 72 | 3 | 0 | 0 | 93 | 83 | 1 |
 | [WORLD](#world) | 69 | 32 | 32 | 5 | 0 | 0 | 62 | 57 | 1 |
@@ -587,7 +587,7 @@ register (ADR 0099), and there is no second one.
 | R12-DATA-10081 | Fabric BigQuery sink streams research data and may lag | qip-mesh has a BigQuery streaming adapter outside the edge closure; no Fabric sink drives it. | PARTIAL | Fabric-driven sink. | R12-DATA-10036 | P2 | cargo test -p qip-mesh --test bigquery |  |
 | R12-DATA-10164 | Build phase 5: Data plane | Knowledge packs and data contracts exist; data stores declared but disabled; no sinks or catalog. | PARTIAL | Enable stores, sinks, catalog. | R12-DATA-10033, R12-DATA-10035, R12-DATA-10036, R12-DATA-10037 | P1 | per-deliverable checks above |  |
 | R12-DATA-10206 | Bigtable app profiles match consistency needs | No Bigtable app profile declared. | MISSING | App profiles. | R12-DATA-10035 | P2 | plan |  |
-| R12-DATA-1029 | Do not warehouse raw external world content | The Tick/Internal Lake's RecordClass is closed to Market and Internal, so a world-source document cannot be written there (tested); world-model graph refuses record bodies. The event log still stores ingested news items with their manifest; discard of transient content in connectors is not proven by a test across every store. | PARTIAL | A cross-store test that no persisted record (event log, KV, blob) carries raw external document bodies. |  | P0 | cargo test -p qip-storage --test lake; cargo test -p qip-world-model --test no_copied_documents |  |
+| R12-DATA-1029 | Do not warehouse raw external world content | A connector's fetched body is discarded after distillation, proven across every durable store the connector path writes: a canary planted in a field no connector keeps is absent from the platform event log, the journal KV store, the knowledge-pack blob store and the tick-lake blob store after a poll through a Platform. Also: the Tick/Internal Lake's RecordClass is closed to Market and Internal (tested); the world-model graph refuses record bodies. | COMPLETE |  |  | P0 | cargo test -p qip-acceptance --test data_infrastructure_guards a_canary |  |
 | R12-DATA-1030 | Source manifest persists source reference and provider identity | SourceManifest and DataReference carry source and locator, refuse empty values, and DataReference is recorded to the event log through Platform::reference_fetch from api/fastbrain/deepbrain. | COMPLETE |  |  | P0 | cargo test -p qip-kernel --test references |  |
 | R12-DATA-1031 | Source manifest persists retrieval timestamp and version/etag | Every connector fetch in all three central binaries goes through Platform::reference_fetch -> DataReference::from_digest, which carries retrieved_at and the source's etag; a deepbrain test polls an emulated source sending an etag and decodes the journaled reference from the event log; mutation (etag None) verified. | COMPLETE | None for the requirement; not deployed. |  | P0 | cargo test -p qip-kernel --test references |  |
 | R12-DATA-1032 | Source manifest persists cryptographic hash/fingerprint | SHA-256 computed by the only constructor; revision detection compares hashes and flags in ledger, log and metrics. | COMPLETE |  |  | P0 | cargo test -p qip-kernel --test references |  |
@@ -639,7 +639,7 @@ register (ADR 0099), and there is no second one.
 | R12-DATA-3105 | Information requests trigger many acquisition kinds | InfoRequest has no kind/handler dispatch. | MISSING | Kinds and handlers. | R12-AMBIENT-3104 | P2 | new test to be written (see gap); cargo test -p <owning crate> |  |
 | R12-DATA-6006 | Data-source alpha attribution after cost and delay | qip-data-finder source_alpha computes incremental information gain over every held series and realised contribution with bounded history, and the deep brain SourceAlphaDesk (qip-deepbrain/src/source_alpha.rs, driven from the node loop through EvolutionEngine::maybe_score_sources) scores each connector arm against the own stream on a cadence. The score is gross: no cost or delay term. | PARTIAL | Net-of-cost and delay-adjusted attribution needs two inputs the desk does not have and one decision nobody has made. The desk knows an arm by source id only (observe_source), not its manifest, so it cannot read SourceCost; the manifest carries no publication_delay_ms (the REST connector config has a contractual publication_delay and the kernel calibrates observed delays per source in Platform::publication_delays); and converting an information coefficient into money or a discount factor needs a price of information (what a unit of IC is worth per month) that no ADR states. Choosing one would be inventing a number that moves source selection, so it is an owner decision. |  | P2 | cargo test -p qip-data-finder --test source_alpha |  |
 | R12-DATA-7013 | Cloud Storage holds artifacts, manifests, packages, simulation outputs | modules/data declares google_storage_bucket.simulation (CMEK, unlocked 30-day retention policy; outputs/ deleted at 90 days, campaigns/ to COLDLINE at 90 and never deleted, manifests/ to NEARLINE at 365 and never deleted) beside the archive and model-artifact buckets; modules/ai holds the training bucket; qip-storage has a GCS-backed BlobStore. All gated on enable_cloud_storage, false everywhere; no deployed process writes a simulation output or campaign dataset to GCS. | PARTIAL | enable_cloud_storage is false in every committed environment (owner switch), so no committed plan renders the bucket; the model-artifact bucket still carries no retention policy; and no deployed process writes a simulation output, campaign dataset or manifest to GCS (the integration half of the verification). |  | P2 | cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/retention_classes.tftest.hcl; cargo test -p qip-acceptance --test data_infrastructure_guards |  |
-| R12-DATA-7021 | External world content refetched, never retained as raw corpus | data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite. | PARTIAL | Not verified that no ingestion path persists raw content. |  | P0 | cargo test -p qip-acceptance --test data_infrastructure_guards |  |
+| R12-DATA-7021 | External world content refetched, never retained as raw corpus | data-finder licensing posture and refetch-health SLO exist; data_infrastructure_guards acceptance suite. The connector path (ConnectorArm over a Platform) is proven to retain no fetched body in the event log, journal KV, knowledge-pack or tick-lake stores by a canary test. | PARTIAL | The canary test covers the connector path only (ConnectorArm, one shipped connector). The other ingestion paths - the narrative/news adapters and the REST market-data adapter - have no equivalent canary test; the register's 'every ingestion path' is not yet verified. |  | P0 | cargo test -p qip-acceptance --test data_infrastructure_guards |  |
 
 ## EVID
 

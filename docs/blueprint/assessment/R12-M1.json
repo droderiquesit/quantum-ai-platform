@@ -654,15 +654,15 @@
   },
   {
     "id": "R12-DATA-1029",
-    "status": "PARTIAL",
-    "current": "The Tick/Internal Lake's RecordClass is closed to Market and Internal, so a world-source document cannot be written there (tested); world-model graph refuses record bodies. The event log still stores ingested news items with their manifest; discard of transient content in connectors is not proven by a test across every store.",
+    "status": "COMPLETE",
+    "current": "A connector's fetched body is discarded after distillation, proven across every durable store the connector path writes: a canary planted in a field no connector keeps is absent from the platform event log, the journal KV store, the knowledge-pack blob store and the tick-lake blob store after a poll through a Platform. Also: the Tick/Internal Lake's RecordClass is closed to Market and Internal (tested); the world-model graph refuses record bodies.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:526 a_canary_in_a_fetched_body_is_found_in_no_durable_store_after_a_poll_through_the_platform",
       "backend/crates/libs/qip-storage/src/lake.rs:59 RecordClass closed enum",
-      "backend/crates/libs/qip-storage/tests/lake.rs:28 world-source document refused and lake has only two classes",
       "backend/crates/services/qip-world-model/src/graph.rs:36 refuse_a_body",
-      "backend/crates/services/qip-world-model/tests/no_copied_documents.rs"
+      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:1015 digest and journal canary unit test"
     ],
-    "gap": "A cross-store test that no persisted record (event log, KV, blob) carries raw external document bodies.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -670,10 +670,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-storage --test lake; cargo test -p qip-world-model --test no_copied_documents",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards a_canary",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L08 2026-10-18. Test drives the node's own ConnectorArm (journaled to a KV store, knowledge packs and tick lake on blob stores, polled through a Platform) over the NWS fixture with a canary planted in the JSON-LD @context, and scans the platform event log, the journal KV and both blob stores; premises: canary served, log grew, journal and pack store non-empty. Mutation, fired and restored: FetchDigest::of building its locator as locator+body put the body on the logged reference and failed the event-log assertion. data_infrastructure_guards: 7 passed, 0 failed."
   },
   {
     "id": "R12-DATA-1030",
