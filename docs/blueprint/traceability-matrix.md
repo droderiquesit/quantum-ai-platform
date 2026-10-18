@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 420 | 27.7% |
+| Blueprint completion (COMPLETE) | 421 | 27.7% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1217 | 80.2% |
 | Integrated (reached from a composition root) | 853 | 56.2% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 420 |
-| PARTIAL | 951 |
+| COMPLETE | 421 |
+| PARTIAL | 950 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -32,7 +32,7 @@ register (ADR 0099), and there is no second one.
 | [CONTRACT](#contract) | 43 | 16 | 27 | 0 | 0 | 0 | 43 | 43 | 0 |
 | [FABRIC](#fabric) | 94 | 30 | 53 | 10 | 1 | 0 | 74 | 68 | 0 |
 | [REFLEX](#reflex) | 56 | 24 | 29 | 1 | 0 | 2 | 55 | 48 | 0 |
-| [MESH](#mesh) | 45 | 7 | 38 | 0 | 0 | 0 | 43 | 40 | 0 |
+| [MESH](#mesh) | 45 | 8 | 37 | 0 | 0 | 0 | 43 | 40 | 0 |
 | [EXEC](#exec) | 18 | 4 | 13 | 0 | 1 | 0 | 14 | 14 | 0 |
 | [RISK](#risk) | 49 | 22 | 27 | 0 | 0 | 0 | 48 | 45 | 0 |
 | [CAPITAL](#capital) | 38 | 3 | 31 | 2 | 2 | 0 | 33 | 33 | 1 |
@@ -323,7 +323,7 @@ register (ADR 0099), and there is no second one.
 | R12-MESH-5046 | Peer mesh client for summaries, tokens, reservations, sagas | In the shipped node the scheduler publishes edge state and leg authorities through the port; the session thread's saga originates tokens, reserves, declares FIRE, sends fills and unwinds; two nodes run a full cycle over sockets. | COMPLETE | None for the requirement; not deployed. |  | P1 | cargo test -p qip-mesh --test peer --test peer_guarantees; node wiring test |  |
 | R12-MESH-5048 | Reflex Mesh and Event & Control Fabric are separate | Peer frames refuse downward-only kinds (backend/crates/services/qip-mesh/src/peer.rs:63 DOWNWARD_ONLY; test backend/crates/services/qip-mesh/tests/peer.rs:493); MeshFunction lane registry (backend/crates/services/qip-mesh/src/peer.rs:108). Fabric codec separate (qip-events event_fabric). Neither peer transport nor node fabric drain is live. | PARTIAL | Both live paths. |  | P1 | cargo test -p qip-mesh --test peer; qip-acceptance mesh_lane |  |
 | R12-MESH-5049 | Fabric outage does not stall local decisions | Flush is now off-thread: DecisionLoop offers journal to FabricMirror/JournalRelay; a never-answering store leaves 30 turns under 500ms with passes running, refused flushes counted, and the journal delivered chained once released. Centre outage covered by reasoning_outage. | COMPLETE | None for the requirement; not deployed. |  | P0 | node test with a store that blocks |  |
-| R12-MESH-5050 | Mesh outage does not prevent journaling or control distribution | The peer turn runs last in DecisionLoop::turn, after the journal flush and the centre's mesh delta (apps/qip-edge-node/src/scheduler.rs:504-548), and uses only try_recv/try_send (peer.rs:15-25, :267-290). A failing peer turn is counted and the loop continues (scheduler.rs:536-547). decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal drives the real loop with an unreachable peer and asserts short turns, running passes, and journal batches reaching the store. Reached from main (main.rs:1092-1103). | PARTIAL | Prove the control/policy half through the loop: deliver a policy via the centre's downlink (apply_mesh/apply_wires inside DecisionLoop::turn) while peers are down. The test's policy half calls decisions.cell_mut().apply_policy(...) directly (decision_loop.rs:655-669), which bypasses the loop. A mutation that gated policy distribution on peer health would not fail it. | R12-MESH-5046 | P0 | node test with peer transport down asserting journal ships |  |
+| R12-MESH-5050 | Mesh outage does not prevent journaling or control distribution | The decision loop reaches peers only through qip_peer_link::boundary::ReflexPort (ADR 0116), whose methods never wait, and applies the centre's control through MeshWorker inside DecisionLoop::turn (apply_mesh, backend/crates/apps/qip-edge-node/src/scheduler.rs:662), independent of peer health. decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal drives the real loop with every peer refusing: turns stay short, the journal ships to the store, and a policy the centre's inbox accepts reaches the cell through the worker and DecisionLoop::turn (sequence 1 to 2) while the peer wire still reports zero sent. | COMPLETE | None for the requirement; not deployed (no execution node exists). | R12-MESH-5046 | P0 | cargo test -p qip-edge-node --test decision_loop an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal |  |
 | R12-MESH-5051 | No remote dependency on a local hot-path decision | Cell::on_bytes and Cell::work touch memory only, and arch_001_independent_reflex.rs now extracts both bodies from qip-edge/src/cell.rs and refuses any mention of qip_transport, MeshPublisher, RemoteSubscriber, TcpStream, TcpListener, UdpSocket, ToSocketAddrs, std::net or tokio, after asserting the same scan does see qip_transport in mesh.rs (the uplink, off the pass). PeerEndpoint::send_leg keeps the local gate last (qip-mesh/src/peer.rs). | COMPLETE |  |  | P0 | cd backend && cargo +1.94.1 test -p qip-acceptance --test arch_001_independent_reflex -- the_cells_hot_path_bodies_name_no_transport_socket_or_runtime |  |
 | R12-MESH-5052 | Distant legs handled with prepositioning, epochs, TTLs, sagas | Epoch TTL ceiling and max_recovery_loss validated in qip-peer; saga drives epochs when peer mesh configured (env-gated). Inventory prepositioning not integrated. | PARTIAL | Default-on peer saga; inventory prepositioning. |  | P0 | cargo test -p qip-mesh --test peer |  |
 | R12-MESH-5053 | Graph node identity includes representation, settlement stage and region | Node is (object, venue, representation, settlement, region), and all five are part of its derived identity and ordering (backend/crates/edge/qip-arbitrage/src/graph.rs:139-148). ArbitrageGraph refuses a zero-cost edge between two nodes differing only in settlement stage or region (graph.rs:36-41, refusal near :810-822). The graph type is the one the edge node's desk builds (apps/qip-edge-node/src/arbitrage.rs:199-210), reached from main.rs:46-56/369. | PARTIAL | qip-arbitrage Node has the five dimensions but the edge node's desk builds nodes with only asset and venue (defaults for the rest). |  | P1 | new qip-arbitrage graph test |  |
