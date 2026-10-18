@@ -13687,3 +13687,90 @@ fn a_blanked_contract_field_is_found_by_the_scan() {
         assert_eq!(blank_contract_fields(&removed), vec![field]);
     }
 }
+
+// --- log retention -----------------------------------------------------------
+
+/// The `retention_days` expression of the observability module's workload log
+/// bucket, and whether that bucket is the project's own `_Default`.
+fn workload_bucket_retention(logging: &str) -> Option<String> {
+    let code = without_comments(logging);
+    let body = terraform_resources(&code, "google_logging_project_bucket_config")
+        .into_iter()
+        .find(|(name, _)| name == "workloads")?
+        .1;
+    body.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "retention_days").then(|| value.trim().to_string())
+    })
+}
+
+#[test]
+fn the_workload_log_bucket_has_a_retention_bounded_by_a_validated_variable() {
+    let logging = read("infrastructure/terraform/modules/observability/logging.tf");
+    let retention = workload_bucket_retention(&logging)
+        .expect("the observability module declares a workload log bucket with a retention");
+    assert_eq!(
+        retention, "var.log_retention_days",
+        "the retention is not the bounded variable"
+    );
+
+    let variables = read("infrastructure/terraform/modules/observability/variables.tf");
+    let block = variables
+        .split("variable \"log_retention_days\"")
+        .nth(1)
+        .expect("the module declares log_retention_days");
+    let block = &block[..block.find("\nvariable ").unwrap_or(block.len())];
+    let default: u32 = block
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "default").then(|| v.trim().parse().ok())?
+        })
+        .expect("the retention has a numeric default");
+    assert!(
+        (1..=400).contains(&default),
+        "the default {default} is outside the bound"
+    );
+    assert!(
+        block.contains("<= 400") && block.contains(">= 1"),
+        "the variable no longer bounds the retention on both sides"
+    );
+    assert!(
+        !without_comments(&logging).contains("bucket_id      = \"_Default\""),
+        "the module manages the project's _Default bucket, which this repository did not create"
+    );
+    assert!(
+        terraform_resources(&without_comments(&logging), "google_logging_project_sink")
+            .iter()
+            .any(|(name, body)| name == "workloads"
+                && body.contains("google_logging_project_bucket_config.workloads")),
+        "no sink routes the platform's logs to the bounded bucket"
+    );
+}
+
+#[test]
+fn an_unbounded_or_missing_log_retention_is_found_by_the_scan() {
+    let logging = read("infrastructure/terraform/modules/observability/logging.tf");
+    assert!(
+        workload_bucket_retention(&logging).is_some(),
+        "premise: the unmutated module declares a retention"
+    );
+    let literal = logging
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("retention_days") {
+                "  retention_days = 0".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(workload_bucket_retention(&literal).as_deref(), Some("0"));
+    let removed = logging
+        .lines()
+        .filter(|l| !l.contains("retention_days"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(workload_bucket_retention(&removed), None);
+}
