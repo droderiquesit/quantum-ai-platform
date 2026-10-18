@@ -296,6 +296,52 @@ pub struct ModelCard {
     /// market move or from someone shaping it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub training_bounds: BTreeMap<String, (f64, f64)>,
+    /// Per feature, where its values came from (R12-MODEL-4016). Empty on a
+    /// card that predates the field; [`ModelRegistry::promote`] refuses a
+    /// card whose recorded origins show a look-ahead or an unaudited
+    /// feature, and a learning desk refuses to promote a card missing any.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub feature_lineage: BTreeMap<String, FeatureOrigin>,
+}
+
+/// Where one feature's values came from (R12-MODEL-4016): enough for a
+/// reviewer to re-derive it and for a promotion to refuse a look-ahead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureOrigin {
+    /// How the value is computed, in words a person can check against the code.
+    pub derivation: String,
+    /// Digest of the source records the column was computed from.
+    pub source_digest: String,
+    /// Digest of the transformation code that computed it.
+    pub code_digest: String,
+    /// The latest instant of source data any value of the feature reads.
+    pub source_through: Timestamp,
+    /// The instant the newest value claims to be known at.
+    pub decision_at: Timestamp,
+    /// How many rows the as-of audit recomputed from truncated and perturbed
+    /// source. Zero is an audit that examined nothing, which is not a clean
+    /// one.
+    pub audited_rows: usize,
+}
+
+impl FeatureOrigin {
+    /// Why this origin cannot stand behind a promotion, if it cannot.
+    fn finding(&self, feature: &str) -> Option<String> {
+        if self.source_through > self.decision_at {
+            return Some(format!(
+                "feature {feature} reads source through {}, after the {} it claims to be known at: \
+                 look-ahead",
+                self.source_through, self.decision_at
+            ));
+        }
+        if self.audited_rows == 0 {
+            return Some(format!(
+                "feature {feature} was not audited as of its decision instant; an audit that \
+                 examined nothing is not a clean one"
+            ));
+        }
+        None
+    }
 }
 
 /// A declared ceiling on what a model may consume. A ceiling set at
@@ -361,7 +407,28 @@ impl ModelCard {
             permitted_locations: BTreeSet::new(),
             validated_regimes: BTreeSet::new(),
             training_bounds: BTreeMap::new(),
+            feature_lineage: BTreeMap::new(),
         }
+    }
+
+    /// Every way the recorded feature lineage cannot stand behind a
+    /// promotion: a feature reading past its decision instant, or one never
+    /// audited. Empty for a card recording no lineage — see
+    /// [`Self::features_without_lineage`] for that half.
+    pub fn lineage_findings(&self) -> Vec<String> {
+        self.feature_lineage
+            .iter()
+            .filter_map(|(feature, origin)| origin.finding(feature))
+            .collect()
+    }
+
+    /// The features this card consumes that its lineage does not account for.
+    pub fn features_without_lineage(&self) -> Vec<&str> {
+        self.features
+            .iter()
+            .filter(|feature| !self.feature_lineage.contains_key(*feature))
+            .map(String::as_str)
+            .collect()
     }
 
     /// Record a regime the model's skill was measured in.
@@ -792,6 +859,14 @@ impl ModelRegistry {
         if card.latest_evaluation().is_none_or(|e| !e.passed) {
             return Err(Error::denied(format!(
                 "{reference} cannot be promoted without a passing evaluation"
+            )));
+        }
+        let leaks = card.lineage_findings();
+        if !leaks.is_empty() {
+            return Err(Error::denied(format!(
+                "{reference} cannot be promoted: {}; a model fitted on the future backtests \
+                 beautifully and cannot trade",
+                leaks.join("; ")
             )));
         }
         card.stage = ModelStage::Production;

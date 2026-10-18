@@ -332,14 +332,16 @@
   },
   {
     "id": "R12-MODEL-4016",
-    "status": "PARTIAL",
-    "current": "Holdout is the last slice in time (split_at_fraction), the strategy HoldoutGate refuses a run whose leakage audit is not clean or empty, and purged splits are used. Per-feature lineage into a model card is not recorded.",
+    "status": "COMPLETE",
+    "current": "ModelCard.feature_lineage records, per consumed feature, a FeatureOrigin: its derivation in words, the digests of the source window and of the transformation code, the instant it reads through, the instant it claims to be known at, and the rows the as-of audit recomputed. The learning desk fills it for every card it registers from FeatureLineage (fed by audit_features_as_of's row count, which already refused a look-ahead fit before the dataset was built, MODEL-030). ModelRegistry::promote, which Platform::promote_model reaches through promote_artifact, refuses a card whose recorded origin reads past its decision instant or was never audited, and LearningDesk::promote_candidate refuses a card missing lineage for any feature it consumes.",
     "evidence": [
-      "backend/crates/services/qip-training/src/dataset.rs:181 split_at_fraction (time-ordered tail)",
-      "backend/crates/services/qip-lifecycle/src/gates.rs:437-450 no_leakage check",
-      "backend/crates/services/qip-training/tests/training.rs:195 observations_out_of_time_order_are_refused"
+      "backend/crates/libs/qip-ai/src/registry.rs FeatureOrigin, ModelCard::lineage_findings, features_without_lineage, ModelRegistry::promote",
+      "backend/crates/apps/qip-deepbrain/src/features.rs FeatureLineage::record_on, DERIVATIONS",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs promote_candidate, audit_features_as_of",
+      "backend/crates/libs/qip-ai/tests/feature_lineage.rs a_feature_that_reads_past_its_decision_instant_blocks_the_promotion",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs a_registered_card_records_per_feature_lineage_and_one_without_it_is_not_promoted"
     ],
-    "gap": "Feature-level lineage on model cards; leakage audit applied to model training (it is applied to strategy promotion).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -347,10 +349,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-lifecycle; qip-training",
+    "verification": "cargo test -p qip-ai --test feature_lineage && cargo test -p qip-deepbrain --lib a_registered_card_records",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: the registry's lineage refusal replaced by false promotes the look-ahead card (two tests fail); the audited_rows == 0 branch removed promotes the unaudited card; the desk's missing-lineage refusal removed promotes the stripped card; dropping lineage.record_on leaves the registered card with no lineage. qip-ai, qip-deepbrain and qip-kernel suites report no failures. The triage proposed the strategy gates.rs no_leakage check at Platform::promote_model; that gate reads a strategy HoldoutReport, which a model promotion does not have, so the same refusal lives at the registry chokepoint instead. A card recording no lineage is not blocked by the registry itself (cards predate the field); the desk, the one production producer, refuses it."
   },
   {
     "id": "R12-MODEL-4017",

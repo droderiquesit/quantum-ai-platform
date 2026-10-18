@@ -906,6 +906,24 @@ impl LearningDesk {
         if !candidate.passed_skill_bar {
             return not_promoted("it did not clear the skill bar on its own holdout".to_string());
         }
+        // Where every feature came from, and that it was audited as of its
+        // decision instant (R12-MODEL-4016). The registry refuses a recorded
+        // look-ahead at promotion; a card recording no lineage at all is
+        // refused here, because the desk is the one producer that always
+        // writes it and a card without it was not registered by a fit.
+        if let Some(card) = self.registry.get(&reference) {
+            let missing = card.features_without_lineage();
+            if !missing.is_empty() {
+                return not_promoted(format!(
+                    "its card records no lineage for {}",
+                    missing.join(", ")
+                ));
+            }
+            let findings = card.lineage_findings();
+            if !findings.is_empty() {
+                return not_promoted(findings.join("; "));
+            }
+        }
         let artifact = InTreeProvider::pack(&candidate.teacher)?;
         let served = match platform.serve_model(&artifact) {
             Ok(served) => served,
@@ -1450,7 +1468,7 @@ impl LearningDesk {
         ClassChoice,
     )> {
         let targets = next_bar_returns(bars);
-        audit_features_as_of(bars, columns)?;
+        let audited_rows = audit_features_as_of(bars, columns)?;
         let times: Vec<Timestamp> = bars
             .iter()
             .skip(LOOKBACK)
@@ -1543,7 +1561,7 @@ impl LearningDesk {
         require_calibrated_baseline(&self.registry, &baseline_registration.reference)?;
         // Every card this round registers names the source window and the
         // code its features came from (MODEL-029).
-        let lineage = FeatureLineage::of(bars, now);
+        let lineage = FeatureLineage::of(bars, now).audited(audited_rows);
         if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
             lineage.record_on(card);
             record_validation_scope(card, regime, &dataset)?;
@@ -2854,6 +2872,66 @@ mod tests {
             .find(|line| line.starts_with(&reference))
             .ok_or_else(|| Error::invalid(format!("not listed: {:?}", stressed.ineligible)))?;
         assert!(line.contains("never scored in reversal/stressed"), "{line}");
+        Ok(())
+    }
+
+    /// R12-MODEL-4016. A registered card names, per feature, its derivation,
+    /// the digests of its source and code, the instant it reads through and
+    /// the rows the as-of audit examined; and a card whose lineage was
+    /// removed is not promoted by the desk.
+    ///
+    /// Mutation: drop `lineage.record_on` for the baseline — the card has no
+    /// lineage and the first assertion fails. Mutation: delete the
+    /// `features_without_lineage` refusal in `promote_candidate` — the
+    /// stripped card is promoted and the `NotPromoted` match fails.
+    #[test]
+    fn a_registered_card_records_per_feature_lineage_and_one_without_it_is_not_promoted()
+    -> Result<()> {
+        let mut desk = learning_desk();
+        let mut platform = serving_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let reference = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .and_then(|round| round.registration)
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference;
+        let card = desk
+            .registry()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the card"))?;
+        assert_eq!(card.features.len(), FEATURES.len());
+        assert!(card.features_without_lineage().is_empty());
+        let through = bars[bars.len() - 2].close_time();
+        for (feature, origin) in &card.feature_lineage {
+            assert!(!origin.derivation.is_empty(), "{feature}");
+            assert_eq!(origin.code_digest, crate::features::code_digest());
+            assert_eq!(origin.source_digest, crate::features::source_digest(&bars));
+            assert_eq!(origin.source_through, through, "{feature}");
+            assert_eq!(origin.decision_at, through, "{feature}");
+            assert!(origin.audited_rows > 0, "{feature} was not audited");
+        }
+        assert!(card.lineage_findings().is_empty());
+
+        // Strip the lineage and the desk refuses to promote the candidate.
+        let mut stripped = desk
+            .registry()
+            .get(&reference)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the card"))?;
+        stripped.feature_lineage.clear();
+        desk.registry_mut().register(stripped);
+        let outcome = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        let PromotionOutcome::NotPromoted { reason, .. } = outcome else {
+            return Err(Error::invalid(
+                "a card with no feature lineage was promoted".to_string(),
+            ));
+        };
+        assert!(
+            reason.contains("records no lineage for return_1"),
+            "{reason}"
+        );
         Ok(())
     }
 
