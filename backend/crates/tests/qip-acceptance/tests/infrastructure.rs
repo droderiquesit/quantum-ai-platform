@@ -2220,6 +2220,78 @@ fn organization_policy_disables_service_account_key_creation() {
 }
 
 #[test]
+fn organization_policy_refuses_external_vm_addresses_and_unshielded_machines() {
+    // R12-GOV-10004. Every VM template omits `access_config` and declares a
+    // shielded configuration, and text tests read both; neither stops a
+    // machine created outside Terraform. These two constraints do, at
+    // creation, and each is checked inside its own resource body for the
+    // reason `organization_policy_disables_service_account_key_creation`
+    // gives: a file-wide match lets one policy's rule stand in for another's.
+    let root = without_comments(&read("infrastructure/terraform/main.tf"));
+    let policies = terraform_resources(&root, "google_org_policy_policy");
+    assert!(
+        policies.len() >= 4,
+        "premise: the root declares the two key policies and the two VM policies, found \
+         {}",
+        policies.len()
+    );
+    for (resource, constraint, rule) in [
+        (
+            "deny_vm_external_ip",
+            "compute.vmExternalIpAccess",
+            // A list constraint: the allowed set is empty, which `deny_all`
+            // writes; `enforce` is not an argument a list constraint takes.
+            "deny_all = \"TRUE\"",
+        ),
+        (
+            "require_shielded_vm",
+            "compute.requireShieldedVm",
+            "enforce = \"TRUE\"",
+        ),
+    ] {
+        let bodies: Vec<&String> = policies
+            .iter()
+            .filter(|(name, _)| name == resource)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "main.tf must declare exactly one google_org_policy_policy \"{resource}\""
+        );
+        let lines: Vec<&str> = bodies[0].lines().map(str::trim).collect();
+        assert!(
+            lines.iter().any(|l| l.starts_with("name")
+                && l.ends_with(&format!("/policies/{constraint}\""))),
+            "{resource} must name {constraint} as its policy"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("parent") && l.contains("projects/${var.project_id}")),
+            "{resource} must be enforced on the project"
+        );
+        assert!(
+            lines.contains(&"spec {") && lines.contains(&rule),
+            "{resource} must carry rules {{ {rule} }} inside spec {{}} in its own body"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| (l.starts_with("enforce") || l.starts_with("deny_all")) && l != &rule),
+            "{resource} carries a rule other than {rule}"
+        );
+        // Under the same switch as the key policies, so an environment inside
+        // ADR 0118's folder, where the folder already enforces them, does not
+        // need an organisation-wide right to restate them.
+        assert!(
+            lines.contains(&"count  = var.project_key_policies_enabled ? 1 : 0"),
+            "{resource} is not gated on project_key_policies_enabled"
+        );
+    }
+}
+
+#[test]
 fn every_service_account_terraform_creates_runs_something_or_signs_something() {
     // Two identities existed with nothing attached to them once. An unused
     // service account is not merely tidy-up: it is a set of permissions
