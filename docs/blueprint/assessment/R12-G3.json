@@ -2945,12 +2945,16 @@
   },
   {
     "id": "R12-RES-10133",
-    "status": "PARTIAL",
-    "current": "Run services carry cnrm deletion-policy abandon so control-plane loss does not delete them (tested); no codified break-glass with reconciliation.",
+    "status": "COMPLETE",
+    "current": "Run services carry cnrm deletion-policy abandon so control-plane loss does not delete them (tested); docs/ops/runbooks/break-glass.md is the committed break-glass procedure — who may act, the two operations allowed (traffic between admitted revisions, scale to nothing; never --breakglass or a breakglassJustification), what is recorded at the time, and the reconciliation step back into infrastructure/gitops/envs/<env> through a pull request, with the dev selfHeal warning — linked from the incident playbooks; the break_glass acceptance suite refuses the runbook losing any of those parts or the link.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:5550 a_cloud_run_service_with_cnrm_deletion_policy_abandon_survives_gitops_control_plane_loss"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs a_cloud_run_service_with_cnrm_deletion_policy_abandon_survives_gitops_control_plane_loss",
+      "docs/ops/runbooks/break-glass.md",
+      "docs/ops/runbooks/incidents.md (link under A failed deploy)",
+      "backend/crates/tests/qip-acceptance/tests/break_glass.rs the_break_glass_runbook_names_who_acts_what_is_recorded_and_how_the_change_is_reconciled_to_git",
+      "backend/crates/tests/qip-acceptance/tests/break_glass.rs the_break_glass_runbook_is_linked_from_the_incident_playbooks"
     ],
-    "gap": "Break-glass procedure with Git reconciliation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2958,10 +2962,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test break_glass --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L02) on the check (a break-glass runbook path exists, reconciled to Git). Mutations: deleting the Reconciliation section failed the suite (\"has no `## Reconciliation to Git` section\"); softening the --breakglass refusal failed it; unlinking from incidents.md failed the link test; all restored byte-for-byte. The procedure is marked Not run in the runbook: no environment runs a service to exercise it on, and the IAM the acting person holds lives outside this repository."
   },
   {
     "id": "R12-FINOPS-10134",

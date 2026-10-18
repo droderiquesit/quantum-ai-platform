@@ -4248,24 +4248,27 @@
   },
   {
     "id": "R12-REFLEX-1189",
-    "status": "PARTIAL",
-    "current": "An acceptance scan proves qip-edge's closure excludes qip-storage and that no qip-edge-node module calls read_canonical/materialize; only drain.rs and main.rs name the lake module.",
+    "status": "COMPLETE",
+    "current": "qip-edge's closure excludes qip-storage (tested); the edge-node source scan now refuses every Lake reader — read_canonical, materialize, Materialized, read_market_history, list_market_history, pin_market_history, and Lake::verify in any module naming Lake — and only drain.rs and main.rs may name the lake module at all.",
     "evidence": [
       "backend/crates/edge/qip-edge/Cargo.toml dependencies exclude qip-storage",
-      "backend/crates/apps/qip-edge-node/Cargo.toml:24 qip-storage (journal)"
+      "backend/crates/apps/qip-edge-node/Cargo.toml:24 qip-storage (journal)",
+      "backend/crates/tests/qip-acceptance/tests/lane0_tick_lake.rs:42 LAKE_READS",
+      "backend/crates/tests/qip-acceptance/tests/lane0_tick_lake.rs:189 no_edge_node_module_reads_the_tick_lake_and_only_the_drain_and_root_name_it",
+      "backend/crates/libs/qip-storage/src/lake_history.rs:211,257,268 the three history readers; lake.rs:424 verify"
     ],
-    "gap": "LAKE_READS omits Lake::read_market_history, list_market_history, pin_market_history and verify; such a read in main.rs or drain.rs passes the scan.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new acceptance test scanning the qip-edge-node closure for qip_storage::lake",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test lane0_tick_lake",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Closed 2026-10-18 (lane L02). Mutations: a drain.rs line naming read_market_history failed the scan ('event_fabric/drain.rs: read_market_history'); a drain.rs call to l.verify(..) failed it ('event_fabric/drain.rs: Lake::verify'); both restored byte-for-byte. verify is judged only in a module that names Lake, so a signature verify elsewhere in the node does not fire."
   },
   {
     "id": "R12-MESH-1190",
