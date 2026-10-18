@@ -190,6 +190,11 @@ struct CurrentSchema {
 struct StreamSchemas {
     registered: BTreeSet<(u32, u32)>,
     current: BTreeMap<u32, CurrentSchema>,
+    /// The event topics the stream admits in a record's body, when the
+    /// catalogue declared them (R12-FABRIC-8090). `None` is a stream declared
+    /// without a topic list, which admits any; `Some` refuses a record of any
+    /// other topic before it is appended.
+    body_topics: Option<BTreeSet<String>>,
 }
 
 /// A stream's fixed shape: how many partitions it has, and the segment log
@@ -700,6 +705,27 @@ impl Broker {
         Ok(())
     }
 
+    /// Declare the event topics `stream` admits in a record's body. A
+    /// produce carrying a record of any other topic is refused with
+    /// [`Refusal::SchemaRefused`] before anything is appended: the batch
+    /// schema registered by [`Self::register_schema`] says the batch is well
+    /// formed, and this says what is in it belongs on this stream.
+    ///
+    /// Replaces the set for `stream` rather than adding to it, so a catalogue
+    /// that narrows a stream narrows what it accepts. Refuses an empty set:
+    /// a stream admitting nothing is a catalogue mistake, not a closed stream.
+    pub fn register_body_topics(&self, stream: &str, topics: BTreeSet<String>) -> Result<()> {
+        if topics.is_empty() {
+            return Err(Error::invalid(format!(
+                "stream '{stream}' was given no body topics; a stream that admits no event \
+                 is a catalogue mistake, so declare the topics it carries"
+            )));
+        }
+        let mut schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
+        schemas.entry(stream.to_string()).or_default().body_topics = Some(topics);
+        Ok(())
+    }
+
     /// Produce `batch` (already stamped by the drain — see
     /// [`qip_events::event_fabric::codec::stamp_drain`]) under `key`, which
     /// [`partition::partition_for`] routes to one of `stream`'s declared
@@ -765,6 +791,9 @@ impl Broker {
         if let Err(error) =
             self.require_registered_schema(stream, batch.schema_id, batch.schema_version)
         {
+            return Ok(Err(ProduceRefusal::new(Refusal::SchemaRefused, error)));
+        }
+        if let Err(error) = self.require_admitted_topics(stream, &batch) {
             return Ok(Err(ProduceRefusal::new(Refusal::SchemaRefused, error)));
         }
         self.refuse_when_a_group_lags(stream, partition)?;
@@ -2086,6 +2115,36 @@ impl Broker {
             "stream '{stream}' has no registered schema id {schema_id} version {schema_version}; \
              refusing to produce it (FABRIC-024) rather than let it become fetchable"
         )))
+    }
+
+    /// Refuse a batch carrying a record whose event topic the stream does not
+    /// admit, or whose body cannot be read to tell. A stream with no
+    /// declared topics admits any.
+    fn require_admitted_topics(&self, stream: &str, batch: &Batch) -> Result<()> {
+        let schemas = self.schemas.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(admitted) = schemas.get(stream).and_then(|s| s.body_topics.as_ref()) else {
+            return Ok(());
+        };
+        for record in &batch.records {
+            let event = record.decode_payload(batch.encoding).map_err(|error| {
+                Error::denied(format!(
+                    "record {} on stream '{stream}' has a body that cannot be read ({}), so \
+                     its topic cannot be checked against the stream's; refusing to append it",
+                    record.event_id,
+                    error.message()
+                ))
+            })?;
+            if !admitted.contains(event.topic.name()) {
+                return Err(Error::denied(format!(
+                    "record {} carries topic '{}', which stream '{stream}' does not admit \
+                     (it admits {}); refusing to append it (FABRIC-024)",
+                    record.event_id,
+                    event.topic.name(),
+                    admitted.iter().cloned().collect::<Vec<_>>().join(", ")
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn partition_state(&self, stream: &str, partition: u32) -> Result<Arc<PartitionState>> {

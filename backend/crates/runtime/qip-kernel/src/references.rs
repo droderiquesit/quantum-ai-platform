@@ -634,6 +634,39 @@ impl Platform {
         )
     }
 
+    /// Record how healthy `source_id`'s re-fetch pass was: the share of the
+    /// extents it asked the source for again that the source still served
+    /// (R12-DATA-1037's pass, R12-OBS-9163's series). One when every one was
+    /// served, zero when none was, written per source on every pass that
+    /// asked for anything. A pass that asked for nothing writes nothing: a
+    /// gauge at one for a source nobody re-fetched would be a health
+    /// nobody measured. Refuses a pass that claims more withdrawn extents
+    /// than it checked.
+    pub fn record_refetch_health(
+        &self,
+        source_id: &str,
+        checked: usize,
+        unretrievable: usize,
+    ) -> Result<()> {
+        if unretrievable > checked {
+            return Err(Error::invalid(format!(
+                "a re-fetch pass over {source_id} reports {unretrievable} withdrawn extents out \
+                 of {checked} checked; count the withdrawn among the checked"
+            )));
+        }
+        if checked == 0 {
+            return Ok(());
+        }
+        // A share of two small counts: statistics, not money.
+        let served = (checked - unretrievable) as f64 / checked as f64;
+        self.telemetry().metrics.gauge(
+            qip_observability::metrics::names::DATA_REFETCH_HEALTH,
+            qip_observability::metrics::labels([("source", source_id)]),
+            served,
+        );
+        Ok(())
+    }
+
     /// Whether an extent from `source_id` naming `symbol` and overlapping
     /// `period` has been revised since this platform used it — the flag a
     /// research run reads before training on the pair.

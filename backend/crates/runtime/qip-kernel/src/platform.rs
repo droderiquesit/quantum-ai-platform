@@ -5872,6 +5872,11 @@ impl Platform {
             "the fraction of records received since assembly whose lineage reached the event log",
         );
         metrics.describe(
+            names::DATA_REFETCH_HEALTH,
+            "the share of the extents a re-fetch pass asked a source for again that the source \
+             still served, per source: 1 all served, 0 none",
+        );
+        metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
             "internal crosses settled to both contributors' books at the mid",
         );

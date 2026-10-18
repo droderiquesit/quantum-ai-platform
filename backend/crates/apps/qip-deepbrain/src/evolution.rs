@@ -3240,6 +3240,17 @@ mod tests {
             .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
         assert_eq!(unchanged.len(), 1, "{unchanged:?}");
         assert_eq!(unchanged[0].check, Some(RevisionCheck::Unchanged));
+        let health = |platform: &Platform| {
+            platform.telemetry().metrics.snapshot().gauge(
+                qip_observability::metrics::names::DATA_REFETCH_HEALTH,
+                &qip_observability::metrics::labels([("source", unchanged[0].source_id.as_str())]),
+            )
+        };
+        assert_eq!(
+            health(&platform),
+            Some(1.0),
+            "a pass that found every extent served reports full health"
+        );
         assert!(
             platform
                 .reference_ledger()
@@ -3271,6 +3282,14 @@ mod tests {
             .maybe_refetch(&mut platform, 1, now)?
             .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
         assert_eq!(findings[0].check, Some(RevisionCheck::Unretrievable));
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().gauge(
+                qip_observability::metrics::names::DATA_REFETCH_HEALTH,
+                &qip_observability::metrics::labels([("source", findings[0].source_id.as_str())]),
+            ),
+            Some(0.0),
+            "a pass that found its only extent withdrawn reports no health"
+        );
         assert!(
             platform
                 .reference_ledger()
