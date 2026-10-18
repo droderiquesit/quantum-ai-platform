@@ -2296,3 +2296,118 @@ fn no_terraform_lifecycle_rule_ignores_an_image_because_terraform_no_longer_name
     }
     assert!(scanned >= 20, "only {scanned} Terraform files were scanned");
 }
+
+/// The service account each RunService manifest in one environment runs as,
+/// by manifest file name, and whether it carries the `qip-egress` sidecar.
+fn workload_identities(environment_files: &[(String, String)]) -> Vec<(String, String, bool)> {
+    environment_files
+        .iter()
+        .filter(|(_, text)| text.lines().any(|line| line == "kind: RunService"))
+        .map(|(file, text)| {
+            let account = text
+                .lines()
+                .skip_while(|line| line.trim() != "serviceAccountRef:")
+                .find_map(|line| line.trim().strip_prefix("external: "))
+                .unwrap_or_else(|| panic!("{file} runs as no named service account"))
+                .to_string();
+            let sidecar = text.lines().any(|line| line.trim() == "- name: qip-egress");
+            (file.clone(), account, sidecar)
+        })
+        .collect()
+}
+
+#[test]
+fn the_workload_that_can_reach_a_vendor_egresses_only_through_the_proxy_under_an_identity_no_other_workload_shares()
+ {
+    // R12-GCP-8061: crawler and agent internet egress needs a static identity
+    // of its own, with domain control. The workload that can reach a vendor is
+    // the deep brain (source discovery and the catalogued connectors); the
+    // fast brain deliberately cannot (port 9102 would be a route to a model
+    // API). The domain control is the proxy's allow-list, held by the other
+    // tests in this file. This pins the two halves left: the deep brain
+    // carries the proxy sidecar in every environment's manifest, and the
+    // service account it runs as is its own, so an egress audit entry or a
+    // Cloud NAT log line attributed to it cannot belong to anything else.
+    let mut environments: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for file in files_with_extension("infrastructure/gitops/envs", "yaml") {
+        let environment = file
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", file.display()));
+        environments
+            .entry(environment)
+            .or_default()
+            .push((name, text));
+    }
+    let mut deep_brains = 0usize;
+    for (environment, files) in &environments {
+        let identities = workload_identities(files);
+        if !identities
+            .iter()
+            .any(|(file, _, _)| file == "deepbrain.yaml")
+        {
+            continue;
+        }
+        deep_brains += 1;
+        let accounts: Vec<&String> = identities.iter().map(|(_, account, _)| account).collect();
+        let distinct: std::collections::BTreeSet<&String> = accounts.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            accounts.len(),
+            "two workloads in {environment} run as one service account"
+        );
+        for (file, account, sidecar) in &identities {
+            match file.as_str() {
+                "deepbrain.yaml" => {
+                    assert!(
+                        *sidecar,
+                        "{environment}'s deep brain has no qip-egress sidecar, so a vendor call \
+                         would leave the instance without the allow-list"
+                    );
+                    assert!(
+                        account.starts_with("qip-deepbrain-"),
+                        "{environment}'s deep brain does not run under its own account"
+                    );
+                }
+                "fastbrain.yaml" => assert!(
+                    !*sidecar,
+                    "{environment}'s fast brain carries the egress sidecar"
+                ),
+                _ => {}
+            }
+        }
+    }
+    assert!(deep_brains > 0, "no environment carries a deep brain");
+
+    // The Terraform half: the module mints one account per workload name, so
+    // two catalogue entries cannot share one.
+    let module = without_comments(&read("infrastructure/terraform/modules/cloudrun/main.tf"));
+    assert!(
+        module.contains("account_id   = \"qip-${var.name}-${var.environment}\""),
+        "the workload account is no longer derived from the workload's own name"
+    );
+
+    // The detector sees a shared account and a missing sidecar.
+    let shared = vec![
+        (
+            "a.yaml".to_string(),
+            "kind: RunService\nspec:\n    serviceAccountRef:\n      external: same@p.iam".to_string(),
+        ),
+        (
+            "b.yaml".to_string(),
+            "kind: RunService\nspec:\n    serviceAccountRef:\n      external: same@p.iam\n    - name: qip-egress"
+                .to_string(),
+        ),
+    ];
+    let found = workload_identities(&shared);
+    assert_eq!(found[0].1, found[1].1);
+    assert_eq!((found[0].2, found[1].2), (false, true));
+}

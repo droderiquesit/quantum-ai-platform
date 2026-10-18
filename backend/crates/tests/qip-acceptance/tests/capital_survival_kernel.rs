@@ -7,7 +7,7 @@
 //! Verification check: A paper book withholds the stressed-liquidity reserve
 //! before releasing any opportunity capital, and no transfer leaves the simulator.
 
-use qip_capital::CapitalSurvivalState;
+use qip_capital::{CapitalSurvivalState, SurvivalTier};
 use qip_core::{Decimal, dec};
 
 /// A paper book withholds all reserves in priority order before releasing opportunity capital.
@@ -280,4 +280,75 @@ fn a_paper_book_withholds_stressed_liquidity_reserve_before_opportunity_capital(
         opportunity_without_reserve - opportunity_with_reserve,
         stressed_reserve
     );
+}
+
+/// R12-CAPITAL-9048: "reordering the waterfall fails the test". The sum the
+/// other tests assert is the same in every order, so none of them could. This
+/// exhausts capital mid-waterfall with a different amount in every tier, so the
+/// tier that runs out, and every tier below it that receives nothing, depends
+/// on the order the tiers are funded in.
+#[test]
+fn a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero()
+ {
+    let state = CapitalSurvivalState::new(dec!("1000"))
+        .expect("total capital")
+        .with_nav_floor(dec!("400"))
+        .expect("NAV floor")
+        .with_reserved_cash(dec!("300"))
+        .expect("reserved cash")
+        .with_margin_required(dec!("200"))
+        .expect("margin")
+        .with_collateral_posted(dec!("150"))
+        .expect("collateral")
+        .with_settlement_required(dec!("100"))
+        .expect("settlement")
+        .with_funding_maturity(dec!("60"))
+        .expect("funding maturity")
+        .with_hedge_capacity(dec!("50"))
+        .expect("hedge capacity")
+        .with_stressed_liquidity_reserve(dec!("40"))
+        .expect("stressed-liquidity reserve");
+
+    // Premise: the reserves do not fit, or there is no exhaustion to order.
+    assert!(
+        state.opportunity_capital().is_err(),
+        "the book was meant to be short of capital"
+    );
+
+    let funding = state.waterfall();
+    let tiers: Vec<SurvivalTier> = funding.iter().map(|f| f.tier).collect();
+    assert_eq!(tiers, SurvivalTier::PRIORITY.to_vec());
+    let funded: Vec<Decimal> = funding.iter().map(|f| f.funded).collect();
+    assert_eq!(
+        funded,
+        vec![
+            dec!("400"),
+            dec!("300"),
+            dec!("200"),
+            dec!("100"), // collateral asked 150 and gets what is left
+            dec!("0"),
+            dec!("0"),
+            dec!("0"),
+            dec!("0"),
+        ],
+        "NAV, cash and margin are met, collateral is funded partly and everything below it gets \
+         nothing"
+    );
+    // Nothing is funded past what a tier asked, and nothing past the capital.
+    assert!(funding.iter().all(|f| f.funded <= f.required));
+    assert_eq!(
+        funded.iter().fold(Decimal::ZERO, |sum, f| sum + *f),
+        dec!("1000")
+    );
+
+    // When capital covers everything every tier is whole and the waterfall
+    // agrees with the sum.
+    let flush = CapitalSurvivalState::new(dec!("1000"))
+        .expect("total capital")
+        .with_nav_floor(dec!("400"))
+        .expect("NAV floor")
+        .with_stressed_liquidity_reserve(dec!("40"))
+        .expect("stressed-liquidity reserve");
+    assert!(flush.waterfall().iter().all(|f| f.funded == f.required));
+    assert_eq!(flush.opportunity_capital().expect("fits"), dec!("560"));
 }

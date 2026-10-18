@@ -284,22 +284,26 @@
   {
     "id": "R12-SEC-7014",
     "status": "PARTIAL",
-    "current": "KMS keys for secrets, models and registry; Secret Manager mounts as files; no HSM protection level or segregated custody signer.",
+    "current": "Cloud KMS holds every CMEK key and both signing systems. ADR 0110's four ASYMMETRIC_SIGN keys (policy, halt, envelope, model-pack) are HSM-only on their own ring (artefact_signing.protection_level refuses anything but HSM) with an authoritative signer binding naming only the API's runtime identity or the model-pack publisher; the Binary Authorization attestor signs deployments under its own key, granted only to CI; CMEK keys grant encrypt/decrypt only to Google service agents. Secret Manager mounts as files. Gated: artefact_signing = null in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:34 google_kms_crypto_key secrets; modules/ai/main.tf:29 models key; modules/registry/main.tf:112"
+      "infrastructure/terraform/artefact-signing.tf:245 google_kms_crypto_key.artefact (HSM, ASYMMETRIC_SIGN)",
+      "infrastructure/terraform/artefact-signing.tf:311 google_kms_crypto_key_iam_binding.artefact_signer",
+      "infrastructure/terraform/tests/artefact-signing.tftest.hcl:97 four_hsm_p256_signing_keys_with_disjoint_signers_are_planned",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13672 no_principal_holds_a_grant_on_keys_of_two_classes",
+      "infrastructure/terraform/modules/secrets/main.tf:34 google_kms_crypto_key secrets"
     ],
-    "gap": "No HSM-level keys or separate custody/signing system.",
+    "gap": "artefact_signing is null in every committed environment, so no committed plan renders the HSM signing keys (an owner switch, and HSM keys are billed); the deployment-signing attestor key and every CMEK key still take kms_protection_level (SOFTWARE by default), which is R12-SEC-10053's owner decision D12 and needs variables.tf.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan; inspection of protection_level",
+    "verification": "cargo test -p qip-acceptance --test infrastructure no_principal_holds_a_grant_on_keys_of_two_classes; cd infrastructure/terraform && terraform test -filter=tests/artefact-signing.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): the closure's keys already existed in artefact-signing.tf (not security.tf); this lane added the acceptance test that keeps signing keys unreadable by workloads that do not sign. Mutations, each restored byte-for-byte: adding the CI identity to the artefact signer binding failed it ('grants something other than sign to its one signer'); granting a workload identity on the evidence CMEK key failed it ('not a Google service agent'). Kept PARTIAL: the check is a plan and nothing committed plans the keys."
   },
   {
     "id": "R12-SEC-7015",
@@ -3431,13 +3435,15 @@
   {
     "id": "R12-COVERAGE-7153",
     "status": "PARTIAL",
-    "current": "CausalGraph, SelfModel, counterfactual trials, episode memory exist.",
+    "current": "CausalGraph, SelfModel, counterfactual trials, episode memory exist. Since 2026-10-18 the research memory holds all three kinds apart: episodic (bounded, append-only), semantic (lessons promoted on support) and procedural (named, versioned step sequences, recorded only when they cite at least MINIMUM_PROCEDURE_SUPPORT distinct held episodes resolved correct, read through procedure_as_of so a backtest cannot see a procedure learned later).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/causal.rs",
       "backend/crates/services/qip-learning-engine/src/self_model.rs",
-      "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs"
+      "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs",
+      "backend/crates/libs/qip-agents/src/memory.rs:371 ResearchMemory::record_procedure",
+      "backend/crates/libs/qip-agents/tests/memory.rs:119 a_procedure_is_recorded_only_after_enough_correct_episodes_and_each_record_raises_its_version"
     ],
-    "gap": "Semantic/procedural memory distinction.",
+    "gap": "The procedural store exists and nothing on a running path distils a procedure into it: no caller of ResearchMemory::record_procedure outside tests, so the Platform's desk memory holds none. No acceptance suite proves the composite.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3448,7 +3454,7 @@
     "verification": "acceptance suite for the composite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: mutations fired - recording on one correct episode admitted the two-episode procedure; counting a resolved wrong episode as support admitted it."
   },
   {
     "id": "R12-COVERAGE-7154",

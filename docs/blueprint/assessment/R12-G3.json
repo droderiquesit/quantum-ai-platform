@@ -30,7 +30,7 @@
       "infrastructure/terraform/main.tf:1054 module identity (Identity Platform, customer auth)",
       "backend/crates/tests/qip-acceptance/tests/identity_separation.rs::every_workforce_access_list_admits_only_managed_cloud_identity_users_and_groups"
     ],
-    "gap": "A shared account written as user: passes; no Cloud Identity group structure is declared; human project-IAM grants beyond the three IAP lists are not enumerated.",
+    "gap": "A shared account written as user: passes, because every workforce list (variables.tf:1645 gitops_iap_members, modules/iap-run and modules/gitops-gateway iap_members) admits ^(user|group):. Requiring ^group: is an owner decision, not a lane edit: the foundation root supports a no-org mode with no Cloud Identity organisation, where no group exists, and group-only lists would leave the console and the controllers reachable by nobody. variables.tf is also a protected path. No Cloud Identity group structure is declared; human project-IAM grants beyond the three IAP lists (the PAM requesters and approvers at variables.tf:1838 also admit user:) are not enumerated.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -41,7 +41,7 @@
     "verification": "inspection of IAP/IAM member lists against a Cloud Identity group naming rule",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 (lane L13): not changed. The closure's ^group: tightening would break no-org mode (infrastructure/foundation, org_id = null) and touches a protected path; it needs the owner to decide that the platform runs only under an organisation with Cloud Identity groups. Patch once decided: in variables.tf:1645, modules/iap-run/variables.tf:108 and modules/gitops-gateway/variables.tf:73 replace ^(user|group): with ^group:, change the user: admission run in modules/iap-run/tests/iap-run.tftest.hcl:213 into an expect_failures run, and update identity_separation.rs's expected regex."
   },
   {
     "id": "R12-SEC-10003",
@@ -488,14 +488,16 @@
   },
   {
     "id": "R12-SEC-10023",
-    "status": "PARTIAL",
-    "current": "29 VPC firewall rules with deny-by-default egress/ingress and tests; no google_compute_network_firewall_policy or hierarchical policy.",
+    "status": "COMPLETE",
+    "current": "modules/network declares google_compute_network_firewall_policy.baseline with catch-all IPv4 and IPv6 ingress deny rules and a google_compute_network_firewall_policy_association for each of the five networks (reflex, fabric, service, data, engineering), beside the per-VPC deny-by-default rules. Ungated, so every environment's plan carries it. Evaluated after the VPC rules (the networks' default enforcement order), so no sanctioned path changes; the organisation/folder policy is R12-SEC-9131.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:48 deny-ingress per network",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs every_subnet_in_the_network_is_covered_by_an_egress_deny",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_firewall_allow_rule_permits_the_whole_internet"
+      "infrastructure/terraform/modules/network/main.tf:388 google_compute_network_firewall_policy.baseline",
+      "infrastructure/terraform/modules/network/main.tf:405 baseline_deny_ingress_ipv4 (and _ipv6 below it)",
+      "infrastructure/terraform/modules/network/main.tf:439 google_compute_network_firewall_policy_association.baseline",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13457 every_network_is_associated_with_a_network_firewall_policy",
+      "infrastructure/terraform/modules/network/tests/three-networks.tftest.hcl:188 every_network_is_associated_with_the_baseline_firewall_policy"
     ],
-    "gap": "No hierarchical/NGFW policy objects.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -503,10 +505,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan shows network firewall policy association",
+    "verification": "cargo test -p qip-acceptance --test infrastructure every_network_is_associated_with_a_network_firewall_policy; cd infrastructure/terraform/modules/network && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L13) on the verification clause: a network firewall policy is planned and associated, and its absence fails both the acceptance test and the plan harness (23 passed). Mutations, each restored byte-for-byte: deleting the data network's association entry failed both ('google_compute_network.data_vpc.id is not associated'; 'must be associated with all five networks'); turning the IPv6 rule to allow failed both ('has no rule denying all ingress from ::/0'). Not applied: dev's next apply would create the policy."
   },
   {
     "id": "R12-REFLEX-10024",
@@ -1160,7 +1162,7 @@
       "infrastructure/terraform/variables.tf:978 kms_protection_level default SOFTWARE",
       "infrastructure/terraform/tests/kms-protection.tftest.hcl"
     ],
-    "gap": "Replace kms_protection_level with per-purpose variables: signing keys HSM everywhere, CMEK HSM in stage and prod; a Terraform test refusing SOFTWARE where forbidden and admitting it in dev/test CMEK (ADR 0110 Amendment 1).",
+    "gap": "Replace kms_protection_level (variables.tf:1061, a protected path) with signing_key_protection_level fixed HSM and cmek_protection_level admitting SOFTWARE in dev/test only, wire them to the six module sites (binaryauthorization takes the signing level; secrets, registry, backup, evidence, build-pool the CMEK level), and a Terraform test refusing SOFTWARE where forbidden and admitting it in dev/test CMEK (ADR 0110 Amendment 1). ADR 0110's artefact-signing keys are already HSM-only (artefact-signing.tf validation). Applying it moves dev's attestor to a billed HSM key version, an owner apply.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1171,7 +1173,7 @@
     "verification": "terraform test tests/kms-protection.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md)."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-18 (lane L13): not changed; the root variable is a protected path, and the module-only alternative (hard-coding HSM in modules/binaryauthorization) would plan a billed HSM attestor version into applied dev. The variables.tf patch is in lane L13's report."
   },
   {
     "id": "R12-SEC-10054",
@@ -2304,13 +2306,16 @@
   },
   {
     "id": "R12-REFLEX-10105",
-    "status": "PARTIAL",
-    "current": "Cells apply policy payloads by sequence and refuse lower sequences; ModelPack names a rollback_parent but nothing in edge or apps uses ModelPack; no activation epoch.",
+    "status": "COMPLETE",
+    "current": "A package is the compiled plan a verified policy payload names by digest. PlanCompiler reads and compiles it off the decision thread and hands it across a bounded Handoff; Handoff::boundary activates it only at a pass boundary (StrategyInstaller::activate, then install_compiled, which deploys only the plan the fresh payload names and refuses a digest or count mismatch). Since 2026-10-18 the installer keeps the plan it replaced resident as its parent (backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller.parent), and a payload naming the parent, as Cell::roll_back_policy produces for the operator's rollback wire, redeploys it at the next install with no file read or compile; the plan rolled away from becomes the parent in turn.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:295-311 ModelPack.rollback_parent (unused by edge)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:623 StrategyInstaller"
+      "backend/crates/apps/qip-edge-node/src/strategies.rs StrategyInstaller::activate, install_compiled, parent_digest",
+      "backend/crates/apps/qip-edge-node/src/control.rs Handoff::boundary",
+      "backend/crates/apps/qip-edge-node/src/rollback.rs rollback wire",
+      "backend/crates/apps/qip-edge-node/tests/control.rs::a_package_is_read_and_compiled_off_the_decision_thread_and_activated_at_a_pass_boundary",
+      "backend/crates/apps/qip-edge-node/tests/strategies.rs::a_rollback_to_the_previous_payload_redeploys_its_plan_from_memory_at_the_next_install"
     ],
-    "gap": "Epoch-based atomic activation and rollback.",
+    "gap": "None for the requirement; not deployed (no execution node exists).",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2320,10 +2325,10 @@
       "R12-REFLEX-10085"
     ],
     "blocked_by": "",
-    "verification": "unit tests in qip-edge",
+    "verification": "cargo test -p qip-edge-node --test strategies --test control",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L09. The earlier text looked for ModelPack.rollback_parent; the reflex package the node runs is the compiled plan, and its rollback rides the policy payload's. Mutation: removing the parent/compiled swap in install_compiled left the rollback blocked ('the compiled plan in hand is <B> and the fresh payload names <A>') with nothing on disk to recompile from, failing the test; restored byte for byte."
   },
   {
     "id": "R12-EVID-10106",
@@ -2448,13 +2453,14 @@
   },
   {
     "id": "R12-MESH-10111",
-    "status": "PARTIAL",
-    "current": "Peer protocol is separate from Fabric streams; the acceptance test for this (fabric_005) asserts its own fixtures.",
+    "status": "COMPLETE",
+    "current": "No Reflex Mesh frame type is a Fabric stream, as a code-level guard: event_fabric_foundations.rs::no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one reads every PeerMessage kind and MeshFunction from qip-peer and the stream catalogue (infrastructure/event-fabric/streams.local.json), requires their names to be disjoint (full name and stem), and requires that no source in qip-peer or qip-peer-link holds a stream's name. fabric_005 separately proves the cell's mesh files name no fabric client.",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs",
-      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs:20 fabric_005 (fixture-only: asserts its own topology struct)"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_foundations.rs fabric_005_reflex_mesh_coordination_stays_off_the_fabric",
+      "infrastructure/event-fabric/streams.local.json"
     ],
-    "gap": "Peer transport; a code-level guard.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2464,10 +2470,10 @@
       "R12-MESH-10075"
     ],
     "blocked_by": "",
-    "verification": "acceptance scan of stream catalogue vs peer frames",
+    "verification": "cd backend && cargo test -p qip-acceptance --test event_fabric_foundations -- no_mesh_frame_kind_is_a_fabric_stream_and_no_peer_source_names_one",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). Mutations: pub const LEAK = \"telemetry.local\" appended to qip-peer/src/lib.rs failed the test naming the file and the stream; a MeshFunction called Control, applied to a copy of the source inside the test, is reported as colliding with the control.local stem (a real variant would also fail the exhaustive match in PeerMessage::function, so the copy is the only way to exercise the check). lib.rs restored byte for byte. The catalogue read is the committed local one; no other stream list exists."
   },
   {
     "id": "R12-MESH-10112",

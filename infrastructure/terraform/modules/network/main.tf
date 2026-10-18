@@ -370,3 +370,77 @@ resource "google_compute_firewall" "console_egress_google_apis" {
   destination_ranges = [local.restricted_vip_range]
   target_tags        = [local.console_egress_tag]
 }
+
+# --- The network firewall policy (R12-SEC-10023) ----------------------------
+#
+# Every network above is deny-by-default on ingress because each carries a
+# catch-all VPC rule, and each of those is one resource somebody can delete or
+# reprioritise to unblock one connection. The policy below holds the same
+# catch-all as a separate object, associated with all five networks, so the
+# deny survives the loss of any one network's own rule.
+#
+# It changes no path that works today. A network evaluates its VPC firewall
+# rules first and this policy only for traffic no VPC rule matched (the
+# network's default enforcement order, AFTER_CLASSIC_FIREWALL), so every
+# sanctioned allow still decides its traffic and the policy is reached only by
+# what the VPC rules would also have denied. The policy is project-scoped; an
+# organisation or folder policy needs the tenant's rights and is not here.
+resource "google_compute_network_firewall_policy" "baseline" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-baseline"
+  description = "Catch-all ingress deny for every platform network, independent of each network's own VPC rules."
+}
+
+locals {
+  # Keys are fixed literals so the association's for_each is known at plan.
+  firewall_policy_networks = {
+    reflex      = google_compute_network.vpc["reflex"].id
+    fabric      = google_compute_network.vpc["fabric"].id
+    service     = google_compute_network.vpc["service"].id
+    data        = google_compute_network.data_vpc.id
+    engineering = google_compute_network.engineering_vpc.id
+  }
+}
+
+resource "google_compute_network_firewall_policy_rule" "baseline_deny_ingress_ipv4" {
+  project         = var.project_id
+  firewall_policy = google_compute_network_firewall_policy.baseline.name
+  description     = "Deny all IPv4 ingress no VPC rule admitted."
+  direction       = "INGRESS"
+  action          = "deny"
+  priority        = 2147483000
+  enable_logging  = true
+
+  match {
+    src_ip_ranges = ["0.0.0.0/0"]
+    layer4_configs {
+      ip_protocol = "all"
+    }
+  }
+}
+
+resource "google_compute_network_firewall_policy_rule" "baseline_deny_ingress_ipv6" {
+  project         = var.project_id
+  firewall_policy = google_compute_network_firewall_policy.baseline.name
+  description     = "Deny all IPv6 ingress no VPC rule admitted."
+  direction       = "INGRESS"
+  action          = "deny"
+  priority        = 2147483001
+  enable_logging  = true
+
+  match {
+    src_ip_ranges = ["::/0"]
+    layer4_configs {
+      ip_protocol = "all"
+    }
+  }
+}
+
+resource "google_compute_network_firewall_policy_association" "baseline" {
+  for_each = local.firewall_policy_networks
+
+  project           = var.project_id
+  name              = "qip-${var.environment}-baseline-${each.key}"
+  attachment_target = each.value
+  firewall_policy   = google_compute_network_firewall_policy.baseline.name
+}

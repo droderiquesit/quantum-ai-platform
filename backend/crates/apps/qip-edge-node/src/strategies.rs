@@ -251,6 +251,12 @@ pub struct StrategyInstaller {
     /// for [`Self::install_compiled`]. Separate from `read`, which is the
     /// legacy path's own cache: a node runs one path or the other.
     compiled: Option<CompiledPlan>,
+    /// The compiled plan the current one replaced, kept resident so a
+    /// rollback to the payload that named it redeploys it at the next
+    /// boundary without reading or compiling anything (REFLEX-10105). Only
+    /// one generation: the cell itself keeps one previous payload, so a
+    /// deeper history here could only name plans no payload can return to.
+    parent: Option<CompiledPlan>,
 }
 
 impl StrategyInstaller {
@@ -266,6 +272,7 @@ impl StrategyInstaller {
             read: None,
             deployed_from: BTreeMap::new(),
             compiled: None,
+            parent: None,
         }
     }
 
@@ -372,7 +379,16 @@ impl StrategyInstaller {
     /// superseded is therefore inert rather than deployed on the strength of
     /// a decision the centre has replaced.
     pub fn activate(&mut self, plan: CompiledPlan) {
+        match self.compiled.take() {
+            Some(current) if current.digest != plan.digest => self.parent = Some(current),
+            Some(_) | None => {}
+        }
         self.compiled = Some(plan);
+    }
+
+    /// The digest of the plan kept ready for a rollback, if any.
+    pub fn parent_digest(&self) -> Option<&str> {
+        self.parent.as_ref().map(CompiledPlan::digest)
     }
 
     /// The digest of the compiled plan in hand, if any, so a caller can tell
@@ -403,6 +419,21 @@ impl StrategyInstaller {
                  set it to `{MARKETABLE}` or `{REST_AT_MID_PREFIX}<seconds>`"
             ));
         };
+        // A payload naming the parent is a rollback (the operator's wire, or
+        // the centre re-shipping the older plan): the parent becomes the plan
+        // in hand and the one it replaced becomes the parent, so a second
+        // rollback forward is as cheap as the first one back.
+        if self
+            .compiled
+            .as_ref()
+            .is_some_and(|plan| plan.digest != named.digest)
+            && self
+                .parent
+                .as_ref()
+                .is_some_and(|plan| plan.digest == named.digest)
+        {
+            std::mem::swap(&mut self.compiled, &mut self.parent);
+        }
         let Some(plan) = self.compiled.take() else {
             return PlanInstallation::blocked(format!(
                 "the payload names plan {} and no compiled plan has been handed across yet; \
