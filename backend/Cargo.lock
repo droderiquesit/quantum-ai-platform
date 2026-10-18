@@ -168,6 +168,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-events",
+ "qip-evidence",
  "serde",
  "serde_json",
 ]

@@ -72,6 +72,7 @@
 use qip_agency::attribution::EffectAttribution;
 use qip_agency::autonomy::ActionPolicy;
 use qip_agency::causal::Scenario;
+use qip_agency::conduct_brain::{EvidenceDecl, EvidenceManifest, HoldingsList};
 use qip_agency::engine::{
     Adapter, Governance, Learning, LearningOutcome, Outcome, Report, Request, learn_shadowed,
     run_governed_with, widen,
@@ -91,6 +92,7 @@ use qip_events::EventLog;
 use qip_twin::futures::{FutureTree, TreeConfig, TwinState, WorldDriver};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Every pass cleared every gate.
 pub const ADMITTED: u8 = 0;
@@ -154,6 +156,23 @@ pub struct AgencyPolicy {
     /// policy document's hash, so which revocations stood is on the record.
     #[serde(default)]
     pub revoked_tools: Vec<String>,
+    /// The evidence the operator holds (R12-AGENCY-1056 / 1057): every
+    /// citation of every draft is resolved against these records, by id, for
+    /// its recorded source and its recorded statement. The requester writes
+    /// the draft and the citation; the operator writes this list, so a
+    /// citation naming evidence that is not here, or claiming what its record
+    /// does not say, withholds the pass. A policy with no list holds no
+    /// evidence, and every pass is withheld: absence is not a licence to cite
+    /// anything.
+    #[serde(default)]
+    pub evidence: Vec<EvidenceDecl>,
+    /// The instruments and products the platform is positioned in
+    /// (R12-AGENCY-1066). A draft naming one, as whole words, must carry a
+    /// `position` disclosure with text, or the pass is withheld as
+    /// undisclosed promotion. An empty list is the operator saying the
+    /// platform holds nothing; a binary that has positions lists them.
+    #[serde(default)]
+    pub holdings: Vec<String>,
 }
 
 /// A request to widen one class's policy, with the data to check it on.
@@ -335,7 +354,11 @@ impl Session {
                  unregistered, so declare the tools the agency may use",
             ));
         }
-        let mut guard = ActionGuard::from_policy(policy.guard)?;
+        let manifest = EvidenceManifest::new(policy.evidence)?;
+        let holdings = HoldingsList::new(policy.holdings)?;
+        let mut guard = ActionGuard::from_policy(policy.guard)?
+            .with_evidence(Arc::new(manifest))
+            .with_holdings(Arc::new(holdings));
         let register = EligibilityRegister::from_records(policy.eligibility)?;
         let mut policies = BTreeMap::new();
         for decl in policy.action_policies {

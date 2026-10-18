@@ -36,6 +36,7 @@ use qip_contracts::action::{MANIPULATION_PHRASES, Method, contains_phrase, words
 use qip_core::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// A proposed external communication awaiting conduct review.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,9 +67,135 @@ pub struct CommunicationDraft {
 pub struct EvidenceCitation {
     pub source_id: String,
     pub evidence_id: String,
+    /// What the draft says this evidence shows. Where an
+    /// [`EvidenceResolver`] is attached it is compared, by the fabric's
+    /// statement fingerprint, with the recorded statement; a citation that
+    /// states no claim cannot be compared and is refused there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
     /// Basis points, `0..=10000`. Outside that range the citation is refused,
     /// not clamped.
     pub confidence_bps: i64,
+}
+
+/// What the platform holds about one piece of evidence: where it came from
+/// and a fingerprint of the statement it records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedEvidence {
+    pub source_id: String,
+    pub statement_fingerprint: String,
+}
+
+/// R12-AGENCY-1056 / 1057: the platform's own record of evidence, asked about
+/// each citation. The failure prevented is a gate that checks what the
+/// requester says its evidence is: the citation names the source, the draft
+/// names the evidence, and every field the checks read was written by the
+/// party being checked. A resolver is held by the operator's side of the
+/// guard, so the requester cannot widen what resolves.
+pub trait EvidenceResolver: std::fmt::Debug + Send + Sync {
+    /// The recorded evidence with this id, or `None` when the platform holds
+    /// none.
+    fn resolve(&self, evidence_id: &str) -> Option<ResolvedEvidence>;
+}
+
+/// One evidence record as an operator's policy document states it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceDecl {
+    pub id: String,
+    pub source_id: String,
+    pub statement: String,
+}
+
+/// An [`EvidenceResolver`] over a list of records, the operator's manifest.
+/// It is the resolver a binary without an evidence fabric has: the manifest
+/// is the operator's export of what the fabric holds, and a citation outside
+/// it resolves to nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EvidenceManifest {
+    records: BTreeMap<String, ResolvedEvidence>,
+}
+
+impl EvidenceManifest {
+    /// Refuses a blank id, source or statement and an id listed twice: two
+    /// records under one id are two answers to one question.
+    pub fn new(decls: Vec<EvidenceDecl>) -> Result<Self, Error> {
+        let mut records = BTreeMap::new();
+        for decl in decls {
+            if [&decl.id, &decl.source_id, &decl.statement]
+                .iter()
+                .any(|v| v.trim().is_empty())
+            {
+                return Err(Error::invalid(format!(
+                    "evidence `{}` has a blank id, source or statement; a record states all three",
+                    decl.id
+                )));
+            }
+            let resolved = ResolvedEvidence {
+                source_id: decl.source_id,
+                statement_fingerprint: qip_evidence::fabric::statement_fingerprint(&decl.statement),
+            };
+            if records.insert(decl.id.clone(), resolved).is_some() {
+                return Err(Error::invalid(format!(
+                    "evidence `{}` is listed twice",
+                    decl.id
+                )));
+            }
+        }
+        Ok(Self { records })
+    }
+}
+
+impl EvidenceResolver for EvidenceManifest {
+    fn resolve(&self, evidence_id: &str) -> Option<ResolvedEvidence> {
+        self.records.get(evidence_id).cloned()
+    }
+}
+
+/// The disclosure kind a draft naming a held instrument must carry
+/// (R12-AGENCY-1066): the position the platform has in what the draft talks
+/// about.
+pub const POSITION_DISCLOSURE: &str = "position";
+
+/// R12-AGENCY-1066: what the platform holds, asked about a draft's words.
+/// A message about an instrument its sender is positioned in is promotion
+/// whether or not it says "buy", and the gate cannot know the positions
+/// itself: they are the platform's.
+pub trait HoldingsResolver: std::fmt::Debug + Send + Sync {
+    /// The first held instrument or product `content` names as whole words,
+    /// or `None` when it names none.
+    fn named_in(&self, content: &str) -> Option<String>;
+}
+
+/// A [`HoldingsResolver`] over a list of instruments, the operator's
+/// statement of what the platform is positioned in. An empty list says the
+/// platform holds nothing, which is the operator's claim and not the gate's
+/// default: a binary that has positions lists them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HoldingsList {
+    instruments: Vec<String>,
+}
+
+impl HoldingsList {
+    /// Refuses a blank instrument, which matches nothing and so would read
+    /// as a position that guards nothing.
+    pub fn new(instruments: Vec<String>) -> Result<Self, Error> {
+        if instruments.iter().any(|i| words(i).is_empty()) {
+            return Err(Error::invalid(
+                "a held instrument has no words in it; a blank entry names nothing",
+            ));
+        }
+        Ok(Self { instruments })
+    }
+}
+
+impl HoldingsResolver for HoldingsList {
+    fn named_in(&self, content: &str) -> Option<String> {
+        self.instruments
+            .iter()
+            .find(|instrument| contains_phrase(content, instrument))
+            .cloned()
+    }
 }
 
 /// A required disclosure for regulatory/policy compliance.
@@ -252,6 +379,18 @@ pub mod checks {
     /// citation with no evidence id or a confidence outside `0..=10000` is not
     /// support: it is the shape of a citation with nothing behind it.
     pub fn check_factual_support(draft: &CommunicationDraft) -> CheckResult {
+        check_factual_support_resolving(draft, None)
+    }
+
+    /// Check 1 with the platform's record of evidence (R12-AGENCY-1056): each
+    /// citation must resolve, must state what it claims the evidence shows,
+    /// and that claim must be the recorded statement. A claim attached to
+    /// evidence that says something else is a citation with nothing behind
+    /// it, however well formed.
+    pub fn check_factual_support_resolving(
+        draft: &CommunicationDraft,
+        resolver: Option<&dyn EvidenceResolver>,
+    ) -> CheckResult {
         const CHECK: &str = "factual_support";
         if draft.evidence_citations.is_empty() && !draft.content.trim().is_empty() {
             return CheckResult::fail(
@@ -278,6 +417,43 @@ pub mod checks {
                     ),
                 );
             }
+            let Some(resolver) = resolver else { continue };
+            let Some(recorded) = resolver.resolve(&citation.evidence_id) else {
+                return CheckResult::fail(
+                    CHECK,
+                    format!(
+                        "citation '{}' resolves to no evidence the platform holds; a citation is \
+                         not support until it names a record",
+                        citation.evidence_id
+                    ),
+                );
+            };
+            match &citation.claim {
+                None => {
+                    return CheckResult::fail(
+                        CHECK,
+                        format!(
+                            "citation '{}' states no claim, so nothing can be compared with the \
+                             record; say what the evidence shows",
+                            citation.evidence_id
+                        ),
+                    );
+                }
+                Some(claim)
+                    if qip_evidence::fabric::statement_fingerprint(claim)
+                        != recorded.statement_fingerprint =>
+                {
+                    return CheckResult::fail(
+                        CHECK,
+                        format!(
+                            "citation '{}' claims \"{claim}\", which is not the statement the \
+                             record holds",
+                            citation.evidence_id
+                        ),
+                    );
+                }
+                Some(_) => {}
+            }
         }
         CheckResult::pass(CHECK)
     }
@@ -287,21 +463,62 @@ pub mod checks {
         draft: &CommunicationDraft,
         authorized_sources: &[String],
     ) -> CheckResult {
+        check_provenance_resolving(draft, authorized_sources, None)
+    }
+
+    /// Check 2 with the platform's record of evidence (R12-AGENCY-1057): the
+    /// source that counts is the one the record names, not the one the
+    /// citation declares. A citation declaring an authorized source for
+    /// evidence recorded as coming from another is a forged provenance, and a
+    /// declared source nobody can check is trust in the party being checked.
+    pub fn check_provenance_resolving(
+        draft: &CommunicationDraft,
+        authorized_sources: &[String],
+        resolver: Option<&dyn EvidenceResolver>,
+    ) -> CheckResult {
         const CHECK: &str = "provenance";
-        match draft
+        if let Some(citation) = draft
             .evidence_citations
             .iter()
             .find(|c| !authorized_sources.contains(&c.source_id))
         {
-            Some(citation) => CheckResult::fail(
+            return CheckResult::fail(
                 CHECK,
                 format!(
                     "Evidence source '{}' is not in authorized sources list",
                     citation.source_id
                 ),
-            ),
-            None => CheckResult::pass(CHECK),
+            );
         }
+        let Some(resolver) = resolver else {
+            return CheckResult::pass(CHECK);
+        };
+        for citation in &draft.evidence_citations {
+            match resolver.resolve(&citation.evidence_id) {
+                None => {
+                    return CheckResult::fail(
+                        CHECK,
+                        format!(
+                            "citation '{}' resolves to no evidence the platform holds, so its \
+                             declared source '{}' cannot be checked",
+                            citation.evidence_id, citation.source_id
+                        ),
+                    );
+                }
+                Some(recorded) if recorded.source_id != citation.source_id => {
+                    return CheckResult::fail(
+                        CHECK,
+                        format!(
+                            "citation '{}' declares source '{}', but the record names '{}'; \
+                             the recorded source is the one that counts",
+                            citation.evidence_id, citation.source_id, recorded.source_id
+                        ),
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+        CheckResult::pass(CHECK)
     }
 
     /// Check 3: Identity. The sender must be an authorized identity: a name
@@ -330,19 +547,43 @@ pub mod checks {
         draft: &CommunicationDraft,
         required_disclosures: &[String],
     ) -> CheckResult {
+        check_disclosures_with_holdings(draft, required_disclosures, None)
+    }
+
+    /// Check 4 with what the platform holds (R12-AGENCY-1066): a draft that
+    /// names an instrument the platform is positioned in also requires a
+    /// [`POSITION_DISCLOSURE`] with text, whatever the policy requires of
+    /// every draft. Promotion is judged by what the words are about and who
+    /// is positioned in it, not by whether a phrase list recognises the pitch.
+    pub fn check_disclosures_with_holdings(
+        draft: &CommunicationDraft,
+        required_disclosures: &[String],
+        holdings: Option<&dyn HoldingsResolver>,
+    ) -> CheckResult {
         const CHECK: &str = "disclosures";
-        for required in required_disclosures {
+        let mut required: Vec<&String> = required_disclosures.iter().collect();
+        let position = POSITION_DISCLOSURE.to_string();
+        let held = holdings.and_then(|h| h.named_in(&draft.content));
+        if held.is_some() && !required.contains(&&position) {
+            required.push(&position);
+        }
+        for required in required {
             let present = draft
                 .disclosures
                 .iter()
                 .any(|d| &d.kind == required && !d.text.trim().is_empty());
             if !present {
-                return CheckResult::fail(
-                    CHECK,
-                    format!(
+                let why = match (&held, required == POSITION_DISCLOSURE) {
+                    (Some(instrument), true) => format!(
+                        "the communication names `{instrument}`, which the platform holds, and \
+                         carries no '{POSITION_DISCLOSURE}' disclosure with text; a message about \
+                         a position the sender has is undisclosed promotion"
+                    ),
+                    _ => format!(
                         "Required disclosure '{required}' is missing from communication, or its text is blank"
                     ),
-                );
+                };
+                return CheckResult::fail(CHECK, why);
             }
         }
         CheckResult::pass(CHECK)
@@ -530,6 +771,12 @@ pub struct ConductGate {
     channel_policies: BTreeMap<String, Vec<String>>,
     permitted_jurisdictions: Vec<String>,
     conduct_rules: Vec<ConductRule>,
+    /// The platform's record of evidence, when one is attached
+    /// (R12-AGENCY-1056 / 1057). Without it citations are checked as
+    /// declared.
+    resolver: Option<Arc<dyn EvidenceResolver>>,
+    /// What the platform holds, when attached (R12-AGENCY-1066).
+    holdings: Option<Arc<dyn HoldingsResolver>>,
 }
 
 impl ConductGate {
@@ -587,7 +834,23 @@ impl ConductGate {
             channel_policies,
             permitted_jurisdictions,
             conduct_rules: parsed.into_iter().collect(),
+            resolver: None,
+            holdings: None,
         })
+    }
+
+    /// Attach what the platform holds: from then on a draft naming a held
+    /// instrument must carry a [`POSITION_DISCLOSURE`].
+    pub fn with_holdings(mut self, holdings: Arc<dyn HoldingsResolver>) -> Self {
+        self.holdings = Some(holdings);
+        self
+    }
+
+    /// Attach the platform's record of evidence: from then on factual
+    /// support and provenance resolve every citation against it.
+    pub fn with_resolver(mut self, resolver: Arc<dyn EvidenceResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn from_policy(policy: ConductPolicy) -> Result<Self, Error> {
@@ -610,10 +873,18 @@ impl ConductGate {
     /// Returns all results; draft passes if all checks pass.
     pub fn evaluate(&self, draft: &CommunicationDraft) -> Vec<CheckResult> {
         vec![
-            checks::check_factual_support(draft),
-            checks::check_provenance(draft, &self.authorized_sources),
+            checks::check_factual_support_resolving(draft, self.resolver.as_deref()),
+            checks::check_provenance_resolving(
+                draft,
+                &self.authorized_sources,
+                self.resolver.as_deref(),
+            ),
             checks::check_identity(draft, &self.authorized_identities),
-            checks::check_disclosures(draft, &self.required_disclosures),
+            checks::check_disclosures_with_holdings(
+                draft,
+                &self.required_disclosures,
+                self.holdings.as_deref(),
+            ),
             checks::check_audience_permissions(draft, &self.channel_policies),
             checks::check_jurisdiction(draft, &self.permitted_jurisdictions),
             checks::check_market_conduct(draft, &self.conduct_rules),
@@ -672,6 +943,7 @@ mod tests {
             evidence_citations: vec![EvidenceCitation {
                 source_id: "source-001".to_string(),
                 evidence_id: "evid-001".to_string(),
+                claim: None,
                 confidence_bps: 8500,
             }],
             disclosures: vec![Disclosure {

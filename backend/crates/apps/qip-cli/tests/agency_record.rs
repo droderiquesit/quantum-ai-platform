@@ -55,6 +55,10 @@ fn policy_document() -> Value {
                 "revocation_path": "operator removes it from this file"
             }]
         },
+        "evidence": [{
+            "id": "spread-series-1", "source_id": "venue-feed",
+            "statement": "quoted spreads on venue-a are wider than the desk target"
+        }],
         "eligibility": [
             {
                 "subject": {"kind": "venue", "id": "venue-a"},
@@ -135,6 +139,7 @@ fn request(window: u64) -> Value {
                 "sender_identity": "desk-agent",
                 "evidence_citations": [{
                     "source_id": "venue-feed", "evidence_id": "spread-series-1",
+                    "claim": "quoted spreads on venue-a are wider than the desk target",
                     "confidence_bps": 9000
                 }],
                 "disclosures": [{"kind": "paper_venue", "text": "Paper venue: no live order is placed"}],
