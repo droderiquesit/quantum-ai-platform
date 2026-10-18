@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 399 | 26.3% |
+| Blueprint completion (COMPLETE) | 400 | 26.4% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
-| Tested (a named test demonstrates it) | 1216 | 80.1% |
+| Tested (a named test demonstrates it) | 1217 | 80.2% |
 | Integrated (reached from a composition root) | 846 | 55.7% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 18 | 1.2% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 399 |
-| PARTIAL | 972 |
+| COMPLETE | 400 |
+| PARTIAL | 971 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -45,7 +45,7 @@ register (ADR 0099), and there is no second one.
 | [REASON](#reason) | 41 | 11 | 28 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 18 | 28 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 31 | 31 | 0 | 7 | 0 | 63 | 61 | 0 |
-| [MODEL](#model) | 81 | 19 | 58 | 3 | 1 | 0 | 76 | 70 | 0 |
+| [MODEL](#model) | 81 | 20 | 57 | 3 | 1 | 0 | 76 | 71 | 0 |
 | [QUANT](#quant) | 78 | 24 | 28 | 26 | 0 | 0 | 52 | 51 | 0 |
 | [EXPAND](#expand) | 68 | 21 | 45 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
@@ -1028,7 +1028,7 @@ register (ADR 0099), and there is no second one.
 | R12-MODEL-9003 | Model registry records versions, evaluation, lineage, aliases, promotion evidence | qip_ai::registry::ModelRegistry tracks model cards, evaluation, a single stage alias with retained alias history, and require_for_decision refuses unevaluated/drifted/retired models; the kernel's model_serving promotes/rolls back with lineage. Every promotion is journaled with its evaluation evidence, the desk that moved the alias and what it displaced, and a restarted process rebuilds every promoted version with that history from the event log alone (tests/promotion_durability.rs). The registry itself is in memory in the deep brain and rebuilt empty at start (qip-deepbrain artifacts.rs and learning.rs ModelRegistry::new), so a registered version that was never promoted, and its evaluation, does not survive a restart. | PARTIAL | Registered-but-unpromoted versions and their evaluations are held only in the in-memory ModelRegistry and lost at restart; closing needs register_fit (central/models.rs) to journal each registration and evaluation, and the deep brain to rebuild its registry from those records. |  | P1 | cargo test -p qip-ai --test model_infrastructure && cargo test -p qip-kernel --test serving && cargo test -p qip-kernel --test promotion_durability |  |
 | R12-MODEL-9009 | Large-model outputs distilled into bounded compact Reflex models and signed bundles | Distillation exists (services/qip-training/src/distill.rs) and produces bounded students with measured fidelity and provenance. Promotion journals the distillate by the digest a cell checks (runtime/qip-kernel/tests/serving.rs). The cell refuses a plan carrying an inline model whose digest the policy frame's trained_models manifest does not name (edge/qip-edge/src/cell.rs:3364-3395), so an altered coefficient, which changes the digest, is refused. The API holds the manifest to KMS/ECDSA-signed release packs and fails closed when none is supplied (apps/qip-api/src/signing.rs:330-370). The compiler refuses a model whose worst-case cost exceeds the reflex budget. | PARTIAL | (1) A pipeline step that signs bundles: no publish workflow produces signed ModelPacks, so in deployment no distillate is named to any cell. (2) Cell-side verification of the model pack signature itself; the cell trusts the policy frame's digest list. (3) OCI packaging. | R12-SEC-9109 | P1 | cargo test -p qip-edge --test model_manifest && cargo test -p qip-training |  |
 | R12-MODEL-9030 | Model Tournament scores by calibration, regime and information value | Learning-engine Tournament scores forecasters per regime (calibration, information value) from resolved outcomes in the kernel cycle, plus qip-evolution champion/challenger. Scoring is on TournamentForecast, not the ForecastState contract. | PARTIAL | Score against ForecastState; tie challenger promotion to tournament comparison. |  | P1 | cargo test -p qip-evolution |  |
-| R12-MODEL-9031 | Forecast Market aggregates model votes via synthetic reputation | Tournament aggregates forecasts weighted by synthetic-credit reputation (forecast_market.rs) in the kernel cycle; ModelVote contract exists in qip-contracts control.rs but nothing emits it, and no ForecastConsensus type exists. | PARTIAL | Emit ModelVote/ForecastConsensus; test that equal weighting fails. | R12-MODEL-9030 | P3 | n/a |  |
+| R12-MODEL-9031 | Forecast Market aggregates model votes via synthetic reputation | TournamentStage::observe_reasoning, run by REASON in every cycle, journals one Validated qip_contracts::control::ModelVote per admitted entrant with standing (R12-CONTRACT-6112) and, for every question it opens, a new Validated ForecastConsensus (qip-contracts control.rs) carrying the pooled probability and each forecaster's share as Tournament::aggregate_weights returns it, normalised to one, with reputation_weighted stating whether the shares were earned or the equal split given where nobody has earned influence. The contract refuses unequal shares claimed as unearned and shares not summing to one. | COMPLETE |  | R12-MODEL-9030 | P3 | cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament a_consensus_is_journaled_for_every_question_and_turns_earned_once_a_forecaster_is_promoted && cargo +1.94.1 test -p qip-learning-engine --lib an_earned_aggregate_is_not_the_equal_weight_mean_of_its_forecasts && cargo +1.94.1 test -p qip-contracts --test control_contracts forecast_consensus |  |
 | R12-MODEL-9119 | Model/policy rollout: shadow, paper/replay, stage, atomic epoch activation, rollback retained | Kernel promotes/rolls back models with lineage and a parent; the cell applies manifests atomically by policy sequence; lifecycle gates require shadow evidence for strategies. No OCI manifests/GCS weights; signatures are HMAC. | PARTIAL | OCI packaging and KMS signatures. | R12-SEC-9109 | P0 | cargo test -p qip-kernel --test serving |  |
 | R12-MODEL-10043 | Vertex AI APIs behind Algorik adapters | qip-training holds a Vertex adapter with tests; the ai module declares a metadata store and endpoint, gated off. | PARTIAL | Not enabled; no guard that contracts never name Vertex types. |  | P2 | cargo test -p qip-training --test vertex |  |
 | R12-MODEL-10044 | Model registry records version, evaluation and lineage | qip-ai ModelRegistry plus Platform::promote_model refuse a candidate without evaluation, with a changed digest, or a quantum-produced candidate; promotions are journaled. The registry is in-process (Vertex Model Registry is not used), so 'unavailable' is concretely a registry that does not hold the candidate's card, which is the state the deep brain's registry is in after a restart. Platform::promote_model refuses that with NotFound before journaling, applying or changing the manifest; the package already promoted keeps being issued by model_manifest, and the same promotion succeeds once the registry holds the card again, so promotion pauses rather than wedges. | COMPLETE |  |  | P1 | cargo test -p qip-kernel --test promotion_durability |  |

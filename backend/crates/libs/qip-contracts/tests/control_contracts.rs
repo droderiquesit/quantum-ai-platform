@@ -806,3 +806,70 @@ fn a_capital_grant_refuses_each_broken_invariant() {
         ],
     );
 }
+
+// ---- ForecastConsensus (R12-MODEL-9031) --------------------------------
+
+fn consensus() -> qip_contracts::control::ForecastConsensusFields {
+    use qip_contracts::control::ConsensusWeight;
+    qip_contracts::control::ForecastConsensusFields {
+        schema_version: 1,
+        proposition: s("AAA/close-direction = up"),
+        regime: s("calm"),
+        probability_bp: 6_400,
+        weights: vec![
+            ConsensusWeight {
+                model: s("detector:volatility_shift"),
+                weight: dec!("0.7"),
+            },
+            ConsensusWeight {
+                model: s("analyst:equity-analyst"),
+                weight: dec!("0.3"),
+            },
+        ],
+        reputation_weighted: true,
+        formed_at: t(0),
+    }
+}
+
+#[test]
+fn a_forecast_consensus_round_trips_and_refuses_a_missing_unknown_or_foreign_field() -> Result<()> {
+    round_trips(consensus())?;
+    refuses_missing_unknown_and_foreign_version(consensus());
+    Ok(())
+}
+
+/// The invariant that carries the row: unequal shares may not be passed off
+/// as unearned, and shares that do not sum to one are not a consensus.
+/// Mutation: delete the unearned-but-unequal refusal in
+/// `ForecastConsensusFields::check` and that case is admitted.
+#[test]
+fn a_forecast_consensus_refuses_each_broken_invariant() {
+    each_refused(
+        &consensus(),
+        vec![
+            ("blank proposition", Box::new(|f| f.proposition = s(""))),
+            ("blank regime", Box::new(|f| f.regime = s(""))),
+            (
+                "probability above one",
+                Box::new(|f| f.probability_bp = 10_001),
+            ),
+            ("no voters", Box::new(|f| f.weights.clear())),
+            (
+                "a voter twice",
+                Box::new(|f| f.weights[1].model = f.weights[0].model.clone()),
+            ),
+            (
+                "a negative share",
+                Box::new(|f| f.weights[1].weight = dec!("-0.3")),
+            ),
+            (
+                "shares short of one",
+                Box::new(|f| f.weights[1].weight = dec!("0.2")),
+            ),
+            (
+                "unequal shares claimed unearned",
+                Box::new(|f| f.reputation_weighted = false),
+            ),
+        ],
+    );
+}
