@@ -340,6 +340,7 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             AgencyRecord::Executed { .. } => "executed",
             AgencyRecord::ToolDecision { .. } => "tool",
             AgencyRecord::VoiceReleased { .. } => "voice",
+            AgencyRecord::IntentRecorded { .. } => "intent",
             AgencyRecord::Learned { .. } => "learned",
             AgencyRecord::LearningWithheld { .. } => "learning withheld",
             AgencyRecord::PassConcluded { .. } => "concluded",
@@ -355,6 +356,8 @@ fn every_pass_is_journaled_and_one_guard_holds_the_rate_window_across_passes_and
             "goal",
             "plan",
             "executed",
+            // R12-CONTRACT-7082: the §27 intent of the cleared step.
+            "intent",
             "tool",
             // R12-AGENCY-1064: what the admitted step said, as whom, so a
             // restart still knows who said it.
