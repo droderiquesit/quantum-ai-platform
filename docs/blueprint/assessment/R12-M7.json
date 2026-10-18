@@ -284,22 +284,26 @@
   {
     "id": "R12-SEC-7014",
     "status": "PARTIAL",
-    "current": "KMS keys for secrets, models and registry; Secret Manager mounts as files; no HSM protection level or segregated custody signer.",
+    "current": "Cloud KMS holds every CMEK key and both signing systems. ADR 0110's four ASYMMETRIC_SIGN keys (policy, halt, envelope, model-pack) are HSM-only on their own ring (artefact_signing.protection_level refuses anything but HSM) with an authoritative signer binding naming only the API's runtime identity or the model-pack publisher; the Binary Authorization attestor signs deployments under its own key, granted only to CI; CMEK keys grant encrypt/decrypt only to Google service agents. Secret Manager mounts as files. Gated: artefact_signing = null in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:34 google_kms_crypto_key secrets; modules/ai/main.tf:29 models key; modules/registry/main.tf:112"
+      "infrastructure/terraform/artefact-signing.tf:245 google_kms_crypto_key.artefact (HSM, ASYMMETRIC_SIGN)",
+      "infrastructure/terraform/artefact-signing.tf:311 google_kms_crypto_key_iam_binding.artefact_signer",
+      "infrastructure/terraform/tests/artefact-signing.tftest.hcl:97 four_hsm_p256_signing_keys_with_disjoint_signers_are_planned",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13672 no_principal_holds_a_grant_on_keys_of_two_classes",
+      "infrastructure/terraform/modules/secrets/main.tf:34 google_kms_crypto_key secrets"
     ],
-    "gap": "No HSM-level keys or separate custody/signing system.",
+    "gap": "artefact_signing is null in every committed environment, so no committed plan renders the HSM signing keys (an owner switch, and HSM keys are billed); the deployment-signing attestor key and every CMEK key still take kms_protection_level (SOFTWARE by default), which is R12-SEC-10053's owner decision D12 and needs variables.tf.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform plan; inspection of protection_level",
+    "verification": "cargo test -p qip-acceptance --test infrastructure no_principal_holds_a_grant_on_keys_of_two_classes; cd infrastructure/terraform && terraform test -filter=tests/artefact-signing.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): the closure's keys already existed in artefact-signing.tf (not security.tf); this lane added the acceptance test that keeps signing keys unreadable by workloads that do not sign. Mutations, each restored byte-for-byte: adding the CI identity to the artefact signer binding failed it ('grants something other than sign to its one signer'); granting a workload identity on the evidence CMEK key failed it ('not a Google service agent'). Kept PARTIAL: the check is a plan and nothing committed plans the keys."
   },
   {
     "id": "R12-SEC-7015",
@@ -2119,13 +2123,13 @@
   {
     "id": "R12-RES-7095",
     "status": "PARTIAL",
-    "current": "Severed mesh link in the degraded test still trades locally; no pre-positioned directional band fallback found.",
+    "current": "Local trading continues with the peer mesh down: through the node's decision loop with every peer refusing, passes run and place orders and the journal ships (decision_loop.rs::an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal; since 2026-10-18 the rig's grant is bounded, so those passes place orders rather than refusing at envelope_unbounded). A multi-cell cycle needs the counterparty's reservation before FIRE (qip-peer-link saga), so with no reachable peer none can fire; the regional band half is cross_region.rs's.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
       "backend/crates/edge/qip-edge/tests/mesh.rs",
       "backend/crates/edge/qip-edge/tests/cross_region.rs"
     ],
-    "gap": "Directional-band reduction for distributed cycles.",
+    "gap": "No test originates a cycle and then loses the peer mid-epoch to show the cycle refused at its TTL while the cell's single-venue strategy keeps trading; qip-peer-link's ReflexPort has no stop, so a test cannot take a peer down after the cycle starts without a lifecycle hook. Pre-positioned directional bands are not distinguished from the region's ordinary capital share.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2136,7 +2140,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 by lane L09: not closed; the node-level half (local trading continues) is proven, the cycle-refusal half needs a peer-loss harness in qip-peer-link."
   },
   {
     "id": "R12-RES-7096",
@@ -2757,7 +2761,7 @@
       "backend/crates/libs/qip-observability/src/slo.rs:200-345 default_slos and blueprint_slos",
       "backend/crates/tests/qip-acceptance/tests/slo.rs; backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs"
     ],
-    "gap": "Not evaluated from a deployed process.",
+    "gap": "market-data-freshness (critical_paths.rs) reads EDGE_CAPABILITY_FRESHNESS under SourceRule::NotCountable, so it evaluates unmeasured in every process. No series records the age of the book a pass decides on: the cell keeps feed_heard per venue (silence detection) but exposes no book age, and the node's simulated feed publishes at the pass instant, so the age after publication is zero by construction while the silence before it is the pass interval (1 s), which sits on the objective's 1000 ms threshold. A countable rule needs a defined measurement first: the age of the newest venue data the pass's decisions used, recorded per pass beside EDGE_DECISION_LATENCY_MS.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2768,7 +2772,7 @@
     "verification": "cargo test -p qip-acceptance --test slo",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 by lane L22 after reading critical_paths.rs, qip-edge-node pass.rs/feed.rs and Cell::feed_heartbeat; no code changed. The decision-latency half of the same evaluator now runs on the node (R12-OBS-7124), so a book-age histogram recorded in pass.rs and bound with SourceRule::LatencyUnder would be evaluated by the same scrape-time evaluation without further wiring."
   },
   {
     "id": "R12-OBS-7124",

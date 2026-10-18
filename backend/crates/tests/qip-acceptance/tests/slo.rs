@@ -391,10 +391,24 @@ fn fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_rec
         Some(2.0),
         "the ceiling must be a number on the objective, not a word in its description"
     );
+    // A whole statement, not a substring: `contains` also matched the call
+    // inside a comment or a longer identifier, so a deleted recording site
+    // that left a mention behind still passed.
     assert!(
         code_of("backend/crates/apps/qip-fabricd/src/archiver.rs")
-            .contains("telemetry.archive_lag(unarchived)"),
+            .lines()
+            .any(|line| line.trim() == "telemetry.archive_lag(unarchived);"),
         "nothing in qip-fabricd's archiver records the archive backlog the objective reads"
+    );
+    // And the objective is evaluated, by the recorder that measures the lag,
+    // from the one constructor the declaration also uses.
+    assert_eq!(fabric, &qip_observability::slo::fabric_archive_backlog());
+    assert!(
+        code_of("backend/crates/apps/qip-fabricd/src/telemetry.rs")
+            .lines()
+            .any(|line| line.trim()
+                == "critical_paths::record(&self.metrics, &[self.backlog.evaluate(good, total)]);"),
+        "qip-fabricd records the lag and evaluates no objective from it"
     );
 
     let ledger = named(&blueprint_slos(), "reconciliation-breaks-zero-unexplained").clone();
