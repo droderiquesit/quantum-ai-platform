@@ -3931,13 +3931,15 @@
   },
   {
     "id": "R12-COVERAGE-7177",
-    "status": "PARTIAL",
-    "current": "Twin models costs/impact over bars; simulated gateway has release tolerance and seeds.",
+    "status": "COMPLETE",
+    "current": "Replay models queue position and multi-leg unwind, and one acceptance test holds both in a single run through the public qip_simulation_engine::tick_replay::replay: a resting limit order joins behind the ten lots already at its price and fills one lot only after the six-lot print is consumed by the queue, while a three-leg plan whose third leg meets a book with no ask is refused at that leg, both filled legs are unwound with sells, nothing is left unhedged and the unwind cost is charged. The register's earlier text was stale: qip-simulation-engine venue.rs keeps a price-time queue and tick_replay.rs models the unwind.",
     "evidence": [
-      "backend/crates/services/qip-twin/src/asof.rs:54-257",
-      "backend/crates/apps/qip-edge-node/src/gateway.rs"
+      "backend/crates/tests/qip-acceptance/tests/replay_queue_and_unwind.rs a_replayed_order_waits_its_turn_in_the_queue_while_a_plan_whose_third_leg_fails_is_unwound",
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs work_resting (queue_ahead) and resolve (failed_leg, unwinds)",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs ReplaySession on the tick desk"
     ],
-    "gap": "Queue position and multi-leg unwind modelling.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3945,10 +3947,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cargo test -p qip-acceptance --test replay_queue_and_unwind",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations, each fired and restored: resting with queue_ahead zero fills ahead of the queue; treating every leg as complete in resolve stops the third-leg failure."
   },
   {
     "id": "R12-COVERAGE-7178",
