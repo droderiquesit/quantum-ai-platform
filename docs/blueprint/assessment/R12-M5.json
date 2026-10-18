@@ -248,7 +248,7 @@
       "backend/crates/libs/qip-contracts/src/ledger.rs:42 Settlement::Simulated only",
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs:6 settlement_has_no_variant_but_simulated"
     ],
-    "gap": "A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: the in_settlement account, the fill posting change, and Decision::Settled from the simulated gateway, with a test that cash is unavailable before the settlement date.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -259,7 +259,7 @@
     "verification": "cargo test -p qip-ledgerd --test store plus a new test per state",
     "work_item": "",
     "size": "M",
-    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does."
+    "notes": "Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL, no operation added; ADR 0123 'Consequences' says each kind needs a producer that observes the fact, and none does. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: A simulated settlement lifecycle (pending -> settled, T+n) without introducing a live variant. No producer observes a settlement: the venue settles at the fill and the desk's T+1 register is a projection, so recording 'settled' would be the kernel's clock passing a calendar's estimate, not a reported fact. A lifecycle needs an in-settlement subledger the fill posts into and a settled transition the ledger books, which changes how fills post cash today and is an ADR, not a producer."
   },
   {
     "id": "R12-LEDGER-5012",
@@ -319,7 +319,7 @@
       "backend/crates/libs/qip-contracts/src/reflex.rs::chain_correlation",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_correlation.rs::one_correlation_id_joins_every_hop_from_the_signal_to_the_ledger_event"
     ],
-    "gap": "Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions. A settlement record has nothing to carry: no production path observes a settlement (the simulated venue settles at the fill; the desk's T+1 register is a projection), so the walk still stops at order/signal. Treasury and capital-grant fundings now reach the ledger as operations whose source cites the operation id and the desk chain, so a funding balance walks back to the grant's own identity (strategy@cell@granted-at) and the journalled CapitalGrantFunded record; that is a lineage for a funding, not the intent -> order -> fill -> settlement chain this row names.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: SourceEvent gains the ChainOpened journal sequence and the settlement posting names the fill's event, with an acceptance walk ledger to journal to intent.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -330,7 +330,7 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL; no settlement record was added because nothing reports one."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Walk stops at order/signal: no intent id, no settlement record. The new test walks forward from the signal and back from the event key, but not through settlement. Desk chain ids no longer repeat across restarts: resume_book continues the order counter past the log's (vertical_slice_ship::an_order_after_a_restart_does_not_share_a_correlation_id_with_one_before). Orders that never filled leave no fill in the log, so their ids can be reissued; they never reached the ledger. Shipper adds no intent id or settlement record (checked against 84e4e33d). 2026-10-17: FillBooked is journalled under the decision cycle's correlation id, so a restarted or healed desk record keeps it (vertical_slice_ship::a_restart_requeues_each_record_under_the_cycle_that_placed_the_order); the cycle id still is not on the ledger wire. Assessed 2026-10-18 by the lane that built the capital-grant funding producer (ADR 0123 decision 6), asked to record a paper fill's simulated settlement as a ledger operation only if a producer can observe the fact honestly: PARTIAL->PARTIAL; no settlement record was added because nothing reports one. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: Intent id and settlement record on the ledger event; a balance-to-intent walk in both directions. A settlement record has nothing to carry: no production path observes a settlement (the simulated venue settles at the fill; the desk's T+1 register is a projection), so the walk still stops at order/signal. Treasury and capital-grant fundings now reach the ledger as operations whose source cites the operation id and the desk chain, so a funding balance walks back to the grant's own identity (strategy@cell@granted-at) and the journalled CapitalGrantFunded record; that is a lineage for a funding, not the intent -> order -> fill -> settlement chain this row names."
   },
   {
     "id": "R12-LEDGER-5015",
@@ -400,7 +400,7 @@
       "backend/crates/libs/qip-contracts/src/ledger_operation.rs::LedgerOperation",
       "backend/crates/apps/qip-ledgerd/src/store.rs::LedgerStore::record_operation"
     ],
-    "gap": "No production producer: nothing in any binary builds a LedgerOperation for custody or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests.",
+    "gap": "Decided by ADR 0130 (accepted 2026-10-18): Simulated fills post into an in-settlement subledger and move to cash at T+n when a producer observes the simulated settlement; the simulated venue's position statement is the custody truth the ledger reconciles against. Code left: CustodyMovement postings from the custody statement, with a subledger and trial-balance test.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -411,7 +411,7 @@
     "verification": "cargo test -p qip-ledgerd plus a subledger test",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D06; gap before it: No production producer: nothing in any binary builds a LedgerOperation for custody or calls LedgerStore::record_operation, so ledger state for it is reachable only from tests."
   },
   {
     "id": "R12-LEDGER-5018",
@@ -775,7 +775,7 @@
       "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
       "backend/crates/apps/qip-edge-node/tests/decision_loop.rs::a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn"
     ],
-    "gap": "Telemetry is not a fabric record; model acknowledgments are not shown on the fabric.",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: no new path: a test pinning that telemetry is scrape-only and the register reading the single-source rule as the design.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -788,7 +788,7 @@
     "verification": "node test with in-process qip-streaming broker double",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Unchanged since the previous grade. Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Telemetry and acks clause unmet. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Telemetry is not a fabric record; model acknowledgments are not shown on the fabric."
   },
   {
     "id": "R12-MESH-5035",
@@ -921,7 +921,7 @@
       "backend/crates/edge/qip-edge/src/cell.rs:3318",
       "backend/crates/edge/qip-edge/tests/model_manifest.rs:227"
     ],
-    "gap": "No calibration of local scores at the edge; manifest producer (kernel model_serving.rs) not shipped to nodes by any deployed path.",
+    "gap": "DistilledModel (qip-strategy model.rs) has no calibration: it returns the raw tree or linear score, and there is no calibration table in the struct, its digest or the training distillation (qip-training distill.rs); the kernel manifest producer (model_serving.rs) is still not shipped to nodes by a deployed path. DistilledModel is constructed or matched at over a hundred sites, so a new field changes every model digest and manifest.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -932,7 +932,7 @@
     "verification": "cargo test -p qip-edge --test model_manifest",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: not attempted; the change alters digests that manifests pin. Kept PARTIAL."
   },
   {
     "id": "R12-REFLEX-5041",
@@ -1036,18 +1036,18 @@
       "backend/crates/apps/qip-edge-node/tests/pass.rs:1173",
       "backend/crates/apps/qip-edge-node/src/lib.rs:180 mode gate"
     ],
-    "gap": "An edge quote engine (quoting mode is refused at the node).",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-edge-node --test pass; cargo test -p qip-edge --test best_venue",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: An edge quote engine (quoting mode is refused at the node)."
   },
   {
     "id": "R12-MESH-5046",
@@ -1084,7 +1084,7 @@
       "backend/crates/apps/qip-ledgerd/tests/fabric.rs::a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
       "backend/crates/tests/qip-acceptance/tests/vertical_slice_cell_ledger.rs::the_cells_spooled_p1_records_are_booked_by_the_real_ledger_store_once"
     ],
-    "gap": "Forward to learning; one end-to-end test with forward-removal mutation.",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: no new path: a test pinning that learning reads fills from the cell report and not the fabric.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1098,7 +1098,7 @@
     "verification": "acceptance test node journal -> fabricd -> ledgerd balance",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement says ledger and learning; learning leg absent."
+    "notes": "Re-graded 2026-10-17 after the tick-to-ledger integration commits, by an independent grader that wrote none of the code (code and tests read, none run by the grader; the workspace run was 9462 passed): Requirement says ledger and learning; learning leg absent. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Forward to learning; one end-to-end test with forward-removal mutation."
   },
   {
     "id": "R12-MESH-5048",
@@ -1479,7 +1479,7 @@
       "backend/crates/edge/qip-arbitrage/src/plan.rs:130",
       "edge/qip-arbitrage/tests/arbitrage.rs::the_least_reversible_leg_is_planned_first"
     ],
-    "gap": "A per-cycle policy that selects concurrent versus risk-ordered execution, honoured by the cell's send path, with a test proving each arm.",
+    "gap": "No per-cycle policy field selects concurrent versus risk-ordered legs: CycleWhitelist (qip-contracts policy.rs) carries cycles, conversions and start_sizes; qip-edge-node's desk_from_whitelist_in builds PlanSettings::with_budget(PLAN_BUDGET) from a literal; LegPlanner::plan always sorts legs least-reversible first, and LegPlan consumers read steps by position. A Concurrent arm loosens the stranded-leg protection the ordering exists for, so it needs the cell's send path and the residual-risk budget (LegPlan::residual_after assumes sequential completion) revisited together, and a decision on who may select it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1490,7 +1490,7 @@
     "verification": "cargo test -p qip-arbitrage --test arbitrage",
     "work_item": "",
     "size": "S",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged."
+    "notes": "Lane L24 2026-10-18 re-graded: not a one-field change; a field the planner honoured but the send path ignored would be a policy that reads as a control and cannot fire. Kept PARTIAL."
   },
   {
     "id": "R12-MESH-5065",
@@ -1685,18 +1685,18 @@
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:309",
       "backend/crates/tests/qip-acceptance/tests/quote_loop.rs:326"
     ],
-    "gap": "Quotes are never placed (even on the simulator); no edge quote engine.",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-execution-engine; qip-acceptance quote_loop",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Quotes are never placed (even on the simulator); no edge quote engine."
   },
   {
     "id": "R12-EXEC-5074",
@@ -1797,18 +1797,18 @@
       "backend/crates/edge/qip-edge/tests/reservation.rs",
       "backend/crates/edge/qip-edge/tests/region_table.rs"
     ],
-    "gap": "Market-making reservations through the same table.",
+    "gap": "Owner decision O15 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Enable quoting on the simulated venue: lift quote_loop.rs's no-path-to-an-order and the node ModeGate's quoting refusal. Enables: Quotes placed on the simulator, an edge quote engine, market-making reservations. Costs: The most dangerous composition in the tree, by its own module doc; quoting is order submission at every real venue.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O15 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-edge --test reservation --test region_table",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision O15; gap before it: Market-making reservations through the same table."
   },
   {
     "id": "R12-EXEC-5079",
@@ -1843,7 +1843,7 @@
       "qip-execution-engine/src/market_creation.rs::tests::an_approved_creation_lists_seeds_and_publishes_its_rule_at_the_simulated_venue",
       "qip-kernel/tests/breadth.rs::a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_journaled"
     ],
-    "gap": "Inventory management after seeding (fills against the created book debit inventory, replenishment/withdrawal on exhaustion); live creation stays BLOCKED (ADR 0003/0021).",
+    "gap": "Inventory management after seeding is absent and has no flow to drive it: SimulatedBroker::fill_price only sweeps the listed book read-only (broker.rs:456), so a fill never consumes resting depth, and nothing routes a fill on a created product back to MarketFactory. The factory side (a settle_fill debiting CreatedMarket.inventory and re-listing the consumed ladder) is the easy half; the broker consuming the book and the kernel reporting the fill are the missing path. Live creation stays BLOCKED (ADR 0003/0021).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -1856,7 +1856,7 @@
     "verification": "acceptance test listing + seeding at SimulatedExchange",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: False claim: the kernel test's doc says 'Mutation: make MarketFactory::seed skip venue.list_book(book) and the venue's book is empty' (tests/breadth.rs:114-116), but the test never reads the venue's book; it asserts market.stage == Seeded and the journal, both set regardless (market_creation.rs:496-512). The unit test does assert depth (market_creation.rs:796-800)."
+    "notes": "Lane L24 2026-10-18 re-graded: the kernel test's mutation claim (tests/breadth.rs) now reads the venue's book through Platform::listed_book, so that part of the 2026-10-11 audit finding is closed; inventory management remains. Kept PARTIAL."
   },
   {
     "id": "R12-EXEC-5081",

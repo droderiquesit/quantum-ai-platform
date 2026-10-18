@@ -193,18 +193,18 @@
       "backend/crates/services/qip-market-ingestion/src/connectors/geospatial_satellite.rs:7 'Status: BLOCKED'",
       "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:186-225 dispatch lists none of the physical-flow modules"
     ],
-    "gap": "Seven of eight physical-source modules are not reachable from the connector dispatch.",
+    "gap": "Owner decision O03 (docs/blueprint/lanes/design-decisions-2026-10-18.json), no ADR written by an agent: Decide the licence for each alternative-data provider (satellite, AIS, flight, port, traffic, commodity, energy grid, IoT) under ADR 0034. Enables: Seven connector modules join connector_feed.rs dispatch. Costs: Vendor contracts and fees, and an external account per provider.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "owner decision O03 (design-decisions-2026-10-18)",
     "verification": "cargo test -p qip-market-ingestion --test connector_contract",
     "work_item": "",
     "size": "L",
-    "notes": "Licensing for several is an external decision."
+    "notes": "Licensing for several is an external decision. ADR lane 2026-10-18: gap re-graded against decision O03; gap before it: Seven of eight physical-source modules are not reachable from the connector dispatch."
   },
   {
     "id": "R12-DATA-2010",
@@ -792,7 +792,7 @@
       "qip-world-model/tests/evidence_fabric.rs::a_signature_claim_is_recorded_and_never_credited",
       "backend/crates/services/qip-market-ingestion/src/connector/transport.rs::ContentDigest"
     ],
-    "gap": "No production TLS-identity, signed-release or registered-issuer signal (no trusted registry configured); belief_weight is read by no decision.",
+    "gap": "Decided by ADR 0139 (accepted 2026-10-18): A committed issuer registry lets connectors verify detached signatures with ring, and the evidence fabric credits SignatureVerified only from a VerifiedSignature token the verifier constructs. Code left: the registry file and loader, the generalised verifier, the VerifiedSignature token and fabric arm, the connector attaching it, and the evidence_fabric.rs test that a verified-issuer claim outranks an unsigned copy.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -805,7 +805,7 @@
     "verification": "a test that authenticity changes evidence weight",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Defect: the production HashVerified signal is tautological (the hash credited is the hash it is compared with). The comment at fabric.rs:265-267 says 'no in-tree signing, ADR 0043', but commit 56f2c191 added ring-based P-256 verification in qip_transport::trust, so 'cannot verify a signature' is no longer a capability limit. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Round-2 independent audit, 2026-10-11: Defect: the production HashVerified signal is tautological (the hash credited is the hash it is compared with). The comment at fabric.rs:265-267 says 'no in-tree signing, ADR 0043', but commit 56f2c191 added ring-based P-256 verification in qip_transport::trust, so 'cannot verify a signature' is no longer a capability limit. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D15; gap before it: No production TLS-identity, signed-release or registered-issuer signal (no trusted registry configured); belief_weight is read by no decision. ADR lane 2026-10-18: gap re-graded against ADR 0139; gap before it: Delegable decision D15 (design-decisions-2026-10-18.json), ADR not yet written: A trusted-issuer registry contract (issuer, key, domain) read from configuration lets connector evidence credit SignatureVerified under qip_transport::trust. Needs that ADR, then the code."
   },
   {
     "id": "R12-EVID-2035",
@@ -1033,13 +1033,15 @@
   {
     "id": "R12-TICK-2044",
     "status": "PARTIAL",
-    "current": "qip-orderbook models auctions beside the book and venue status; ITCH trading-action messages are decoded in the replay acceptance session; edge cell journals refusals and expiries.",
+    "current": "qip-orderbook models auctions beside the book and venue status; MessageBody::AuctionUpdate carries imbalance and imbalance_side (message.rs); VenueStatus::CircuitBreaker (venue.rs) is a distinct typed status that refuses orders and prices, decoded from an ITCH trading action whose reason is LUDP/LUDS/MWCn (itch.rs) and from the JSON framing and depth snapshot status strings, and the book drops its auction and serves no price on it; edge cell journals refusals and expiries.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/venue.rs",
-      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume",
-      "backend/crates/edge/qip-edge/src/telemetry.rs refusals/expired series"
+      "backend/crates/libs/qip-contracts/src/venue.rs VenueStatus::CircuitBreaker",
+      "backend/crates/edge/qip-protocols/src/itch.rs trading-action reason decode",
+      "backend/crates/edge/qip-orderbook/tests/venue.rs a_circuit_breaker_halts_the_book_and_withdraws_the_auction_it_replaced",
+      "backend/crates/edge/qip-protocols/tests/itch.rs a_breaker_reason_on_a_trading_action_decodes_as_a_circuit_breaker_not_an_ordinary_halt",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs:90 trading_action halt/resume"
     ],
-    "gap": "Imbalance and circuit-breaker events are not distinct record types; only simulated sources.",
+    "gap": "Imbalance and circuit-breaker are now distinct typed records, but the only decoder that emits the breaker from a venue frame (qip_protocols::itch) has no production caller outside tests/acceptance, so no binary receives a breaker from a venue; only simulated sources feed the edge node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1047,10 +1049,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-orderbook",
+    "verification": "cargo test -p qip-contracts --test contracts a_circuit_breaker; cargo test -p qip-protocols --test itch a_breaker_reason; cargo test -p qip-orderbook --test venue a_circuit_breaker",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: dropping the LUD/MWC guard in itch.rs failed the itch test; letting accepts_orders admit CircuitBreaker failed the contracts and orderbook tests. Kept PARTIAL: closes only with a real ITCH/SBE feed wired into qip-edge-node (deploy-dependent)."
   },
   {
     "id": "R12-TICK-2045",
@@ -1240,7 +1242,7 @@
       "backend/crates/libs/qip-contracts/src/message.rs",
       "backend/crates/services/qip-market-ingestion/src/adapter.rs SensedRecord"
     ],
-    "gap": "Unify on one canonical market-event schema across edge and centre.",
+    "gap": "Decided by ADR 0132 (accepted 2026-10-18): One admission header (three times, uncertainty, source hash, entitlement) shared by MarketEvent and every SensedRecord; SourceManifest v2 is additive and v1 stays readable; ticks reach the fabric only as bounded per-pass feature digests. Code left: qip_contracts::admission::Admission and the Admitted wrappers for MarketMessage and SensedRecord, with refusal tests for disagreeing times.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1251,17 +1253,20 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": " ADR lane 2026-10-18: gap re-graded against decision D08; gap before it: Unify on one canonical market-event schema across edge and centre."
   },
   {
     "id": "R12-TICK-2054",
-    "status": "PARTIAL",
-    "current": "MarketEvent recomputes the payload hash at construction and refuses a mismatch — but over the canonical JSON of the decoded payload, not the venue-native bytes. Connector digests hash the native body.",
+    "status": "COMPLETE",
+    "current": "MarketEvent keeps source_hash over the canonical JSON of the decoded payload and now also native_hash: sha256 of the venue wire bytes, set by MarketEvent::with_native_bytes. SimulatedFeed::capture hashes the exact level_line the cell decoded, and the scheduler hands those events to the pass-input recorder on every pass of a node running the simulated feed.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/market_event.rs:47-50,81 hash_payload of canonical JSON",
-      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:64 FetchDigest over native bytes"
+      "backend/crates/libs/qip-contracts/src/market_event.rs native_hash / with_native_bytes",
+      "backend/crates/apps/qip-edge-node/src/feed.rs SimulatedFeed::capture",
+      "backend/crates/apps/qip-edge-node/src/scheduler.rs:539 take_captured into PassInputs",
+      "backend/crates/libs/qip-contracts/tests/market_event.rs a_native_hash_names_the_wire_bytes_not_the_canonical_reencoding",
+      "backend/crates/apps/qip-edge-node/tests/book_reconstruction.rs a_captured_tick_names_the_wire_line_it_was_decoded_from_by_its_native_hash"
     ],
-    "gap": "Carry the native-bytes hash (not the canonical re-encoding) on edge market events.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1269,10 +1274,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts market_event",
+    "verification": "cargo test -p qip-contracts --test market_event; cargo test -p qip-edge-node --test book_reconstruction",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: native_hash set to source_hash failed the contracts test; dropping with_native_bytes in feed.rs capture failed the node test. The only edge feed is the simulated one; a venue-wire decoder (ITCH/SBE) would need to call with_native_bytes at its own seam when one is wired."
   },
   {
     "id": "R12-TICK-2055",
@@ -1458,7 +1463,7 @@
       "backend/crates/edge/qip-sequencing/tests/align.rs:187 identical_stamps_are_unordered_rather_than_simultaneous_and_the_bound_itself_is_not_an_order",
       "backend/crates/edge/qip-feature-dag/src/features.rs:583 aligned_tail (separate, uncertainty-free)"
     ],
-    "gap": "Use align in cross-venue features and research.",
+    "gap": "Nothing supplies the uncertainty alignment needs: qip_sequencing::align (align.rs:158) takes Placed stamps whose uncertainty comes from the clock discipline (DisciplinedTime), and nothing outside qip-sequencing calls the discipline, Placed or align. The feature DAG's InstrumentState keeps only (bucket, mid) per sample (state.rs:131), with no per-instrument clock uncertainty or arrival time, so replacing aligned_tail (features.rs:583) with align would order every pair exactly (zero uncertainty), which is the defect, or refuse every cross-venue feature. Needs the clock discipline threaded into MarketState per instrument first.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1471,7 +1476,7 @@
     "verification": "cargo test -p qip-sequencing --test align",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18 re-graded: the closure's test two_venues_inside_combined_uncertainty_are_not_ordered_by_a_cross_venue_feature could only pass with an uncertainty the test itself declares, proving the arithmetic of align and not the feed. Kept PARTIAL."
   },
   {
     "id": "R12-TICK-2063",
@@ -1696,14 +1701,14 @@
   },
   {
     "id": "R12-TICK-2072",
-    "status": "PARTIAL",
-    "current": "TrainingCadence::authorise is the only constructor of AuthorisedUpdate and refuses structural change at fast cadences; TrainedTeacher::apply takes only an AuthorisedUpdate. Drift is not routed to the expansion curriculum.",
+    "status": "COMPLETE",
+    "current": "The learning round's drifted models reach the research sweep (node.rs drifted_references -> ResearchLoop::note_drifted_models -> model_drift observations) as one ModelDrift gap per model, which ExpansionDesk::offer queues as a validated curriculum item naming the model; learning runs every 8 cycles by default.",
     "evidence": [
-      "backend/crates/services/qip-training/src/cadence.rs:268 authorise",
-      "backend/crates/runtime/qip-kernel/tests/models.rs:20 cadence tests",
-      "backend/crates/services/qip-expansion/src/curriculum.rs (no drift input)"
+      "backend/crates/apps/qip-deepbrain/src/node.rs drifted_references",
+      "backend/crates/apps/qip-deepbrain/src/research.rs note_drifted_models, sweep_over model_drift",
+      "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs a_drifted_model_opens_a_curriculum_task_and_an_undrifted_one_does_not"
     ],
-    "gap": "Route drift findings into Curriculum Engine tasks.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1713,10 +1718,10 @@
       "R12-TICK-2071"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test models",
+    "verification": "cargo test -p qip-deepbrain --test expansion_rows -- a_drifted",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Mutation: replacing the `observations.extend(model_drift(..))` line in sweep_over with a bare take of drifted_models fails the new test and a_drifted_model_raises_exactly_one_model_drift_gap. The closure named learning.rs opening the task; the route through the sweep already existed and is the one the default cycle runs."
   },
   {
     "id": "R12-TICK-2073",
@@ -2026,7 +2031,7 @@
       "backend/crates/services/qip-training/src/distill.rs:311",
       "backend/crates/runtime/qip-kernel/src/fusion.rs::OpportunityMap"
     ],
-    "gap": "Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No edge crate or qip-edge-node reads the OpportunityMap, so it never reaches a reflex cell.",
+    "gap": "Decided by ADR 0133 (accepted 2026-10-18): What crosses between centre and reflex lane: a bounded fused-state digest as a policy slot, a reflex forecast contract the node issues itself, episode summaries on the cell report, and one source per fact (learning on the report, telemetry on the scrape). Code left: FusedDigest and the fused_digest slot, built per cell after authorise_for, with an edge test that a stale or region-refused digest is not read.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -2039,7 +2044,7 @@
     "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. ADR lane 2026-10-18: gap re-graded against decision D09; gap before it: Tick desk is off by default: QIP_DEEPBRAIN_TICK_EVERY unset and no committed deployment sets it, so this never runs in a deployed binary. No edge crate or qip-edge-node reads the OpportunityMap, so it never reaches a reflex cell."
   },
   {
     "id": "R12-TICK-2087",

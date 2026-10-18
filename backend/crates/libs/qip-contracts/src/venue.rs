@@ -99,6 +99,13 @@ pub enum VenueStatus {
     Auction,
     /// Reachable but not trading.
     Halted,
+    /// Not trading because a circuit breaker fired: a single-instrument
+    /// limit-up/limit-down pause or a market-wide decline halt. Distinct from
+    /// `Halted` because a breaker ends on a clock the venue publishes and
+    /// reopens through an auction, while an ordinary halt ends when the venue
+    /// says so; a consumer that cannot tell them apart cannot tell a pause
+    /// that is five minutes old from a suspension that is not going to lift.
+    CircuitBreaker,
     /// Outside session hours.
     Closed,
     /// Cannot be reached. Distinct from `Halted`: the venue may be trading and
@@ -112,6 +119,7 @@ impl VenueStatus {
             Self::Open => "open",
             Self::Auction => "auction",
             Self::Halted => "halted",
+            Self::CircuitBreaker => "circuit_breaker",
             Self::Closed => "closed",
             Self::Unreachable => "unreachable",
         }

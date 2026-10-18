@@ -57,6 +57,7 @@
 //! created.
 
 use qip_agents::finding::FindingStatus;
+use qip_contracts::challenge::{ChallengeRequest, VerificationResult};
 use qip_contracts::control::{
     ConsensusWeight, ForecastConsensus, ForecastConsensusFields, ModelVote, ModelVoteFields,
     ScorePoint,
@@ -142,6 +143,34 @@ pub struct OpenedQuestion {
     pub aggregate_up: Option<f64>,
 }
 
+/// The §27 pair for one attack: the request that asked every critic, and the
+/// society's verdict as the contract result, checked against its own reports
+/// and against the request (R12-REASON-9032).
+fn challenge_exchange(
+    society: &VerifierSociety,
+    question: &str,
+    dossier: &PredictionDossier,
+    verification: &Verification,
+    now: Timestamp,
+) -> Result<ChallengeExchange> {
+    let request = society.request_for_prediction(
+        format!("challenge-{question}"),
+        dossier,
+        VERIFIER_ORIGIN,
+        now,
+    )?;
+    let result = verification.as_result(&request.request_id)?;
+    result.answers(&request)?;
+    Ok(ChallengeExchange { request, result })
+}
+
+/// A challenge and its answer, as one record.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChallengeExchange {
+    pub request: ChallengeRequest,
+    pub result: VerificationResult,
+}
+
 /// The tournament's cycle, as the log keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TournamentReview {
@@ -150,6 +179,10 @@ pub struct TournamentReview {
     pub opened: Vec<OpenedQuestion>,
     pub refused: Vec<String>,
     pub verifications: Vec<Verification>,
+    /// Each important prediction's attack as the §27 request and result
+    /// (R12-REASON-9032), beside the society's own record of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub challenges: Vec<ChallengeExchange>,
     pub research: Vec<ResearchTask>,
     pub resolved: Vec<ResolvedQuestion>,
     pub abandoned: Vec<String>,
@@ -195,6 +228,7 @@ impl TournamentReview {
         self.opened.is_empty()
             && self.refused.is_empty()
             && self.verifications.is_empty()
+            && self.challenges.is_empty()
             && self.research.is_empty()
             && self.resolved.is_empty()
             && self.abandoned.is_empty()
@@ -690,6 +724,18 @@ impl TournamentStage {
                     .hold_out(&question, verification.verdict.summary());
             }
             society_clause = format!("; verifier society: {}", verification.verdict.summary());
+            // The same attack as the §27 pair a second brain can read: the
+            // request that asked every critic, and the result the contract
+            // checked against its own reports (R12-REASON-9032).
+            let exchange =
+                challenge_exchange(&self.society, &question, &dossier, &verification, now);
+            match exchange {
+                Ok(exchange) => self.review.challenges.push(exchange),
+                Err(error) => self
+                    .review
+                    .refused
+                    .push(format!("{question}/challenge: {}", error.message())),
+            }
             self.review.verifications.push(verification);
         }
         self.pending.insert(
@@ -988,6 +1034,7 @@ impl TournamentStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_contracts::challenge::ChallengeVerdict;
 
     /// The threshold is two of the subject's own deviations, and is stated
     /// only once ten returns exist. Until the round-2 mutation audit this
@@ -1020,6 +1067,74 @@ mod tests {
             "premise: the short window has a deviation to read"
         );
         assert_eq!(tail_threshold(short), None, "nine returns state no tail");
+    }
+
+    /// R12-REASON-9032: a fatal attack on a prediction leaves an exchange
+    /// whose result is refuted by the critic that raised it, and whose
+    /// request the result answers; the same dossier unaltered leaves a
+    /// survival. Mutation: build the result from a fixed `SocietyVerdict`
+    /// instead of the attack's own — the contract refuses the disagreement
+    /// and the `expect` fails.
+    #[test]
+    fn a_fatal_attack_is_recorded_as_a_refuted_result_that_answers_its_request() {
+        let at = Timestamp::from_secs(1_760_000_000);
+        let society = VerifierSociety::standard();
+        let sound = PredictionDossier {
+            hypothesis_id: "hyp-1".to_string(),
+            subject: "obj-AAA".to_string(),
+            direction: 1.0,
+            confidence: 0.7,
+            as_of: at,
+            expected_move_bps: 200.0,
+            evidence: vec![
+                EvidenceItem {
+                    origin: "exchange".to_string(),
+                    supports: true,
+                    weight: 0.5,
+                    known_at: at,
+                },
+                EvidenceItem {
+                    origin: "filings".to_string(),
+                    supports: true,
+                    weight: 0.4,
+                    known_at: at,
+                },
+            ],
+            panel: vec![PanelView {
+                agent: "valuation".to_string(),
+                direction: 1.0,
+                conviction: 0.6,
+            }],
+            missing_inputs: Vec::new(),
+            coverage: 0.8,
+            regime_crossed_recently: Some(false),
+            spread_ratio: Some(1.1),
+            adverse_tail_bps: Some(150.0),
+            forecaster_failure: BTreeMap::from([("detector:momentum".to_string(), 0.2)]),
+        };
+        let exchange = |dossier: &PredictionDossier| {
+            let verification = society.attack_prediction(dossier, at);
+            challenge_exchange(&society, "q-hyp-1", dossier, &verification, at)
+                .expect("the society's own verdict satisfies the contract")
+        };
+        assert_eq!(
+            exchange(&sound).result.verdict,
+            ChallengeVerdict::Survived,
+            "premise: the sound prediction survives"
+        );
+
+        let mut fragile = sound;
+        fragile.adverse_tail_bps = Some(900.0);
+        let fatal = exchange(&fragile);
+
+        assert_eq!(
+            fatal.result.verdict,
+            ChallengeVerdict::Refuted {
+                by: vec!["tail_risk".to_string()]
+            }
+        );
+        assert_eq!(fatal.request.request_id, "challenge-q-hyp-1");
+        fatal.result.answers(&fatal.request).expect("it answers");
     }
 
     /// R12-CONTRACT-6112: a vote whose cost is not an amount is refused,

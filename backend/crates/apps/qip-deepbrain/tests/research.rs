@@ -11,7 +11,9 @@ use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timesta
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::evolution::{EvolutionConfig, EvolutionEngine};
 use qip_deepbrain::node::{self, Loops};
-use qip_deepbrain::operations::{CapabilitySwitch, IterationFacts, Operations, quantum_outcome};
+use qip_deepbrain::operations::{
+    CapabilitySwitch, IterationFacts, Operations, RemediationJournal, quantum_outcome, runbooks,
+};
 use qip_deepbrain::research::{ResearchConfig, ResearchLoop, limit_approach_signals};
 use qip_deepbrain::status::NodeStatus;
 use qip_financial::quality::DataQuality;
@@ -22,7 +24,9 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::synthetic::{EnvironmentConfig, SyntheticEnvironment};
 use qip_observability::Telemetry;
-use qip_observability::aiops::{Effector, EntityKey, SignalClass};
+use qip_observability::aiops::{
+    AuditRecord, AuditSink, Effector, EntityKey, Remediator, SignalClass,
+};
 use qip_observability::metrics::{labels, names};
 use qip_optimization_engine::QuantumDispatch;
 use qip_risk::limits::{LimitSet, RiskState};
@@ -470,6 +474,90 @@ fn the_effector_carries_out_nothing_but_disabling_this_nodes_own_research() {
     );
     assert!(switch.apply("disable_capability", "research").is_ok());
     assert!(switch.is_disabled("research"));
+}
+
+/// A sink that cannot take a record, as a full disk or a lost file would be.
+#[derive(Debug)]
+struct UnwritableJournal;
+
+impl AuditSink for UnwritableJournal {
+    fn journal(&mut self, _record: &AuditRecord) -> qip_core::error::Result<()> {
+        Err(qip_core::error::Error::io("the journal's disk is full"))
+    }
+}
+
+/// R12-CICD-9081. An effect whose audit record stayed in the process left no
+/// account of itself once the restart it was waiting for came.
+#[test]
+fn an_incident_journals_the_authorising_record_before_the_effect_and_the_outcome_after() {
+    let platform = platform();
+    let journal = RemediationJournal::open(None, Arc::new(ManualClock::new(start())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut ops =
+        Operations::journalled(start(), journal.clone()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        journal.records().unwrap_or_default().is_empty(),
+        "premise: nothing is journalled before an incident"
+    );
+    for i in 0..24i64 {
+        let ms = if i < 12 {
+            10.0 + (i % 2) as f64
+        } else {
+            1_000.0
+        };
+        let at = start().saturating_add(Duration::from_secs(i));
+        ops.observe(&platform, &facts(at, ms, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    assert!(ops.is_disabled("research"), "premise: the runbook ran");
+    let records = journal.records().unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(records.len(), 2, "authorisation then outcome: {records:?}");
+    assert!(
+        records[0]
+            .result
+            .starts_with("authorised by shed-research-on-iteration-shift"),
+        "{:?}",
+        records[0]
+    );
+    assert_eq!(
+        records[1].result,
+        "research disabled until the process restarts"
+    );
+    assert_eq!(
+        records[1].prev_hash, records[0].hash,
+        "the two are one chain"
+    );
+    assert_eq!(&records[..], ops.remediator().audit().records());
+}
+
+/// R12-CICD-9081. Mutation: call `apply` before `journal_last` and this
+/// fails, because the effector has already switched research off.
+#[test]
+fn an_effect_whose_audit_record_cannot_be_journalled_is_refused_and_not_applied() {
+    let mut remediator = Remediator::journalled(
+        runbooks(),
+        CapabilitySwitch::default(),
+        Box::new(UnwritableJournal),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        !remediator.effector().is_disabled("research"),
+        "premise: research is on"
+    );
+    let refusal = remediator
+        .remediate("INC-1", "disable_capability", "research")
+        .err()
+        .unwrap_or_else(|| panic!("an unjournalled action must be refused"));
+    assert!(
+        refusal.message().contains("could not be journalled"),
+        "{}",
+        refusal.message()
+    );
+    assert!(
+        !remediator.effector().is_disabled("research"),
+        "the effector must not have run"
+    );
+    assert!(remediator.audit().verify());
 }
 
 fn routing(dispatch: QuantumDispatch, ran: &[&str]) -> SolverRoutingJournal {

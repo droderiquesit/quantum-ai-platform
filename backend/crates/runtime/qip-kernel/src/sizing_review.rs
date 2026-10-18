@@ -233,6 +233,7 @@ mod tests {
             smaller_favoured: smaller,
             larger_favoured: larger,
             trade_error_bps: None,
+            unfilled: qip_core::Decimal::ZERO,
         }
     }
 
