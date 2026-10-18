@@ -166,7 +166,12 @@ fn run() -> Result<()> {
         PlatformConfig::default()
             .with_live_ceiling(ceiling)
             .with_venue_registrations(venue_registrations)
-            .with_desk_chain(qip_api::DESK_CHAIN),
+            .with_desk_chain(qip_api::DESK_CHAIN)
+            // The Hedge Brain searches the catalogue this process sizes
+            // against; an empty list planned no hedge in any binary.
+            .with_hedge_candidates(qip_kernel::config::paper_hedge_candidates(
+                &catalogue.universe,
+            )),
     );
     config.central.arbitrage = arbitrage;
     config.central.region_dark_after = region_dark_after;

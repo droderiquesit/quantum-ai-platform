@@ -2533,27 +2533,27 @@
   },
   {
     "id": "R12-CONTRACT-6114",
-    "status": "PARTIAL",
-    "current": "Kernel hedge brain (qip-kernel/src/hedge.rs) now constructs and journals a HedgePlan in DECIDE; contract tests refuse missing/unknown fields and round-trip.",
+    "status": "COMPLETE",
+    "current": "Kernel hedge brain (qip-kernel/src/hedge.rs) constructs and journals a validated HedgePlan in DECIDE, and every central root now declares hedge candidates from its loaded catalogue (qip-api, qip-fastbrain, qip-deepbrain main.rs -> PlatformConfig::with_hedge_candidates(paper_hedge_candidates(..))), so a book failing a stressed world inside the withheld hedge capacity is planned a HedgePlan in production by default. Contract tests refuse missing/unknown fields and round-trip.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/control.rs:316 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:656 a_hedge_plan_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:665 a_hedge_plan_refuses_each_broken_invariant",
       "backend/crates/runtime/qip-kernel/src/hedge.rs::plan",
-      "backend/crates/runtime/qip-kernel/src/config.rs::with_hedge_candidates"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue"
     ],
-    "gap": "PlatformConfig::hedge_candidates defaults empty and no binary sets it, so no HedgePlan is produced in production by default.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts && cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding HedgePlan exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. Text corrected 2026-10-18 by an independent grader. Lane L07, 2026-10-18: PARTIAL->COMPLETE. The test assembles the platform as the roots do (committed catalogue, paper_hedge_candidates, SurvivalPolicy::shipped) and decodes the journaled HedgePlan. Mutation: the declared equity loading misspelt -> no HedgePlan; restored and passing."
   },
   {
     "id": "R12-CONTRACT-6115",
