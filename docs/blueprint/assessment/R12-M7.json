@@ -743,14 +743,14 @@
   {
     "id": "R12-FABRIC-7034",
     "status": "PARTIAL",
-    "current": "Broker::retain_hot deletes archived, indexed segments past a hot window; fabricd archiver calls it; tested.",
+    "current": "Broker::retain_hot derives each stream's hot window from its StreamPolicy retention class (event_fabric::broker::hot_window): a class retained nowhere beyond its ring (§22.1 Retention::Never, the Transient class) keeps only the batch the next produce chains to, every other class keeps the operator's window, and an archive-required class is still held behind its archived-and-indexed boundary. qip-fabricd's archiver calls retain_hot only when QIP_EVENT_FABRIC_HOT_BATCHES is set, and no committed deployment sets it, so by default no stream is trimmed.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:264-400 StreamPolicySpec/StreamPolicy: qos, partition key, ordering, retention, RF, mirroring, overload, ack, byte/message quotas, lag limit, entitlement",
-      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:549",
-      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs::Broker::retain_hot",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs::a_configured_hot_window_removes_segments_past_it_and_archived_history_is_still_served"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs hot_window and Broker::retain_hot",
+      "backend/crates/services/qip-streaming/tests/event_fabric_retention.rs a_stream_with_a_short_retention_class_is_trimmed_while_a_long_one_is_kept",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs retain (hot_batches None by default)",
+      "backend/crates/apps/qip-fabricd/src/config.rs HOT_BATCHES"
     ],
-    "gap": "Window is a global batch count, not each stream's retention policy/age; no test of per-stream retention expiry.",
+    "gap": "Retention runs only when a deployment sets QIP_EVENT_FABRIC_HOT_BATCHES, which none does; and the time-bounded classes (EventAnchored Rolling(90d), FallbackSeries For(..)) are trimmed by batch count, not by age, because segments carry no time bound retain_hot reads.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -758,10 +758,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "broker retention test",
+    "verification": "cargo test -p qip-streaming --test event_fabric_retention --test event_fabric_hydrate",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L21 2026-10-18. Mutation: hot_window returning the operator window for the Transient class keeps offset 12 of the transient stream and the test fails. The test sits in qip-streaming rather than qip-fabricd/tests/broker.rs to stay out of a file two other lanes edit. qip-streaming and qip-fabricd: 157 passed, 0 failed."
   },
   {
     "id": "R12-FABRIC-7035",
