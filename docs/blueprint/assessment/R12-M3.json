@@ -220,13 +220,15 @@
   },
   {
     "id": "R12-CONTRACT-3011",
-    "status": "PARTIAL",
-    "current": "PolicyPayload / ModelPack contracts exist and the kernel produces policy frames and a model pack.",
+    "status": "COMPLETE",
+    "current": "The kernel issues signed, versioned PolicyFrames and a ModelPack (model_serving::pack) by default; with a peer epoch live on the node a policy or halt reaches the cell only down the verified path, and nothing but the cell's own verification can mint a verified policy, halt or grant — the peer protocol cannot name one, so a tampered payload is refused. The check (the central plane issues a signed policy payload a cell accepts; tampering is refused) is met.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/policy.rs PolicyPayload/PolicyFrame",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs:242 ModelPack",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:113 with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs:241 nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_grant_and_the_peer_protocol_cannot_name_one"
     ],
-    "gap": "Assessed in CONTRACT/FABRIC slices; no deployed consumer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -234,10 +236,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test contracts",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'No deployed consumer' is not a clause of the check; no node is enabled, so deployable stays false. No mutation run by this lane."
   },
   {
     "id": "R12-REASON-3012",

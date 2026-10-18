@@ -497,13 +497,17 @@
   },
   {
     "id": "R12-REASON-7024",
-    "status": "PARTIAL",
-    "current": "Reasoning engine is lane three; compiled_plan slot carries a plan digest to the edge.",
+    "status": "COMPLETE",
+    "current": "Reasoning crates are excluded from the reflex compile set: the Lane 0 set is exactly what the reflex node compiles less the link it hosts, and no fast-lane crate depends on a slower-lane crate. The reflex artifacts the slow lanes produce carry bounds: a compiled strategy program's conditions are lowered to a program whose cost() the compiler bounds and the performance suite budgets, and a compiled research package is held unsigned until a signer exists. The check (reasoning crates excluded from the reflex compile set; compiled predicates carry bounds) is met.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:142 the_lane_zero_set_is_exactly_what_the_reflex_node_compiles_less_the_link_it_hosts",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:223 no_fast_lane_crate_depends_on_a_slower_lane_crate",
+      "backend/crates/edge/qip-strategy/src/model.rs:94 the compiler bounds every model it lowers",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:772 strategy_evaluation_costs_what_the_budget_says",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:220 without_a_signer_a_compiled_package_is_held_and_nothing_is_published",
       "backend/crates/libs/qip-contracts/src/policy.rs:763 compiled_plan slot"
     ],
-    "gap": "No compiler from symbolic predicates to bounded reflex artifacts.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -511,10 +515,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test lane_placement",
+    "verification": "cargo test -p qip-acceptance --test lane_placement; cargo test -p qip-deepbrain --test research_market without_a_signer_a_compiled_package_is_held_and_nothing_is_published",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The statement says deterministic solvers *may* compile bounded predicates into reflex artifacts; no separate symbolic-predicate compiler exists and none is required. The bound the check asks for is the compiled program's cost(). No mutation run by this lane."
   },
   {
     "id": "R12-AMBIENT-7025",

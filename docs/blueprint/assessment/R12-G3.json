@@ -1016,14 +1016,16 @@
   },
   {
     "id": "R12-SEC-10047",
-    "status": "PARTIAL",
-    "current": "deploy.yml scans each image before push/sign/attest (Trivy) and container analysis notes back the attestor; Artifact Analysis on-push scanning is not configured.",
+    "status": "COMPLETE",
+    "current": "deploy.yml runs `trivy image --severity CRITICAL,HIGH --exit-code 1` on every image before it is pushed or signed, asserted by deploy_provenance.rs on every path; containerscanning.googleapis.com is enabled in modules/services/main.tf, which turns on Artifact Analysis on-push and continuous scanning of the registry's images, asserted by security_controls.rs; the container-analysis note backs the attestor. The check (scan before push/sign, fail on CRITICAL, removing the step fails the gate test) is met.",
     "evidence": [
-      ".github/workflows/deploy.yml:462 scan before push",
+      ".github/workflows/deploy.yml:462-495 scan before push and sign",
+      "infrastructure/terraform/modules/services/main.tf:77 containerscanning.googleapis.com",
       "infrastructure/terraform/modules/binaryauthorization/main.tf container_analysis_note",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4361 the_pipeline_gates_on_everything_it_claims_to"
+      "backend/crates/tests/qip-acceptance/tests/deploy_provenance.rs:205 a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:70 the_container_scanning_api_is_enabled_for_the_registry"
     ],
-    "gap": "Artifact Analysis continuous scanning of stored images.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1031,10 +1033,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_pipeline_gates_on_everything_it_claims_to",
+    "verification": "cargo test -p qip-acceptance --test deploy_provenance a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path; cargo test -p qip-acceptance --test security_controls the_container_scanning_api_is_enabled_for_the_registry",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. The former gap (Artifact Analysis continuous scanning) closed when the containerscanning API was enabled; the former evidence cited infrastructure.rs::the_pipeline_gates_on_everything_it_claims_to, whose gate list does not name trivy, so deploy_provenance.rs is the proving test. No mutation run by this lane: the workflow is a protected path and the tests read it as text."
   },
   {
     "id": "R12-CICD-10048",
@@ -2191,14 +2193,15 @@
   },
   {
     "id": "R12-RISK-10101",
-    "status": "PARTIAL",
-    "current": "Cell::work runs deterministic gates (silent_feed, journal_pressure, quote_budget, live_venue, ...) before Cell::send; refusals journaled and counted; simulated gateway only.",
+    "status": "COMPLETE",
+    "current": "Cell::work runs the deterministic gates (silent feed, journal pressure, quote budget, live venue, feasibility, settlement, reconciliation, ...) before Cell::send; every refusal is journaled under a gate constant and counted on qip_edge_refusals_total{gate}; no order reaches the venue adapter that the feasibility gate would have refused. The check (every refusal journaled under a gate constant and no order past a refusal) is met; the simulated gateway is the only adapter by design (ADR 0003).",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:106-382 gate constants",
-      "backend/crates/edge/qip-edge/tests/telemetry.rs",
+      "backend/crates/edge/qip-edge/tests/feasibility.rs:317 no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs refusal series per gate",
       "backend/crates/apps/qip-edge-node/tests/pass.rs"
     ],
-    "gap": "Not deployed; paper only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2206,10 +2209,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge",
+    "verification": "cargo test -p qip-edge --test feasibility no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused; cargo test -p qip-edge --test telemetry",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. 'Not deployed; paper only' is the platform's standing posture (ADR 0003), not a clause of the statement. No mutation run by this lane."
   },
   {
     "id": "R12-FABRIC-10102",

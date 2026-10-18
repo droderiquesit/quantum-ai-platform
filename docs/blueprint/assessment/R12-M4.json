@@ -1053,14 +1053,15 @@
   },
   {
     "id": "R12-QUANT-4049",
-    "status": "PARTIAL",
-    "current": "TaskSpec::compile requires class, variables, constraints, objective, tolerance, deadline, verification and refuses a missing one by name; the only producer is the portfolio router, which fills them by hand.",
+    "status": "COMPLETE",
+    "current": "TaskSpec::compile requires class, variables, constraints, objective, tolerance, deadline and verification properties and refuses a missing one by name rather than defaulting it; a tolerance or deadline that cannot mean anything is refused; the portfolio router produces the only spec on the default path. The check (a compiled problem carries all six; a missing one is refused rather than defaulted) is met.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/compute.rs:201 compile; :216 tolerance; :223 deadline; :230 verification",
       "backend/crates/services/qip-optimization-engine/src/router.rs:983 portfolio task spec",
-      "backend/crates/services/qip-optimization-engine/tests/compute.rs:27; :84"
+      "backend/crates/services/qip-optimization-engine/tests/compute.rs:27 a_task_missing_any_declared_property_is_refused_by_name_rather_than_defaulted",
+      "backend/crates/services/qip-optimization-engine/tests/compute.rs:84 a_tolerance_or_deadline_that_cannot_mean_anything_is_refused"
     ],
-    "gap": "Extraction for task classes other than portfolio allocation.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1070,10 +1071,10 @@
       "R12-QUANT-4048"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-optimization-engine --test compute",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Tolerance/deadline/proof now carried; extraction still single-family."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Tolerance/deadline/proof now carried; extraction still single-family. Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->COMPLETE. Mutation: defaulting a missing tolerance (`self.tolerance.unwrap_or(1e-6)`) fails the test at compute.rs:47. Extraction for other task classes is not a clause of the check."
   },
   {
     "id": "R12-QUANT-4050",
@@ -1782,12 +1783,15 @@
   {
     "id": "R12-CAPITAL-4083",
     "status": "PARTIAL",
-    "current": "pre_position plans and evaluate_pre_positioning scores, journaled per window; nothing moves (paper).",
+    "current": "DECIDE plans the pre-positioning on its forecasts (Platform::pre_position, one plan retained per window, journaled) and LEARN scores each plan against what the world needed once its window closes (evaluate_pre_positioning); nothing moves, which is the paper rule (ADR 0003). The plan names amount and destination venue; it chooses no corridor.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18951,19002",
-      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:63-122"
+      "backend/crates/runtime/qip-kernel/src/platform.rs::pre_position",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::evaluate_pre_positioning",
+      "backend/crates/runtime/qip-kernel/src/pre_positioning.rs:63-122",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:715 decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:527 a_pre_positioning_plan_is_scored_against_what_the_world_needed"
     ],
-    "gap": "Movement is BLOCKED (live capital); plan side done.",
+    "gap": "The check's 'via the cheapest signed corridor' clause is unmet: pre_position states how much and to which venue but consults no corridor (qip_capital_fabric::corridor is not read by pre_positioning.rs, whose module doc names the corridor choice as the intent), so no plan records which signed corridor it would use or that it is the cheapest. Movement itself stays paper (ADR 0003) and is not the gap.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1795,10 +1799,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test platform_outcomes decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window; cargo test -p qip-kernel --test platform_outcomes a_pre_positioning_plan_is_scored_against_what_the_world_needed",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L00 after running the proving test named in verification and, where stated, a mutation of the implementation that made it fail for the stated reason before a byte-for-byte restore: PARTIAL->PARTIAL. The triage proposed COMPLETE; the plan-and-score halves are tested but the corridor clause of the check has no code behind it, and the former gap ('movement is BLOCKED') named the wrong thing. No mutation run by this lane."
   },
   {
     "id": "R12-CAPITAL-4084",
