@@ -183,7 +183,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
-use qip_risk::limits::{LimitSet, RiskState};
+use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::RiskMonitor;
 use qip_risk_engine::pretrade::PreTradeChecker;
@@ -12190,12 +12190,57 @@ impl Platform {
     /// the detail clause and the problems: each member assessment the
     /// federation refused, and a review the log refused, are findings the
     /// stage carries rather than silences.
+    /// What the causal graph's live claims into each instrument imply for its
+    /// next return (R12-WORLD-3040, -3042): each cause's latest return
+    /// carried over the claim's signed transmission, summed. An instrument no
+    /// live claim reaches is absent, and the federation's causal member says
+    /// it has nothing to go on rather than reading zero as "no move".
+    fn causal_views(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, crate::federation_stage::CausalView> {
+        let latest: BTreeMap<&String, f64> = self
+            .price_history
+            .iter()
+            .filter_map(|(subject, closes)| Self::returns_of(closes).last().map(|r| (subject, *r)))
+            .collect();
+        let world = self.world.read();
+        self.price_history
+            .keys()
+            .filter_map(|subject| {
+                let claims = world.causal().incoming(subject, now);
+                if claims.is_empty() {
+                    return None;
+                }
+                let lean: f64 = claims
+                    .iter()
+                    .filter_map(|edge| {
+                        latest
+                            .get(&edge.cause)
+                            .map(|moved| edge.signed_transmission() * moved)
+                    })
+                    .sum();
+                let confidence =
+                    claims.iter().map(|edge| edge.confidence).sum::<f64>() / claims.len() as f64;
+                Some((
+                    subject.clone(),
+                    crate::federation_stage::CausalView {
+                        lean,
+                        claims: claims.len(),
+                        confidence,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     fn understand_federation(&mut self, now: Timestamp) -> (String, Vec<String>) {
         use crate::federation_stage::{
             ChainView, FEDERATION_MIN_RETURNS, FederationInputs, InstrumentView, SystemView,
         };
         let mut instruments = Vec::new();
         let mut thin_subjects = 0;
+        let causal_views = self.causal_views(now);
         for (subject, closes) in &self.price_history {
             let returns = Self::returns_of(closes);
             let (Some(last_close), Some(bar)) = (
@@ -12214,6 +12259,7 @@ impl Platform {
                 last_close: *last_close,
                 observed_through: bar.close_time(),
                 spread_ratio: self.spread_ratio(subject),
+                causal: causal_views.get(subject).copied(),
             });
         }
         let level = self.autonomy.level();
@@ -18398,13 +18444,40 @@ impl Platform {
                 SETTLEMENT_CURRENCY,
             ) {
                 Ok(review) => {
-                    let required = review.maintenance_required - review.unobserved_maintenance();
-                    state.margin_utilisation = Some(if !required.is_positive() {
-                        0.0
-                    } else if review.cover_observed.is_positive() {
-                        required.to_f64() / review.cover_observed.to_f64()
-                    } else {
-                        f64::INFINITY
+                    // Each observed venue is its own isolated domain with
+                    // rehypothecation forbidden, so the figure is the worst
+                    // single venue: pooling cover let a surplus at one prime
+                    // hide a call at another. The same per-venue cover and
+                    // debit go to the limit as a basis, so it can charge the
+                    // order under check; this figure is the book as it stands.
+                    let model = MarginModel::default();
+                    let mut venues = BTreeMap::new();
+                    let mut worst = 0.0_f64;
+                    for coverage in &review.coverage {
+                        worst = worst.max(coverage.utilisation());
+                        // The coverage carries maintenance whole; the debit is
+                        // what is left once the rated gross is taken out, the
+                        // inverse of `cross_margin::requirement`.
+                        let gross = figures
+                            .axis_exposures()
+                            .get(qip_risk::limits::COUNTERPARTY_AXIS)
+                            .and_then(|axis| axis.get(coverage.venue.as_str()))
+                            .copied()
+                            .filter(|gross| gross.is_positive())
+                            .unwrap_or(Decimal::ZERO);
+                        let debit = coverage.maintenance - gross * model.maintenance_rate;
+                        venues.insert(
+                            coverage.venue.as_str().to_string(),
+                            VenueMargin {
+                                cover: coverage.effective(),
+                                debit,
+                            },
+                        );
+                    }
+                    state.margin_utilisation = Some(worst);
+                    state.margin_basis = Some(MarginBasis {
+                        maintenance_rate: model.maintenance_rate,
+                        venues,
                     });
                 }
                 Err(error) => {
@@ -25163,6 +25236,60 @@ mod simulate_tests {
                 )
             })
             .expect("an edge naming both ends is admitted");
+    }
+
+    /// R12-WORLD-3042: the federation's causal member is fed only from a live
+    /// claim that reaches the instrument, and the figure is the cause's
+    /// latest move carried over the claim's signed transmission. Mutation:
+    /// drop the sign (`transmission()` for `signed_transmission()`) — the
+    /// substitution claim below then reads the wrong way round.
+    #[test]
+    fn the_causal_view_handed_to_the_federation_is_the_causes_move_over_the_claims_signed_transmission()
+     {
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        feed_history(&mut platform, "MSFT", 80);
+        // Premise: with no claim in the graph no instrument has a causal view.
+        assert!(platform.causal_views(start()).is_empty());
+
+        platform
+            .world
+            .update(|world| {
+                world.claim_causal(
+                    qip_world_model::causal::CausalEdge::new(
+                        "MSFT",
+                        "AAPL",
+                        qip_world_model::causal::Mechanism::CompetitiveSubstitution,
+                        0.5,
+                        Duration::from_days(1),
+                        start(),
+                    )
+                    .expect("a strength in [0, 1] is admitted")
+                    .with_confidence(0.8)
+                    .expect("a confidence in [0, 1] is admitted"),
+                )
+            })
+            .expect("an edge naming both ends is admitted");
+        let views = platform.causal_views(start());
+        assert_eq!(views.len(), 1, "only the claimed effect has a view");
+        let view = views.get("AAPL").expect("AAPL is the claimed effect");
+        let moved = *Platform::returns_of(&platform.price_history["MSFT"])
+            .last()
+            .expect("MSFT has returns");
+        // Competitive substitution inverts the cause, at 0.5 * 0.8.
+        assert!(moved != 0.0, "the premise: the cause moved");
+        assert!(
+            (view.lean - (-0.4 * moved)).abs() < 1e-12,
+            "{view:?} {moved}"
+        );
+        assert_eq!(view.claims, 1);
+        assert!((view.confidence - 0.8).abs() < 1e-12);
+        // A claim not yet knowable is not read.
+        assert!(
+            platform
+                .causal_views(start().saturating_sub(Duration::from_days(1)))
+                .is_empty()
+        );
     }
 
     #[test]

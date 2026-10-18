@@ -517,3 +517,46 @@ fn the_tier_census_reads_the_declared_family_and_a_disagreeing_sweep_tiers_to_ba
     assert_eq!(census.count(EvaluationTier::Hot), 0);
     Ok(())
 }
+
+/// R12-TICK-2085: the fused posterior sizes the round, so what the fusion
+/// engine believes about a subject changes which candidates the foundry holds
+/// to register. Mutation: make `search_with_prior` ignore its prior — the
+/// three runs propose the same candidates and the assertions on the quiet and
+/// the moving subject fail.
+#[test]
+fn a_fused_posterior_changes_how_many_candidates_a_round_proposes_and_so_which_are_registered()
+-> Result<()> {
+    let pending_after = |prior: Option<f64>| -> Result<Vec<StrategyId>> {
+        let mut foundry = foundry(7)?;
+        match prior {
+            Some(p) => foundry.search_with_prior(10, p)?,
+            None => foundry.search(10)?,
+        };
+        foundry
+            .pending()
+            .iter()
+            .map(|c| c.id().clone())
+            .map(Ok)
+            .collect()
+    };
+    let neutral = pending_after(None)?;
+    let quiet = pending_after(Some(0.0))?;
+    let moving = pending_after(Some(1.0))?;
+    // Premise: the neutral prior is the plain search, and the search yields
+    // candidates at all, or the comparison below proves nothing.
+    assert!(!neutral.is_empty());
+    assert_eq!(
+        neutral,
+        pending_after(Some(qip_kernel::central::foundry::NEUTRAL_PRIOR))?
+    );
+    assert!(quiet.len() < neutral.len(), "{quiet:?} vs {neutral:?}");
+    assert!(moving.len() > neutral.len(), "{moving:?} vs {neutral:?}");
+
+    // A posterior that is not a probability is refused, not clamped.
+    let mut foundry = foundry(7)?;
+    for bad in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+        assert!(foundry.search_with_prior(10, bad).is_err(), "{bad}");
+    }
+    assert_eq!(foundry.rounds(), 0, "a refused search was recorded");
+    Ok(())
+}

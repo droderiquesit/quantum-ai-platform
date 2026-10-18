@@ -251,7 +251,7 @@
       "backend/crates/edge/qip-strategy/src/compile.rs strategy IR compiler",
       "backend/crates/services/qip-training/src/distill.rs:311 distil"
     ],
-    "gap": "Symbolic-predicate and representation compilation missing.",
+    "gap": "No predicate-to-strategy-IR compiler exists: the symbolic stage's validated rule packs (qip-reasoning-engine) are advisory data, and qip-strategy/compile.rs compiles the generator's candidates only. The compiler needs a defined mapping from Cond/Op/Value facts to the IR's Type and feature catalogue (which instruments' features a rule fact names) and a bounds contract, which is a design decision rather than a wiring change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -262,7 +262,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-MODEL-4013",
@@ -1828,14 +1828,14 @@
   {
     "id": "R12-CAPITAL-4084",
     "status": "PARTIAL",
-    "current": "Corridor holds six caps with a signed, delayed lifecycle; gate.rs checks a TransferIntent (seven checks) against it; the kernel reads corridor funding standing but no kernel path builds or gates a TransferIntent, and no transfer executes.",
+    "current": "A transfer reaches the fabric only as a FabricCommand::Gate carrying a TransferIntent, and Platform::decide_fabric (runtime/qip-kernel/src/platform.rs:8785) re-derives the corridor ruling the command states, runs the seven deterministic checks and journals the verdict. qip-api's FabricFeed applies an operator-declared command file through it; backend/crates/apps/qip-api/tests/fabric.rs proves from that composition-root seam that a transfer off the signed corridor set is vetoed under CorridorAuthority, that a generated transfer over any cap is vetoed whole and one under all caps is admitted at the amount asked (for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_...), and that a stated ruling the layer did not derive is refused. A veto is itself a record on the chain by design (a refusal is a decision), and no money moves: paper only. The capital engine's pre-positioning plan deliberately never becomes a TransferIntent (pre_positioning.rs module doc, ADR 0021).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/corridor.rs:357 Corridor",
       "backend/crates/services/qip-capital-fabric/src/gate.rs:113,697 TransferIntent / checks_passed",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8399 corridor_funding",
       "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs"
     ],
-    "gap": "Route every paper transfer decision through the gate in the kernel; actual movement BLOCKED by ADR 0003/0021.",
+    "gap": "No committed deployment declares a fabric command file (QIP_CAPITAL_FABRIC_PATH is wired through var.capital_fabric_file in catalogue.tf but that variable is null in every environment tfvars; dev carries it commented out at terraform.tfvars:426), so on every running root no TransferIntent is ever built and the gate is exercised only by the serving-desk tests. The grader's closure (build an intent per planned pre-positioning move in pre_position) was not implemented: a GateCommand carries three enforcement-point attestations that a human establishes out of band, and a machine minting them from its own plan would attest to itself. Closing needs an operator declaration mounted in a deployment (infrastructure/environments/** is a protected path) or an ADR changing ADR 0021's permitted half.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1846,7 +1846,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L07, 2026-10-18: re-read and kept PARTIAL with the gap corrected. Verified: cargo test -p qip-api --test fabric -> test result: ok. 18 passed; 0 failed. No code changed."
   },
   {
     "id": "R12-CAPITAL-4085",
@@ -2076,7 +2076,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:15898 shared_cause::observe",
       "backend/crates/libs/qip-risk/tests/shared_cause.rs"
     ],
-    "gap": "Learned/AI risk discovery.",
+    "gap": "Not reached in this session. The closure asks for one test asserting CentralPlane.crowded and shared_cause findings in a single cycle's report; tests/central.rs has crowded tests (lines 642, 6565) and none over shared_cause, so the combined fixture still has to be built.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2087,7 +2087,7 @@
     "verification": "",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": " Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4095",
@@ -2311,14 +2311,17 @@
   },
   {
     "id": "R12-RISK-4105",
-    "status": "PARTIAL",
-    "current": "Each DECIDE runs the Hedge Brain (platform.rs:14906 -> run_hedge_brain, :16605-16640), whose ExposureSurvey reads drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail (backend/crates/runtime/qip-kernel/src/hedge.rs:179-230). Greeks are delta only, with gamma and vega reported unmeasured; correlation is one mean pairwise figure.",
+    "status": "COMPLETE",
+    "current": "Each DECIDE runs the Hedge Brain (Platform::run_hedge_brain -> hedge::plan), whose ExposureSurvey reads drivers, factors, Greeks, liquidity, correlation, funding, counterparty and tail. Gamma and vega are a measured Some(0.0) when every held position is a catalogued linear instrument (hedge::is_linear: stock, preferred, receipt, ETF, index, future, forward, FX spot/forward, commodity spot/future) and None, named in unmeasured(), when the book holds anything else or an instrument absent from the catalogue. Correlation is reported as the mean and as the strongest held pairs (ExposureSurvey::pair_correlations, at most 16, by absolute value with name tie-break).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/hedge.rs:179-230",
-      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reads_every_listed_axis_and_names_what_it_cannot_measure",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14906"
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::book_option_greeks",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::is_linear",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs::correlations",
+      "runtime/qip-kernel/src/hedge.rs::tests::a_linear_book_has_a_measured_zero_gamma_and_vega_and_anything_else_has_none",
+      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reports_each_correlated_pair_and_not_only_their_mean",
+      "runtime/qip-kernel/src/hedge.rs::tests::the_survey_reads_every_listed_axis_and_names_what_it_cannot_measure"
     ],
-    "gap": "Measure the book's gamma and vega (and per-pair correlation exposure) rather than reporting them unmeasured.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2326,10 +2329,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo test -p qip-kernel --lib hedge::",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: Lane commit efb437af states gamma/vega unmeasured; confirmed."
+    "notes": "Lane L07, 2026-10-18: closed. Mutations that fired: forcing the linear branch off -> the measured-zero assertion fails; admitting Option in is_linear -> the not-known-linear loop fails; replacing the catalogue-type test with true -> the hedge-fund holding reads measured and the test fails; reversing the pair sort and clearing the pairs each fail the pair test; all restored (qip-kernel: 957 passed, 0 failed). Limit stated: the catalogue carries no per-position option sensitivities, so a book that holds an option reports gamma and vega unmeasured, not computed; the committed universe holds only common stock, so every running root measures them as zero."
   },
   {
     "id": "R12-RISK-4106",
@@ -2481,7 +2484,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_split_panel_shrinks_the_size_of_the_thesis_it_split_on",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving dissent through the cycle into the sizing budget and the next grant, mutation-verified; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: split-panel dissent driven through REASON into SurvivalGovernor::size and Platform::issue_capital is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2492,7 +2495,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Round-2 independent audit, 2026-10-11: The lane's kernel test (central.rs) covers 4111/4114 only, not disagreement. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4113",
@@ -2553,7 +2556,7 @@
       "runtime/qip-kernel/src/confidence.rs::tests::a_regime_never_graded_in_shrinks_the_size",
       "runtime/qip-kernel/src/confidence.rs::tests::disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant"
     ],
-    "gap": "A kernel test driving a regime mismatch into the sizing budget and the next grant; ADR 0121 so a grant is issuable in a deployed binary.",
+    "gap": "Not reached in this session; the gap stands as graded: the regime-mismatch narrowing of size and the next grant is covered by unit tests only.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -2564,7 +2567,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Measure exists now; grant half and test missing. Re-examined 2026-10-18 by lane L05, kept PARTIAL with the gap corrected; no code changed for this row."
   },
   {
     "id": "R12-RISK-4116",

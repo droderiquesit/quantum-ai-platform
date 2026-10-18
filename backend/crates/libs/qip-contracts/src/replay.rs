@@ -15,9 +15,10 @@
 //! is replaced by the reading the live pass actually took.
 
 use qip_core::canonical::canonical_json;
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{EventId, sha256_hex};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// One control frame's position in its own stream, as a pass applied it.
 ///
@@ -145,7 +146,55 @@ pub struct PassMarker {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReplayManifest {
     marker: PassMarker,
+    /// What the run assumed about the world it simulated against. Absent
+    /// (not blank) on a manifest that never stated them, which hashes as it
+    /// always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assumptions: Option<ReplayAssumptions>,
+    /// The model versions the run used, by component: the fill model, the
+    /// impact model, the latency model. Empty when none were stated.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_versions: BTreeMap<String, String>,
     reproducibility_hash: String,
+}
+
+/// What a simulated run assumed about clock, latency, queue position, fills
+/// and impact (R12-CONTRACT-7073). A marker proves *which inputs* a pass
+/// applied; two runs over identical inputs under different assumptions about
+/// how a venue would have filled them are not the same experiment, and a
+/// manifest that cannot say so lets a replay "reproduce" a result under a
+/// fill model nobody can name.
+///
+/// Each is a statement in words, and "none" is a statement (a gateway with no
+/// latency model says so); blank is not.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayAssumptions {
+    pub clock: String,
+    pub latency: String,
+    pub queue: String,
+    pub fill: String,
+    pub impact: String,
+}
+
+impl ReplayAssumptions {
+    /// Refuse a blank assumption, naming it.
+    pub fn check(&self) -> Result<()> {
+        for (name, text) in [
+            ("clock", &self.clock),
+            ("latency", &self.latency),
+            ("queue", &self.queue),
+            ("fill", &self.fill),
+            ("impact", &self.impact),
+        ] {
+            if text.trim().is_empty() {
+                return Err(Error::invalid(format!(
+                    "the replay manifest states no {name} assumption; say what the run assumed, \
+                     or that it assumed none, because a blank cannot be told from an omission"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ReplayManifest {
@@ -154,17 +203,83 @@ impl ReplayManifest {
         let reproducibility_hash = Self::hash_of(&marker)?;
         Ok(Self {
             marker,
+            assumptions: None,
+            model_versions: BTreeMap::new(),
             reproducibility_hash,
         })
     }
 
+    /// Build a manifest that also states what the run assumed and which model
+    /// versions it used, hashing all three together so changing either
+    /// changes the hash. Refused when an assumption is blank, when no model
+    /// version is stated, or when a component or version name is blank.
+    pub fn with_assumptions(
+        marker: PassMarker,
+        assumptions: ReplayAssumptions,
+        model_versions: BTreeMap<String, String>,
+    ) -> Result<Self> {
+        assumptions.check()?;
+        Self::check_versions(&model_versions)?;
+        let reproducibility_hash = Self::hash_with(&marker, Some(&assumptions), &model_versions)?;
+        Ok(Self {
+            marker,
+            assumptions: Some(assumptions),
+            model_versions,
+            reproducibility_hash,
+        })
+    }
+
+    fn check_versions(versions: &BTreeMap<String, String>) -> Result<()> {
+        if versions.is_empty() {
+            return Err(Error::invalid(
+                "the replay manifest states no model versions; name each model the run used",
+            ));
+        }
+        if versions
+            .iter()
+            .any(|(model, version)| model.trim().is_empty() || version.trim().is_empty())
+        {
+            return Err(Error::invalid(
+                "a model version in the replay manifest is blank; name the model and its version",
+            ));
+        }
+        Ok(())
+    }
+
     /// sha256 of the canonical JSON of `marker` — "the manifest minus the
-    /// hash field": a [`ReplayManifest`] carries nothing beyond `marker` and
-    /// this hash itself, so hashing the marker alone and hashing the
-    /// manifest with its hash field removed are the same computation.
+    /// hash field" for a manifest that states no assumptions.
     pub fn hash_of(marker: &PassMarker) -> Result<String> {
         let value = serde_json::to_value(marker)?;
         Ok(sha256_hex(canonical_json(&value).as_bytes()))
+    }
+
+    /// The hash of a marker together with the assumptions and model versions
+    /// beside it. With neither stated it is [`Self::hash_of`], so a manifest
+    /// recorded before the fields existed still verifies.
+    pub fn hash_with(
+        marker: &PassMarker,
+        assumptions: Option<&ReplayAssumptions>,
+        model_versions: &BTreeMap<String, String>,
+    ) -> Result<String> {
+        if assumptions.is_none() && model_versions.is_empty() {
+            return Self::hash_of(marker);
+        }
+        let value = serde_json::json!({
+            "marker": serde_json::to_value(marker)?,
+            "assumptions": serde_json::to_value(assumptions)?,
+            "model_versions": serde_json::to_value(model_versions)?,
+        });
+        Ok(sha256_hex(canonical_json(&value).as_bytes()))
+    }
+
+    /// What the run assumed, when it said.
+    pub fn assumptions(&self) -> Option<&ReplayAssumptions> {
+        self.assumptions.as_ref()
+    }
+
+    /// The model versions the run used, by component.
+    pub fn model_versions(&self) -> &BTreeMap<String, String> {
+        &self.model_versions
     }
 
     pub fn marker(&self) -> &PassMarker {
@@ -183,6 +298,10 @@ impl ReplayManifest {
     /// exists for the deserialised case: a manifest read back off a wire or a
     /// journal whose hash was altered, or whose marker was, after the fact.
     pub fn is_consistent(&self) -> Result<bool> {
-        Ok(Self::hash_of(&self.marker)? == self.reproducibility_hash)
+        Ok(Self::hash_with(
+            &self.marker,
+            self.assumptions.as_ref(),
+            &self.model_versions,
+        )? == self.reproducibility_hash)
     }
 }

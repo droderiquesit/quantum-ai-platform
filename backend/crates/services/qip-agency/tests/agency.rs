@@ -375,12 +375,19 @@ fn tool(name: &str) -> ToolRegistration {
         max_actions_per_window: 2,
         budget_units: 100,
         revocation_path: "cancel all resting quotes".to_string(),
+        provenance: "in-tree test tool".into(),
+        sandbox_tests: ["sandbox-smoke"].into_iter().map(String::from).collect(),
+        cost_latency: qip_contracts::action::CostLatency {
+            cost_units: 1,
+            latency_ms: 1,
+        },
+        allowed_callers: ["desk-agent"].into_iter().map(String::from).collect(),
     }
 }
 
 #[test]
-fn a_tool_missing_any_of_its_six_declarations_is_not_registered() {
-    let cases: [(&str, fn(&mut ToolRegistration)); 7] = [
+fn a_tool_missing_any_of_its_declarations_is_not_registered() {
+    let cases: [(&str, fn(&mut ToolRegistration)); 11] = [
         ("acting identity", |t| t.acting_identity = " ".into()),
         ("permission scope", |t| t.permission_scope.clear()),
         ("disclosure policy", |t| t.disclosure_policy.clear()),
@@ -388,6 +395,10 @@ fn a_tool_missing_any_of_its_six_declarations_is_not_registered() {
         ("rate limit", |t| t.max_actions_per_window = 0),
         ("budget", |t| t.budget_units = 0),
         ("revocation path", |t| t.revocation_path.clear()),
+        ("provenance", |t| t.provenance.clear()),
+        ("sandbox tests", |t| t.sandbox_tests.clear()),
+        ("cost and latency", |t| t.cost_latency.latency_ms = 0),
+        ("allowed callers", |t| t.allowed_callers.clear()),
     ];
     let mut reg = ToolRegistry::new();
     assert!(
@@ -2544,6 +2555,7 @@ fn the_same_message_released_under_a_second_identity_in_a_later_pass_is_withheld
             acting_identity: "desk-agent-2".into(),
             max_actions_per_window: 10,
             budget_units: 1_000,
+            allowed_callers: BTreeSet::from(["desk-agent-2".to_string()]),
             ..tool("quoter-2")
         });
         decl.communications

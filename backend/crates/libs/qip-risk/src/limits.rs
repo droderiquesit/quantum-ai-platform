@@ -711,6 +711,64 @@ impl LimitBreach {
     }
 }
 
+/// What one observed venue holds against what it is owed, for the margin rule.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VenueMargin {
+    /// Post-haircut cover pledged at this venue.
+    pub cover: Decimal,
+    /// Money borrowed at this venue, owed in full rather than at a rate.
+    pub debit: Decimal,
+}
+
+/// The inputs [`LimitKind::MaxMarginUtilisation`] needs to measure an order.
+///
+/// Maintenance at a venue is `gross * rate + debit`, and gross at a venue is a
+/// bucket of the counterparty axis, which the pre-trade projection moves. The
+/// kernel files the cover, the debit and the rate here and the limit does the
+/// division, so the order under check is charged before the comparison. Each
+/// venue is its own isolated margin domain, so each is compared against its
+/// own cover: spare cover elsewhere cannot meet a call here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarginBasis {
+    pub maintenance_rate: Decimal,
+    /// Observed venues only, keyed as the counterparty axis keys them.
+    pub venues: BTreeMap<String, VenueMargin>,
+}
+
+impl MarginBasis {
+    /// The highest maintenance-over-cover ratio across observed venues, with
+    /// gross read from `counterparties` (the projected axis, when the state
+    /// is a projection). Infinite where a venue owes maintenance and holds no
+    /// cover; zero where nothing is owed anywhere.
+    ///
+    /// Money → statistic: two `Decimal`s become one ratio at this line, as
+    /// `DomainCoverage::utilisation` does.
+    fn worst_utilisation(&self, counterparties: Option<&BTreeMap<String, Decimal>>) -> f64 {
+        let mut worst = 0.0_f64;
+        for (venue, margin) in &self.venues {
+            let gross = counterparties
+                .and_then(|axis| axis.get(venue))
+                .copied()
+                .filter(|gross| gross.is_positive())
+                .unwrap_or(Decimal::ZERO);
+            let required = match gross.checked_mul(self.maintenance_rate) {
+                Some(rated) => rated.checked_add(margin.debit),
+                None => None,
+            };
+            let ratio = match required {
+                None => f64::INFINITY,
+                Some(required) if !required.is_positive() => 0.0,
+                Some(required) if margin.cover.is_positive() => {
+                    required.to_f64() / margin.cover.to_f64()
+                }
+                Some(_) => f64::INFINITY,
+            };
+            worst = worst.max(ratio);
+        }
+        worst
+    }
+}
+
 /// The state a limit set is evaluated against.
 #[derive(Clone, Debug, Default)]
 pub struct RiskState {
@@ -831,7 +889,17 @@ pub struct RiskState {
     /// [`LimitKind::MaxMarginUtilisation`]. `None` when no venue statement was
     /// observed, which that limit records nothing on. Infinite when a venue is
     /// observed with maintenance due and no cover at all.
+    ///
+    /// This is the book as it stands, the figure a monitor or a report reads.
+    /// The limit itself prefers [`RiskState::margin_basis`], which lets it
+    /// charge the order under check; this stays the fallback for a state that
+    /// carries no basis.
     pub margin_utilisation: Option<f64>,
+    /// The per-venue cover and debit behind `margin_utilisation`, with the
+    /// maintenance rate, so [`LimitKind::MaxMarginUtilisation`] can recompute
+    /// the figure from the *projected* counterparty axis. `None` when no venue
+    /// statement was observed.
+    pub margin_basis: Option<MarginBasis>,
     /// Equity left after held capital and unfunded commitments, as a fraction
     /// of equity, read by [`LimitKind::MinFundingBuffer`]. `None` when no
     /// commitment stands.
@@ -1821,21 +1889,31 @@ impl LimitSet {
                 }
             }
             LimitKind::MaxMarginUtilisation { limit: bound } => {
-                // The figure is the book before the order, so it cannot say
-                // whether this order deepens the call. An order that does not
-                // raise gross is the way out of one and is never refused by
-                // it, exactly as `MaxSurvivalGross` treats a book above its
-                // ceiling; a margin limit that refused the sale that cures
-                // the call would hold the book in it.
+                // An order that does not raise gross is the way out of a call
+                // and is never refused by it, exactly as `MaxSurvivalGross`
+                // treats a book above its ceiling; a margin limit that
+                // refused the sale that cures the call would hold the book in
+                // it.
                 if state.sheds_gross() {
                     return out;
                 }
-                if let Some(utilisation) = state.margin_utilisation {
+                // With a basis the figure is recomputed from the projected
+                // counterparty axis, so the order under check is charged
+                // before the comparison (an unprojected figure let through
+                // the single order that took a covered book into a call), and
+                // it is the worst single venue, never a pool.
+                let utilisation = match &state.margin_basis {
+                    Some(basis) => {
+                        Some(basis.worst_utilisation(state.axis_exposures.get(COUNTERPARTY_AXIS)))
+                    }
+                    None => state.margin_utilisation,
+                };
+                if let Some(utilisation) = utilisation {
                     record(
                         utilisation,
                         *bound,
                         None,
-                        "maintenance required over observed post-haircut cover".into(),
+                        "maintenance required over observed post-haircut cover, worst venue".into(),
                     );
                 }
             }

@@ -328,6 +328,19 @@ impl AmbientIntake {
                 max_actions_per_window: config.rate_per_window,
                 budget_units: config.budget_units,
                 revocation_path: format!("revoke tool `{DRAFT_TOOL}` on the intake guard"),
+                provenance: "in-tree: qip-agency DraftingAdapter appends to the local outbox; \
+                             no network call and no dependency beyond the workspace's"
+                    .to_string(),
+                sandbox_tests: BTreeSet::from([
+                    "ambient_intake::an_activated_detection_is_promoted_guarded_and_drafted_with_its_provenance"
+                        .to_string(),
+                ]),
+                // One draft is one budget unit and one local append.
+                cost_latency: qip_contracts::action::CostLatency {
+                    cost_units: 1,
+                    latency_ms: 100,
+                },
+                allowed_callers: BTreeSet::from([config.acting_identity.clone()]),
             }],
         };
         let mut guard = ActionGuard::from_policy(policy)?;

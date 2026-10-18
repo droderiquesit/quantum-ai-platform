@@ -93,7 +93,8 @@ fn a_request_and_the_result_that_answers_it_round_trip_and_match() {
 /// refuting finding decodes as a plain struct and releases the forecast the
 /// critic held back. Mutation: delete the `Survived if !refuting.is_empty()`
 /// arm in `VerificationResultFields::check` — the result is accepted and the
-/// first assertion fails.
+/// first assertion fails. Mutation: delete the `if !refuting.is_empty()` check
+/// in the `Unverified` arm — the unverified-over-refutation assertion fails.
 #[test]
 fn a_verdict_that_contradicts_its_own_reports_is_refused() {
     let over_refutation = result_fields(
@@ -103,6 +104,18 @@ fn a_verdict_that_contradicts_its_own_reports_is_refused() {
     assert!(
         VerificationResult::new(over_refutation).is_err(),
         "survived was accepted over a refuting finding"
+    );
+
+    // Unverified over a refuting report: the count (2 examined) is right, so
+    // only the `Unverified` arm's refutation check can stop it. Without it a
+    // receiver decodes a refuted forecast as merely unverified.
+    let unverified_over_refutation = result_fields(
+        vec![survived("bull"), refuted("tail_risk")],
+        ChallengeVerdict::Unverified { examined: 2 },
+    );
+    assert!(
+        VerificationResult::new(unverified_over_refutation).is_err(),
+        "unverified was accepted over a refuting finding"
     );
 
     // Premise for the rest: the honest versions of the same reports pass.
