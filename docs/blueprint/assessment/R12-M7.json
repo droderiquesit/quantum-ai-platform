@@ -638,24 +638,26 @@
   {
     "id": "R12-AGENCY-7030",
     "status": "PARTIAL",
-    "current": "EffectAttribution contract with horizons, counterfactual method, identifiability; attribution refusal tests.",
+    "current": "EffectAttribution contract with horizons, counterfactual method, identifiability; attribution refusal tests. A sweep-time join of drafts to their follow-up reading runs in qip-deepbrain (ambient_agency.rs::observe) and emits one EffectAttribution per follow-up through engine::learn, uncertainty stated as identifiability 0.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/expansion.rs:183-226",
       "backend/crates/services/qip-agency/src/attribution.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs:458"
+      "backend/crates/services/qip-agency/tests/agency.rs:458",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
     ],
-    "gap": "No batch/stream worker joined to episode stores; no experiment assignment.",
+    "gap": "No experiment assignment: the door writes one draft per signal, so there is no second variant to assign (two drafts per opportunity is what AmbientIntake dedups), external assignment stays refused (ADR 0114), and no estimate.rs estimator runs on the observed outcome because none has a control.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cargo test -p qip-agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
   },
   {
     "id": "R12-FABRIC-7031",
@@ -2931,13 +2933,15 @@
   {
     "id": "R12-AGENCY-7133",
     "status": "PARTIAL",
-    "current": "ActionPolicy::observe narrows authority; engine::learn calls it after attribution, and qip-cli calls engine::learn_shadowed after every shadowed pass, so a widened policy whose simulated effect lies outside its predicted uplift returns to shadow on the default path. The journal record carries the interval and the authority before and after.",
+    "current": "ActionPolicy::observe narrows authority; engine::learn calls it after attribution, and qip-cli calls engine::learn_shadowed after every shadowed pass, so a widened policy whose simulated effect lies outside its predicted uplift returns to shadow on the default path. The journal record carries the interval and the authority before and after. qip-deepbrain calls engine::learn, and so ActionPolicy::observe, on every draft follow-up with a measured effect, holding the Communication policy to a predicted uplift of exactly zero; the DraftLearning record carries the authority before and after.",
     "evidence": [
       "backend/crates/services/qip-agency/src/autonomy.rs ActionPolicy::observe, predicted_uplift",
       "backend/crates/services/qip-agency/src/engine.rs learn_shadowed",
-      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
     ],
-    "gap": "The effect fed to observe() is the shadowed pass's simulation, declared simulated; no observed intervention effect exists because no intervention occurs (ADR 0114), and the check runs per pass, not continuously.",
+    "gap": "The deepbrain policy starts at Shadow and nothing on that path widens it, so observe() cannot be shown to narrow anything there; the only widened policy is the CLI's, on simulated effects.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2945,10 +2949,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo test -p qip-agency --test agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "M",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
   },
   {
     "id": "R12-ARCH-7134",
@@ -3265,12 +3269,15 @@
   {
     "id": "R12-AGENCY-7148",
     "status": "PARTIAL",
-    "current": "Default shadow; narrow-reversible refuses irreversible tools; ambient-to-agency routing and drafting adapter run in deepbrain; effect attribution, the no-action baseline and the Action Outcome Memory are written by qip-cli after every shadowed pass (engine::learn_shadowed on the simulated outcome).",
+    "current": "Default shadow; narrow-reversible refuses irreversible tools; ambient-to-agency routing and drafting adapter run in deepbrain; effect attribution, the no-action baseline and the Action Outcome Memory are written by qip-cli after every shadowed pass (engine::learn_shadowed on the simulated outcome). On the deepbrain node (the default path), AmbientAgency holds a draft until a later sweep raises its subject again, then runs ObserveEffect, Attribute and Update through qip_agency::engine::learn on a measured outcome: the subject's reading at the follow-up sweep against its reading when drafted (status quo as the no-action baseline), kept in ActionOutcomeMemory as Observed::Measured, the Communication policy held to a predicted uplift of zero, the attribution recorded NotIdentified at identifiability 0, and the record journaled as DraftLearning (or withheld with the stage that refused it).",
     "evidence": [
       "backend/crates/services/qip-agency/tests/agency.rs",
       "backend/crates/apps/qip-cli/src/agency.rs Session::learn",
       "backend/crates/services/qip-agency/src/memory.rs",
-      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update"
+      "backend/crates/apps/qip-cli/tests/agency_record.rs::a_shadowed_pass_learns_from_its_simulated_outcome_and_the_journal_carries_the_lever_update",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_follow_up_a_stage_refuses_is_journaled_withheld_naming_the_stage"
     ],
     "gap": "Authorised adapters and narrow-reversible actions stay refused (ADR 0114 D8), so the phase's second half is not reachable.",
     "implemented": true,
@@ -3280,10 +3287,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency",
+    "verification": "cargo test -p qip-agency --test agency; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "L",
-    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
   },
   {
     "id": "R12-COVERAGE-7149",
@@ -4125,23 +4132,25 @@
   {
     "id": "R12-COVERAGE-7189",
     "status": "PARTIAL",
-    "current": "qip-agency memory and policy observe exist; no world-model update.",
+    "current": "qip-deepbrain records each draft's measured outcome into ActionOutcomeMemory and runs ActionPolicy::observe through engine::learn on the default node path (R12-AGENCY-6107); no world-model or causal-graph update.",
     "evidence": [
       "backend/crates/services/qip-agency/src/memory.rs",
-      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects"
+      "backend/crates/services/qip-agency/src/autonomy.rs:87-123 ActionPolicy::widen refuses unidentified attribution; observe() narrows on side effects",
+      "backend/crates/apps/qip-deepbrain/src/ambient_agency.rs AmbientAgency::observe, learn_from, learn_stages (engine::learn on the default node path), ask, await_follow_up; DraftLearning, LEARNING_ORIGIN, learnings",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_agency.rs::a_drafted_subject_read_again_on_a_later_sweep_is_learned_from_as_a_measured_null_effect"
     ],
-    "gap": "Feedback into world model/causal graph.",
+    "gap": "Feedback into the world model federation and the causal graph: the only measured effect is unidentified, and Federation::update_from_attribution would journal it as an update to a market world model; deliberately not fed until an identified estimate exists.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "acceptance suite for the composite; cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_agency",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L04 (qip-deepbrain ambient agency learning): AmbientAgency now calls engine::learn on the default node path for every draft whose subject a later sweep reads again (the outbox write is the one executed act in the platform, so this is the one measured outcome), journals a DraftLearning beside the outbox, asks the memory before every offer, and the six new node tests' mutations fired (observe call dropped, withheld journal skipped, ask dropped, process-wide correlation counter, Err on a withheld draft, other acting identity)."
   },
   {
     "id": "R12-COVERAGE-7190",
