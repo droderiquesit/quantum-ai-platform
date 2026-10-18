@@ -77,6 +77,14 @@ import {
 export const PRICES = JSON.parse(readFileSync(new URL("./prices.json", import.meta.url), "utf8"));
 
 /**
+ * The committed list of datasets a packet may name or read (ADR 0102 amendment
+ * of 2026-10-11, item 4). Each entry says what class the dataset is; the
+ * worker admits `synthetic` and `licensed-research` and nothing else.
+ */
+export const DATASETS = JSON.parse(readFileSync(new URL("./synthetic-datasets.json", import.meta.url), "utf8"));
+export const DATASET_CLASSES = ["synthetic", "licensed-research"];
+
+/**
  * ADR 0102 decision 1's roster. There is no architect, integrator, security,
  * risk, execution or merge role at any size: those stay with the lead, and
  * their absence from this list is how a packet for one is refused.
@@ -102,7 +110,9 @@ const PACKET_ID = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 const TEXT_FIELDS = ["packet_id", "role", "model", "why_this_tier", "task", "context", "acceptance", "escalate_if"];
 const TOKEN_FIELDS = ["max_input_tokens", "max_output_tokens"];
 const PATH_FIELDS = ["paths", "source_paths"];
-const FIELDS = [...TEXT_FIELDS, ...PATH_FIELDS, ...TOKEN_FIELDS];
+/** Optional: absent is a packet that names no dataset. */
+const DATASET_FIELD = "datasets";
+const FIELDS = [...TEXT_FIELDS, ...PATH_FIELDS, ...TOKEN_FIELDS, DATASET_FIELD];
 
 /** ADR 0102 retry policy: 429 and 503 only, four attempts in all. */
 export const RETRY_STATUSES = [429, 503];
@@ -211,7 +221,7 @@ export function payloadOf(packet) {
  * dispatcher admits is not refused in the cloud for a rule only the worker
  * knew, and the reverse.
  */
-export function validatePacket(packet) {
+export function validatePacket(packet, { datasets = DATASETS } = {}) {
   if (packet === null || typeof packet !== "object" || Array.isArray(packet)) {
     return ["the packet is not a JSON object"];
   }
@@ -262,6 +272,9 @@ export function validatePacket(packet) {
   // What follows reads the fields above as well-formed.
   if (problems.length > 0) return problems;
 
+  problems.push(...datasetProblems(packet, datasets));
+  if (problems.length > 0) return problems;
+
   const payload = payloadOf(packet);
   const found = screenPayload(payload);
   if (found.length > 0) {
@@ -282,6 +295,45 @@ export function validatePacket(packet) {
       `the prompt is ${bytes} bytes and max_input_tokens is ${packet.max_input_tokens}, so the input bound the ` +
         `worst case is priced on could be exceeded. Raise max_input_tokens to at least ${bytes} or shrink the context`,
     );
+  }
+  return problems;
+}
+
+/**
+ * Why a packet's data is not admitted, or nothing (ADR 0102 amendment, item 4).
+ *
+ * A dataset is admitted only if the committed list names it and marks it
+ * `synthetic` or `licensed-research`. The `datasets` field is the declared way
+ * to name one, and a path under `data/` in `paths` or `source_paths` is held
+ * to the same list, because otherwise the field is a courtesy a packet can
+ * skip by naming the file as a source. Markdown under `data/` is documentation,
+ * not data. The worker refuses; it does not drop the entry and carry on.
+ */
+function datasetProblems(packet, list) {
+  const problems = [];
+  const admitted = (name) => Object.hasOwn(list.datasets, name) && DATASET_CLASSES.includes(list.datasets[name]);
+  const refusal = (name) =>
+    Object.hasOwn(list.datasets, name)
+      ? `is marked '${list.datasets[name]}' in scripts/fleet/synthetic-datasets.json; only ${DATASET_CLASSES.join(" and ")} data may be sent`
+      : "is not in scripts/fleet/synthetic-datasets.json, so it is not known to be synthetic or licensed for research";
+  if (packet[DATASET_FIELD] !== undefined) {
+    if (!Array.isArray(packet[DATASET_FIELD]) || packet[DATASET_FIELD].some((name) => typeof name !== "string")) {
+      problems.push("'datasets' must be an array of dataset paths from scripts/fleet/synthetic-datasets.json, or absent");
+    } else {
+      for (const name of packet[DATASET_FIELD]) {
+        if (!admitted(name)) problems.push(`dataset ${JSON.stringify(name)} ${refusal(name)}. Remove it from the packet`);
+      }
+    }
+  }
+  for (const field of PATH_FIELDS) {
+    for (const path of packet[field]) {
+      const segments = path.split("/").filter((part) => part !== "" && part !== ".");
+      if (segments[0]?.toLowerCase() !== "data" || path.toLowerCase().endsWith(".md")) continue;
+      const name = segments.join("/");
+      if (!admitted(name)) {
+        problems.push(`${field} entry ${JSON.stringify(path)} is under data/ and ${refusal(name)}. Remove it from the packet`);
+      }
+    }
   }
   return problems;
 }
@@ -327,8 +379,8 @@ export function costMicroUsd(row, tokensIn, tokensOut) {
  *
  * `row` and `worstMicro` are present only when the packet is valid and priced.
  */
-export function assess(packet, { prices = PRICES, slotCapMicro }) {
-  const problems = validatePacket(packet);
+export function assess(packet, { prices = PRICES, slotCapMicro, datasets = DATASETS }) {
+  const problems = validatePacket(packet, { datasets });
   if (problems.length > 0) return { problems };
   const row = priceRow(prices, packet.model);
   if (!row) {
@@ -724,6 +776,15 @@ export async function runTask({
     ALGORIK_WORKER_VERTEX_PROJECT: await metadataProject(fetchImpl),
     ALGORIK_WORKER_MODEL: packet.model,
     ALGORIK_WORKER_MAX_CALLS: "1",
+    // The gateway refuses to start without its four budgets (R12-FINOPS-10140).
+    // A task's ledger is its own, so one call is the whole of its day, its
+    // month and its build and tool allowance; the fleet's day across tasks is
+    // bounded in dollars by the ceiling refusal above, which these do not
+    // replace.
+    ALGORIK_WORKER_DAILY_CALLS: "1",
+    ALGORIK_WORKER_MONTHLY_CALLS: "1",
+    ALGORIK_WORKER_BUILD_CALLS: "1",
+    ALGORIK_WORKER_TOOL_CALLS: "1",
     ALGORIK_WORKER_MAX_TOKENS: String(packet.max_output_tokens),
   });
   if (config.problems.length > 0) return refuse(78, config.problems.join("; "));

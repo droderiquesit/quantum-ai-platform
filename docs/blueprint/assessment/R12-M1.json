@@ -3023,12 +3023,13 @@
   {
     "id": "R12-REASON-1132",
     "status": "PARTIAL",
-    "current": "CausalGraph::intervene runs per hypothesis subject in symbolic_stage and is journaled; kernel causal_review uses world-model causal edges.",
+    "current": "CausalGraph::intervene runs per hypothesis subject in symbolic_stage::derive and is journaled; symbolic_stage::verify (called by replay) re-runs intervene on the recorded subject at the record's instant — point in time, so later edges are not walked — and refuses a record whose affected set, path count or kept paths' edge identities differ, or whose cited evidence is not a prefix of what the edge holds.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:202",
-      "backend/crates/runtime/qip-kernel/src/causal_review.rs"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:674 derive",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:895 verify re-runs CausalGraph::intervene",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:720 a_journaled_intervention_the_causal_graph_does_not_reach_at_its_instant_is_refused_on_replay"
     ],
-    "gap": "Advisory only; not coupled to neural models; intervene result not asserted by a reproducibility test.",
+    "gap": "Not coupled to a neural model: no neural model exists anywhere in the tree (grep -rli neural over qip-kernel and qip-reasoning-engine finds nothing). Recorded-and-reproducible is closed; the symbolic replay has no binary caller.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3036,39 +3037,44 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept for the neural coupling the requirement names. Mutation fired: verify's intervention comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing)."
   },
   {
     "id": "R12-REASON-1133",
     "status": "PARTIAL",
-    "current": "REASON runs symbolic_stage::derive for each hypothesis; the temporal timeline orders anomaly before hypothesis and is journaled as a SymbolicDerivation.",
+    "current": "REASON runs symbolic_stage::derive for each hypothesis; the timeline orders anomaly before hypothesis and is journaled with the instants it was built from (TemporalInputs); symbolic_stage::verify rebuilds the timeline by the same construction at the record's instant and refuses a mismatch.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/temporal.rs:29"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:153 TemporalInputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:494 timeline_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654 a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay"
     ],
-    "gap": "No neural model is coupled; replay re-verifies only the rule-pack verdict, not the temporal result.",
+    "gap": "Not coupled to a neural model: none exists in the tree. Recorded-and-reproducible is closed; a record written before TemporalInputs existed decodes with inputs None and its timeline is not rebuilt.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept for the neural coupling. Mutation fired: verify's timeline comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-17 by an independent grader."
   },
   {
     "id": "R12-REASON-1134",
     "status": "PARTIAL",
-    "current": "Bayesian network posterior computed per hypothesis in symbolic_stage::derive and journaled.",
+    "current": "Bayesian network posterior computed per hypothesis in symbolic_stage::derive and journaled with its network; symbolic_stage::verify recomputes it over the recorded network_nodes with the panel evidence the recorded contested fact implies and refuses a mismatch.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:20"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:615 posterior_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:680 a_journaled_posterior_that_the_recorded_network_does_not_yield_is_refused_on_replay"
     ],
-    "gap": "Advisory after REASON decides; not coupled to neural model outputs; no probabilistic-logic beyond network posterior.",
+    "gap": "Not coupled to neural model outputs: none exists in the tree; no probabilistic logic beyond the network posterior. Recorded-and-reproducible is closed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3076,10 +3082,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's posterior comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-18 by an independent grader."
   },
   {
     "id": "R12-REASON-1135",
@@ -3106,22 +3112,23 @@
   {
     "id": "R12-REASON-1136",
     "status": "PARTIAL",
-    "current": "REASON solves an acting constraint problem per hypothesis (Satisfied or Unsatisfiable naming the blocking rule), consistent with rule-pack eligibility, and journals it.",
+    "current": "REASON solves an acting constraint problem per hypothesis (Satisfied or Unsatisfiable naming the blocking constraint), consistent with rule-pack eligibility, and journals it; symbolic_stage::verify re-solves it from the recorded verdict's eligible/halted and the recorded kill_switch and refuses a differing answer.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:38"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:702 a_journaled_acting_answer_the_recorded_verdict_does_not_solve_to_is_refused_on_replay"
     ],
-    "gap": "No neural model is coupled; replay does not re-solve the constraint; no SAT/SMT/MILP.",
+    "gap": "Not coupled to a neural model: none exists in the tree; no SAT/SMT/MILP. Recorded-and-reproducible is closed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's acting comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-17 by an independent grader."
   },
   {
     "id": "R12-REASON-1137",
@@ -4291,12 +4298,16 @@
   {
     "id": "R12-MESH-1190",
     "status": "PARTIAL",
-    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. No measured peer latency series confirmed.",
+    "current": "Peer mesh (qip-peer-link ADR 0116, saga.rs drives epoch/reserve/FIRE/fill/unwind) is spawned by qip-edge-node only when QIP peer listen/peers env vars are set; no committed deployment sets them and no node is deployed. Transport is TCP+mTLS, not QUIC. The session thread now stores the shortest fresh clock round trip (PeerStatus::clock_round_trip_ns, host.rs record) and DecisionLoop::turn writes it to qip_edge_peer_round_trip_ms in the scrape registry through telemetry::PeerSeries; it is a gauge of the nearest peer, not a histogram of samples, and absent while no clock is measured.",
     "evidence": [
       "backend/crates/services/qip-mesh/src/peer.rs:88 Lane",
-      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs"
+      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs",
+      "backend/crates/edge/qip-peer-link/src/host.rs:record",
+      "backend/crates/apps/qip-edge-node/src/telemetry.rs:PeerSeries",
+      "backend/crates/apps/qip-edge-node/tests/telemetry_wiring.rs",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs"
     ],
-    "gap": "Default-on peer link with measured latency recorded.",
+    "gap": "Default-on peer link: nothing sets the peer listen/peers variables in a committed deployment and no node is deployed, so the latency series reaches no running process. Measured latency is recorded (nearest-peer gauge); a per-sample histogram would need the endpoint to count samples.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4306,10 +4317,10 @@
       "R12-MESH-1010"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh",
+    "verification": "cargo test -p qip-peer-link; cargo test -p qip-edge-node --test telemetry_wiring --test decision_loop",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Lane L25 2026-10-18 added the latency gauge; mutations: dropping the clock_round_trip_ns store in host.rs record fails telemetry_wiring::a_peer_clock_exchange_records_the_measured_round_trip_in_the_scrape_registry, and dropping series.observe in DecisionLoop::turn fails decision_loop::the_decision_loop_publishes_the_peer_round_trip_it_reads_from_the_port."
   },
   {
     "id": "R12-ARCH-1191",
