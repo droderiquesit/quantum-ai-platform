@@ -2190,13 +2190,14 @@
   },
   {
     "id": "R12-RES-7098",
-    "status": "PARTIAL",
-    "current": "Edge cell halts new exposure on exhausted journal pressure while withdrawals continue; no coupling to central ledger (ledgerd) commit failure.",
+    "status": "COMPLETE",
+    "current": "Edge cell halts new exposure on exhausted journal pressure while withdrawals continue. The desk side halts too: Platform::stage_act_orders withholds every proposal signature while the desk's feed to the central ledger is full (DESK_OUTBOX_CAPACITY unacknowledged records) or its chain has advanced over a record it could not queue, counting qip_proposals_unsigned_total{control=\"ledger\"} and saying why on the ACT report; cancels, fill booking and the book following the venue are untouched, and signing resumes once the feed drains.",
     "evidence": [
       "backend/crates/edge/qip-edge/tests/journal_pressure.rs:248,311 pressure narrows sizing before halting; exhausted journal halts new exposure while withdrawals continue",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/pressure.rs:208 PressureGauge"
+      "backend/crates/runtime/qip-kernel/src/platform.rs ledger_blocked / LEDGER_UNCOMMITTED_REASON in stage_act_orders (grep -n ledger_blocked)",
+      "backend/crates/runtime/qip-kernel/src/desk_ledger.rs a_desk_whose_ledger_feed_is_full_signs_nothing_new_until_the_feed_drains"
     ],
-    "gap": "Halt on central authoritative ledger commit failure.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2204,10 +2205,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test journal_pressure",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --lib a_desk_whose_ledger_feed_is_full_signs_nothing_new_until_the_feed_drains",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). The trigger is non-acknowledgement, not an explicit ledgerd NACK, because a non-acknowledgement is the only commit failure the kernel can observe; a backlog of DESK_OUTBOX_CAPACITY records is the committed bound. Mutation: replacing `!ledger_blocked` with `true` in the signable expression failed the test at 'a desk with a full ledger feed still authorised new exposure'; restored byte-for-byte, it passes."
   },
   {
     "id": "R12-RES-7099",
