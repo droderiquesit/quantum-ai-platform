@@ -3195,6 +3195,9 @@ struct FilledPath {
     /// of the fill error can say which way the twin was wrong.
     side: BookSide,
     decided_at: Timestamp,
+    /// What the venue left unfilled of the order when it reported, from the
+    /// order manager's own book (R12-MODEL-6004). Zero for a whole fill.
+    unfilled: Decimal,
 }
 
 /// What the twin found about one fill, once it has priced the sizes not
@@ -3232,6 +3235,21 @@ pub struct FillScore {
     /// prices. `None` where the twin's own `trade` alternative did not fill,
     /// so there was no simulated entry to compare. A statistic, not money.
     pub trade_error_bps: Option<f64>,
+    /// The quantity the venue left unfilled when it reported this order,
+    /// zero for a whole fill (R12-MODEL-6004). Without it a partial fill and
+    /// a whole one left the same score, and the size findings above — priced
+    /// on the quantity that traded — read as though the order had been the
+    /// size that was asked for. Defaults to zero for a score written before
+    /// the field existed, which is the reading those records were made under.
+    #[serde(default)]
+    pub unfilled: Decimal,
+}
+
+impl FillScore {
+    /// Whether the venue filled only part of the order this scores.
+    pub fn is_partial(&self) -> bool {
+        self.unfilled.is_positive()
+    }
 }
 
 /// What the LEARN stage's calibration pass left in the journal.
@@ -19015,6 +19033,7 @@ impl Platform {
                         fill_price,
                         side: book_side(side),
                         decided_at: now,
+                        unfilled: shortfall.map_or(Decimal::ZERO, |(_, remaining)| remaining),
                     }),
                     None => self.capture_problems.push(format!(
                         "filled order {} will not be priced for its size: its fills do not \
@@ -20696,6 +20715,7 @@ impl Platform {
                         smaller_favoured,
                         larger_favoured,
                         trade_error_bps,
+                        unfilled: path.unfilled,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -28879,6 +28899,7 @@ mod counterfactual_trial_seam_tests {
             smaller_favoured: false,
             larger_favoured,
             trade_error_bps: None,
+            unfilled: Decimal::ZERO,
         }
     }
 

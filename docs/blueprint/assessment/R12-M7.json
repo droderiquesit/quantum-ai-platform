@@ -3711,23 +3711,26 @@
   },
   {
     "id": "R12-COVERAGE-7165",
-    "status": "PARTIAL",
-    "current": "LEARN stage calibrates resolved, scores declined and filled.",
+    "status": "COMPLETE",
+    "current": "LEARN calibrates resolved theses, prices every refused order against its gate (score_declined) and every filled order for size (score_filled); a partly filled order is now scored as such: FillScore.unfilled carries the quantity the venue left, from the order manager's own book, and is_partial() reads it, beside the existing PartiallyFilled capture record.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14585,17244,17410 stage_learn, score_declined, score_filled"
+      "backend/crates/runtime/qip-kernel/src/platform.rs FilledPath.unfilled / FillScore.unfilled (grep -n 'unfilled' platform.rs)",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:422 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_realises_nothing_twice"
     ],
-    "gap": "Partial fills and failures explicitly.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning a_partly_filled_order_is_scored_as_partial_with_the_quantity_the_venue_left",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Closed 2026-10-18 (lane L01). Mutation: recording Decimal::ZERO instead of the order manager's remainder in the FilledPath push failed the test at 'the score does not carry what the venue left unfilled'; restored byte-for-byte, it passes. Not covered, and not what this row asks: a resting remainder later cancelled or expired is not priced separately (see R12-MODEL-6004 for hedged/unwound paths)."
   },
   {
     "id": "R12-COVERAGE-7166",
