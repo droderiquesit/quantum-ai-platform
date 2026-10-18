@@ -3835,13 +3835,16 @@
   },
   {
     "id": "R12-WORLD-10170",
-    "status": "PARTIAL",
-    "current": "NOW Brain promoted state and lattice §9.14 forecasts with per-horizon calibration run in the cycle.",
+    "status": "COMPLETE",
+    "current": "NOW Brain promoted state and the lattice's §9.14 forecasts with per-horizon calibration run in every cycle, and the lattice now carries a calibration objective: a running direction-call Brier bound (CALIBRATION_BRIER_BOUND = 0.30, above the 0.25 a forecast of one half always scores) judged per horizon once CALIBRATION_MIN_RESOLVED = 20 resolutions exist, written each cycle as qip_lattice_calibration_slo_breached{horizon} (1 breached, 0 met, no series while unjudged).",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/feature.rs:413 ForecastLattice",
-      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs"
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::calibration_slo_breached",
+      "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::LATTICE_CALIBRATION_SLO_BREACHED",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (calibration objective gauge beside LATTICE_BRIER)",
+      "runtime/qip-kernel/tests/now_lattice.rs::a_horizon_is_judged_against_the_brier_bound_only_once_it_has_enough_resolutions",
+      "runtime/qip-kernel/tests/now_lattice.rs::a_run_records_the_now_state_the_forecasts_and_the_calibration_objective_gauge"
     ],
-    "gap": "No calibration SLO exists; no phase exit test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3851,10 +3854,10 @@
       "R12-WORLD-10091"
     ],
     "blocked_by": "",
-    "verification": "per-deliverable checks above",
+    "verification": "cd backend && cargo test -p qip-kernel --test now_lattice",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Lane L07, 2026-10-18: closed. The exit test lives in qip-kernel (not qip-acceptance: m6_foundation holds contract tests with no platform): one run records the NOW deltas, issued forecast contracts and the gauge. Mutations: flipping the comparison -> both tests fail; ignoring the minimum -> the bound/minimum test fails; never writing the gauge -> the exit test fails; all restored (now_lattice: 13 passed). Limits stated: the 0.30 bound and 20-resolution minimum are stated policy, not fitted; no alert policy names the gauge (observability rule: none until something scrapes and ingestion is shown), so a breach is charted and pages no one."
   },
   {
     "id": "R12-MODEL-10171",

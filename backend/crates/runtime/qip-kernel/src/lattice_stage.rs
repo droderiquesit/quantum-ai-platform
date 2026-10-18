@@ -70,6 +70,34 @@ pub const LATTICE_COVERAGE: &str = "qip_lattice_interval_coverage";
 pub const LATTICE_PINBALL: &str = "qip_lattice_pinball_loss";
 pub const LATTICE_INCONSISTENCIES_TOTAL: &str = "qip_lattice_inconsistencies_total";
 pub const LATTICE_WEIGHTS_FROZEN: &str = "qip_lattice_weights_frozen";
+/// 1 when a horizon's running calibration is outside its objective, 0 when it
+/// meets it. Written only for a horizon with enough resolutions to judge: an
+/// unjudged horizon has no series, because a 0 there would read as met.
+pub const LATTICE_CALIBRATION_SLO_BREACHED: &str = "qip_lattice_calibration_slo_breached";
+
+/// The running direction-call Brier score a horizon must stay under. A forecast
+/// that says nothing (probability one half) scores 0.25 whatever happens, so
+/// 0.30 is the line past which a horizon is doing worse than not forecasting
+/// direction at all, with room for the sampling noise of a short run.
+pub const CALIBRATION_BRIER_BOUND: f64 = 0.30;
+
+/// Resolutions a horizon needs before its score is judged against the bound.
+/// Below it a handful of lucky or unlucky calls decide the verdict.
+pub const CALIBRATION_MIN_RESOLVED: u64 = 20;
+
+/// Whether `card` breaches the calibration objective, or `None` while it has
+/// too few resolutions to say. Pure so the bound, the minimum and the
+/// comparison are testable without a cycle.
+pub fn calibration_slo_breached(
+    card: &qip_world_model::lattice::Scorecard,
+    bound: f64,
+    minimum: u64,
+) -> Option<bool> {
+    if card.resolved < minimum {
+        return None;
+    }
+    card.brier().map(|brier| brier > bound)
+}
 
 /// What the record's idempotency key starts with.
 pub const IDEMPOTENCY_PREFIX: &str = "lattice:";
