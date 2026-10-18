@@ -390,15 +390,16 @@
   },
   {
     "id": "R12-MODEL-6018",
-    "status": "PARTIAL",
-    "current": "Scorecard carries directional_accuracy and quantile_loss (pinball over stated quantiles), tested in the library. Every kernel forecaster submits quantiles: None, so quantile loss is never measured in production.",
+    "status": "COMPLETE",
+    "current": "TournamentStage::observe_reasoning, run by REASON in every cycle, submits quantiles at 0.1/0.5/0.9 over the realised move in basis points for the detector and each analyst (model_tournament.rs::move_quantiles): centred on the mean of the claim's two-point move under the forecaster's own p_up, spread by the subject's one-period return deviation, and None where the claim states no non-zero move or the deviation cannot be measured. The resolution's realised_value is that move, so Scorecard::quantile_loss is measured per forecaster.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:268 hits",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:222 brier",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:321",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:419",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:447",
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Scorecard::quantile_loss",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage (quantiles: None)"
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::every_forecaster_a_cycle_scored_has_its_quantile_loss_measured"
     ],
-    "gap": "No production forecaster states quantiles; quantile accuracy is unmeasured for every forecaster the cycle runs.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -406,10 +407,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-learning-engine",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament every_forecaster_a_cycle_scored_has_its_quantile_loss_measured",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06. Two mutations each failed the test, restored byte for byte: the detector submitting quantiles None (model_tournament.rs:419) left detector:volatility_shift unmeasured, and the analyst arm submitting None (:447) left analyst:chief-investment-intelligence unmeasured; 5 passed after. Stated limits: the spread is one-period and not scaled to the horizon, which charges every forecaster alike; an analyst's distribution is derived from its stated direction and conviction applied to the claim's magnitude, since a finding states no magnitude of its own."
   },
   {
     "id": "R12-MODEL-6019",
@@ -2532,27 +2533,27 @@
   },
   {
     "id": "R12-CONTRACT-6114",
-    "status": "PARTIAL",
-    "current": "Kernel hedge brain (qip-kernel/src/hedge.rs) now constructs and journals a HedgePlan in DECIDE; contract tests refuse missing/unknown fields and round-trip.",
+    "status": "COMPLETE",
+    "current": "Kernel hedge brain (qip-kernel/src/hedge.rs) constructs and journals a validated HedgePlan in DECIDE, and every central root now declares hedge candidates from its loaded catalogue (qip-api, qip-fastbrain, qip-deepbrain main.rs -> PlatformConfig::with_hedge_candidates(paper_hedge_candidates(..))), so a book failing a stressed world inside the withheld hedge capacity is planned a HedgePlan in production by default. Contract tests refuse missing/unknown fields and round-trip.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/control.rs:316 type",
       "backend/crates/libs/qip-contracts/tests/control_contracts.rs:656 a_hedge_plan_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:665 a_hedge_plan_refuses_each_broken_invariant",
       "backend/crates/runtime/qip-kernel/src/hedge.rs::plan",
-      "backend/crates/runtime/qip-kernel/src/config.rs::with_hedge_candidates"
+      "backend/crates/runtime/qip-kernel/src/config.rs::paper_hedge_candidates",
+      "backend/crates/runtime/qip-kernel/tests/catalogue_hedge_candidates.rs::a_book_failing_a_library_world_is_planned_a_hedge_from_the_committed_catalogue"
     ],
-    "gap": "PlatformConfig::hedge_candidates defaults empty and no binary sets it, so no HedgePlan is produced in production by default.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-contracts && cargo test -p qip-kernel --test catalogue_hedge_candidates",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding HedgePlan exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 by an independent audit: PARTIAL->PARTIAL. Text corrected 2026-10-18 by an independent grader. Lane L07, 2026-10-18: PARTIAL->COMPLETE. The test assembles the platform as the roots do (committed catalogue, paper_hedge_candidates, SurvivalPolicy::shipped) and decodes the journaled HedgePlan. Mutation: the declared equity loading misspelt -> no HedgePlan; restored and passing."
   },
   {
     "id": "R12-CONTRACT-6115",

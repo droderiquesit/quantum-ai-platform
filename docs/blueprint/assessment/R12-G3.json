@@ -4364,13 +4364,19 @@
   },
   {
     "id": "R12-RISK-10192",
-    "status": "PARTIAL",
-    "current": "Risk limits veto in the kernel (expected-shortfall limit proven to fire) and cells refuse beyond envelopes; no separate hedge/confidence services.",
+    "status": "COMPLETE",
+    "current": "The confidence governor (qip-kernel confidence.rs, ConfidenceSignals::decide, read by the survival governor DECIDE sizes through) and the hedge capacity the survival waterfall withholds for the Hedge Brain (survival.rs:849, hedge.rs) reduce a construction, and the shipped LimitSet vetoes on expected shortfall, none of them reading a forecast or alpha figure: ThesisView carries a hypothesis, an instrument and a regime only, and RiskState is the book's measurements. stress.rs::a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk proves all three on a thesis its panel approved unanimously. The previous text (no separate hedge/confidence services) predated hedge.rs and confidence.rs.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19703",
-      "backend/crates/edge/qip-edge/src/reservation.rs"
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:294",
+      "backend/crates/runtime/qip-kernel/src/confidence.rs:337",
+      "backend/crates/runtime/qip-kernel/src/survival.rs:849",
+      "backend/crates/runtime/qip-kernel/src/hedge.rs",
+      "backend/crates/libs/qip-risk/src/limits.rs:1598",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:11680",
+      "backend/crates/runtime/qip-kernel/tests/stress.rs::a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk",
+      "backend/crates/runtime/qip-kernel/src/platform.rs::tests::the_expected_shortfall_limit_can_actually_fire"
     ],
-    "gap": "Hedge and confidence governors.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4378,10 +4384,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel the_expected_shortfall_limit_can_actually_fire",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test stress a_unanimously_approved_thesis_is_still_narrowed_by_confidence_and_vetoed_by_risk",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L06. A cycle measures a real distribution shift on AAA; a five-panellist unanimous approval is recorded for theses on AAA and the calm BBB; decide narrows AAA (no Disagreement contraction) and leaves BBB whole; a 10% hedge capacity reduces the unanimous BBB construction; LimitSet::conservative_default breaches expected-shortfall on a RiskState::with_tail_risk book with a sixteen percent left tail and not on a calm one. Three mutations each failed it, restored byte for byte: the OOD arm of decide unreachable (confidence.rs:337), the hedge capacity forced to zero (survival.rs:849), the ES lookup in LimitSet::check removed (qip-risk limits.rs:1598). The Hedge Brain itself vetoes nothing by design (hedge.rs module doc): its reduction is the capacity withheld, and a hedge order meets the Risk Gate like any other."
   },
   {
     "id": "R12-ARCH-10193",

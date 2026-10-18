@@ -792,26 +792,27 @@
   {
     "id": "R12-AMBIENT-9034",
     "status": "PARTIAL",
-    "current": "Register text was stale: ComputePlan exists (qip-contracts control.rs:175 ComputePlanFields, issued by qip-expansion meta.rs for every QPU grant) and model weights are the reputation-weighted bids MetaIntelligence prices. MetaIntelligence::allocate_within (meta.rs:555) bounds each agent, keyed by the ReputationKey whose record weights its bids, to a stated compute budget across every resource including the QPU baseline, and refuses a unit past it, declining a bid that gets none Decline::OverAgentBudget. The deployed market (qip-deepbrain research.rs:2111) still calls allocate, which states no agent budget.",
+    "current": "ComputePlan exists (qip-contracts control.rs:175 ComputePlanFields, issued by qip-expansion meta.rs for every QPU grant) and model weights are the reputation-weighted bids MetaIntelligence prices. Since 2026-10-18 the deployed market calls MetaIntelligence::allocate_within with ResearchConfig::agent_budgets, read from QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS (domain/horizon/regime=units, comma-separated; a malformed entry or a key named twice is refused), so a research agent past its stated budget is declined over_agent_budget on the default path.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/control.rs:175 ComputePlanFields",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:353 ResearchConfig::agent_budgets",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:364 parse_agent_budgets",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:2359 run_market calls allocate_within",
+      "backend/crates/apps/qip-deepbrain/tests/research_market.rs:432 a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing (mutation: call allocate; the zero-budget agent is granted and the test fails)",
       "backend/crates/services/qip-expansion/src/meta.rs:555 MetaIntelligence::allocate_within",
-      "backend/crates/services/qip-expansion/tests/meta.rs:373 an_agent_bid_over_its_compute_budget_is_refused",
-      "backend/crates/libs/qip-agents/src/budget.rs",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:41,138"
+      "backend/crates/services/qip-expansion/tests/meta.rs:373 an_agent_bid_over_its_compute_budget_is_refused"
     ],
-    "gap": "Not on the default path: research.rs::run_market calls MetaIntelligence::allocate with no agent budgets, so no deployed bid is ever refused for its agent's budget; it needs to state per-agent budgets (from config or the cost ledger) and call allocate_within. No AgentBudget or ModelWeight record is emitted into the event log, so the bound and the weights are not replayable from it.",
+    "gap": "No committed deployment states QIP_DEEPBRAIN_RESEARCH_AGENT_BUDGETS (a dev value under infrastructure/environments/dev/**, which this lane may not edit), so deployed agents are bounded by the resource budgets alone. No AgentBudget or ModelWeight record is emitted into the event log, so the bound and the weights are not replayable from it.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-expansion --test meta an_agent_bid_over_its_compute_budget_is_refused",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test research_market a_research_agent_stated_a_zero_budget_is_declined_and_starts_nothing",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged."
+    "notes": "2026-10-18 lane L18: the allocator's agent bound landed with a mutated test (deleting the agent-budget check grants the agent five units and the second bid); a negative agent budget is refused. The research.rs call site belongs to lanes L03/L20 and is in L18's report. Status unchanged. 2026-10-18 lane L03: the research.rs call site and its configuration landed, mutation-verified; PARTIAL on the deployment value and the event-log record."
   },
   {
     "id": "R12-WORLD-9035",
