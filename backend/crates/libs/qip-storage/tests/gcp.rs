@@ -1079,3 +1079,36 @@ fn the_bigquery_blob_refusal_names_the_warehouse_rather_than_a_missing_adapter()
         "the refusal must say where an artifact should go instead: {message}"
     );
 }
+
+/// R12-TICK-2055: a conditional upload carries `ifGenerationMatch=0`, so
+/// Cloud Storage itself refuses to replace a live object, and its 412 is
+/// reported as "already there" rather than as a failure or a success.
+/// Mutations: dropping the query parameter fails the target assertion;
+/// treating 412 as success reports the refused write as created.
+#[test]
+fn a_cloud_storage_put_if_absent_asks_for_generation_zero_and_reads_412_as_already_there() {
+    let created = TestServer::always(Action::ok(r#"{"name":"seg.seg"}"#));
+    let store = bucket_store(&created);
+    assert!(
+        store
+            .put_if_absent("lake/seg.seg", b"first".to_vec())
+            .expect("the upload succeeds")
+    );
+    let requests = created.requests();
+    assert_eq!(requests.len(), 1, "premise: one request crossed the socket");
+    assert!(
+        requests[0].target.contains("&ifGenerationMatch=0"),
+        "the create was not conditional: {}",
+        requests[0].target
+    );
+
+    let exists = TestServer::always(Action::json(412, r#"{"error":{"code":412}}"#));
+    let store = bucket_store(&exists);
+    assert!(
+        !store
+            .put_if_absent("lake/seg.seg", b"second".to_vec())
+            .expect("a precondition failure is an answer, not an error")
+    );
+    // A plain put is never conditional, and a 412 there is an error.
+    assert!(store.put("lake/seg.seg", b"second".to_vec()).is_err());
+}
