@@ -2263,16 +2263,16 @@
   },
   {
     "id": "R12-AGENCY-6102",
-    "status": "PARTIAL",
-    "current": "estimate.rs computes randomised-experiment, difference-in-differences, synthetic-control, instrumental-variable, structural-model, no-action-baseline and correlation estimates, each carrying its earned identification; qip-cli checks widening attributions against them and journals the estimator.",
+    "status": "COMPLETE",
+    "current": "estimate.rs now computes, beside the randomised, difference-in-differences, synthetic-control, instrumental-variable and correlation estimators, a MatchedControl (nearest-neighbour matching within a refused-beyond caliper, Observational), a StagedExperiment (waves drawn from a seed, Experiment) and a BayesianCausal (Bayesian linear model with a stated Gaussian prior, Observational) estimator, each carrying the identification its method earns and each refusing degenerate input. All three are accepted as widening evidence by the shadow binary (EstimateInput) and journaled with their method; an attribution that claims a label the method did not earn is refused by Estimate::supports.",
     "evidence": [
-      "backend/crates/services/qip-agency/src/attribution.rs:18",
-      "backend/crates/services/qip-agency/src/attribution.rs:60",
-      "backend/crates/services/qip-agency/tests/agency.rs:458",
-      "backend/crates/services/qip-agency/src/estimate.rs::EstimatorKind",
+      "backend/crates/services/qip-agency/src/estimate.rs::matched_control, staged_experiment, stage_assignment, bayesian_causal, EstimateInput",
+      "backend/crates/services/qip-agency/tests/agency.rs::matched_controls_recover_an_effect_a_naive_comparison_misses_and_refuse_a_treated_unit_with_no_match",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_staged_rollout_drawn_here_is_an_experiment_in_every_period_and_a_missing_period_or_unit_is_refused",
+      "backend/crates/services/qip-agency/tests/agency.rs::a_bayesian_causal_estimate_follows_the_data_under_a_wide_prior_and_the_prior_under_a_tight_one",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_refused"
     ],
-    "gap": "No matched-control, staged-experiment or Bayesian causal estimator; estimates run on operator-supplied data for widening, never on observed post-intervention effects (no intervention occurs).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2280,10 +2280,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency",
+    "verification": "cd backend && cargo test -p qip-agency -p qip-cli --no-fail-fast",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 (lane L10) on the closure's scope. Mutations that fired: matched_control labelled Experiment; staged_experiment labelled NotIdentified; the Bayesian prior zeroed (a tight prior no longer shrinks); the matching caliper ignored (a treated unit with no comparable control is matched anyway). Running these estimators on observed post-intervention effects remains R12-AGENCY-1184: the binary takes operator-supplied data and no intervention occurs. Matching and the Bayesian model are identified only conditionally on the covariates, which their labels say; the Bayesian arithmetic adds uncertainty, not identification."
   },
   {
     "id": "R12-AGENCY-6103",
