@@ -7966,9 +7966,17 @@ fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() 
     let mut calm = platform_at_pilot(&id)?;
     let (full, calm_entry) = issue_through_the_platform(&mut calm, &id)?;
     assert_eq!(calm_entry.outcome, "issued");
+    // A platform that has measured nothing about itself still reads its
+    // causal graph, beliefs and self-model as never produced, and a grant
+    // narrows on that (R12-RISK-4113). The premise here is narrower than it
+    // was: none of the governor's own four triggers has fired.
+    let calm_detail = calm_entry.detail.clone().unwrap_or_default();
     assert!(
-        calm_entry.detail.is_none(),
-        "premise: an unmeasured platform signs the whole allocation: {calm_entry:?}"
+        calm_detail.contains("stale or unavailable")
+            && !calm_detail.contains("calibration")
+            && !calm_detail.contains("recent returns"),
+        "premise: only the evidence-freshness contraction bites an unmeasured platform: \
+         {calm_entry:?}"
     );
 
     let mut decayed = platform_at_pilot(&id)?;

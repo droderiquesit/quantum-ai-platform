@@ -8501,7 +8501,7 @@ impl Platform {
                 // than skipped when a measurement it reads is malformed — a
                 // grant signed past a governor that could not decide is a
                 // grant the governor never saw.
-                let narrowing = self.governor.grant_decision();
+                let narrowing = self.grant_narrowing(now);
                 let outcome = narrowing.and_then(|narrowing| {
                     self.central
                         .issue_narrowed(
@@ -14536,6 +14536,38 @@ impl Platform {
             BeliefFreshness::assess(self.reasoning.beliefs().last_updated(), BELIEF_HORIZON, now)?;
         state.observe(Capability::BeliefState, belief.freshness());
         Ok(state)
+    }
+
+    /// The contraction the next capital grant takes: the confidence
+    /// governor's, compounded with the centre's §6.2 sizing multiplier so a
+    /// grant narrows when the evidence the centre sizes on has gone stale
+    /// exactly as a construction does (R12-RISK-4113). Contraction only: the
+    /// multiplier is in `(0, 1]` by construction and the product is checked.
+    /// A freshness reading that cannot be taken refuses the grant rather than
+    /// signing it against a table nobody read.
+    pub(crate) fn grant_narrowing(
+        &self,
+        now: Timestamp,
+    ) -> Result<crate::confidence::ConfidenceDecision> {
+        let mut decision = self.governor.grant_decision()?;
+        let freshness = self.central_degradation(now)?.central_sizing_multiplier();
+        if freshness < Decimal::ONE {
+            decision.multiplier = decision.multiplier.checked_mul(freshness).ok_or_else(|| {
+                Error::numeric(
+                    "narrowing the capital grant by evidence freshness overflows".to_string(),
+                )
+            })?;
+            decision.contractions.push(crate::confidence::Contraction {
+                trigger: crate::confidence::Trigger::EvidenceFreshness,
+                subject: None,
+                multiplier: freshness,
+                reason: format!(
+                    "the evidence the centre sizes on is stale or unavailable (§6.2); the grant \
+                     is narrowed to {freshness}"
+                ),
+            });
+        }
+        Ok(decision)
     }
 
     /// Read the model registry for production models that have drifted past
@@ -26323,6 +26355,82 @@ mod central_sizing_tests {
             multiplier(&platform),
             healthy,
             "the narrowing outlived the model"
+        );
+    }
+
+    /// R12-RISK-4113: a capital grant contracts when the evidence the centre
+    /// sizes on falls in freshness, and never widens past what the confidence
+    /// governor alone would sign. The platforms differ only in when their one
+    /// causal claim was recorded. Mutations: return the governor's decision
+    /// unchanged from `grant_narrowing` (the stale grant equals the fresh
+    /// one, and neither carries the contraction); multiply by the reciprocal
+    /// (the widening assertion fails).
+    #[test]
+    fn a_stale_causal_graph_narrows_the_next_capital_grant_below_a_fresh_one_and_neither_widens_it()
+    {
+        use crate::confidence::Trigger;
+        use qip_world_model::causal::{CausalEdge, Mechanism};
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        let claim = |recorded_at: Timestamp| {
+            CausalEdge::new(
+                "ent-cause",
+                "ent-effect",
+                Mechanism::SupplyChain,
+                0.5,
+                Duration::from_days(1),
+                recorded_at,
+            )
+            .expect("a strength in [0, 1] is admitted")
+        };
+        let fresh = platform();
+        fresh
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(1)))))
+            .expect("an edge naming both ends is admitted");
+        let stale = platform();
+        stale
+            .world
+            .update(|world| world.claim_causal(claim(now.saturating_sub(Duration::from_days(365)))))
+            .expect("an edge naming both ends is admitted");
+
+        let governor_alone = fresh.governor.grant_decision().expect("the governor reads");
+        assert_eq!(
+            governor_alone.multiplier,
+            Decimal::ONE,
+            "premise: no measurement has contracted the governor's own grant"
+        );
+        let fresh_grant = fresh.grant_narrowing(now).expect("the grant reads");
+        let stale_grant = stale.grant_narrowing(now).expect("the grant reads");
+
+        assert!(
+            fresh_grant.multiplier < Decimal::ONE,
+            "belief and self-model are unavailable here, so even a fresh graph narrows"
+        );
+        assert!(
+            stale_grant.multiplier < fresh_grant.multiplier,
+            "a stale graph must narrow the grant below a fresh one: {} vs {}",
+            stale_grant.multiplier,
+            fresh_grant.multiplier
+        );
+        assert!(
+            stale_grant.multiplier <= governor_alone.multiplier,
+            "evidence freshness widened a grant"
+        );
+        for grant in [&fresh_grant, &stale_grant] {
+            assert!(
+                grant
+                    .contractions
+                    .iter()
+                    .any(|c| c.trigger == Trigger::EvidenceFreshness),
+                "the contraction is not named: {:?}",
+                grant.contractions
+            );
+        }
+        assert_eq!(
+            stale_grant.multiplier,
+            fresh_grant.multiplier * dec!("0.75"),
+            "the stale graph narrows by the row 2 factor and nothing else"
         );
     }
 
