@@ -348,6 +348,56 @@ fn a_hypothesis_opens_a_question_many_forecasters_answer_and_a_later_cycle_score
     Ok(())
 }
 
+/// R12-MODEL-6018: every forecaster on a question states quantiles over the
+/// realised move, so the scorecard a later cycle writes measures each one's
+/// quantile accuracy, not only its direction. Until 2026-10-18 the stage
+/// submitted `quantiles: None` for the detector and every analyst alike, and
+/// `Scorecard::quantile_loss` read "no forecast here stated quantiles" for
+/// every forecaster the platform had ever scored.
+///
+/// Mutation: submit `quantiles: None` for the detector in
+/// `TournamentStage::observe_reasoning` — the detector's quantile loss reads
+/// unmeasured and the assertion naming it fails.
+#[test]
+fn every_forecaster_a_cycle_scored_has_its_quantile_loss_measured() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    let question = platform
+        .model_tournament()
+        .open_questions()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::not_found(format!("no question opened:\n{}", first.summarise())))?;
+    let forecasters: Vec<String> = question.forecasts().keys().cloned().collect();
+    assert!(
+        forecasters.iter().any(|f| f.starts_with("detector:"))
+            && forecasters.iter().any(|f| f.starts_with("analyst:")),
+        "premise: a detector and an analyst both forecast: {forecasters:?}"
+    );
+    let resolves_at = question.spec().resolves_at;
+    platform.observe(vec![bar("AAA", resolves_at, 150.0, 165.0)]);
+    platform.run_cycle(resolves_at.saturating_add(Duration::from_days(2)));
+
+    for forecaster in &forecasters {
+        let cards = platform.model_tournament().scorecards(forecaster);
+        assert!(!cards.is_empty(), "premise: {forecaster} was scored");
+        for card in cards {
+            let loss = card.quantile_loss.value().unwrap_or_else(|| {
+                panic!(
+                    "{forecaster}'s quantile accuracy was not tracked: {:?}",
+                    card.quantile_loss
+                )
+            });
+            assert!(
+                loss.is_finite() && loss >= 0.0,
+                "{forecaster}'s pinball loss is {loss}"
+            );
+        }
+    }
+    Ok(())
+}
+
 // --- W3.6: the society blocks a promotion ------------------------------------
 
 const DESK: &str = "tournament-tests/model-desk";

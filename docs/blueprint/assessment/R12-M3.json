@@ -1569,12 +1569,13 @@
   {
     "id": "R12-AMBIENT-3071",
     "status": "PARTIAL",
-    "current": "Declined and filled paths priced each LEARN under a per-cycle cap.",
+    "current": "LEARN prices declined and filled paths under one per-cycle cap (COUNTERFACTUALS_PER_CYCLE); a due path past the cap stays queued, is counted under qip_counterfactuals_deferred_total and is priced on a later cycle, so the cap delays scoring and drops nothing. A path is dropped only when the twin refuses to price it (counted unscored{reason=refused}) or when the bounded queue is full at capture (counted unscored{reason=*_capacity}). The resulting DeclinedScore and FillScore records feed the regret findings and the size-cap review inside the kernel; no router or opportunity sweep reads them.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:17244",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:565"
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn score_declined: deferred due paths are counted and left in self.declined",
+      "backend/crates/runtime/qip-kernel/src/platform.rs fn score_filled: same rule under the remaining budget",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle"
     ],
-    "gap": "Per-cycle, capped; not continuous.",
+    "gap": "Output reaches no router: counterfactual regret is not raised as an opportunity-class signal the deep brain sweep (or any router) consumes. The carry-over the triage closure asked for already exists and is tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1582,10 +1583,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test learning declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next_cycle",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Corrected 2026-10-18 (lane L01): the clause said the per-cycle cap drops some declines; it defers them and a test pins that. Kept PARTIAL on the missing router. Read, not run, by this lane."
   },
   {
     "id": "R12-AMBIENT-3072",

@@ -390,15 +390,16 @@
   },
   {
     "id": "R12-MODEL-6018",
-    "status": "PARTIAL",
-    "current": "Scorecard carries directional_accuracy and quantile_loss (pinball over stated quantiles), tested in the library. Every kernel forecaster submits quantiles: None, so quantile loss is never measured in production.",
+    "status": "COMPLETE",
+    "current": "TournamentStage::observe_reasoning, run by REASON in every cycle, submits quantiles at 0.1/0.5/0.9 over the realised move in basis points for the detector and each analyst (model_tournament.rs::move_quantiles): centred on the mean of the claim's two-point move under the forecaster's own p_up, spread by the subject's one-period return deviation, and None where the claim states no non-zero move or the deviation cannot be measured. The resolution's realised_value is that move, so Scorecard::quantile_loss is measured per forecaster.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:268 hits",
-      "backend/crates/services/qip-learning-engine/src/self_model.rs:222 brier",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:321",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:419",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:447",
       "backend/crates/services/qip-learning-engine/src/tournament.rs::Scorecard::quantile_loss",
-      "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage (quantiles: None)"
+      "backend/crates/runtime/qip-kernel/tests/model_tournament.rs::every_forecaster_a_cycle_scored_has_its_quantile_loss_measured"
     ],
-    "gap": "No production forecaster states quantiles; quantile accuracy is unmeasured for every forecaster the cycle runs.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -406,10 +407,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-learning-engine",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test model_tournament every_forecaster_a_cycle_scored_has_its_quantile_loss_measured",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Closed 2026-10-18 by lane L06. Two mutations each failed the test, restored byte for byte: the detector submitting quantiles None (model_tournament.rs:419) left detector:volatility_shift unmeasured, and the analyst arm submitting None (:447) left analyst:chief-investment-intelligence unmeasured; 5 passed after. Stated limits: the spread is one-period and not scaled to the horizon, which charges every forecaster alike; an analyst's distribution is derived from its stated direction and conviction applied to the claim's magnitude, since a finding states no magnitude of its own."
   },
   {
     "id": "R12-MODEL-6019",
@@ -2302,7 +2303,7 @@
       "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused",
       "backend/crates/apps/qip-cli/tests/agency_record.rs::an_attribution_missing_its_chain_confounders_rivals_or_horizons_is_refused_on_the_record"
     ],
-    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced; the one attribution the platform computes itself (simulated::evidence after a shadowed pass) is of the simulation at the plan's own horizon, and nothing measures an effect after an intervention.",
+    "gap": "Validation admits a single horizon, so 'multiple horizons' is not enforced, and the triage closure (require two distinct horizons in EffectAttribution::validate) cannot land alone. Both default-path producers build exactly one HorizonObservation: qip-agency simulated.rs:178 (the shadowed pass's simulated effect, at the plan's own horizon) and qip-deepbrain ambient_agency.rs:663 (the measured null effect of a draft read again on a later sweep). Each must first observe a second distinct horizon, from the simulator's path or a second sweep. Raising the bound alone broke 14 tests across qip-agency (agency, causal, journal), qip-cli (agency_record), qip-deepbrain (ambient_agency) and qip-world-model (federation).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2313,7 +2314,7 @@
     "verification": "cargo test -p qip-agency -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired."
+    "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. Re-graded 2026-10-18 by the shadow-learning lane: qip agency shadow now calls engine::learn_shadowed after every shadowed pass on the outcome the pass simulated, journals it as `learned` (or `learning-withheld` with the reason), and the binary test's five mutations fired. Probed 2026-10-18 (lane L12): requiring two distinct horizons in qip-contracts EffectAttribution::validate failed 14 tests in five crates, every failure an attribution built by one of the two producers above, so the change was reverted rather than shipped with the producers refused. Kept PARTIAL."
   },
   {
     "id": "R12-AGENCY-6105",
