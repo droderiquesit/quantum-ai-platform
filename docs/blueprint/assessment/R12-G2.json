@@ -3991,25 +3991,27 @@
   },
   {
     "id": "R12-RES-9178",
-    "status": "PARTIAL",
-    "current": "deploy.yml, infra.yml and image.yml are workflow_dispatch-able by a human and no runtime calls an agent service; no test asserts this.",
+    "status": "COMPLETE",
+    "current": "deploy.yml, infra.yml and image.yml each declare workflow_dispatch and none is triggered by or calls an agent workflow (cicd_governance.rs::the_human_release_pipeline_never_depends_on_the_autonomous_development_plane), and no source under backend/crates/apps names a model host, so no deployable binary calls an agent service (no_deployable_binary_names_a_model_host_so_no_runtime_component_calls_an_agent_service).",
     "evidence": [
-      ".github/workflows/deploy.yml:58",
-      ".github/workflows/infra.yml:123",
-      ".github/workflows/image.yml:106"
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs the_human_release_pipeline_never_depends_on_the_autonomous_development_plane",
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs no_deployable_binary_names_a_model_host_so_no_runtime_component_calls_an_agent_service",
+      ".github/workflows/deploy.yml workflow_dispatch",
+      ".github/workflows/infra.yml workflow_dispatch",
+      ".github/workflows/image.yml workflow_dispatch"
     ],
-    "gap": "A test asserting the property.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cd backend && cargo test -p qip-acceptance --test cicd_governance",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08). The workflow half was already held by an existing test; this adds the runtime half. Mutation: api.anthropic.com written into qip-api/src/lib.rs failed the new test naming that file; restored byte for byte. The workflow half was not re-mutated here. The scan names five hosts and is not exhaustive; a provider off the list is still caught by the port and invocation tests in model_gateway_boundary.rs."
   },
   {
     "id": "R12-REFLEX-9179",

@@ -2937,13 +2937,15 @@
   },
   {
     "id": "R12-LEDGER-8132",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "google_spanner_instance.global pins edition = \"ENTERPRISE_PLUS\" with the nam-eur-asea multi-region config and 100 processing units; terraform validate and the module tftests pass with the attribute; the acceptance suite refuses its absence or a regional config. Still gated by enable_spanner, false in every environment, so no plan renders it.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:380-402 (edition at :395)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13246 the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration",
+      "infrastructure/terraform/modules/data/tests/spanner_edition.tftest.hcl",
+      "infrastructure/terraform/modules/data/main.tf google_spanner_instance.global edition"
     ],
-    "gap": "enable_spanner is false in every committed environment, so the plan the check asks for renders no instance; enabling it is a paid-resource decision for the owner (and the ledger adapter against a live instance is unproven).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2951,10 +2953,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-acceptance --test infrastructure -- the_ledger_spanner_instance_is_enterprise_plus_in_a_multi_region_configuration; cd infrastructure/terraform/modules/data && terraform validate && terraform test",
+    "verification": "cd infrastructure/terraform/modules/data && terraform init -backend=false && terraform test -filter=tests/spanner_edition.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "2026-10-18 (lane L02): edition added; terraform 1.9.8 validate: Success; terraform test: 6 passed, 0 failed. Mutation: deleted the edition line; the test failed \"does not pin edition\"; restored byte-for-byte. Kept PARTIAL because the check is a plan and nothing plans the instance."
+    "notes": "2026-10-18. The attribute and the acceptance text scan already existed; what was missing was a plan that reads it. A mocked-provider run with enable_spanner = true plans the instance on ENTERPRISE_PLUS (terraform 1.9.8, checksum-verified: `Success! 2 passed, 0 failed.`), and a second run proves no instance is planned while it is off, which is the state of every committed environment. Mutation, restored: edition set to ENTERPRISE failed the first run."
   },
   {
     "id": "R12-LEDGER-8133",
