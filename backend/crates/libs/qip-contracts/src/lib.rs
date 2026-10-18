@@ -84,7 +84,7 @@ pub mod world_model;
 pub use capital::{
     CapitalAdmission, CapitalEnvelope, CapitalGrant, ExposureBounds, ExposureBreach, Utilisation,
 };
-pub use control::{ComputePlan, HedgePlan, InformationRequest, ModelVote};
+pub use control::{ComputePlan, ForecastConsensus, HedgePlan, InformationRequest, ModelVote};
 pub use control_pack::ControlPackAnnouncement;
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
