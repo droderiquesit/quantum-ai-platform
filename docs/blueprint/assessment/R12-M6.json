@@ -1263,7 +1263,7 @@
       "backend/crates/libs/qip-contracts/src/expansion.rs:549",
       "backend/crates/libs/qip-contracts/tests/memory_registry.rs:4"
     ],
-    "gap": "Registry store and integration.",
+    "gap": "Registry store and integration. A MemoryRegistry in qip-agents/src/memory.rs is simple; the consult is not. ResearchMemory lives in the kernel Platform (platform.rs research_memory, its episodes recorded at platform.rs record_episode (~14187, located by symbol)), not in qip-deepbrain's main.rs, and a consult that can refuse an episode drops it from ResearchMemory::hit_rate, so it biases the calibration the platform scores its analysts on. A default policy that never refuses (importance threshold zero) would be a gate that cannot fire. The decision needed first: which MemoryKind an episode is, what its importance is, and whether a below-threshold episode is dropped or kept compressed.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1274,7 +1274,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L23: not implemented after reading MemoryEntry/ValuePolicy (qip-contracts expansion.rs) and the single production record_episode site; see gap for the design question."
   },
   {
     "id": "R12-EXPAND-6058",
@@ -1353,7 +1353,7 @@
       "backend/crates/libs/qip-agents/src/research.rs:33",
       "backend/crates/libs/qip-agents/tests/expansion_registries.rs:64"
     ],
-    "gap": "The registry stores only hypothesis+verdict, with no experiments, open-question, benchmark-suite or contradiction fields; it refuses only an empty hypothesis or evidence.",
+    "gap": "The registry stores hypothesis plus Verdict, and a Null or Supported verdict already must cite non-empty evidence (research.rs record_version), so the 'refuse a verdict without an experiment' half exists as free text. Missing: structured experiment ids (ResearchCampaign has none - it holds a question and per-stage provenance), a list of open questions, a benchmark-suite field, and unresolved contradictions. Widening needs a campaign identity first, and the desk's two record() call sites (qip-expansion desk.rs conclude) and the tests that call record() change with the signature.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1364,7 +1364,7 @@
     "verification": "cargo test -p qip-agents --test expansion_registries",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "2026-10-18 lane L23: not implemented; ExpansionDesk is on the deep-brain sweep, so the widened record would run, but ResearchCampaign has no id to cite."
   },
   {
     "id": "R12-EXPAND-6062",
