@@ -328,14 +328,13 @@
   {
     "id": "R12-DATA-2015",
     "status": "PARTIAL",
-    "current": "discovery_targets::targets_from ranks knowledge gaps and forecast-error spikes on uncovered entities; Platform::discovery_targets feeds it from LEARN-stage evaluations and DiscoveryDesk uses it to order candidates.",
+    "current": "discovery_targets::targets_from_strategies takes a StrategyCoverage input beside the knowledge gaps and forecast-error spikes: an instrument a running strategy trades on that no source covers becomes a target naming the strategy (TargetReason::StrategyGap), outranking a bare gap and below any spike; targets_from is the same call with no strategies. Platform::discovery_targets feeds it the factory candidates compiled subjects and counts a strategy instrument as covered by the same has_source_for test as the other two inputs.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/discovery_targets.rs:86 targets_from",
-      "backend/crates/runtime/qip-kernel/src/source_discovery.rs:123 discovery_targets",
-      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs:25 a_forecast_error_spike_on_an_entity_no_source_covers_yields_a_target_naming_it",
-      "backend/crates/apps/qip-deepbrain/src/discovery.rs:216 targets read each pass"
+      "backend/crates/services/qip-data-finder/src/discovery_targets.rs targets_from_strategies, StrategyCoverage, TargetReason::StrategyGap",
+      "backend/crates/runtime/qip-kernel/src/source_discovery.rs Platform::strategy_coverage, discovery_targets",
+      "backend/crates/services/qip-data-finder/tests/discovery_targets.rs a_strategy_whose_instrument_no_source_covers_yields_a_target_naming_it"
     ],
-    "gap": "Strategy gaps are not an input (only entity coverage and thesis errors); disabled in every environment.",
+    "gap": "Two limits. The kernel wiring (strategy_coverage reading the strategy factory candidates) has no kernel-level test that registers a candidate and reads the target back, so deleting that feed would not fail a test. And discovery runs only when QIP_DEEPBRAIN_DISCOVER_EVERY is above zero, which it is in no committed environment.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -343,10 +342,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test source_discovery",
+    "verification": "cargo test -p qip-data-finder --test discovery_targets; cargo test -p qip-kernel --test source_discovery",
     "work_item": "",
     "size": "S",
-    "notes": "Discovery is off unless QIP_DEEPBRAIN_DISCOVER_EVERY is set; infrastructure/environments/dev/terraform.tfvars leaves deepbrain_discover_every and source_candidates_file null, so no environment runs it."
+    "notes": "2026-10-18 L22: input, ranking and finder-level test added; kept PARTIAL. Mutations that fired: treat every strategy instrument as uncovered; skip the strategy loop. The kernel feed was built and compiled but not mutation-tested; that is the first remaining gap, stated rather than claimed."
   },
   {
     "id": "R12-DATA-2016",

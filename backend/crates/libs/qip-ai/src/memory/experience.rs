@@ -293,6 +293,7 @@ mod tests {
                 expected_move_bps: Some(12.0),
                 realised_move_bps: 10.0,
                 realised_pnl: 1.0,
+                fills: Vec::new(),
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,

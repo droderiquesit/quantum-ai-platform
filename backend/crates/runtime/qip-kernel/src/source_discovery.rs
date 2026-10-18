@@ -14,7 +14,7 @@ use crate::platform::Platform;
 use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::discovery_targets::{
-    DiscoveryTarget, ForecastError, KnowledgeGap, targets_from,
+    DiscoveryTarget, ForecastError, KnowledgeGap, StrategyCoverage, targets_from_strategies,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -117,19 +117,48 @@ impl Platform {
             })
     }
 
+    /// The instrument each registered strategy trades on, in strategy order
+    /// (R12-DATA-2015): the factory's candidates, each compiled against one
+    /// subject.
+    fn strategy_coverage(&self) -> Vec<StrategyCoverage> {
+        let mut out: Vec<StrategyCoverage> = self
+            .central()
+            .factory()
+            .candidates()
+            .map(|candidate| StrategyCoverage {
+                strategy: candidate.strategy().as_str().to_string(),
+                instruments: vec![candidate.compiled().subject().as_str().to_string()],
+            })
+            .collect();
+        out.sort_by(|left, right| left.strategy.cmp(&right.strategy));
+        out
+    }
+
     /// What discovery should look for now: uncovered entities the world
     /// model has a gap on or the platform's forecasts spiked on, largest
     /// spike first.
     pub fn discovery_targets(&self, now: Timestamp) -> Result<Vec<DiscoveryTarget>> {
         let gaps = self.knowledge_gaps(now);
         let errors = self.forecast_errors();
+        let strategies = self.strategy_coverage();
         let covered: BTreeSet<String> = gaps
             .iter()
             .map(|gap| gap.entity.as_str())
             .chain(errors.iter().map(|error| error.entity.as_str()))
+            .chain(
+                strategies
+                    .iter()
+                    .flat_map(|strategy| strategy.instruments.iter().map(String::as_str)),
+            )
             .filter(|entity| self.has_source_for(entity))
             .map(str::to_string)
             .collect();
-        targets_from(&gaps, &errors, &covered, DISCOVERY_SPIKE_MULTIPLE)
+        targets_from_strategies(
+            &gaps,
+            &errors,
+            &strategies,
+            &covered,
+            DISCOVERY_SPIKE_MULTIPLE,
+        )
     }
 }

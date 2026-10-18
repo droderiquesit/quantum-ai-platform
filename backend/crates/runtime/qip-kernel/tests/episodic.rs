@@ -1059,3 +1059,75 @@ fn a_hypothesis_refused_on_review_forms_no_thesis_and_decide_sizes_nothing_for_i
     );
     Ok(())
 }
+
+/// R12-WORLD-3033: an episode says what the platform did about its claim, not
+/// only what it claimed. A thesis whose order filled remembers that fill, by
+/// order id, quantity and price; the same thesis with no order remembers none,
+/// so the field cannot be filled by default. Mutations: leave the vector empty
+/// in `remember_resolved` (the filled case fails); match the belief key
+/// against a hypothesis nothing cites in `fills_expressing` (no fill is
+/// found, the same assertion fails).
+#[test]
+fn a_resolved_episode_remembers_the_fills_on_the_orders_that_expressed_its_claim() -> Result<()> {
+    let (t2, t3) = resolution_instants()?;
+
+    // The control: no order was ever sent for the thesis.
+    let (idle, _) = three_cycles(t2, t3)?;
+    let remembered: Vec<_> = idle.remembered_episodes(t3).collect();
+    assert_eq!(remembered.len(), 1, "premise: one episode was remembered");
+    assert!(
+        remembered[0]
+            .outcome
+            .as_ref()
+            .is_some_and(|o| o.fills.is_empty()),
+        "an episode with no order remembered a fill"
+    );
+
+    // The same tape, with an order citing the hypothesis that fills before the
+    // claim resolves.
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let claim = platform.predictions()[0].clone();
+    let hypothesis = claim
+        .claim
+        .as_ref()
+        .map(|c| c.hypothesis_id.clone())
+        .expect("premise: the claim was written down");
+    let order = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("10"),
+        dec!("100"),
+        "prop-episode",
+        vec![hypothesis],
+        start(),
+    );
+    let order_id = order.order_id.clone();
+    platform.submit_order(order, start())?;
+    let filled: Vec<_> = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .filter(|fill| fill.order_id == order_id)
+        .cloned()
+        .collect();
+    assert!(!filled.is_empty(), "premise: the accepted order filled");
+
+    platform.observe(swings("AAA", claim.proposition.resolves_at));
+    platform.run_cycle(t2);
+    let remembered: Vec<_> = platform.remembered_episodes(t3).collect();
+    assert_eq!(remembered.len(), 1, "premise: one episode was remembered");
+    let fills = &remembered[0]
+        .outcome
+        .as_ref()
+        .expect("a remembered episode is a resolved one")
+        .fills;
+    assert_eq!(fills.len(), filled.len(), "{fills:?}");
+    for (remembered, fill) in fills.iter().zip(&filled) {
+        assert_eq!(remembered.order_id, order_id.as_str());
+        assert_eq!(remembered.quantity, fill.quantity);
+        assert_eq!(remembered.price, fill.price);
+    }
+    Ok(())
+}
