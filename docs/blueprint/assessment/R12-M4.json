@@ -1657,24 +1657,28 @@
   },
   {
     "id": "R12-GOV-4077",
-    "status": "PARTIAL",
-    "current": "FinancingPermissions refuses any regulated function without a recorded (entity, counterparty, jurisdiction) permission and funding.rs uses it; neither is reached from the kernel or an app. No regulated function runs, so the fail-closed default holds trivially.",
+    "status": "COMPLETE",
+    "current": "No regulated financing function runs, and the one seam that draws on a financing source, qip_capital::funding::plan_funding, takes &FinancingPermissions and asks FinancingPermissions::require before counting a source; the empty registry refuses every FinancingFunction. A structural acceptance suite now fails if any production source outside qip-capital's treasury.rs and funding.rs names FundingSource::Financing or FinancingFunction::, so a second financing seam cannot be added without routing through the gate.",
     "evidence": [
       "backend/crates/services/qip-capital/src/treasury.rs:408 FinancingPermissions",
+      "backend/crates/services/qip-capital/src/funding.rs:130 plan_funding takes the registry and calls require",
+      "backend/crates/tests/qip-acceptance/tests/financing_permissions.rs:80 no_production_source_outside_the_gate_names_a_financing_source_or_function",
+      "backend/crates/tests/qip-acceptance/tests/financing_permissions.rs:129 the_one_financing_seam_takes_the_permissions_and_asks_them_before_drawing",
+      "backend/crates/tests/qip-acceptance/tests/financing_permissions.rs:148 an_empty_permission_registry_refuses_every_regulated_financing_source",
       "backend/crates/services/qip-capital/tests/funding.rs:60"
     ],
-    "gap": "Wire permissions into every financing seam before any exists.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-acceptance --test financing_permissions",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: closed as a structural invariant; no regulated function exists to wire, so 'every financing seam' is enforced by making any new one fail CI. Mutations: a qip-kernel src file naming FundingSource::Financing fails the walk; making plan_funding skip the require check fails the seam and empty-registry tests (a financing source funded with no permission). Restored, 3/3 pass. compliance_proof 8/8, security 29/29, paper_boundary 5/5 pass; no risk, execution, broker or capital source changed."
   },
   {
     "id": "R12-CAPITAL-4078",
