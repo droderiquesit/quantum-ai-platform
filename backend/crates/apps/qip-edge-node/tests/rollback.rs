@@ -162,10 +162,19 @@ fn a_refused_rollback_is_reported_once_and_leaves_the_halt_in_place() -> Result<
     let mut wire = wire(&path)?;
     published(&wire, &RollbackReading::AwayFrom(2));
 
-    assert!(matches!(
-        wire.apply(&mut cell, t(11)),
-        Some(RollbackOutcome::Refused { from: 2, .. })
-    ));
+    // The refusal carries a class the node can log as fixed text, so the
+    // operator reads why without the cell's message reaching stderr
+    // (rust/cleartext-logging, ci run 1044).
+    match wire.apply(&mut cell, t(11)) {
+        Some(RollbackOutcome::Refused {
+            from: 2, refusal, ..
+        }) => assert_eq!(
+            refusal,
+            qip_edge_node::rollback::RollbackRefusal::CentreHalted,
+            "a halted cell's refusal was classified as {refusal:?}"
+        ),
+        other => panic!("the halted cell did not refuse the rollback: {other:?}"),
+    }
     assert!(cell.is_halted());
     assert_eq!(wire.apply(&mut cell, t(12)), None);
     assert_eq!(cell.policy_sequence(), Some(2));

@@ -146,6 +146,26 @@ pub fn graph_from_whitelist(
     whitelist: &CycleWhitelist,
     venues: &[VenueId],
 ) -> Result<ArbitrageGraph> {
+    graph_from_whitelist_in(whitelist, venues, None)
+}
+
+/// [`graph_from_whitelist`], with every node placed in `region` (MESH-5053).
+///
+/// A node's region is part of its identity, and the graph refuses a
+/// zero-cost edge between two nodes that differ only in region. A desk
+/// whose nodes carry no region cannot tell its holdings from the same asset
+/// at the same venue booked in another region, so a cross-region merge of
+/// two cells' graphs would join them for free. The composition root passes
+/// the cell's own region.
+pub fn graph_from_whitelist_in(
+    whitelist: &CycleWhitelist,
+    venues: &[VenueId],
+    region: Option<&str>,
+) -> Result<ArbitrageGraph> {
+    let place = |node: Node| match region {
+        Some(region) => node.in_region(region),
+        None => node,
+    };
     if whitelist.conversions.is_empty() {
         return Err(Error::invalid(
             "the cycle whitelist carries no conversion, so there is no graph to build",
@@ -197,11 +217,14 @@ pub fn graph_from_whitelist(
             VenueFacts::new(conversion.venue_class, VenueStatus::Open),
         );
         let index = graph.add_trade(
-            Node::new(
+            place(Node::new(
                 ObjectId::from_string(conversion.from.as_str()),
                 venue.clone(),
-            ),
-            Node::new(ObjectId::from_string(conversion.to.as_str()), venue),
+            )),
+            place(Node::new(
+                ObjectId::from_string(conversion.to.as_str()),
+                venue,
+            )),
             Decimal::ONE,
             conversion.cost_fraction,
             ObjectId::from_string(conversion.market.as_str()),
@@ -308,7 +331,19 @@ pub fn desk_from_whitelist_with(
     envelope: VerifiedEnvelope,
     search: SearchSettings,
 ) -> Result<ArbitrageDesk> {
-    let graph = graph_from_whitelist(whitelist, venues)?;
+    desk_from_whitelist_in(whitelist, venues, None, strategy, envelope, search)
+}
+
+/// [`desk_from_whitelist_with`], its graph's nodes placed in `region`.
+pub fn desk_from_whitelist_in(
+    whitelist: &CycleWhitelist,
+    venues: &[VenueId],
+    region: Option<&str>,
+    strategy: StrategyId,
+    envelope: VerifiedEnvelope,
+    search: SearchSettings,
+) -> Result<ArbitrageDesk> {
+    let graph = graph_from_whitelist_in(whitelist, venues, region)?;
     let sizes = sizes_from_whitelist(whitelist)?;
     let budget = Decimal::parse(PLAN_BUDGET)
         .ok_or_else(|| Error::invalid("the plan budget literal is not a decimal"))?;
@@ -404,6 +439,8 @@ impl Installation {
 pub struct ArbitrageInstaller {
     strategy: StrategyId,
     venues: Vec<VenueId>,
+    /// The region every node of the installed graph is placed in.
+    region: Option<String>,
     envelope: Option<VerifiedEnvelope>,
     /// What the desk it installs will search under: the maximum leg count
     /// in force, above all.
@@ -415,6 +452,7 @@ impl ArbitrageInstaller {
         Self {
             strategy,
             venues,
+            region: None,
             envelope: None,
             search: SearchSettings::default(),
         }
@@ -426,6 +464,14 @@ impl ArbitrageInstaller {
     #[must_use]
     pub fn with_search(mut self, search: SearchSettings) -> Self {
         self.search = search;
+        self
+    }
+
+    /// Place every node of the graph this installs in `region`, the cell's
+    /// own (MESH-5053).
+    #[must_use]
+    pub fn in_region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
         self
     }
 
@@ -480,9 +526,10 @@ impl ArbitrageInstaller {
         let Some(envelope) = self.envelope.clone() else {
             return Installation::NoEnvelope;
         };
-        let desk = match desk_from_whitelist_with(
+        let desk = match desk_from_whitelist_in(
             &whitelist,
             &self.venues,
+            self.region.as_deref(),
             self.strategy.clone(),
             envelope,
             self.search,

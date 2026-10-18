@@ -1113,15 +1113,13 @@
   },
   {
     "id": "R12-CAPITAL-9048",
-    "status": "PARTIAL",
-    "current": "Now integrated: kernel survival.rs SurvivalGovernor runs the qip_capital waterfall (cash, margin, collateral, settlement, funding, emergency, hedge, stressed liquidity) every construction before sizing; reserves beyond the book refuse; binaries apply survival policy at start-up.",
+    "status": "COMPLETE",
+    "current": "The survival waterfall is ordered and the order is tested: qip_capital::CapitalSurvivalState::waterfall funds the eight reserve tiers in SurvivalTier::PRIORITY from the total capital, each receiving the lesser of what it requires and what the tiers above left, so a book that runs out mid-waterfall funds the higher tiers, funds one partly and leaves every lower tier at zero. capital_survival_kernel.rs::a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero asserts the funded vector exactly. opportunity_capital still refuses when the reserves do not fit.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/survival.rs",
-      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs:15 a_paper_book_withholds_reserves_in_priority_order_before_releasing_opportunity_capital, :58",
-      "backend/crates/runtime/qip-kernel/src/survival.rs::SurvivalGovernor::size",
-      "backend/crates/apps/qip-api/src/main.rs::apply_survival_policy"
+      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs a_paper_book_that_runs_out_of_capital_mid_waterfall_funds_the_higher_tiers_and_leaves_the_lower_ones_at_zero",
+      "backend/crates/services/qip-capital/src/survival.rs CapitalSurvivalState::waterfall, SurvivalTier::PRIORITY"
     ],
-    "gap": "No test fails when the waterfall is reordered: acceptance test only checks a commutative sum; cell-envelope composition absent.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1129,10 +1127,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test capital_survival_kernel; kernel integration test",
+    "verification": "cd backend && cargo test -p qip-acceptance --test capital_survival_kernel",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 (lane L08). The register was right that the acceptance tests asserted a commutative sum: the code held no ordered accounting either, and the module doc's 'a refusal at any tier stops release at that tier and all below it' had nothing behind it. waterfall() is that accounting, added beside opportunity_capital without changing it. Mutation: Margin and Collateral swapped in SurvivalTier::PRIORITY failed the test with funded [400,300,150,150,0,0,0,0] against [400,300,200,100,0,0,0,0]; restored byte for byte. Nothing in the kernel's decision path calls waterfall() yet; it is the ordered record for audit and for naming the short tier, and opportunity_capital remains the gate."
   },
   {
     "id": "R12-RISK-9049",
@@ -2782,7 +2780,7 @@
       "infrastructure/terraform/modules/cloudrun/main.tf:204",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2354 no_workload_runs_as_the_projects_default_compute_identity"
     ],
-    "gap": "Group-based human access.",
+    "gap": "Human access lists admit user: as well as group: (variables.tf:1645, modules/iap-run, modules/gitops-gateway, PAM requesters at variables.tf:1838). Group-only access needs an owner decision because no-org mode has no Cloud Identity groups, and variables.tf is a protected path; see R12-SEC-10002's notes for the patch.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2793,7 +2791,7 @@
     "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): same seam as R12-SEC-10002; not changed, for the reason recorded there."
   },
   {
     "id": "R12-SEC-9123",
@@ -2883,14 +2881,14 @@
   {
     "id": "R12-SEC-9127",
     "status": "PARTIAL",
-    "current": "CMEK keys for data, archive, registry, evidence, secrets, backups; attestor key in KMS; keys rotate and data keys are undeletable (tested). Protection level is a variable; package/policy signing is not KMS.",
+    "current": "CMEK keys for data, archive, registry, evidence, secrets and backups rotate and the data-holding ones cannot be destroyed; the attestor key signs attestations in KMS; ADR 0110's policy, halt, envelope and model-pack keys are HSM ASYMMETRIC_SIGN keys with prevent_destroy (artefact-signing.tf), now asserted inside the key's own body. Gated: artefact_signing = null everywhere.",
     "evidence": [
-      "infrastructure/terraform/modules/secrets/main.tf:34-41",
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:54-61",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3499",
-      "backend/crates/tests/qip-acceptance/tests/security_controls.rs:548"
+      "infrastructure/terraform/artefact-signing.tf:245 google_kms_crypto_key.artefact",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:54",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4796 every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed",
+      "infrastructure/terraform/tests/artefact-signing.tftest.hcl:97"
     ],
-    "gap": "KMS package/policy signing.",
+    "gap": "artefact_signing is null in every committed environment (owner switch), so no committed plan holds a package-signing key, and the attestation root is not HSM (kms_protection_level, R12-SEC-10053).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2898,10 +2896,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cargo test -p qip-acceptance --test infrastructure every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed; cd infrastructure/terraform && terraform test -filter=tests/artefact-signing.tftest.hcl",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): every_key_rotates_and_the_ones_that_hold_data_cannot_be_destroyed now reads google_kms_crypto_key.artefact for ASYMMETRIC_SIGN, the HSM protection level and prevent_destroy. Mutation: prevent_destroy = false on that key failed it ('lacks `prevent_destroy = true`'); restored byte-for-byte. Kept PARTIAL on the gating."
   },
   {
     "id": "R12-SEC-9128",
@@ -2971,12 +2969,17 @@
   {
     "id": "R12-SEC-9131",
     "status": "PARTIAL",
-    "current": "Project-level VPC firewall rules: default-deny ingress per network, trust-zone sanctioned paths and egress; no hierarchical policies (org scope).",
+    "current": "infrastructure/foundation declares google_compute_firewall_policy.platform parented on the platform folder and associated with it: a goto_next rule (priority 1000) hands private address space, Google health-check/proxy ranges and IAP on to each project's VPC rules, and deny rules (2000, 2001) refuse every other IPv4 and IPv6 ingress source before any VPC rule is read, so no project-level role can open a machine to the internet. Behind hierarchical_firewall_enabled (default true) and org mode; controls_not_applied reports it when off. The platform root adds a project network firewall policy on all five networks (R12-SEC-10023) beside the per-VPC rules.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:44,81,142,313",
-      "infrastructure/terraform/modules/trust-zones/main.tf"
+      "infrastructure/foundation/main.tf:169 google_compute_firewall_policy.platform",
+      "infrastructure/foundation/main.tf:194 delegate_private_and_google (deny rules below it)",
+      "infrastructure/foundation/main.tf:247 google_compute_firewall_policy_association.platform",
+      "infrastructure/foundation/variables.tf:154 hierarchical_firewall_enabled",
+      "infrastructure/foundation/tests/foundation.tftest.hcl:310, :344",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13551 the_platform_folder_carries_a_hierarchical_firewall_policy_denying_internet_ingress",
+      "infrastructure/terraform/modules/network/main.tf:388 google_compute_network_firewall_policy.baseline"
     ],
-    "gap": "Hierarchical policies.",
+    "gap": "The folder policy segments ingress only: egress segmentation and lateral paths between networks are still held by per-VPC rules and trust zones, not by a hierarchical or NGFW policy. The foundation root is applied by the owner (scripts/bootstrap-foundation.sh), never by a workflow, and has not been re-applied with this policy, which also needs roles/compute.orgFirewallPolicyAdmin on the folder.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2984,10 +2987,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_platform_folder_carries_a_hierarchical_firewall_policy_denying_internet_ingress; cd infrastructure/foundation && terraform init -backend=false && terraform test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 (lane L13): folder policy added in the foundation root, which holds the folder and the organisation's rights (the closure's security.tf has neither). terraform test in infrastructure/foundation: 16 passed, 0 failed. Mutations, each restored byte-for-byte: delegation action set to allow failed the acceptance test ('may deny or hand on, never allow'); 0.0.0.0/0 added to the delegated ranges failed it ('delegates the whole internet past the deny'); deleting the association failed both the acceptance test and the plan harness. Kept PARTIAL for egress segmentation and because nothing has applied it."
   },
   {
     "id": "R12-SEC-9132",
@@ -3099,14 +3102,14 @@
   {
     "id": "R12-SEC-9137",
     "status": "PARTIAL",
-    "current": "Terraform has distinct per-purpose KMS keys: the Binary Authorization attestor ASYMMETRIC_SIGN key for deploy signing (modules/binaryauthorization/main.tf:54), and secrets, registry, data, evidence, backup, models and staging encryption keys. One kms_protection_level applies to all of them (variables.tf:1043). In code, ADR 0110 separates policy, halt and envelope signing keys per class (apps/qip-api/src/signing.rs SIGNED_HERE). Workload mTLS identity would come from a CAS pool (security.tf, off).",
+    "current": "Distinct KMS keys per class with disjoint IAM, asserted across the tree: deployment signing (Binary Authorization attestor, granted only to CI), artefact signing (ADR 0110's four HSM keys, each granted roles/cloudkms.signer to exactly its one signer, the API runtime identity or the model-pack publisher, never CI), and encryption (CMEK keys, granted cryptoKeyEncrypterDecrypter only to Google service agents). Artefact keys gated on artefact_signing = null everywhere. Until 2027-01-31 the default runtime posture is one shared HMAC key across policy, halt and envelope (trust.rs).",
     "evidence": [
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:54",
-      "infrastructure/terraform/security.tf:111",
-      "backend/crates/apps/qip-api/src/signing.rs:55-60",
-      "infrastructure/terraform/variables.tf:1043"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:13672 no_principal_holds_a_grant_on_keys_of_two_classes",
+      "infrastructure/terraform/artefact-signing.tf:311 google_kms_crypto_key_iam_binding.artefact_signer",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:138 ci_signs",
+      "backend/crates/apps/qip-api/src/signing.rs:55-60"
     ],
-    "gap": "No Fabric identity or policy signing key exists as a Terraform KMS key with its own IAM, because the ADR 0110 per-class keys are not provisioned. The CAS pool for Fabric identity is off. No test asserts disjoint IAM across key classes. Custody/transfer keys do not exist (paper only), and user-auth keys are Identity Platform-managed with no stated separation. Until 2027-01-31 the default posture is one shared HMAC key across policy, halt and envelope (trust.rs:99), the opposite of separate trust domains.",
+    "gap": "artefact_signing is null everywhere, so the per-class signing keys are not in any committed plan; Fabric identity keys (the CAS pool in security.tf) are off; custody/transfer keys do not exist (paper only) and user-auth keys are Identity Platform-managed, so neither is a KMS class to separate; the runtime default is still one shared HMAC key until 2027-01-31.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3114,10 +3117,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "inspection",
+    "verification": "cargo test -p qip-acceptance --test infrastructure no_principal_holds_a_grant_on_keys_of_two_classes",
     "work_item": "",
     "size": "M",
-    "notes": "Round-2 independent audit, 2026-10-11: Unchanged in substance. The code-level per-class split is new."
+    "notes": "2026-10-18 (lane L13): disjointness test added (closure's no_principal_holds_roles_on_two_key_classes, renamed to the property). Mutations, each restored byte-for-byte: CI added to the artefact signer binding failed it; a workload granted on the evidence CMEK key failed it. Kept PARTIAL for the gaps above."
   },
   {
     "id": "R12-SEC-9138",
@@ -3543,26 +3546,28 @@
   },
   {
     "id": "R12-OBS-9157",
-    "status": "PARTIAL",
-    "current": "fabric-archive-backlog (ceiling 2, 0.99, Hour) in default_slos and reconciliation-breaks-zero-unexplained in blueprint_slos, both asserted by acceptance test. Register text stale (says no backlog SLO).",
+    "status": "COMPLETE",
+    "current": "Both are declared product objectives with targets: fabric-archive-backlog (backlog at most 2 sealed-but-unarchived segments, 0.99, Hour; one constructor slo::fabric_archive_backlog used by the declaration and the evaluation) and reconciliation-breaks-zero-unexplained (1.0). qip-fabricd's archiver thread, on every housekeeping pass of the binary, records the lag, counts the reading within or over the ceiling under qip_event_fabric_archive_backlog_checks_total{outcome} and writes the objective as qip_slo_observations / qip_slo_budget_consumed{objective=fabric-archive-backlog}. The kernel observes reconciliation-breaks-zero-unexplained on every cell report it ingests, refused reports included.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:427",
-      "backend/crates/apps/qip-fabricd/src/telemetry.rs:74,78",
-      "backend/crates/libs/qip-observability/src/slo.rs::default_slos",
-      "backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs::FED_OPERATIONAL_OBJECTIVES"
+      "backend/crates/libs/qip-observability/src/slo.rs:350 fabric_archive_backlog",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs:260 FabricdTelemetry::archive_lag evaluates the objective",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs telemetry.archive_lag(unarchived) on each pass; lib.rs archive thread",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs:630 a_backlog_past_its_ceiling_marks_the_archive_backlog_objective_missed",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs:375 fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_recorded_series",
+      "backend/crates/runtime/qip-kernel/src/platform.rs ingest_cell_report observes blueprint_objectives::RECONCILIATION_BREAKS_ZERO"
     ],
-    "gap": "Backlog objective is never evaluated (not in FED_OPERATIONAL_OBJECTIVES, no caller feeds archive lag into a ledger); reconciliation feed is off by default. Test asserts recording sites by substring only.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test slo",
+    "verification": "cargo test -p qip-fabricd --lib a_backlog_past_its_ceiling_marks_the_archive_backlog_objective_missed; cargo test -p qip-acceptance --test slo fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_recorded_series",
     "work_item": "",
     "size": "S",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Closed 2026-10-18 by lane L22. The backlog objective was declared and evaluated by nothing; qip-fabricd now evaluates it where the lag is measured. Readings 0, 2, 5 give three observations and a budget consumed past one. Mutation: drop the backlog-check count in archive_lag - the evaluation reads zero observations; restored. The acceptance test's recording-site check is now a whole-statement match rather than a substring, plus a check that the recorder evaluates; mutation: comment out the archiver's archive_lag call - it fires. No fabricd is deployed (event_fabric_broker is null everywhere), and the reconciliation objective moves only when a cell report arrives."
   },
   {
     "id": "R12-OBS-9158",

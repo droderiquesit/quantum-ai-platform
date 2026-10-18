@@ -101,6 +101,7 @@ dependencies = [
 name = "qip-acceptance"
 version = "0.1.0"
 dependencies = [
+ "qip-agency",
  "qip-agents",
  "qip-ai",
  "qip-api",
@@ -488,6 +489,7 @@ dependencies = [
  "qip-protocols",
  "qip-risk",
  "qip-routing",
+ "qip-sequencing",
  "qip-storage",
  "qip-strategy",
  "qip-streaming",

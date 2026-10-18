@@ -630,8 +630,10 @@ impl DecisionLoop {
                 "qip-edge-node: rolled the policy back from sequence {from} to {to} at the \
                  operator's request; the centre must ship a sequence above {from} to move on"
             ),
-            Some(RollbackOutcome::Refused { from, reason }) => eprintln!(
-                "qip-edge-node: the cell refused to roll back from sequence {from}: {reason}"
+            // The class, never the cell's message: see RollbackRefusal.
+            Some(RollbackOutcome::Refused { from, refusal, .. }) => eprintln!(
+                "qip-edge-node: the cell refused to roll back from sequence {from}: {}",
+                refusal.describe()
             ),
             None => {}
         }

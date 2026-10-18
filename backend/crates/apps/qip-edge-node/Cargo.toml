@@ -39,6 +39,11 @@ qip-transport.workspace = true
 # third external dependency.
 qip-protocols.workspace = true
 qip-orderbook.workspace = true
+# The capture-time clock discipline the drain runs over every applied tick
+# before it reaches the tick lake (TICK-1122, TICK-2052, TICK-2089). A
+# workspace crate `qip-edge` already depends on, not a third external
+# dependency.
+qip-sequencing.workspace = true
 # The strategy plan the payload names by digest is read from a file on the
 # node and compiled here, so the deployable names the specification, the
 # compiler and the catalogue the cell already depends on through `qip-edge`.
