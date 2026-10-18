@@ -1336,6 +1336,12 @@ pub mod names {
     pub const EVENT_FABRIC_SERVING: &str = "qip_event_fabric_serving";
     pub const EVENT_FABRIC_SEGMENTS_SEALED: &str = "qip_event_fabric_segments_sealed_total";
     pub const EVENT_FABRIC_ARCHIVE_LAG: &str = "qip_event_fabric_archive_lag_segments";
+    /// Archive-lag readings judged against the `fabric-archive-backlog`
+    /// ceiling, by `outcome` (`within`, `over`): the good and total counts
+    /// the objective is evaluated from, since a gauge alone keeps only the
+    /// last reading and no fraction can be read off it.
+    pub const EVENT_FABRIC_ARCHIVE_BACKLOG_CHECKS: &str =
+        "qip_event_fabric_archive_backlog_checks_total";
     pub const EVENT_FABRIC_GROUP_LAG: &str = "qip_event_fabric_group_lag";
 
     // Edge journal metrics (edge-node)

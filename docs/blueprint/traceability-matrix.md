@@ -8,17 +8,17 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 436 | 28.7% |
+| Blueprint completion (COMPLETE) | 437 | 28.8% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1223 | 80.6% |
-| Integrated (reached from a composition root) | 854 | 56.3% |
+| Integrated (reached from a composition root) | 855 | 56.3% |
 | Deployable (provisionable from committed config) | 206 | 13.6% |
 | End-to-end demonstrated | 19 | 1.3% |
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 436 |
-| PARTIAL | 935 |
+| COMPLETE | 437 |
+| PARTIAL | 934 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -52,7 +52,7 @@ register (ADR 0099), and there is no second one.
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
 | [GOV](#gov) | 26 | 10 | 11 | 3 | 2 | 0 | 21 | 21 | 2 |
 | [SEC](#sec) | 57 | 19 | 34 | 4 | 0 | 0 | 50 | 40 | 0 |
-| [OBS](#obs) | 50 | 18 | 26 | 6 | 0 | 0 | 44 | 42 | 1 |
+| [OBS](#obs) | 50 | 19 | 25 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
 | [GCP](#gcp) | 54 | 8 | 25 | 15 | 6 | 0 | 33 | 24 | 0 |
 | [API](#api) | 8 | 1 | 7 | 0 | 0 | 0 | 8 | 7 | 0 |
@@ -1416,7 +1416,7 @@ register (ADR 0099), and there is no second one.
 | R12-OBS-9154 | Traces for warm/API; correlation IDs bridge into Reflex/Fabric metadata | API uses Platform::observe_fresh (root lineage per record) and the cell derives its own chain id; no API-set id appears in cell metadata; spans export OTLP to OpenObserve, not Cloud Trace. | PARTIAL | Test that a correlation id set at the API appears in the cell's event metadata; Cloud Trace. |  | P2 | new acceptance test |  |
 | R12-OBS-9155 | Network telemetry: flow logs, connectivity tests, LB and Interconnect metrics | Flow logs on execution-node, standby, image-bake and console-egress subnets; NAT logging (tested); no Connectivity Tests resources. | PARTIAL | Not built. A google_network_management_connectivity_test needs a concrete source and destination (instance, IP, forwarding rule); the execution-node-to-API path has an internal Cloud Run service as its destination, which Connectivity Tests do not take as an endpoint, and execution nodes are not deployed in any environment (execution_nodes_enabled is false). A test declared against endpoints that do not exist would plan to nothing or fail on apply. |  | P2 | terraform plan |  |
 | R12-OBS-9156 | SLOs per plane with error budgets driving release policy | SLOs declared in code (slo.rs, tested); aiops::release_gate refuses a release per plane (tested via Platform::release_decision); no workflow consults it. | PARTIAL | Wire to promotion. |  | P1 | cargo test -p qip-kernel --test self_observation |  |
-| R12-OBS-9157 | Fabric backlog and ledger reconciliation are product SLOs | fabric-archive-backlog (ceiling 2, 0.99, Hour) in default_slos and reconciliation-breaks-zero-unexplained in blueprint_slos, both asserted by acceptance test. Register text stale (says no backlog SLO). | PARTIAL | Backlog objective is never evaluated (not in FED_OPERATIONAL_OBJECTIVES, no caller feeds archive lag into a ledger); reconciliation feed is off by default. Test asserts recording sites by substring only. |  | P1 | cargo test -p qip-acceptance --test slo |  |
+| R12-OBS-9157 | Fabric backlog and ledger reconciliation are product SLOs | Both are declared product objectives with targets: fabric-archive-backlog (backlog at most 2 sealed-but-unarchived segments, 0.99, Hour; one constructor slo::fabric_archive_backlog used by the declaration and the evaluation) and reconciliation-breaks-zero-unexplained (1.0). qip-fabricd's archiver thread, on every housekeeping pass of the binary, records the lag, counts the reading within or over the ceiling under qip_event_fabric_archive_backlog_checks_total{outcome} and writes the objective as qip_slo_observations / qip_slo_budget_consumed{objective=fabric-archive-backlog}. The kernel observes reconciliation-breaks-zero-unexplained on every cell report it ingests, refused reports included. | COMPLETE |  |  | P1 | cargo test -p qip-fabricd --lib a_backlog_past_its_ceiling_marks_the_archive_backlog_objective_missed; cargo test -p qip-acceptance --test slo fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_recorded_series |  |
 | R12-OBS-9158 | AIOps SRE agent diagnoses and executes pre-approved actions with audit | Deep brain's operations loop detects iteration level shifts, opens incidents with timelines and applies the one runbook (shed research) with audit. Register text stale (says no Effector). | PARTIAL | No incident/PR integration, no reading of recent diffs, no scaling, rollback, restart or drain actions. |  | P2 | cargo test -p qip-observability --test aiops |  |
 | R12-OBS-9159 | Reflex SLOs declared and measured | All five declared as reflex SLOs with targets (tested); none measured on a deployment. | PARTIAL | Declare the missing objectives, record them, and prove ingestion. |  | P1 | cargo test -p qip-acceptance --test slo |  |
 | R12-OBS-9160 | Fabric SLOs declared and measured | Append latency, group lag, archive lag, refusals recorded by fabricd; quorum/under-replication/mirror lag impossible on a single node; no declared Fabric SLOs. | PARTIAL | Declare the missing objectives, record them, and prove ingestion. |  | P1 | cargo test -p qip-acceptance --test slo |  |
