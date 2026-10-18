@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 493 | 32.5% |
+| Blueprint completion (COMPLETE) | 494 | 32.5% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1226 | 80.8% |
 | Integrated (reached from a composition root) | 870 | 57.3% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 493 |
-| PARTIAL | 878 |
+| COMPLETE | 494 |
+| PARTIAL | 877 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -41,7 +41,7 @@ register (ADR 0099), and there is no second one.
 | [DATA](#data) | 95 | 20 | 65 | 10 | 0 | 0 | 83 | 74 | 1 |
 | [EVID](#evid) | 25 | 3 | 22 | 0 | 0 | 0 | 24 | 21 | 0 |
 | [TICK](#tick) | 97 | 22 | 72 | 3 | 0 | 0 | 93 | 83 | 1 |
-| [WORLD](#world) | 69 | 31 | 33 | 5 | 0 | 0 | 62 | 57 | 1 |
+| [WORLD](#world) | 69 | 32 | 32 | 5 | 0 | 0 | 62 | 57 | 1 |
 | [REASON](#reason) | 41 | 15 | 24 | 2 | 0 | 0 | 39 | 39 | 0 |
 | [AMBIENT](#ambient) | 48 | 21 | 25 | 2 | 0 | 0 | 46 | 45 | 9 |
 | [AGENCY](#agency) | 69 | 39 | 23 | 0 | 7 | 0 | 63 | 61 | 0 |
@@ -797,7 +797,7 @@ register (ADR 0099), and there is no second one.
 | R12-WORLD-10090 | Evidence updates latent state via typed knowledge events | NOW Brain absorbs typed observations each cycle and journals schema-closed BeliefDeltas that refuse a raw payload field. | PARTIAL | Inputs come from in-process bar history and the world model, not scout/evidence workers over typed Fabric knowledge events. |  | P2 | cargo test -p qip-world-model |  |
 | R12-WORLD-10091 | Forecast Router fans multi-horizon questions to the model society | lattice::route weights a horizon population from a reputation cache; lattice stage issues per-horizon forecasts from NOW latent returns. | PARTIAL | No Fabric task contracts; no fan-out to agents, world models or simulators; microsecond horizon never issued. | R12-WORLD-10090 | P3 | unit tests |  |
 | R12-WORLD-10120 | NOW Brain estimates current latent state and uncertainty | Each cycle observations are stepped into NowBrain; promoted NowStore state carries mean and uncertainty updated per observation, contradiction widening it. | COMPLETE | None for the requirement; not deployed. |  | P2 | cargo test -p qip-world-model |  |
-| R12-WORLD-10170 | Build phase 11: NOW + Forecast Lattice | NOW Brain promoted state and lattice §9.14 forecasts with per-horizon calibration run in the cycle. | PARTIAL | No calibration SLO exists; no phase exit test. | R12-WORLD-10091 | P3 | per-deliverable checks above |  |
+| R12-WORLD-10170 | Build phase 11: NOW + Forecast Lattice | NOW Brain promoted state and the lattice's §9.14 forecasts with per-horizon calibration run in every cycle, and the lattice now carries a calibration objective: a running direction-call Brier bound (CALIBRATION_BRIER_BOUND = 0.30, above the 0.25 a forecast of one half always scores) judged per horizon once CALIBRATION_MIN_RESOLVED = 20 resolutions exist, written each cycle as qip_lattice_calibration_slo_breached{horizon} (1 breached, 0 met, no series while unjudged). | COMPLETE |  | R12-WORLD-10091 | P3 | cd backend && cargo test -p qip-kernel --test now_lattice |  |
 | R12-WORLD-10187 | Every material forecast carries horizon, distribution, calibration, disagreement, lineage and expiry | qip_contracts::forecast::Forecast requires horizon, distribution, calibration, disagreement, evidence lineage and expiry and refuses each broken invariant; lattice issues it. | PARTIAL | Decided by ADR 0140 (accepted 2026-10-18): A forecast is material when it reaches a size, a capital plan, a published record or a promotion, and every material forecast is a qip_contracts Forecast: lattice members, DemandForecast and the return forecast an ApprovedThesis is sized on. Code left: lattice members as Forecast, DemandForecast holding a Forecast, ApprovedThesis carrying its return Forecast with refusal and round-trip tests. |  | P2 | cargo test -p qip-contracts |  |
 | R12-WORLD-1003 | Numerous concurrent world models, not one monolith | Federation of seven members is built and run each UNDERSTAND pass and journaled. | PARTIAL | Decided by ADR 0125 (accepted 2026-10-18): An advisory stage (federation, lattice staleness, symbolic derivation, refutation) may veto a hypothesis or narrow a size inside (0, 1], compounding with ADR 0063/0066's caps, and never enlarges one. Code left: the federation narrowing schedule in Platform::construct_from's caps map, with a test that an agreeing population leaves every cap at one and a disagreeing one narrows; Federation::branch still has no cycle caller. |  | P2 | cargo test -p qip-kernel (new test: cycle consults >1 federated model) |  |
 | R12-WORLD-1016 | Represent uncertainty and contradiction explicitly | Reasoning engine beliefs carry probability and contradiction resolution types; world-model tests cover contradictions; self-model exists in qip-learning-engine. Episodic/semantic memories are not shown to carry uncertainty. | PARTIAL | Uncertainty is shown on four of the five model kinds by acceptance tests (2026-10-18): world Fact (confidence refused outside [0,1]), episodic ClaimRecord.confidence, self-model CapabilityEstimate (refuses a thin sample, never reports certainty), reasoning-engine confidence-by-arithmetic. Contradiction records exist only for the world graph (graph::Contradiction, both beliefs kept) and the reasoning engine (ContradictionResolution); the episodic, semantic and self models hold no contradiction record, and nothing shows a semantic-memory type carrying confidence. Uniform fields across all five kinds are unbuilt. |  | P1 | cd backend && cargo test -p qip-acceptance --test uncertainty_records && cargo test -p qip-world-model --test contradictions |  |
