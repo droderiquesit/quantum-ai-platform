@@ -8,7 +8,7 @@ register (ADR 0099), and there is no second one.
 
 | Measure | Count | Share of applicable |
 |---|---|---|
-| Blueprint completion (COMPLETE) | 442 | 29.1% |
+| Blueprint completion (COMPLETE) | 443 | 29.2% |
 | Implemented (behaviour exists in code) | 1330 | 87.6% |
 | Tested (a named test demonstrates it) | 1223 | 80.6% |
 | Integrated (reached from a composition root) | 854 | 56.3% |
@@ -17,8 +17,8 @@ register (ADR 0099), and there is no second one.
 
 | Status | Requirements |
 |---|---|
-| COMPLETE | 442 |
-| PARTIAL | 929 |
+| COMPLETE | 443 |
+| PARTIAL | 928 |
 | MISSING | 114 |
 | INCORRECT | 1 |
 | BLOCKED | 31 |
@@ -50,7 +50,7 @@ register (ADR 0099), and there is no second one.
 | [EXPAND](#expand) | 68 | 25 | 41 | 2 | 0 | 0 | 65 | 64 | 3 |
 | [EVENT](#event) | 11 | 3 | 8 | 0 | 0 | 0 | 11 | 11 | 0 |
 | [COMMERCE](#commerce) | 17 | 2 | 15 | 0 | 0 | 0 | 17 | 17 | 0 |
-| [GOV](#gov) | 26 | 10 | 11 | 3 | 2 | 0 | 21 | 21 | 2 |
+| [GOV](#gov) | 26 | 11 | 10 | 3 | 2 | 0 | 21 | 21 | 2 |
 | [SEC](#sec) | 57 | 19 | 34 | 4 | 0 | 0 | 50 | 40 | 0 |
 | [OBS](#obs) | 50 | 18 | 26 | 6 | 0 | 0 | 44 | 42 | 1 |
 | [CICD](#cicd) | 60 | 20 | 29 | 3 | 8 | 0 | 44 | 36 | 0 |
@@ -1312,7 +1312,7 @@ register (ADR 0099), and there is no second one.
 | R12-GOV-10005 | Cloud Asset Inventory records asset and change history | No cloud_asset resource in Terraform. | MISSING | Declare an asset feed/export for each project. |  | P2 | terraform plan shows google_cloud_asset_project_feed |  |
 | R12-GOV-10109 | Validated results reach the hot path only as signed packages | Cells apply only payloads verified down the signed path and nothing but the cell's own verification can mint a verified policy, halt or grant; the edge node links no cognitive crate; and a promoted distillate reaches the manifest only when a verified release pack names its artifact, with qip-api admitting an empty pack set (every distillate withheld) when QIP_MODEL_PACKS_PATH is unset. The check is met and model packages travel the same signed path. | COMPLETE |  | R12-REFLEX-10085 | P0 | cargo test -p qip-acceptance --test downward_signed_path; cargo test -p qip-kernel --test release_packs; cargo test -p qip-acceptance --test arch_001_independent_reflex |  |
 | R12-GOV-10149 | prod: live bounded execution with strict isolation and signed artifacts | prod exists as a project with paper ceiling; Terraform and composition roots refuse live ceilings; prod promoted by nobody. | BLOCKED | Live execution in prod. |  | P0 | n/a |  |
-| R12-GOV-1017 | Autonomous operation only inside bounded authority | AutonomyLevel::deployable refuses live ceilings at start-up in all three central composition roots; Terraform refuses them at plan; acceptance tests scan every binary that reads the ceiling. | PARTIAL | Cite or add per-activity authority bounds (research budget, promotion rule, allocation envelope) with tests. |  | P0 | cargo test -p qip-acceptance --test paper_boundary |  |
+| R12-GOV-1017 | Autonomous operation only inside bounded authority | Discovery, research, training, promotion, deployment and allocation each run inside a bound that refuses, and one suite drives four of them side by side: the research budget ledger refuses the call past its budget, a candidate with no evidence is not promoted and a capital-holding rung needs a dual approval, a verified capital envelope refuses an order that does not fit whole, a foreign cell, an expired grant and an unverified signature, and no live autonomy ceiling is deployable. bounded_authority.rs holds all four. | COMPLETE |  |  | P0 | cd backend && cargo test -p qip-acceptance --test bounded_authority |  |
 | R12-GOV-1042 | AI may originate but act only inside a pre-authorized envelope | Edge cells trade only under verified, unexpired signed capital envelopes; the downlink refuses to build without a key. Central autonomy is bounded by the ceiling. Not deployed. | PARTIAL | Deployment of an envelope-bounded cell. |  | P0 | cargo test -p qip-edge --test cell --test envelope_expiry |  |
 | R12-GOV-3029 | Communications & Conduct Brain gates external communications | ConductGate's seven checks (truthfulness/provenance, identity/disclosure, channel policy, audience, jurisdiction, market conduct and the rest) are built inside ActionGuard and every communication draft passes them in ActionGuard::preflight before any adapter call; no adapter is ever called without a guard, and each check alone withholds the plan. The check (a draft failing any single check is blocked; removing a check lets a failing draft through) is met on the only acting path (qip-cli agency, shadow; under ADR 0114 every shipped adapter refuses, so no external channel exists yet). | COMPLETE |  |  | P0 | cargo test -p qip-agency --test agency each_guard_check_alone_withholds_the_plan_before_any_adapter_call; cargo test -p qip-agency --test conduct_brain |  |
 | R12-GOV-3030 | Post-publication monitoring of external communications | No post-publication monitoring in code. | MISSING | Entire capability. |  | P2 | new test in qip-agency |  |
