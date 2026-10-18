@@ -2083,23 +2083,26 @@
   },
   {
     "id": "R12-MODEL-3093",
-    "status": "PARTIAL",
-    "current": "A synthetic-credit forecast market settles by log scoring against the aggregate; market share enters influence, duplicates are clustered, and the kernel computes the aggregate each LEARN (advisory).",
+    "status": "COMPLETE",
+    "current": "A synthetic-credit forecast market settles by log scoring against the aggregate, and the kernel computes the tournament aggregate each LEARN (model_tournament.rs:445, advisory). The aggregate's weights are influence: the reputation share (settled balance) multiplied by calibration, information, cost, latency and regime survival, each in (0, 1] and able only to reduce it, then normalised. With every other factor tied the normalised weight is exactly ForecastMarket::shares, and the pooled probability is the share-weighted mix; a test now asserts both.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/forecast_market.rs"
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:1424 the influence product, market share first",
+      "backend/crates/services/qip-learning-engine/src/forecast_market.rs:115 ForecastMarket::shares",
+      "backend/crates/services/qip-learning-engine/src/tournament.rs:2070 with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares",
+      "backend/crates/runtime/qip-kernel/src/model_tournament.rs:445 the LEARN-stage aggregate"
     ],
-    "gap": "Aggregate weights are influence (share x calibration x information x cost x latency x survival), not equal to reputation shares, and are equal until a forecaster is promoted; no test asserts weights equal shares.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new test to be written (see gap); cargo test -p <owning crate>",
+    "verification": "cargo test -p qip-learning-engine --lib with_every_other_factor_equal_the_aggregate_weights_are_the_reputation_shares",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L23: the check reads 'weights are influence and the reputation share is its first factor'; weights equal shares exactly when the other five factors tie, which is what the test pins. Mutation fired: replacing market_share with 1.0 in the product gave weight 0.5 against share 0.5123. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
   },
   {
     "id": "R12-MODEL-3094",
