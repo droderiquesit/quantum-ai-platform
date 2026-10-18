@@ -1358,13 +1358,15 @@
   {
     "id": "R12-QUANT-4063",
     "status": "PARTIAL",
-    "current": "Quantum path is now asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts with JobClass research classes.",
+    "current": "Quantum path is asynchronous via QuantumGateway submit/poll; qip-contracts DecisionRequest/SolverResult are solver-agnostic QUBO contracts. The kernel now states a discrete solve in them: ComputeRouter keeps the QUBO and each QUBO run's assignment on its RoutingDecision, and Platform::route_quantum_decisions (no longer a stub) converts the previous DECIDE's solve into a DecisionRequest, a recomputed classical SolverResult, the quantum or quantum-inspired result where one ran, and a contract RoutingDecision, journalled on optimization.completed under kernel/quantum-routing.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/quantum.rs:21-310",
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-235 JobClass",
-      "backend/crates/libs/qip-quantum/src/gateway.rs::QuantumGateway"
+      "backend/crates/runtime/qip-kernel/src/quantum_routing.rs contract_of / QuantumRoutingRecorded",
+      "backend/crates/runtime/qip-kernel/src/platform.rs route_quantum_decisions (grep -n 'fn route_quantum_decisions')",
+      "backend/crates/services/qip-optimization-engine/src/router.rs RoutedQubo, SolverRun.assignment",
+      "backend/crates/runtime/qip-kernel/tests/solver_routing.rs a_discrete_solve_is_stated_in_the_quantum_contract_with_its_classical_baseline_recomputed"
     ],
-    "gap": "ComputeRouter takes PortfolioProblem and returns its own RoutingDecision; nothing in production builds a qip_contracts::quantum::DecisionRequest or SolverResult. The kernel seam meant to journal contract decisions, Platform::route_quantum_decisions in qip-kernel platform.rs, is a stub returning Vec::new(). Closing needs a router-side conversion (the QUBO the arm submits as a DecisionRequest, each run as a SolverResult) and that stub replaced by a call journaling it; the stub is lane L01's file.",
+    "gap": "The default composition never reaches it: PlatformConfig::default's Mandate has maximum_holdings None, so DECIDE solves a continuous quadratic program, which has no QUBO, and route_quantum_decisions journals nothing there (the test pins that). It runs for a mandate that sets maximum_holdings. A quantum-enabled continuous problem still states nothing, because the contract's classical result must be a classical solve of the same QUBO the quantum arm was sent, and the router solves the QP baseline instead; stating it needs the router to also solve that QUBO classically (a design decision on its cost against ADR 0006's baseline). No test drives the quantum result arm end to end.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1374,10 +1376,10 @@
       "R12-QUANT-4029"
     ],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test solver_routing",
     "work_item": "",
     "size": "M",
-    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change."
+    "notes": "Gap corrected 2026-10-18 by lane L19 after reading the code: the earlier gap was right in substance; it now names the stub seam. Not closed: the closure needs platform.rs work beyond a call-site change. Advanced 2026-10-18 (lane L01), kept PARTIAL. Mutation: making route_quantum_decisions discard the pending solve failed the test at 'one solve, one contract record'; restored byte-for-byte, it passes. Found on the way: weights cannot stand in for the assignment (an encoding whose per-holding weight is zero loses the selection), so SolverRun now carries it."
   },
   {
     "id": "R12-QUANT-4064",
