@@ -776,6 +776,15 @@ export async function runTask({
     ALGORIK_WORKER_VERTEX_PROJECT: await metadataProject(fetchImpl),
     ALGORIK_WORKER_MODEL: packet.model,
     ALGORIK_WORKER_MAX_CALLS: "1",
+    // The gateway refuses to start without its four budgets (R12-FINOPS-10140).
+    // A task's ledger is its own, so one call is the whole of its day, its
+    // month and its build and tool allowance; the fleet's day across tasks is
+    // bounded in dollars by the ceiling refusal above, which these do not
+    // replace.
+    ALGORIK_WORKER_DAILY_CALLS: "1",
+    ALGORIK_WORKER_MONTHLY_CALLS: "1",
+    ALGORIK_WORKER_BUILD_CALLS: "1",
+    ALGORIK_WORKER_TOOL_CALLS: "1",
     ALGORIK_WORKER_MAX_TOKENS: String(packet.max_output_tokens),
   });
   if (config.problems.length > 0) return refuse(78, config.problems.join("; "));

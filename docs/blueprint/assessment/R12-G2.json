@@ -102,15 +102,13 @@
   {
     "id": "R12-REASON-9005",
     "status": "PARTIAL",
-    "current": "qip-reasoning-engine has deterministic rules, a constraint module, Bayesian belief updates and red-team challenges, composed into the kernel's REASON stage; there is no external solver and no proof object an independent checker re-verifies.",
+    "current": "Each formed hypothesis carries a SymbolicDerivation; symbolic_stage::verify is an in-tree checker that re-derives the rule verdict, timeline, posterior, acting answer, intervention, violated assumptions and uncertainty from the record and refuses at the first part that does not reproduce; corrupting any of them fails verification (five tests).",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs",
-      "backend/crates/services/qip-reasoning-engine/src/engine.rs:111 red_team",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:179 ReasoningEngine use",
-      "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs",
-      "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:768 replay",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654-748 five corruption tests"
     ],
-    "gap": "A checkable proof/constraint certificate type and a re-checker; Z3/OR-Tools are refused by ADR 0002 so an in-tree checker is the only route.",
+    "gap": "The checker runs only in tests: no binary or operator surface calls symbolic_stage::replay/verify on a journal, and reasoning does not run on separately provisioned compute (ADR 0002's refusal of an external solver stands).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -118,10 +116,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoners",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 by lane L05: the checkable artefact and its re-checker now exist and each part's comparison was mutation-verified (disable -> its test fails 'a corrupted derivation was accepted'); PARTIAL kept because nothing deployed runs the checker."
   },
   {
     "id": "R12-TICK-9006",
