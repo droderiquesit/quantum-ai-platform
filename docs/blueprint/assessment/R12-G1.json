@@ -239,14 +239,14 @@
   },
   {
     "id": "R12-DATA-8011",
-    "status": "PARTIAL",
-    "current": "NewsItem carries a SourceManifest (hash, locator) and no text field, so news text cannot be persisted; other connectors (market-ingestion) persist derived ticks/events. No general transient scout worker with an explicit discard step.",
+    "status": "COMPLETE",
+    "current": "NewsItem, the durable record of an ingested document, carries a SourceManifest (source, locator, byte length, SHA-256, retrieval instant) and no field able to hold the source text; a structural unit test pins its serialised key set exactly and asserts the article's own bytes never appear in the serialised record, so adding a body String (or any field) fails. The other intelligence bodies (FundamentalUpdate, MacroObservation, AlternativeDataPoint, ReferenceDataUpdate, DataQualityFailure) carry identifiers, units and values, not document text.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/intelligence.rs:182-201 NewsItem.manifest, no text field",
+      "backend/crates/libs/qip-financial/src/intelligence.rs:183-221 NewsItem.manifest, no text field",
       "backend/crates/libs/qip-financial/src/manifest.rs:63 SourceManifest",
-      "backend/crates/libs/qip-financial/src/manifest.rs:191 the_hash_is_of_the_bytes_that_were_read (unit test)"
+      "backend/crates/libs/qip-financial/src/intelligence.rs:680 an_ingested_news_item_serialises_no_field_able_to_hold_the_source_text (unit test; mutation: adding a serde-defaulted body: String to NewsItem fails the key-set assertion)"
     ],
-    "gap": "Pipeline-level guarantee for every connector (not only news), evidence scoring before persistence, and a test that fails if a connector writes a raw payload.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -254,10 +254,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial manifest",
+    "verification": "cargo test -p qip-financial --lib an_ingested_news_item_serialises_no_field_able_to_hold_the_source_text",
     "work_item": "",
     "size": "M",
-    "notes": "Structural for NewsItem only; no test asserts the absence of a text field."
+    "notes": "Closed 2026-10-18 by lane L24 against the row's own verification clause (a body String added to NewsItem must fail a structural test). Mutation-verified: adding #[serde(default)] pub body: String to NewsItem fails the exact key-set assertion; restored byte for byte, passes. GCP-side persistence (warehouse) is guarded separately by R12-DATA-8123."
   },
   {
     "id": "R12-DATA-8012",
@@ -2725,13 +2725,14 @@
   {
     "id": "R12-DATA-8123",
     "status": "PARTIAL",
-    "current": "qip-mesh BigQueryWarehouse writes derived rows; dataset gated off; no schema check against document bodies.",
+    "current": "qip-mesh BigQueryWarehouse::insert, the one seam every warehouse row passes, refuses before any connection a row carrying a column named for a document body (body, text, html, content, document, article, raw, raw_payload, full_text, document_text, article_text, transcript; whole-name, case-insensitive) and admits columns describing a document (body_sha256, body_bytes). The adapter has no production caller and the dataset is gated off (enable_bigquery = false).",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/bigquery.rs",
-      "backend/crates/services/qip-mesh/tests/bigquery.rs",
-      "infrastructure/terraform/modules/data/main.tf:85"
+      "backend/crates/services/qip-mesh/src/bigquery.rs:81 DOCUMENT_COLUMNS",
+      "backend/crates/services/qip-mesh/src/bigquery.rs:580 insert refuses a document column",
+      "backend/crates/services/qip-mesh/tests/bigquery.rs:391 a_bigquery_row_carrying_a_document_body_column_is_refused_before_any_connection",
+      "infrastructure/terraform/modules/data/main.tf:85 google_bigquery_dataset.research behind enable_bigquery"
     ],
-    "gap": "Enable dataset; schema guard.",
+    "gap": "The schema guard holds at the adapter; what remains is that nothing writes: no binary constructs BigQueryWarehouse or calls insert, and enable_bigquery (an owner switch) is false, so the K3 tier does not exist to hold rows.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2739,10 +2740,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-mesh --test bigquery",
+    "verification": "cargo test -p qip-mesh --test bigquery a_bigquery_row_carrying_a_document_body_column_is_refused_before_any_connection",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L24 2026-10-18: schema guard added and mutation-verified (making the column match always false lets a body column through and the test fails at the not-refused arm); restored, passes. Kept PARTIAL because the clause is not met on a running path: the warehouse has no production caller and the dataset is gated off."
   },
   {
     "id": "R12-DATA-8124",

@@ -470,7 +470,16 @@ fn the_agent_roster_validates_at_assembly() -> Result<()> {
     // A platform whose governance does not hold should fail to assemble, not
     // fail on the first decision it makes.
     let platform = platform(PlatformConfig::default())?;
-    assert_eq!(platform.organisation().len(), 18);
+    // The organisation the platform assembles is the standard one, counted
+    // from the list that builds it rather than from a literal that went
+    // stale every time a specialist was added.
+    let standard = qip_investment_agents::chief::standard_agents(
+        std::sync::Arc::new(qip_investment_agents::Desk::empty(start())),
+        start(),
+        Vec::new(),
+        false,
+    );
+    assert_eq!(platform.organisation().len(), standard.len());
     let findings = platform.review_governance(start());
     let errors: Vec<_> = findings
         .iter()

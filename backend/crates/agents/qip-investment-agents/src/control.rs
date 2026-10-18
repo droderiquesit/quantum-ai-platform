@@ -16,6 +16,22 @@ use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
 use std::sync::Arc;
 
+/// Standard deviations in the generated stress day.
+const STRESS_SIGMAS: f64 = 3.0;
+
+/// Trading days a year, to take annualised volatility to one day.
+const TRADING_DAYS: f64 = 252.0;
+
+/// Limit kinds whose measured value scales linearly with a proportional cut
+/// in gross exposure, by `LimitKind::label`.
+const SCALES_WITH_GROSS: [&str; 5] = [
+    "max_leverage",
+    "max_volatility",
+    "max_value_at_risk",
+    "max_expected_shortfall",
+    "max_survival_gross",
+];
+
 /// Evaluates the book against its limits.
 #[derive(Debug)]
 pub struct RiskControl {
@@ -140,6 +156,66 @@ impl Agent for RiskControl {
                 "a limit check is arithmetic against declared limits; it is not a view on whether the position is a good idea"
                     .to_string(),
             ]);
+
+        // Forecast: the tail the risk engine forecast for the book, at the
+        // highest confidence it computed. Read, not recomputed — the state
+        // is the engine's aggregate and a second derivation here would be a
+        // second answer — and reported only where a figure exists, so a
+        // state that forecast nothing is not reported as a zero tail.
+        for (label, tail) in [
+            ("forecast_value_at_risk", &risk.state.value_at_risk),
+            (
+                "forecast_expected_shortfall",
+                &risk.state.expected_shortfall,
+            ),
+        ] {
+            if let Some((_, value)) = tail
+                .iter()
+                .filter(|(_, value)| value.is_finite())
+                .max_by(|a, b| a.0.cmp(b.0))
+            {
+                builder = builder.fact(computed(ctx, label, *value, "ratio", &["risk_state"]));
+            }
+        }
+
+        // Stress: a generated scenario rather than a forecast — a three-sigma
+        // day at the book's own annualised volatility, scaled by its
+        // leverage, as a fraction of equity. Not a tail estimate: it says what
+        // one bad day of the size the book's volatility already implies would
+        // cost, which is the figure a desk can hold against its drawdown room.
+        let equity = risk.state.equity.to_f64();
+        let leverage = risk.state.gross_exposure.to_f64() / equity;
+        if equity > 0.0 && risk.state.volatility > 0.0 && leverage.is_finite() {
+            builder = builder.fact(computed(
+                ctx,
+                "stress_loss_3sd_day",
+                STRESS_SIGMAS * risk.state.volatility / TRADING_DAYS.sqrt() * leverage,
+                "ratio",
+                &["risk_state"],
+            ));
+        }
+
+        // Recommendation: the gross exposure to shed so every blocking limit
+        // whose measure scales with the book's size is back inside its
+        // bound. Leverage, volatility, the tail figures and the survival
+        // ceiling all scale linearly with a proportional cut, so the cut is
+        // set by the worst utilisation among them. A breach of any other
+        // kind — a drawdown, a cash floor — is not cleared by selling, and
+        // is left to the block above rather than given a number that would
+        // not fix it. Zero when nothing that scales blocks.
+        let scale_to_clear = blocking
+            .iter()
+            .filter(|breach| SCALES_WITH_GROSS.contains(&breach.limit_kind.as_str()))
+            .filter(|breach| breach.observed > breach.bound && breach.bound > 0.0)
+            .map(|breach| breach.bound / breach.observed)
+            .fold(1.0_f64, f64::min);
+        builder = builder.fact(computed(
+            ctx,
+            "recommended_gross_reduction",
+            risk.state.gross_exposure.to_f64() * (1.0 - scale_to_clear),
+            "currency",
+            &["risk_state", "limit_set"],
+        ));
 
         if direction == Direction::Negative {
             builder = builder.falsifiers(vec![
