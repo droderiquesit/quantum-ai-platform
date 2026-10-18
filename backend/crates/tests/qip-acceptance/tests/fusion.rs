@@ -94,6 +94,8 @@ fn trace(object: &str, before: f64, after: f64, turn: i64) -> MarketTrace {
                     at: at(t),
                     mid: if t < turn { before } else { after },
                     spread_bps: 2.0,
+                    depth: None,
+                    imbalance: None,
                 }
             })
             .collect(),
@@ -197,6 +199,8 @@ fn nothing_recorded_or_printed_after_the_fusion_instant_changes_the_fused_state(
             at: at(301),
             mid: 1.0,
             spread_bps: 900.0,
+            depth: None,
+            imbalance: None,
         });
     }
     let after = fuse(&graph, &traces, at(300), &config())?;

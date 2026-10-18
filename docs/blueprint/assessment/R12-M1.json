@@ -32,7 +32,7 @@
       "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse",
       "backend/crates/apps/qip-deepbrain/src/tick_desk.rs::TickDesk"
     ],
-    "gap": "Tick desk off by default; no test that a decision consumes the fused record and changes when either input is removed.",
+    "gap": "Tick desk off by default; no test that a decision consumes the fused record and changes when either input is removed. REASON (reason_about_the_queue in platform.rs) forms its hypothesis through the cost router and the agent panel and holds no seam for a prior from outside the opportunity; a fused posterior is a belief about an instrument reacting, so injecting it as the panel prior is a decision-path design choice (which confidence it moves, and under which gate) that needs an ADR, not a call-site change.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -45,7 +45,7 @@
     "verification": "an integration test in qip-kernel asserting a decision reads a fused record",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; wiring FusedState::posteriors into REASON would change what a decision rests on without a recorded design. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-WORLD-1003",

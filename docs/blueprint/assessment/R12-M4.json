@@ -230,7 +230,7 @@
       "backend/crates/libs/qip-contracts/src/ambient.rs:76-160 ambient signal types",
       "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs"
     ],
-    "gap": "Distilled ambient models in fast lanes with test.",
+    "gap": "Distilled ambient models in fast lanes with test. The NOW stage's expected-state estimator is a local-level filter over bounded variables, and qip_training::distil takes a fitted teacher with training rows; no teacher exists for it, so distilling it would fit a student to the filter's own outputs and call that a distillate. A cell plan carrying an inline ambient model also needs a promoted model pack release (R12-CONTRACT-7064) to be named to a cell.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -241,7 +241,7 @@
     "verification": "",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; a distillate with no teacher is the filter relabelled. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4012",

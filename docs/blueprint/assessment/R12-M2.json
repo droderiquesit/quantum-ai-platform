@@ -1911,11 +1911,13 @@
   {
     "id": "R12-TICK-2081",
     "status": "PARTIAL",
-    "current": "fusion::fuse joins knowable world events, entities, exposure paths and beliefs with replayed tick traces as of one instant, producing watch graphs, measured reactions, belief updates and mismatches; the tick desk calls it.",
+    "current": "qip_kernel::fusion::fuse measures, per event and instrument, the mid reaction and spread change plus depth_ratio, flow_imbalance, realised_vol_bps, venue_dislocation_bps and clears_spread (a move larger than the spread it costs to cross), from TracePoint depth and imbalance and the per-venue mids; qip-deepbrain tick_desk fills depth and imbalance from the replayed book's top-of-book sizes. The desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/fusion.rs::fuse"
+      "backend/crates/runtime/qip-kernel/src/fusion.rs::MeasuredReaction",
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::each_market_input_the_trace_records_appears_in_the_measured_reaction",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs TracePoint depth imbalance"
     ],
-    "gap": "Market side carries only mid and spread reactions; regime, liquidity, flow, dislocation and feasibility are not fused.",
+    "gap": "Fusion now carries liquidity, flow, regime (realised volatility), dislocation and feasibility, but only behind the tick desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it; the desk's fill of depth and imbalance from the replayed book has no test of its own (the round keeps counts, not the fused reactions). The regime is a realised-volatility reading, not a classified regime label, and flow is book imbalance, not signed trade flow.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -1923,10 +1925,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "a qip-kernel integration test over a recorded world event and its tick reaction",
+    "verification": "cargo test -p qip-kernel --test fusion",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: five inputs fused; mutations (depth ratio against itself, dislocation needing three venues, feasibility compared with zero) each failed the new test. Kept PARTIAL: desk off by default and its fill untested."
   },
   {
     "id": "R12-TICK-2082",
