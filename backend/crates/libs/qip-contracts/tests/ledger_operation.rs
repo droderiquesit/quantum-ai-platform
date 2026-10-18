@@ -614,3 +614,34 @@ fn a_transfer_to_itself_and_an_inventory_move_between_counterparties_are_refused
     );
     assert!(Validated::new(merged_lot).is_err());
 }
+
+/// Mutation: return `None` from `LedgerOperationFields::owner` for the
+/// treasury kinds — the grant's event is booked with no owner.
+#[test]
+fn an_operation_with_exactly_one_owner_books_its_event_under_that_owner_and_the_rest_stay_unowned()
+{
+    let mut owned = 0;
+    for (i, (kind, _)) in every_kind().into_iter().enumerate() {
+        let fields = operation(&format!("op-{i}"), kind);
+        let event = fields.to_event().expect("builds");
+        assert_eq!(event.owner(), fields.owner(), "operation {i}");
+        match &fields.kind {
+            OperationKind::TreasuryAllocation { .. }
+            | OperationKind::CapitalGrantFunded { .. }
+            | OperationKind::CapitalGrantRecalled { .. } => {
+                assert_eq!(event.owner(), Some("paper-pool"), "operation {i}");
+                owned += 1;
+            }
+            OperationKind::MandateSubscription { mandate, .. } => {
+                assert_eq!(event.owner(), Some(mandate.as_str()));
+                owned += 1;
+            }
+            _ => assert_eq!(
+                event.owner(),
+                None,
+                "operation {i} names no single owner and was attributed one"
+            ),
+        }
+    }
+    assert!(owned >= 3, "premise: the table holds owned kinds ({owned})");
+}

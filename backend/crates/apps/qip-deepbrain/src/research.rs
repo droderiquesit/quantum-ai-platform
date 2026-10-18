@@ -1945,7 +1945,7 @@ impl ResearchLoop {
             SignalClass::Assumption => Pathway::ReflexModelUpdate,
             SignalClass::Capital => Pathway::CapitalPreparation,
         };
-        AmbientSignal::new(
+        let signal = AmbientSignal::new(
             format!("ambient-{}", self.issued),
             class,
             qip_expansion::desk::question_for(raised),
@@ -1963,6 +1963,18 @@ impl ResearchLoop {
                 wake_targets: vec![pathway],
                 evidence_ids: raised.signal.evidence.clone(),
                 expiry: now.saturating_add(self.config.signal_ttl),
+            },
+        )?;
+        // What closing the gap is worth, on the scale the market bids it on
+        // (a hundredth of a unit of economic value per basis point of
+        // scale). A value outside the scale is left unstated rather than
+        // refused: the market counts such a bid as `invalid_value`, and a
+        // malformed figure on one gap must not fail the sweep that raised
+        // the others. An unstated value ranks the held signal on severity.
+        Ok(
+            match basis_points(raised.signal.economic_value.to_f64() / 100.0) {
+                Ok(bp) => signal.with_economic_value_bp(bp)?,
+                Err(_) => signal,
             },
         )
     }
@@ -3252,6 +3264,41 @@ const fn class_str(class: qip_contracts::expansion::GapClass) -> &'static str {
 mod tests {
     use super::*;
     use qip_contracts::ambient::AcquisitionStatus;
+
+    /// The router admits held signals by severity x economic value, and the
+    /// loop is the producer that knows the value: a gap worth 25 units of
+    /// the market's scale carries 2,500 bp, and one whose figure is off the
+    /// scale is left unstated (full scale) rather than failing the sweep that
+    /// raised the others. Mutation: drop the `with_economic_value_bp` call in
+    /// `ResearchLoop::emit` — the valued signal states the full scale.
+    #[test]
+    fn a_raised_gaps_economic_value_reaches_the_signal_the_router_admits_by() {
+        let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())
+            .unwrap_or_else(|e| panic!("{e}"));
+        let raise_worth = |worth: i64| {
+            qip_expansion::gap::raise(Observation {
+                trigger: GapTrigger::Contradiction,
+                wanting: vec![Wanting::Source],
+                observation: "two sources disagree".to_string(),
+                affected_domains: vec!["evidence".to_string()],
+                evidence: vec!["measured:0.4".to_string()],
+                severity: 0.5,
+                economic_value: Decimal::from_int(worth),
+                risk_value: Decimal::ZERO,
+            })
+            .unwrap_or_else(|e| panic!("{e}"))
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let valued = research.emit(&raise_worth(25), now).expect("emits");
+        assert_eq!(valued.economic_value_bp(), 2_500);
+        let off_scale = research.emit(&raise_worth(500), now).expect("emits");
+        assert_eq!(
+            off_scale.economic_value_bp(),
+            qip_contracts::ambient::MAX_SEVERITY_BP,
+            "premise: an off-scale figure is left unstated, not refused"
+        );
+        assert!(valued.attention_value() < off_scale.attention_value());
+    }
 
     /// The failure this prevents has happened: the loop stated urgency as
     /// zero, which was harmless under the additive rank and, once the rank

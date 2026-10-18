@@ -1544,12 +1544,14 @@
   {
     "id": "R12-CONTRACT-7069",
     "status": "PARTIAL",
-    "current": "LedgerEvent with source event (cell/session/journal digest/order), settlement, fee and balanced postings; deserialisation goes through the same refusals.",
+    "current": "LedgerEvent carries an optional owner (desk or mandate id) and an optional Attribution chain (fill, order, intent, decision ids) beside the SourceEvent; both are refused when blank, the chain is refused when its order is not the source order, a stored event meets the same refusals on decode, and an event stating neither re-encodes byte for byte as before. LedgerOperationFields::to_event books treasury allocations, capital grants (funded, recalled) and mandate subscriptions under their single owner; the other operation kinds name no single owner and stay unowned.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:103-175",
-      "backend/crates/libs/qip-contracts/tests/ledger_event.rs"
+      "backend/crates/libs/qip-contracts/src/ledger.rs LedgerEvent::with_owner / with_attribution / Attribution",
+      "backend/crates/libs/qip-contracts/src/ledger_operation.rs LedgerOperationFields::owner / to_event",
+      "backend/crates/libs/qip-contracts/tests/ledger_event.rs an_owner_and_an_attribution_chain_are_refused_when_blank_and_round_trip_when_stated",
+      "backend/crates/libs/qip-contracts/tests/ledger_operation.rs an_operation_with_exactly_one_owner_books_its_event_under_that_owner_and_the_rest_stay_unowned"
     ],
-    "gap": "Ownership field and full attribution chain beyond the source event.",
+    "gap": "Ownership is stated only on the capital operations the kernel ships; fill events (qip_portfolio::ledger::post from a PaperFill) state no owner and no attribution chain, because a fill carries a strategy share map and a source (cell, session, journal digest, order id) and neither an intent id nor a decision id nor a mandate: the chain is recoverable from the journal by order id but is not on the PaperFill. The triage closure to refuse a missing owner cannot land without refusing every fill event ledgerd already holds. Needs the cell to carry the signal intent and decision ids on Decision::Filled (a journal chain-version change) and the central plane to map a strategy to its mandate.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1557,10 +1559,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ledger_event",
+    "verification": "cargo test -p qip-contracts --test ledger_event --test ledger_operation",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 L12: mutations that fired: dropping the blank-owner refusal failed the ledger_event test; returning no owner for the funded-grant kind failed the ledger_operation test. AttributedFill (qip-capital) carries strategy, source, currency and amount, not the fill, order, intent and decision ids the triage assumed."
   },
   {
     "id": "R12-CONTRACT-7070",
@@ -4522,14 +4524,15 @@
   {
     "id": "R12-AMBIENT-7202",
     "status": "PARTIAL",
-    "current": "qip-deepbrain runs a compute market each sweep: bids by gap class on CPU, GPU and QPU (research.rs:1430-1496), granted greedily by marginal value per unit cost (qip-expansion/src/meta.rs:519-600, allocate), with a classical-baseline cost on QPU bids. TPU budget is Decimal::ZERO (research.rs:1493). Attention is admitted by the router on a materiality threshold and a per-window budget, first come (qip-contracts/src/ambient.rs:401-440).",
+    "current": "qip-deepbrain runs a compute market each sweep: bids by gap class on CPU, GPU and QPU, granted greedily by marginal value per unit cost, with per-agent budgets (agent_budgets, R12-AMBIENT-9034) and a classical-baseline cost on QPU bids; TPU budget is Decimal::ZERO. AttentionRouter now drains its held queue by severity x economic value (AmbientSignal::attention_value), the oldest among equals, instead of pop_front FIFO; ResearchLoop::emit states each raised gap economic value on the signal it routes (left unstated, which ranks on severity, when the figure is off the scale). A fresh signal is still activated immediately when the window has budget and nothing is held.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/research.rs:1430-1496",
-      "backend/crates/services/qip-expansion/src/meta.rs:519-530",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:401-440",
-      "backend/crates/services/qip-expansion/tests/meta.rs::the_next_unit_goes_to_the_work_with_the_higher_marginal_value_per_cost"
+      "backend/crates/libs/qip-contracts/src/ambient.rs AttentionRouter::route / AmbientSignal::with_economic_value_bp",
+      "backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::emit",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_higher_value_deferred_signal_is_activated_before_an_earlier_lower_one",
+      "backend/crates/apps/qip-deepbrain/src/research.rs a_raised_gaps_economic_value_reaches_the_signal_the_router_admits_by",
+      "backend/crates/services/qip-expansion/src/meta.rs allocate"
     ],
-    "gap": "Attention is not allocated by marginal value (threshold + FIFO budget); agents are not allocated by marginal value at all; TPU has a zero budget. No acceptance test asserts the defining property from a composition root.",
+    "gap": "Only gaps raised from fill residuals carry an economic value (every other detector states zero, which the loop leaves unstated), so in practice the held queue still drains on severity; no qip-acceptance test drives two differently valued held signals from a deepbrain sweep, which needs the router policy configurable on ResearchConfig (it is built with a fixed 256-per-hour budget) or a storm of valued residual gaps; TPU still has a zero budget.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4537,10 +4540,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "new acceptance suite",
+    "verification": "cargo test -p qip-contracts --test ambient a_higher_value; cargo test -p qip-deepbrain --lib a_raised_gaps",
     "work_item": "",
     "size": "XL",
-    "notes": "Round-2 independent audit, 2026-10-11: Compute half is real and in production."
+    "notes": "2026-10-18 L12: mutations that fired: restoring pop_front failed the drain-order test (activated sig-2 before sig-3); dropping with_economic_value_bp in emit failed the deepbrain test (10000 where 2500 expected). Closure called for agent-budget bids in run_market: already present as agent_budgets; the acceptance test from a deepbrain root is not added because the loop router is not configurable from a test."
   },
   {
     "id": "R12-REASON-7203",
