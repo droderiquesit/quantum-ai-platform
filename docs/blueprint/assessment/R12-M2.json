@@ -687,7 +687,7 @@
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:197 contradicting_evidence_lowers_a_belief",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13021-13070 synthesise builds EvidenceSet for REASON"
     ],
-    "gap": "Narrative/world records bypass any evidence object on their way to detectors and the world model.",
+    "gap": "World-source records are checked per source in the connector runtime but not re-gated by the world fabric before the detectors and the world model observe them. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -698,7 +698,7 @@
     "verification": "cargo test -p qip-reasoning-engine --test reasoning",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-EVID-2031",
@@ -714,7 +714,7 @@
       "qip-market-ingestion/tests/evidence_stage.rs::every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_document",
       "qip-evidence/src/evidence.rs::tests::an_evidence_record_refuses_empty_license"
     ],
-    "gap": "Gate a record's entry into the world model on its evidence being admitted (or link each world-model fact to its evidence id), wrap claims from the live/tape feeds, and a test that fails when a claim reaches the world model without evidence.",
+    "gap": "A world-model fact does not carry its evidence id, and observe is not gated on world-fabric admission. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -727,7 +727,7 @@
     "verification": "an integration test that a narrative poll produces EvidenceRecords",
     "work_item": "",
     "size": "L",
-    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop."
+    "notes": "Round-2 independent audit, 2026-10-11: EvidenceRecord fields are all pub (evidence.rs:19-57), so the constructor's refusals can be bypassed by a struct literal; the fabric's is_complete check (fabric.rs:633) is the backstop. 2026-10-18 lane L06: not implemented; same missing record-to-evidence link as R12-EVID-1200. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-EVID-2032",
@@ -764,7 +764,7 @@
       "backend/crates/libs/qip-evidence/src/fabric.rs:738-758",
       "backend/crates/runtime/qip-kernel/src/evidence_intake.rs:103-150"
     ],
-    "gap": "Link beliefs to the claims they rest on and provide/test a walk from a belief to every source document hash.",
+    "gap": "A belief cannot be walked to its source document hashes: a NowVariable cites ManifestRefs that are in-process names (kernel/bar-history, cycle-N), not evidence ids, so there is no edge from a belief to a claim in the fabric's ProvenanceGraph and ProvenanceGraph::sources_of has no production reader. The link has to be made where the world model feeds the NOW stage (macro and company readings carry their feature's evidence id), which is the same missing record-to-evidence id as R12-EVID-1200.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -777,7 +777,7 @@
     "verification": "a test walking a belief back to source hashes",
     "work_item": "",
     "size": "L",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Graph exists inside the fabric only."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Graph exists inside the fabric only. 2026-10-18 lane L06: not implemented; a resolver over manifest names that are not evidence ids would resolve nothing or invent edges. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-EVID-2034",

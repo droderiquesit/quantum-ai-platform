@@ -377,13 +377,12 @@
   {
     "id": "R12-QUANT-4018",
     "status": "PARTIAL",
-    "current": "ModelProducer::QuantumInformed is admitted only with its calibrated baseline; QuantumGateway output as a candidate is refused. No quantum-assisted training exists and eligibility by workload family is not checked at this seam.",
+    "current": "Platform::promote_model_from refuses a ModelProducer::QuantumInformed candidate unless it names a workload family (qip_quantum::foundry::FamilyKind variant) that Foundry::platform() holds as Registered; a NotBuilt, unnamed or unknown family is refused with the foundry reason before anything is journalled.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:78-88 ModelProducer",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:630-650 refusal arms",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:713 a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs::require_eligible_workload",
+      "backend/crates/runtime/qip-kernel/tests/serving.rs::a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built"
     ],
-    "gap": "No quantum-assisted variant is ever produced; no eligible-workload check.",
+    "gap": "The seam refuses ineligible workloads, but no production caller produces a QuantumInformed candidate (qip-deepbrain promotes only ModelProducer::TrainingPipeline through promote_model), so the check runs only when a test or a future desk names the producer.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -391,10 +390,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "",
+    "verification": "cargo test -p qip-kernel --test serving",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: eligibility check landed at the promotion seam; mutation (check call deleted) was admitted and failed the new test at the first unwrap_err. Kept PARTIAL: nothing in a binary builds a quantum-informed candidate."
   },
   {
     "id": "R12-MODEL-4019",
@@ -468,7 +467,7 @@
       "backend/crates/services/qip-lifecycle/src/gates.rs:490 PaperGate",
       "backend/crates/services/qip-lifecycle/src/gates.rs:629 ShadowGate"
     ],
-    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record.",
+    "gap": "Model promotion (Platform::promote_model) does not require a simulation/paper trial record. The only validation before promotion is the deep brain held-out rmse comparison; score_filled scores fills of cycles that already ran, with no per-candidate shadow run, so no PaperGate-style trial record exists to require. Needs a shadow-scoring stage that runs a candidate beside the incumbent over simulated or paper fills and journals the result before the kernel can refuse a promotion lacking it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -479,7 +478,7 @@
     "verification": "",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; requiring a trial record nothing produces would stop every promotion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-4023",

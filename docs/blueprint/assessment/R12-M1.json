@@ -492,11 +492,12 @@
     "current": "qip_kernel::fusion::fuse joins knowledge-graph events (occurred and recorded by as_of) with knowable tick traces into FusedState (posteriors, mismatches, opportunity_map); tests/fusion.rs covers it; called by qip-deepbrain tick_desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set (no committed deployment sets it).",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:892 nothing visible before it became known",
-      "backend/crates/runtime/qip-kernel/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_is_read"
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_is_read",
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::over_random_episodes_fusing_everything_equals_fusing_only_what_was_knowable"
     ],
-    "gap": "Example test, not a property test; join of tick embeddings absent; desk off by default.",
+    "gap": "Tick embeddings are not joined (fusion reads mid and spread only); the desk that calls fuse is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -504,10 +505,10 @@
       "R12-TICK-1002"
     ],
     "blocked_by": "",
-    "verification": "new property test in qip-training or qip-kernel",
+    "verification": "cargo test -p qip-kernel --test fusion",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: the point-in-time clause is now a seeded 200-episode property test; two mutations (trace-point as_of filter dropped; events_at widened to Timestamp::MAX) each failed it with the case number. Kept PARTIAL: the property holds in fuse, but fuse runs only behind the off-by-default desk."
   },
   {
     "id": "R12-WORLD-1023",
@@ -4545,7 +4546,7 @@
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model"
     ],
-    "gap": "Truth-loop order is only proven by a test-local pipeline; no global-scout stage, and the kernel cycle does not call the quality/entitlement gate before the world model.",
+    "gap": "Truth-loop order is proven by a test-local pipeline; no global-scout stage. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4556,7 +4557,7 @@
     "verification": "cargo test -p qip-acceptance --test truth_loop",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model. 2026-10-18 lane L06: not implemented; the closure needs ConnectorFeed to return evidence ids with its records, a change in qip-market-ingestion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-TICK-1201",

@@ -853,12 +853,12 @@
   {
     "id": "R12-EXPAND-6039",
     "status": "PARTIAL",
-    "current": "KnowledgeDelta contract exists in qip-contracts.",
+    "current": "Platform::absorb_evidence (called by the connector composition roots) now leaves one validated qip_contracts::KnowledgeDelta per admissible, keyed claim, version-stepped by the fabric version, citing the claim and its document hash, naming contradicted claims as conflicts under a review-required merge, journalled on world_model.updated under origin kernel/knowledge-delta.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
-      "backend/crates/libs/qip-contracts/src/federation.rs"
+      "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::knowledge_delta_for",
+      "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys"
     ],
-    "gap": "No producer on a binary path; no SharedEpisode.",
+    "gap": "No SharedEpisode producer; the delta is journalled locally and no brain publishes or consumes it, so it does not yet cross a brain boundary.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -866,10 +866,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test (crate producing KnowledgeDelta / SharedEpisode)",
+    "verification": "cargo test -p qip-kernel --test evidence_intake",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: KnowledgeDelta producer landed; mutation (journalling loop removed) failed the new test at the knowledge_deltas == 2 assertion. Kept PARTIAL for SharedEpisode and for the cross-brain hop."
   },
   {
     "id": "R12-EXPAND-6040",

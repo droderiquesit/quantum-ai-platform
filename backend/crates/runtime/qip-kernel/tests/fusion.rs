@@ -575,3 +575,109 @@ fn the_distilled_map_is_bounded_and_ships_only_where_the_training_entitlements_p
     assert!(map.authorise_for(&card, "us-east4").is_err());
     Ok(())
 }
+
+/// A seeded in-tree LCG (the repository takes no `rand`): reproducible, so
+/// a failing seed is a failing seed on every machine.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+}
+
+/// `nothing_recorded_or_printed_after_the_fusion_instant_is_read` is one
+/// example. A leak that needs a particular interleaving of recording and
+/// tick times passes an example, so this draws 200 random episodes — events
+/// recorded before and after the fusion instant, ticks on both sides of it —
+/// and requires `fuse` over everything to equal `fuse` over only what was
+/// knowable at `as_of`. The comparison fuses a graph and traces rebuilt
+/// without the late records, so a late record that changes any output is a
+/// difference rather than an absence. It also asserts its own premise: that
+/// late records existed in most episodes and that some events were knowable,
+/// so a generator that never produced either would fail here rather than
+/// pass vacuously.
+///
+/// Mutations, each failing the equality: drop the `p.at <= as_of` filter on
+/// trace points in `fuse`, and widen `events_at(as_of, as_of)` to
+/// `events_at(as_of, Timestamp::MAX)` so an event recorded later is read.
+#[test]
+fn over_random_episodes_fusing_everything_equals_fusing_only_what_was_knowable() -> Result<()> {
+    let mut rng = Lcg(0x5eed_f00d);
+    let mut with_late_records = 0;
+    let mut with_knowable_events = 0;
+    for case in 0..200 {
+        let as_of = at(150 + i64::try_from(rng.below(300)).unwrap_or(0));
+        let count = 1 + rng.below(4);
+        // (company, object, direction, quality, recorded, mid before/after, turn)
+        let mut episodes = Vec::new();
+        for n in 0..count {
+            episodes.push((
+                format!("co{n}"),
+                format!("obj-CO{n}"),
+                if rng.below(2) == 0 { "up" } else { "down" },
+                ["0.9", "0.2", "0.6"][usize::try_from(rng.below(3)).unwrap_or(0)],
+                at(110 + i64::try_from(rng.below(400)).unwrap_or(0)),
+                50.0 + rng.below(50) as f64,
+                1.0 + rng.below(10) as f64 / 10.0,
+                i64::try_from(rng.below(60)).unwrap_or(0) * 10,
+            ));
+        }
+        let build = |only_knowable: bool| -> Result<(KnowledgeGraph, Vec<MarketTrace>)> {
+            let mut graph = KnowledgeGraph::new();
+            let mut traces = Vec::new();
+            for (company, object, direction, quality, recorded, before, factor, turn) in &episodes {
+                if !only_knowable || *recorded <= as_of {
+                    add_episode(
+                        &mut graph,
+                        &format!("evt-{company}"),
+                        company,
+                        object,
+                        direction,
+                        quality,
+                        *recorded,
+                    )?;
+                }
+                let mut path = trace(object, *before, before * factor, *turn);
+                if only_knowable {
+                    path.points.retain(|p| p.at <= as_of);
+                }
+                traces.push(path);
+            }
+            Ok((graph, traces))
+        };
+        let (graph, traces) = build(false)?;
+        let (known_graph, known_traces) = build(true)?;
+        if episodes.iter().any(|e| e.4 > as_of)
+            && traces.iter().any(|t| t.points.iter().any(|p| p.at > as_of))
+        {
+            with_late_records += 1;
+        }
+        let everything = fuse(&graph, &traces, as_of, &config())?;
+        let knowable = fuse(&known_graph, &known_traces, as_of, &config())?;
+        if !knowable.events.is_empty() {
+            with_knowable_events += 1;
+        }
+        assert_eq!(
+            everything, knowable,
+            "case {case}: a record knowable only after {as_of} changed the fusion"
+        );
+    }
+    assert!(
+        with_late_records >= 100,
+        "premise: only {with_late_records} of 200 episodes held a late record"
+    );
+    assert!(
+        with_knowable_events >= 50,
+        "premise: only {with_knowable_events} of 200 episodes fused a knowable event"
+    );
+    Ok(())
+}

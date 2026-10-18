@@ -38,13 +38,19 @@
 //! bounded; durability of its links (R12-EVID-2032) is not claimed here.
 
 use crate::platform::Platform;
+use qip_contracts::knowledge_delta::{
+    ChangeOp, KnowledgeDelta, KnowledgeDeltaFields, KnowledgeTarget, MergePolicy,
+};
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
+use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
-use qip_world_model::fabric::KeyOutcome;
+use qip_world_model::fabric::{ClaimKey, KeyOutcome};
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
+use serde::{Deserialize, Serialize};
 
 /// Claims a connector forwarded into the world fabric, by `outcome`:
 /// `admitted`, `contested` (admitted and opened or joined a contest),
@@ -58,6 +64,94 @@ pub const EVIDENCE_POISONING_FINDINGS: &str = "qip_evidence_poisoning_findings_t
 /// Refusal reasons kept on one report. The counter carries the total; the
 /// first few reasons are what an operator reads on the cycle line.
 pub const REFUSALS_RETAINED: usize = 8;
+
+/// The producer on every knowledge-delta record, so a replay picks them out
+/// of the `world_model.updated` topic they share with the NOW, lattice and
+/// federation reviews the way those are told apart: by origin and by
+/// idempotency prefix.
+pub const KNOWLEDGE_DELTA_ORIGIN: &str = "kernel/knowledge-delta";
+
+const KNOWLEDGE_DELTA_PREFIX: &str = "knowledge-delta/";
+
+/// The brain and region a kernel-produced delta names as its origin: the
+/// kernel absorbs the evidence and the home region is where it runs.
+const DELTA_BRAIN: &str = "qip-kernel";
+const DELTA_REGION: &str = "home";
+
+/// One world-model change as the log holds it (R12-EXPAND-6039): the
+/// contract's [`KnowledgeDeltaFields`], which a receiver re-admits through
+/// `KnowledgeDelta::new` and so cannot read as anything the contract refuses.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgeDeltaRecord {
+    pub delta: KnowledgeDeltaFields,
+}
+
+impl EventBody for KnowledgeDeltaRecord {
+    const TOPIC: Topic = Topic::WorldModelUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!("{KNOWLEDGE_DELTA_PREFIX}{}", self.delta.delta_id))
+    }
+}
+
+/// What the fabric said about one admitted claim, as a delta needs it.
+struct AdmittedClaim<'a> {
+    id: &'a str,
+    key: &'a ClaimKey,
+    value: &'a str,
+    document_hash: &'a str,
+    weight: f64,
+    contradicts: &'a [String],
+    /// The fabric's version before and after the claim; one apart.
+    versions: (u64, u64),
+}
+
+/// Build the contract delta for one admitted claim, or say why the claim
+/// cannot be one. A claim whose weight is outside `[0, 1]` is refused rather
+/// than clamped into a confidence nobody computed.
+fn knowledge_delta_for(claim: &AdmittedClaim<'_>, now: Timestamp) -> Result<KnowledgeDelta> {
+    if !(0.0..=1.0).contains(&claim.weight) {
+        return Err(Error::invalid(format!(
+            "claim `{}` weighs {}, outside [0, 1]; a delta states a confidence, and one nobody              computed is not stated",
+            claim.id, claim.weight
+        )));
+    }
+    let contested = !claim.contradicts.is_empty();
+    KnowledgeDelta::new(KnowledgeDeltaFields {
+        schema_version: 1,
+        delta_id: format!("kd-{}", claim.id),
+        target: KnowledgeTarget::WorldModel,
+        base_version: claim.versions.0,
+        new_version: claim.versions.1,
+        changes: vec![ChangeOp::Assert {
+            key: format!(
+                "{}/{}@{}",
+                claim.key.subject,
+                claim.key.attribute,
+                claim.key.instant.as_nanos()
+            ),
+            value: claim.value.to_string(),
+        }],
+        provenance: vec![claim.id.to_string(), format!("doc:{}", claim.document_hash)],
+        // Rounded from a value just proven to be in [0, 1], so the cast
+        // cannot leave [0, 10000].
+        confidence_bp: (claim.weight * 10_000.0).round() as u32,
+        conflicts: claim
+            .contradicts
+            .iter()
+            .map(|other| format!("kd-{other}"))
+            .collect(),
+        originating_brain: DELTA_BRAIN.to_string(),
+        originating_region: DELTA_REGION.to_string(),
+        merge_policy: if contested {
+            MergePolicy::ReviewRequired
+        } else {
+            MergePolicy::FastForwardOnly
+        },
+        created_at: now,
+    })
+}
 
 /// What one forwarded batch did to the world fabric.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -75,6 +169,12 @@ pub struct EvidenceIntake {
     pub duplicate: usize,
     /// Refused by the fabric.
     pub refused: usize,
+    /// Of `admitted`, claims that changed what the world fabric believes and
+    /// left one validated, journalled `KnowledgeDelta` each.
+    pub knowledge_deltas: usize,
+    /// Admitted claims whose delta the contract or the log refused. Counted,
+    /// never fatal: the claim is already in the fabric.
+    pub deltas_refused: usize,
     /// The first [`REFUSALS_RETAINED`] refusal reasons.
     pub refusals: Vec<String>,
 }
@@ -110,6 +210,7 @@ impl Platform {
             return intake;
         }
         let metrics = self.telemetry.metrics.clone();
+        let mut deltas: Vec<KnowledgeDelta> = Vec::new();
         self.world.update(|world| {
             for checked in batch {
                 if world.evidence().get(&checked.record.id).is_some() {
@@ -118,9 +219,29 @@ impl Platform {
                     continue;
                 }
                 let id = checked.record.id.clone();
+                let claim = ClaimKey::of(&checked.record);
+                let before = world.evidence().version();
                 match world.absorb_evidence(checked.record, Some(&checked.document_hash), now) {
                     Ok((verdict, outcome)) => {
                         intake.admitted += 1;
+                        // Only an admissible claim with a checkable key moves
+                        // what the fabric believes; an inadmissible one is
+                        // held so the detector sees it and weighs nothing.
+                        if let (true, Some((key, value))) = (verdict.admissible, claim) {
+                            let admitted = AdmittedClaim {
+                                id: &id,
+                                key: &key,
+                                value: &value,
+                                document_hash: &checked.document_hash,
+                                weight: verdict.belief_weight,
+                                contradicts: &verdict.contradicts,
+                                versions: (before, world.evidence().version()),
+                            };
+                            match knowledge_delta_for(&admitted, now) {
+                                Ok(delta) => deltas.push(delta),
+                                Err(_) => intake.deltas_refused += 1,
+                            }
+                        }
                         let label = if !verdict.admissible {
                             intake.inadmissible += 1;
                             "inadmissible"
@@ -144,6 +265,15 @@ impl Platform {
                 }
             }
         });
+        for delta in deltas {
+            let record = KnowledgeDeltaRecord {
+                delta: delta.into_fields(),
+            };
+            match self.journal_record(record, KNOWLEDGE_DELTA_ORIGIN, now) {
+                Ok(()) => intake.knowledge_deltas += 1,
+                Err(_) => intake.deltas_refused += 1,
+            }
+        }
         intake
     }
 
