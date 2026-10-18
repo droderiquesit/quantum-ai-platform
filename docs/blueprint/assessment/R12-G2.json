@@ -700,7 +700,7 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:341-465 EvolutionEngine",
       "backend/crates/services/qip-evolution/tests/evolution.rs"
     ],
-    "gap": "Score against ForecastState; tie challenger promotion to tournament comparison.",
+    "gap": "Score against ForecastState; tie challenger promotion to tournament comparison. The tournament scores forecasters on resolved questions (probabilities and, since ed9e3e8f, quantiles); qip-evolution promotes strategy challengers on their own backtest and lifecycle evidence. No identity joins a strategy challenger to a tournament forecaster, so a promotion gate on a tournament win would have nothing to compare, and ForecastState scoring needs the contract produced by a forecaster first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -711,7 +711,7 @@
     "verification": "cargo test -p qip-evolution",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; no key joins a strategy challenger to a forecaster. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-MODEL-9031",
@@ -1830,12 +1830,15 @@
   },
   {
     "id": "R12-GOV-9079",
-    "status": "PARTIAL",
-    "current": "Blueprint sources are held to the README's SHA-256 both ways; the other checks are existence-only: an ADR README, ADRs 0001-0003, 3 binary names in catalogue.tf, any .md file in docs/ops.",
+    "status": "COMPLETE",
+    "current": "The architecture memory index is complete and a missing entry fails: every docs/adr/0NNN-*.md file has exactly one index row in docs/adr/README.md and every row names a file (every_numbered_adr_has_exactly_one_index_row_and_every_row_names_a_file); all eight crates under backend/crates/apps are placed at a declared home in Terraform or named as not deployed, with a section in the per-binary runbook (every_binary_under_apps_is_catalogued_where_it_is_deployed_or_named_as_not_deployed); and every page under docs/ops and docs/ops/runbooks is linked from docs/ops/README.md, which gained an index for that purpose (every_operations_page_is_listed_in_the_ops_index).",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs:17,70,133,156,186,211"
+      "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs every_numbered_adr_has_exactly_one_index_row_and_every_row_names_a_file",
+      "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs every_binary_under_apps_is_catalogued_where_it_is_deployed_or_named_as_not_deployed",
+      "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs every_operations_page_is_listed_in_the_ops_index",
+      "docs/ops/README.md Index of runbooks and records"
     ],
-    "gap": "No check that every ADR has an index row; 5 of 8 binaries unchecked; runbooks not enumerated; contracts and SLOs not indexed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1843,10 +1846,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture_memory_index",
+    "verification": "cd backend && cargo test -p qip-acceptance --test architecture_memory_index",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Tests are existence/contains checks: no ADR-index completeness, no contracts or SLO index, catalogue lists only 3 Cloud Run binaries. Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-18 (lane L08). Before this, the ADR test spot-checked three ADRs and the ops test checked that one markdown file exists. Six runbooks were linked from nowhere in docs/ops and are now indexed. Mutations, each restored byte for byte: the 0042 row removed from docs/adr/README.md failed the ADR pairing; the break-glass link repointed in docs/ops/README.md failed the ops index test; every qip-ledgerd in modules/ledgerd/main.tf renamed failed the binary-home test naming the file. The ADR pairing reads index rows that link a file; claimed rows with plain-text numbers name no file, by the README's protocol. An SLO/contracts index row is not separately enforced: no page under docs/ops is an SLO index."
   },
   {
     "id": "R12-GOV-9080",

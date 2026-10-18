@@ -519,3 +519,103 @@ fn the_reflex_pass_reaches_no_journal_flush_socket_sleep_or_file_through_the_cel
         }
     }
 }
+
+#[test]
+fn qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter()
+ {
+    // R12-COVERAGE-7154. The generalist planners (goal, plan, generate in
+    // `qip-agency`) and `AmbientAgency::open` run in the deep brain, never in
+    // the reflex pass or on the fast brain. That is a property of who links
+    // the crate. Its adapters are the other half: an adapter performs a step
+    // in the world, so every one is reached through `execute`, which refuses
+    // to send unguarded, and the guard owns the one `ToolRegistry`
+    // (`qip_contracts::action::ToolRegistry`, re-exported by `tools.rs`).
+    let register = register();
+    let graph = workspace();
+    assert_eq!(
+        register.get("qip-agency").map(|(lane, _)| *lane),
+        Some(3),
+        "qip-agency must be registered at the cognitive slow lane"
+    );
+
+    let linking: BTreeSet<&str> = graph
+        .iter()
+        .filter(|(_, deps)| deps.contains("qip-agency"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        linking,
+        BTreeSet::from(["qip-cli", "qip-deepbrain"]),
+        "the crates that link qip-agency changed; each must be a slow-lane composition root"
+    );
+    for binary in &linking {
+        let lane = register.get(*binary).map(|(lane, _)| *lane);
+        assert!(
+            lane.is_some_and(|lane| lane >= 3),
+            "{binary} links qip-agency from lane {lane:?}, which is faster than the slow lane"
+        );
+    }
+
+    // The fast paths do not reach it, by any chain.
+    for fast in ["qip-edge-node", "qip-fastbrain", "qip-api"] {
+        assert!(
+            closure(fast, &graph).contains("qip-contracts"),
+            "premise: the closure of {fast} was read"
+        );
+        assert!(
+            !closure(fast, &graph).contains("qip-agency"),
+            "{fast} can reach qip-agency, so a planner could run on the fast path"
+        );
+    }
+
+    // Adapters: the only production `impl Adapter for` are the drafting
+    // adapter, whose output is an outbox draft, and the CLI's `Unwired`
+    // adapter, which refuses every step. `execute` will not send without a
+    // guard, and the guard holds the registry.
+    let root = qip_acceptance::repository_root();
+    let mut implementors = BTreeSet::new();
+    for file in qip_acceptance::files_with_extension("backend/crates", "rs") {
+        let relative = file
+            .strip_prefix(&root)
+            .unwrap_or(&file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let parts: Vec<&str> = relative.split('/').collect();
+        if parts.len() < 6 || parts[4] != "src" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).expect("a source is readable");
+        if qip_acceptance::production_text(&text).contains("impl Adapter for") {
+            implementors.insert(relative);
+        }
+    }
+    assert_eq!(
+        implementors,
+        BTreeSet::from([
+            "backend/crates/apps/qip-cli/src/agency.rs".to_string(),
+            "backend/crates/services/qip-agency/src/outbox.rs".to_string(),
+        ]),
+        "an adapter implementation appeared outside the two the paper boundary admits"
+    );
+    let engine = qip_acceptance::production_text(&qip_acceptance::read(
+        "backend/crates/services/qip-agency/src/engine.rs",
+    ));
+    assert!(
+        engine.contains("it never sends unguarded") || engine.contains("ActionGuard"),
+        "engine.rs no longer names the guard its execute path depends on"
+    );
+    let guard = qip_acceptance::production_text(&qip_acceptance::read(
+        "backend/crates/services/qip-agency/src/guard.rs",
+    ));
+    assert!(
+        guard.contains("registry: ToolRegistry"),
+        "the guard no longer owns the tool registry"
+    );
+    let tools = qip_acceptance::read("backend/crates/services/qip-agency/src/tools.rs");
+    assert!(
+        tools.contains(
+            "pub use qip_contracts::action::{ToolAudit, ToolRegistration, ToolRegistry};"
+        ),
+        "qip-agency's registry is no longer the contracts' ToolRegistry"
+    );
+}

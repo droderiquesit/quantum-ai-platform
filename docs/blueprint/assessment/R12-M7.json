@@ -216,12 +216,15 @@
   {
     "id": "R12-FABRIC-7011",
     "status": "PARTIAL",
-    "current": "event-fabric-broker module defines one instance template + DNS SRV; it is not instantiated from main.tf; fabricd is single-node.",
+    "current": "The root's event_fabric_broker object instantiates modules/event-fabric-broker (fabric.tf) with one to three addresses (two or three only beside ADR 0111's Spanner managed log). Each broker is a google_compute_instance_from_template in the zone its address is named into (zone for the first, additional_zones in order for the rest), on a reserved internal address; the module refuses two brokers in one zone and a zone outside the region at plan, and machine_type defaults to and is validated as a C4/C4D shape. event_fabric_broker is null in every environment, because no broker boot image has been baked.",
     "evidence": [
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:21 broker instance template; no module block in infrastructure/terraform/main.tf instantiates it",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:1-33 single-node broker composition root (one broker, one disk)"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:181 instance zone = local.broker_zone[each.value]; one-per-zone and in-region preconditions",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:197 broker_zones; machine_type default c4-standard-4 validated ^c4d?-",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/machine.tftest.hcl:312 three_brokers_are_placed_in_three_zones, two_brokers_in_one_zone_are_refused, a_broker_zone_outside_the_region_is_refused, a_c3_broker_shape_is_refused",
+      "infrastructure/terraform/tests/fabric.tftest.hcl:183 three_brokers_behind_the_spanner_lease_are_provisioned (three zones), additional_brokers_without_a_zone_each_are_refused",
+      "infrastructure/terraform/fabric.tf broker_zones from zone + additional_zones; placement precondition on their lengths"
     ],
-    "gap": "Module not instantiated; no three-zone placement; no controller nodes.",
+    "gap": "No committed environment instantiates the module, so no plan of a real environment renders the three-zone placement; controller nodes are not separate machines: ADR 0111's Spanner lease is the controller, so 'broker/controller nodes' resolves to the lease-contending broker instances.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -231,10 +234,10 @@
       "R12-FABRIC-7037"
     ],
     "blocked_by": "",
-    "verification": "terraform plan rendering three-zone broker nodes",
+    "verification": "cd infrastructure/terraform/modules/event-fabric-broker && terraform test; cd infrastructure/terraform && terraform test -filter=tests/fabric.tftest.hcl; cargo test -p qip-acceptance --test event_fabric_scaling",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Lane L22, 2026-10-18: per-address zones, the one-per-zone refusal, the in-region refusal and the C4/C4D shape validation added; root wiring via the orchestrator's protected-path patch (additional_zones, c4-standard-4 default). Mutations: drop the one-per-zone precondition - two_brokers_in_one_zone_are_refused fails; put the instance back on var.zone - three_brokers_are_placed_in_three_zones and acceptance fabric_084/fabric_101 fail; remove the machine_type validation - a_c3_broker_shape_is_refused fails; default c3-standard-4 - fabric_084 fails; all restored. The root fabric harness had planned its brokers in us-east4-a under the root's default region europe-west2; the new in-region refusal caught it and the harness's broker zones now sit in europe-west2. Module terraform test 23 passed; root terraform test 103 passed."
   },
   {
     "id": "R12-FABRIC-7012",
@@ -1434,7 +1437,7 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
     ],
-    "gap": "Not a single canonical type; the contract ModelPack has no production constructor.",
+    "gap": "Not a single canonical type; the contract ModelPack has no production constructor. qip_contracts::policy::ModelPack carries an ECDSA signature over its signing payload and a two-person Publication (ADR 0110, ADR 0121), which the kernel cannot supply: model_serving.rs builds its own unsigned ModelPack from the promotion records. Retiring the local struct needs the release path that signs and publishes (per-person credentials) to feed the kernel, or the contract split into an unsigned body and a signed envelope.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1445,7 +1448,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field test added; duplicate type remains."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field test added; duplicate type remains. 2026-10-18 lane L06: not implemented; building the contract type in the kernel would require fabricating a signature and two publishers. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CONTRACT-7065",
@@ -1611,7 +1614,7 @@
       "backend/crates/libs/qip-contracts/src/market_state.rs:39-70",
       "backend/crates/libs/qip-contracts/tests/market_state.rs"
     ],
-    "gap": "No production producer/consumer.",
+    "gap": "No production producer/consumer. The NOW stage holds instrument readings, not the MarketEvents a MarketStatePack is reconstructed over (qip-contracts market_state.rs computes its integrity flags from those events), so a pack built there would carry an empty event list and claim a clean tape nobody read; the producer belongs where the ingested tape or the edge book is held.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1622,7 +1625,7 @@
     "verification": "cargo test -p qip-contracts --test market_state",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: the grader closure (build a MarketStatePack in now_stage.rs) was not implemented because it would assert tape integrity over zero events; row left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CONTRACT-7073",
@@ -1670,25 +1673,25 @@
   {
     "id": "R12-CONTRACT-7075",
     "status": "PARTIAL",
-    "current": "WorldModelState is a Validated contract; qip-world-model now.rs builds one in world_model_state().",
+    "current": "NowStage::run (every cycle, default path) calls NowBrain::world_model_state for each partition a pass moved a belief in and journals the validated WorldModelStateFields in NowReview.world_states on world_model.updated; each re-admits through WorldModelState::new and is stamped with the pass clock.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/world_model.rs:110 type",
+      "backend/crates/runtime/qip-kernel/src/now_stage.rs::NowStage::run world_states",
+      "backend/crates/runtime/qip-kernel/tests/now_state.rs::a_pass_that_moves_a_belief_journals_the_world_model_state_of_the_partition_it_moved",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
-      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:530 a_world_model_state_refuses_each_broken_invariant",
       "backend/crates/services/qip-world-model/src/now.rs::world_model_state"
     ],
-    "gap": "world_model_state() has no production caller; no seam between brains emits or consumes WorldModelState.",
+    "gap": "Produced and journalled, but no brain consumes or decodes WorldModelState: nothing reads NowReview.world_states back as the contract, so the seam between brains has an emitter and no receiver.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts",
+    "verification": "cargo test -p qip-kernel --test now_state",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it. Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: producer landed; mutation (projection result dropped instead of pushed) failed the new test with an empty world_states. Kept PARTIAL for the receiving side."
   },
   {
     "id": "R12-CONTRACT-7076",
@@ -2038,7 +2041,7 @@
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
       "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant"
     ],
-    "gap": "No production seam constructs or consumes ControlPackAnnouncement (grep of ControlPackAnnouncementFields outside qip-contracts finds nothing).",
+    "gap": "No production seam constructs or consumes ControlPackAnnouncement. The contract requires a signer, an attestation digest, target regions and nodes, an activation window and an acknowledgement quorum; the promotion path holds none of them (nothing signs, and the target cells and window are the release workflow decision), so a kernel-built announcement would invent them. The announcement belongs to the release path that signs a ModelPack and chooses its targets.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2049,7 +2052,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ControlPackAnnouncement exists and is tested; nothing in production constructs or decodes it."
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ControlPackAnnouncement exists and is tested; nothing in production constructs or decodes it. 2026-10-18 lane L06: not implemented; the kernel would have to fabricate signer, attestation, targets and quorum. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CONTRACT-7092",
@@ -3458,14 +3461,15 @@
   },
   {
     "id": "R12-COVERAGE-7154",
-    "status": "PARTIAL",
-    "current": "Agents and tool registry exist; lane test puts them in slow lane.",
+    "status": "COMPLETE",
+    "current": "Generalist planners run in the slow lane and use tools under policy. qip-agency's goal, plan and generate modules are the planner, AmbientAgency::open runs unconditionally in qip-deepbrain, and lane_placement.rs::qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter holds the placement: qip-agency is registered at Lane 3, exactly qip-cli and qip-deepbrain link it (both Lane 3 binaries), the closures of the edge node, the fast brain and the API do not contain it, and the only production implementors of the Adapter trait are the outbox drafting adapter and the CLI's Unwired adapter that refuses every step. execute refuses to send unguarded, and the guard owns the one contracts ToolRegistry that tools.rs re-exports.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents",
-      "backend/crates/libs/qip-contracts/src/action.rs:250-340 ToolRegistration/ToolRegistry with revoke at :328",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:218"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter",
+      "backend/crates/apps/qip-deepbrain/src/main.rs AmbientAgency::open",
+      "backend/crates/services/qip-agency/src/guard.rs registry: ToolRegistry",
+      "backend/crates/services/qip-agency/src/tools.rs"
     ],
-    "gap": "Generalist planners.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3473,10 +3477,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "acceptance suite for the composite",
+    "verification": "cd backend && cargo test -p qip-acceptance --test lane_placement -- qip_agency_is_slow_lane_linked_only_by_slow_lane_binaries_and_acts_only_through_a_guarded_adapter",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-18 (lane L08); the register text 'generalist planners ... missing' was older than the code. Mutations, each restored byte for byte: qip-agency added to qip-edge's manifest failed the linking-crates assertion; the text impl Adapter for written into qip-api's lib.rs failed the implementor assertion. The fast brain and the API are registered at Lane 3 beside the deep brain, so lane placement alone does not keep a planner off the fast brain; the closure assertions do. The adapter claim reads source text (an impl of the trait outside two files), not a type-level fence."
   },
   {
     "id": "R12-COVERAGE-7155",
@@ -4409,7 +4413,7 @@
       "backend/crates/services/qip-learning-engine/src/tournament.rs::MAX_FORECASTERS",
       "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage"
     ],
-    "gap": "Production admits only the detector and panel analysts; no path spawns specialist or temporary models, so thousands compete only in a library test.",
+    "gap": "Production admits only the detector and panel analysts; no path spawns specialist or temporary models. WorldModelSpawner proposes a federation branch (a hypothesis record, parent id, trigger residual) when a residual exceeds a threshold; it does not produce a forecaster, so admitting ForecasterKind::Temporary entrants from it would submit forecasts no model made. A temporary specialist needs a forecasting function per spawned entity (a fitted or rule-based model that answers the tournament question) and a residual signal that reaches the kernel; neither exists, and the live entrants stay the detector class and the panel analysts.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -4420,7 +4424,7 @@
     "verification": "new acceptance suite",
     "work_item": "",
     "size": "XL",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: not implemented; same missing forecaster-per-entity as R12-MODEL-3089. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-TICK-7199",

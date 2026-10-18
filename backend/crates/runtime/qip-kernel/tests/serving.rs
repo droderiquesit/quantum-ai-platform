@@ -723,6 +723,7 @@ fn a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_at
     let baseline_reference = baseline.reference();
     let informed = || ModelProducer::QuantumInformed {
         baseline: baseline_reference.clone(),
+        workload: Some("PortfolioAllocation".to_string()),
     };
 
     // No baseline on record: refused.
@@ -752,6 +753,70 @@ fn a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_at
             .map(|record| record.producer.clone()),
         Some(informed())
     );
+    Ok(())
+}
+
+/// A quantum-informed candidate named a baseline and nothing about what its
+/// quantum input was for, so a benefit could be claimed on any workload,
+/// including the six families the foundry records as not built and so has no
+/// benchmark for. Each refusal below is checked after the baseline is on
+/// record and calibrated, so it is the workload that refuses and not the
+/// baseline; the built family is then admitted, which keeps the gate from
+/// being one that refuses everything.
+///
+/// Mutation: delete the `require_eligible_workload` call in
+/// `promote_model_from` — the not-built and unnamed candidates are admitted
+/// and the first refusal assertion fails.
+#[test]
+fn a_quantum_informed_candidate_is_admitted_only_on_a_workload_family_the_foundry_has_built()
+-> Result<()> {
+    use qip_kernel::ModelProducer;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    let mut registry = ModelRegistry::new();
+    let candidate = teacher("bar-linear-wl", "0.1.0")?;
+    let reference = registered(&mut registry, &candidate)?;
+    let artifact = InTreeProvider::pack(&candidate)?;
+    let baseline = teacher("bar-baseline-wl", "0.1.0")?;
+    let baseline_reference = baseline.reference();
+    let data = dataset("bar-baseline-wl-data")?;
+    let (fit_set, _) = data.split_at_fraction(0.25)?;
+    registered(&mut registry, &baseline.calibrated_on(&fit_set)?)?;
+    let informed = |workload: Option<&str>| ModelProducer::QuantumInformed {
+        baseline: baseline_reference.clone(),
+        workload: workload.map(str::to_string),
+    };
+
+    for (workload, expected) in [
+        (None, "names none"),
+        (Some("GraphSearch"), "is not built"),
+        (Some("TeleportationAllocation"), "not a workload family"),
+    ] {
+        let refused = platform
+            .promote_model_from(
+                informed(workload),
+                &mut registry,
+                &artifact,
+                None,
+                &[],
+                start(),
+            )
+            .unwrap_err();
+        assert!(
+            refused.message().contains(expected),
+            "{workload:?}: {refused}"
+        );
+    }
+    assert_eq!(promotion_records(&platform), 0, "a refusal reached the log");
+
+    platform.promote_model_from(
+        informed(Some("PortfolioAllocation")),
+        &mut registry,
+        &artifact,
+        None,
+        &[],
+        start(),
+    )?;
+    assert!(platform.model_promotions().contains_key(&reference));
     Ok(())
 }
 

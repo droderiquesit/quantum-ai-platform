@@ -1173,7 +1173,7 @@
     "verification": "terraform test tests/kms-protection.tftest.hcl",
     "work_item": "",
     "size": "S",
-    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-18 (lane L13): not changed; the root variable is a protected path, and the module-only alternative (hard-coding HSM in modules/binaryauthorization) would plan a billed HSM attestor version into applied dev. The variables.tf patch is in lane L13's report."
+    "notes": "Owner decision 2026-10-11 (docs/blueprint/owner-decisions-2026-10-11.md). 2026-10-18 (lane L13): not changed; the root variable is a protected path, and the module-only alternative (hard-coding HSM in modules/binaryauthorization) would plan a billed HSM attestor version into applied dev. The variables.tf patch is in lane L13's report. It remains an owner decision: applying the patch puts dev's deploy-signing (attestor) key on a billed HSM key version. The full protected-path patch for infrastructure/terraform/variables.tf, verbatim:\n\n# R12-SEC-10053 (owner decision D12, ADR 0110 Amendment 1): protected-path patch\n# for infrastructure/terraform/variables.tf, not applied by lane L13.\n# Replace `variable \"kms_protection_level\"` (variables.tf:1061-1077) with:\n\nvariable \"signing_key_protection_level\" {\n  description = \"Protection level for every signing key (the Binary Authorization attestor). HSM in every environment (D12).\"\n  type        = string\n  default     = \"HSM\"\n\n  validation {\n    condition     = var.signing_key_protection_level == \"HSM\"\n    error_message = \"signing_key_protection_level must be exactly \\\"HSM\\\": D12 puts every signing key on an HSM in every environment.\"\n  }\n}\n\nvariable \"cmek_protection_level\" {\n  description = \"Protection level for every encryption (CMEK) key: SOFTWARE is admitted in dev and test only; stage and prod are HSM (D12).\"\n  type        = string\n  default     = \"HSM\"\n\n  validation {\n    condition     = contains([\"SOFTWARE\", \"HSM\"], var.cmek_protection_level)\n    error_message = \"cmek_protection_level must be exactly \\\"SOFTWARE\\\" or \\\"HSM\\\"; EXTERNAL and EXTERNAL_VPC need a google_kms_ekm_connection this configuration does not declare.\"\n  }\n\n  validation {\n    condition     = var.cmek_protection_level == \"HSM\" || contains([\"dev\", \"test\"], var.environment)\n    error_message = \"cmek_protection_level SOFTWARE is admitted only in dev and test; stage and prod encryption keys are HSM (D12).\"\n  }\n}\n\n# main.tf: pass `kms_protection_level = var.signing_key_protection_level` to\n# module \"binaryauthorization\", and `kms_protection_level = var.cmek_protection_level`\n# to modules secrets, registry, backup, evidence and build-pool (their own\n# variables keep the name). environments/{dev,test}/terraform.tfvars:\n# `cmek_protection_level = \"SOFTWARE\"` where `kms_protection_level` is set today.\n# tests/kms-protection.tftest.hcl: expect_failures on\n# var.signing_key_protection_level = \"SOFTWARE\" (any env) and on\n# var.cmek_protection_level = \"SOFTWARE\" with environment = \"stage\" and \"prod\";\n# assert plans admit SOFTWARE CMEK in dev and test. Applying it puts the dev\n# attestor on an HSM key version, which is billed: an owner apply.\n"
   },
   {
     "id": "R12-SEC-10054",
@@ -4102,7 +4102,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:444 resume_model_promotions",
       "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack"
     ],
-    "gap": "Provenance record per activated package.",
+    "gap": "Provenance record per activated package. A five-link ActivationRecord that refuses a missing link would refuse every promotion today: no source commit reaches the kernel (the artifact digest is over the fitted bytes, not a build), nothing signs a promoted model (ADR 0043, ADR 0110 signs the ModelPack only on the release path), and no approval event exists beyond the desk name and the card evaluation already on ModelPromotion. Needs the training pipeline to carry a commit and a data manifest reference and a per-person approval (ADR 0121) before the kernel can require them.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4116,7 +4116,7 @@
     "verification": "unit test on activation record",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; the closure as graded would block every promotion in qip-deepbrain or record invented links. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-RES-10181",
@@ -4619,7 +4619,7 @@
       "backend/crates/runtime/qip-kernel/src/model_serving.rs:595-680",
       "backend/crates/services/qip-lifecycle/src/gates.rs"
     ],
-    "gap": "Replay and envelope-compatibility gates.",
+    "gap": "Replay and envelope-compatibility gates. No replay-evidence record or envelope-compatibility result is produced anywhere upstream of Platform::promote_model: qip-deepbrain rescoring held-out rows is a fit check, not a replay of journalled cycles, and no model output feeds RiskLimits, so there is no envelope for a candidate to be incompatible with. A kernel gate requiring either would refuse every promotion; the producers (a replay harness over the log and a risk-envelope probe) come first.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4630,7 +4630,7 @@
     "verification": "cargo test -p qip-kernel",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-18 lane L06: not implemented; a gate with no producer fails closed for the whole learning loop. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-CICD-10203",

@@ -447,8 +447,34 @@ fn every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_
              is a way out that no gateway log records"
         );
 
-        for (name, _) in resources(text, "google_compute_address") {
+        for (name, body) in resources(text, "google_compute_address") {
             let reference = format!("google_compute_address.{name}");
+            // An INTERNAL reservation is an address on a subnet, not a way out:
+            // Google refuses one as a NAT IP or an access_config's nat_ip, so it
+            // can carry no internet egress. It is held to that shape instead of
+            // skipped: it names its subnetwork, and nothing in the module hands
+            // it to a gateway or an external interface. Without this arm the
+            // fabric broker's stable internal address (FABRIC-8099) read as
+            // egress with no gateway in front, and the guard refused the one
+            // kind of reservation that cannot be egress.
+            let shape = compact(&body);
+            if shape.contains("address_type=\"INTERNAL\"") {
+                assert!(
+                    shape.contains("subnetwork="),
+                    "{path}: the internal address `{name}` names no subnetwork, so nothing \
+                     pins it inside the VPC"
+                );
+                assert!(
+                    !text.lines().any(|line| {
+                        let line = line.trim_start();
+                        (line.starts_with("nat_ips") || line.starts_with("nat_ip"))
+                            && line.contains(&reference)
+                    }),
+                    "{path}: the internal address `{name}` is handed to a gateway or an \
+                     external interface as if it could carry egress"
+                );
+                continue;
+            }
             let on_a_gateway = text
                 .lines()
                 .any(|line| line.trim_start().starts_with("nat_ips") && line.contains(&reference));

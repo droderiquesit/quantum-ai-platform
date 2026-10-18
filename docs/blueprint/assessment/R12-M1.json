@@ -492,11 +492,12 @@
     "current": "qip_kernel::fusion::fuse joins knowledge-graph events (occurred and recorded by as_of) with knowable tick traces into FusedState (posteriors, mismatches, opportunity_map); tests/fusion.rs covers it; called by qip-deepbrain tick_desk, which is off unless QIP_DEEPBRAIN_TICK_EVERY is set (no committed deployment sets it).",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:892 nothing visible before it became known",
-      "backend/crates/runtime/qip-kernel/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_is_read"
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::nothing_recorded_or_printed_after_the_fusion_instant_is_read",
+      "backend/crates/runtime/qip-kernel/tests/fusion.rs::over_random_episodes_fusing_everything_equals_fusing_only_what_was_knowable"
     ],
-    "gap": "Example test, not a property test; join of tick embeddings absent; desk off by default.",
+    "gap": "Tick embeddings are not joined (fusion reads mid and spread only); the desk that calls fuse is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no committed deployment sets it.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -504,10 +505,10 @@
       "R12-TICK-1002"
     ],
     "blocked_by": "",
-    "verification": "new property test in qip-training or qip-kernel",
+    "verification": "cargo test -p qip-kernel --test fusion",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code. 2026-10-18 lane L06: the point-in-time clause is now a seeded 200-episode property test; two mutations (trace-point as_of filter dropped; events_at widened to Timestamp::MAX) each failed it with the case number. Kept PARTIAL: the property holds in fuse, but fuse runs only behind the off-by-default desk."
   },
   {
     "id": "R12-WORLD-1023",
@@ -3005,23 +3006,26 @@
   },
   {
     "id": "R12-REASON-1131",
-    "status": "PARTIAL",
-    "current": "OntologyRegistry.",
+    "status": "COMPLETE",
+    "current": "Every hypothesis the REASON stage forms is derived symbolically on the default cycle (Platform::reason_symbolically), and the derivation now types its subject against symbolic_stage::platform_ontology, an OntologyRegistry seeded with every asset class (Asset family), the anomaly (Event) and the hypothesis lifecycle (Lifecycle). The class comes from the asset class the platform registered the instrument under; a subject with no class, or a class the ontology does not hold, is recorded as a refused typing, and replay re-types the subject and refuses a journaled typing the ontology does not reproduce.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/registries.rs:21"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:128 platform_ontology, type_subject, SubjectTyping on SymbolicDerivation, verify",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_symbolically passes subject_class from asset_classes",
+      "backend/crates/libs/qip-agents/src/registries.rs:21 OntologyRegistry",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:907 the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused"
     ],
-    "gap": "Integrate ontologies into the REASON stage.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Closed 2026-10-18 by lane L22. The shipped cycle's derivation for AAA (a common stock) records 'asset/equity v1'; a subject with no class and one under an unheld class are recorded refused, naming why, and the stage line says 'subject untyped'; a corrupted typing is refused on replay as 'the subject typing is not reproducible'. Mutations: pass subject_class: None from reason_symbolically - the shipped typing assertion fails; record Step::Derived whatever type_subject returns - the untyped subject reads typed and the refusal assertion fails; both restored. The typing is advisory, like the rest of the derivation: it reaches nothing that sizes or sends. Records written before the field decode with subject_type None."
   },
   {
     "id": "R12-REASON-1132",
@@ -4542,7 +4546,7 @@
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:475 one event travels all stages",
       "backend/crates/tests/qip-acceptance/tests/truth_loop.rs:682 failing record never reaches the world model"
     ],
-    "gap": "Truth-loop order is only proven by a test-local pipeline; no global-scout stage, and the kernel cycle does not call the quality/entitlement gate before the world model.",
+    "gap": "Truth-loop order is proven by a test-local pipeline; no global-scout stage. The connector runtime already quarantines a record whose evidence is refused, impossible or from an altered document (connector/runtime.rs check_evidence), so a record reaching Platform::sense via ConnectorFeed::poll has passed a per-source check. What is missing is the kernel-level gate: a SensedRecord carries no evidence id (the id is the event fingerprint minted inside the connector runtime), so Platform::absorb_evidence cannot hand back which records the world fabric admitted and node.rs / connectors.rs cannot gate observe on it; ConnectorFeed::poll would have to return (record, evidence id) pairs first (qip-market-ingestion, outside the model lane).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4553,7 +4557,7 @@
     "verification": "cargo test -p qip-acceptance --test truth_loop",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model."
+    "notes": "Re-graded COMPLETE->PARTIAL 2026-10-17 by independent audit (W0.10): Gate order is asserted on a test-local composition; no scout stage and no production path enforcing scout->truth->world model. 2026-10-18 lane L06: not implemented; the closure needs ConnectorFeed to return evidence ids with its records, a change in qip-market-ingestion. Left PARTIAL with the corrected gap."
   },
   {
     "id": "R12-TICK-1201",

@@ -235,3 +235,195 @@ fn no_document_class_claimed_by_claude_md_is_missing() {
         );
     }
 }
+
+/// The ADR files named by index rows in `readme`: the target of every
+/// `| [0NNN](0NNN-….md) |` link. A row whose number is plain text is a claim
+/// with no body yet (the README's own protocol) and names no file.
+fn indexed_adrs(readme: &str) -> Vec<String> {
+    readme
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("| [")?;
+            let (number, rest) = rest.split_once("](")?;
+            let (target, _) = rest.split_once(')')?;
+            (number.len() == 4 && number.chars().all(|c| c.is_ascii_digit()))
+                .then(|| target.to_string())
+        })
+        .collect()
+}
+
+/// R12-GOV-9079: "the index lists every ADR; a missing entry fails". The
+/// older test above spot-checks three ADRs exist; it passes with a hundred
+/// unindexed. This pairs every numbered file with exactly one index row and
+/// every row with a file.
+#[test]
+fn every_numbered_adr_has_exactly_one_index_row_and_every_row_names_a_file() {
+    let readme = qip_acceptance::read("docs/adr/README.md");
+    let rows = indexed_adrs(&readme);
+    let files: BTreeSet<String> =
+        std::fs::read_dir(qip_acceptance::repository_root().join("docs/adr"))
+            .expect("the ADR directory is readable")
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| {
+                name.ends_with(".md") && name.chars().take(4).all(|c| c.is_ascii_digit())
+            })
+            .collect();
+    assert!(
+        files.len() > 100 && rows.len() > 100,
+        "premise: {} files and {} rows were read; the register holds well over a hundred",
+        files.len(),
+        rows.len()
+    );
+    let unique: BTreeSet<&String> = rows.iter().collect();
+    assert_eq!(unique.len(), rows.len(), "an ADR is indexed twice");
+    let unindexed: Vec<&String> = files.iter().filter(|f| !unique.contains(f)).collect();
+    assert_eq!(
+        unindexed,
+        Vec::<&String>::new(),
+        "ADR files with no index row"
+    );
+    let dangling: Vec<&&String> = unique.iter().filter(|r| !files.contains(**r)).collect();
+    assert_eq!(
+        dangling,
+        Vec::<&&String>::new(),
+        "index rows naming no file"
+    );
+
+    // The check fails on a README with one row removed, and on one that
+    // indexes a file that is not there.
+    let victim = rows.first().expect("rows").clone();
+    let without: String = readme
+        .lines()
+        .filter(|line| !line.starts_with(&format!("| [{}](", &victim[..4])))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        files.iter().any(|f| !indexed_adrs(&without).contains(f)),
+        "removing a row left every file indexed"
+    );
+    let phantom = format!("{readme}\n| [0999](0999-nothing.md) | nothing |");
+    assert!(
+        indexed_adrs(&phantom).iter().any(|r| !files.contains(r)),
+        "a row naming no file was not seen"
+    );
+}
+
+/// Where each deployable binary under `backend/crates/apps` is declared. A
+/// binary that is not in Terraform is named with the reason, so a ninth
+/// application forces a line here rather than going unlisted.
+const BINARY_HOMES: [(&str, Option<&str>); 8] = [
+    ("qip-api", Some("infrastructure/terraform/catalogue.tf")),
+    (
+        "qip-deepbrain",
+        Some("infrastructure/terraform/catalogue.tf"),
+    ),
+    (
+        "qip-fastbrain",
+        Some("infrastructure/terraform/catalogue.tf"),
+    ),
+    (
+        "qip-edge-node",
+        Some("infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl"),
+    ),
+    (
+        "qip-fabricd",
+        Some("infrastructure/terraform/modules/event-fabric-broker/main.tf"),
+    ),
+    (
+        "qip-ledgerd",
+        Some("infrastructure/terraform/modules/ledgerd/main.tf"),
+    ),
+    // The console is a Next.js portal served by its own RunService manifest;
+    // the Rust crate is the experimental renderer ADR 0025 left open.
+    ("qip-web", None),
+    // Operator tooling, run by a person; it is not deployed.
+    ("qip-cli", None),
+];
+
+#[test]
+fn every_binary_under_apps_is_catalogued_where_it_is_deployed_or_named_as_not_deployed() {
+    let on_disk: BTreeSet<String> =
+        std::fs::read_dir(qip_acceptance::repository_root().join("backend/crates/apps"))
+            .expect("the apps directory is readable")
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+    let listed: BTreeSet<String> = BINARY_HOMES.iter().map(|(n, _)| n.to_string()).collect();
+    assert_eq!(
+        on_disk, listed,
+        "an application crate was added or removed; place it in BINARY_HOMES"
+    );
+    let mut declared = 0usize;
+    for (binary, home) in BINARY_HOMES {
+        let Some(home) = home else { continue };
+        declared += 1;
+        let text = qip_acceptance::read(home);
+        let named = text
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .any(|word| word == binary);
+        assert!(named, "{home} does not name {binary}");
+    }
+    assert!(
+        declared >= 6,
+        "only {declared} binaries have a declared home"
+    );
+    // Every binary, deployed or not, appears in the per-binary runbook.
+    let binaries = qip_acceptance::read("docs/ops/runbooks/binaries.md");
+    for (binary, _) in BINARY_HOMES {
+        // The CLI's binary is `qip`, and its page is headed by that name.
+        let heading = if binary == "qip-cli" {
+            "## qip (".to_string()
+        } else {
+            format!("## {binary}")
+        };
+        assert!(
+            binaries.contains(&heading),
+            "docs/ops/runbooks/binaries.md has no section for {binary}"
+        );
+    }
+}
+
+#[test]
+fn every_operations_page_is_listed_in_the_ops_index() {
+    let index = qip_acceptance::read("docs/ops/README.md");
+    let mut pages = Vec::new();
+    for directory in ["docs/ops", "docs/ops/runbooks"] {
+        for file in qip_acceptance::files_with_extension(directory, "md") {
+            let relative = file
+                .strip_prefix(qip_acceptance::repository_root())
+                .expect("under the root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let parent = std::path::Path::new(&relative)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // Only this directory's own pages, not nested directories' (those
+            // have their own README), and not the index itself.
+            if parent != directory || relative.ends_with("docs/ops/README.md") {
+                continue;
+            }
+            let name = relative
+                .strip_prefix("docs/ops/")
+                .expect("under docs/ops")
+                .to_string();
+            pages.push(name);
+        }
+    }
+    assert!(pages.len() >= 12, "only {} pages were found", pages.len());
+    let unlisted: Vec<&String> = pages
+        .iter()
+        .filter(|page| !index.contains(&format!("]({page})")))
+        .collect();
+    assert_eq!(
+        unlisted,
+        Vec::<&String>::new(),
+        "operations pages missing from docs/ops/README.md"
+    );
+    // The check fails on an index with one link removed.
+    let first = pages.first().expect("pages");
+    let without = index.replace(&format!("]({first})"), "](removed.md)");
+    assert!(!without.contains(&format!("]({first})")));
+}

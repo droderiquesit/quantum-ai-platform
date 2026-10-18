@@ -582,6 +582,7 @@ fn a_derivation_records_what_the_subject_would_have_done_had_its_abduced_cause_s
         horizon: Duration::from_days(5),
         moves: BTreeMap::from([("kestrel".to_string(), -0.05)]),
         settlement: None,
+        subject_class: Some("equity".into()),
     };
     let derivation = derive(input, &causal, now);
     // Premise: abduction named Kestrel, seen to move, so there is a cause to
@@ -887,5 +888,93 @@ fn the_self_system_member_is_fed_the_previous_cycles_stage_latency_and_the_degra
             "{degraded}"
         );
     }
+    Ok(())
+}
+
+/// R12-REASON-1131: a reasoning task uses the ontology. The symbolic stage
+/// types every hypothesis's subject against `platform_ontology`, from the
+/// asset class the platform registered it under, and journals the typing on
+/// the derivation; a subject the ontology cannot type is recorded as
+/// refused rather than reasoned about as if it were known. Until this,
+/// `OntologyRegistry` was constructed only in its own tests.
+///
+/// Mutations: in `Platform::reason_symbolically`, pass `subject_class: None`
+/// — the shipped cycle's derivation is untyped and the first assertion
+/// fires; in `symbolic_stage::derive`, record `Step::Derived` whatever
+/// `type_subject` returns — the untyped subjects read as typed and the
+/// refusal assertions fire.
+#[test]
+fn the_symbolic_stage_types_its_subject_against_the_ontology_and_records_an_untyped_subject_as_refused()
+-> Result<()> {
+    use qip_kernel::symbolic_stage::{Step, derive};
+
+    // The shipped cycle: AAA is a common stock, so an equity.
+    let (platform, derivation) = journaled_derivation()?;
+    let typing = derivation
+        .subject_type
+        .as_ref()
+        .expect("a derivation written by this build records its subject's typing");
+    assert_eq!(typing.class.as_deref(), Some("equity"));
+    assert_eq!(typing.typed, Step::Derived("asset/equity v1".to_string()));
+
+    // A subject with no registered class, and one whose class the ontology
+    // does not hold: both refused, each naming why.
+    let mut input = {
+        use qip_kernel::symbolic_stage::{AnomalyFacts, SymbolicInput};
+        SymbolicInput {
+            cycle: 1,
+            hypothesis_id: "hyp-1-unknown".into(),
+            subject: "unknown".into(),
+            status: "draft".into(),
+            confidence: 0.6,
+            contested: false,
+            dissenters: 0,
+            evidence_items: 1,
+            kill_switch: false,
+            live_authority: false,
+            anomaly: AnomalyFacts {
+                detector: "zscore".into(),
+                detected_at: start(),
+                observed: -0.04,
+                expected: 0.0,
+                confidence: 0.9,
+            },
+            catalyst: None,
+            formed_at: start(),
+            horizon: Duration::from_days(5),
+            moves: std::collections::BTreeMap::new(),
+            settlement: None,
+            subject_class: None,
+        }
+    };
+    let unregistered = derive(input.clone(), platform.world().causal(), start());
+    match unregistered.subject_type.as_ref().map(|t| &t.typed) {
+        Some(Step::Refused(why)) => assert!(why.contains("no registered asset class"), "{why}"),
+        other => panic!("a subject with no class was typed: {other:?}"),
+    }
+    input.subject_class = Some("weather_derivative".into());
+    let foreign = derive(input, platform.world().causal(), start());
+    match foreign.subject_type.as_ref().map(|t| &t.typed) {
+        Some(Step::Refused(why)) => {
+            assert!(
+                why.contains("`weather_derivative` is not a type the ontology holds"),
+                "{why}"
+            )
+        }
+        other => panic!("a class the ontology does not hold was typed: {other:?}"),
+    }
+    assert!(
+        foreign.detail().ends_with(", subject untyped"),
+        "the stage line does not say the subject was untyped: {}",
+        foreign.detail()
+    );
+
+    // And the typing is part of the proof: a journaled typing the ontology
+    // does not reproduce is refused on replay.
+    let mut corrupted = derivation;
+    if let Some(typing) = corrupted.subject_type.as_mut() {
+        typing.typed = Step::Derived("asset/credit v1".to_string());
+    }
+    assert_refused_for(&platform, &corrupted, "subject typing");
     Ok(())
 }

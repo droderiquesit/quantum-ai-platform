@@ -54,3 +54,18 @@ run "no_instance_is_planned_while_spanner_is_off" {
     error_message = "enable_spanner = false planned a Spanner instance."
   }
 }
+
+# The harness policy asks every plan file to prove a refusal beside its
+# admissions. The edition is not itself a validation, so the refusal here is
+# the neighbouring floor on the same instance: a sliver of a node is refused
+# while the default is admitted by the first run above.
+run "a_floor_below_one_node_is_refused_on_the_same_instance" {
+  command = plan
+
+  variables {
+    enable_spanner               = true
+    spanner_min_processing_units = 100
+  }
+
+  expect_failures = [var.spanner_min_processing_units]
+}
