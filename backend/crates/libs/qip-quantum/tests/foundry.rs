@@ -171,3 +171,31 @@ fn a_family_without_an_encoding_is_refused_by_name() -> Result<()> {
     }
     Ok(())
 }
+
+/// R12-QUANT-4040. The symbolic family has an encoder and a proven baseline in
+/// the tree, so the generic "no encoding, baseline or benchmark exists"
+/// reason would be a false statement about it - while registering it would
+/// let `model_serving` promote a benefit nothing in the cycle can produce.
+///
+/// Mutation: record the symbolic family with the generic reason - the reason
+/// no longer names the encoder and the first assertion fails. Mutation:
+/// register it - the `NotBuilt` match fails.
+#[test]
+fn the_symbolic_family_is_not_routed_and_its_reason_names_the_encoder_that_exists() -> Result<()> {
+    let foundry = Foundry::platform()?;
+    let Some(FamilyStatus::NotBuilt { reason }) =
+        foundry.status(FamilyKind::SymbolicCombinatorialSearch)
+    else {
+        panic!("the symbolic family must be accounted for as not built until the cycle routes it");
+    };
+    assert!(
+        reason.contains("`Problem::to_qubo`") && reason.contains("`Problem::minimise`"),
+        "the reason does not name the encoder and baseline that exist: {reason}"
+    );
+    let Some(FamilyStatus::NotBuilt { reason: generic }) = foundry.status(FamilyKind::GraphSearch)
+    else {
+        panic!("premise: graph search is not built");
+    };
+    assert_ne!(reason, generic, "premise: the symbolic reason is its own");
+    Ok(())
+}

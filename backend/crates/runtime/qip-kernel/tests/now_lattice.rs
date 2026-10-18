@@ -460,3 +460,62 @@ fn every_issued_forecast_is_journaled_with_its_control_plane_state_and_a_dropped
         "{refused:?}"
     );
 }
+
+/// R12-WORLD-3083: a forecast inconsistent with its adjacent horizon is
+/// flagged by the cycle, on the record and on the counter, and never repaired.
+/// The first cycle over calm history issues hours-days medians that sit outside
+/// the weeks-months 80% interval for both instruments, so the premise is a real
+/// finding rather than a manufactured one. The flagged list must be exactly
+/// what `constrain` finds over the forecasts the same record carries, and the
+/// forecasts must be unchanged by being flagged: a silently widened interval is
+/// a forecast nobody issued. Mutations: skip the `constrain` call in
+/// `LatticeStage::run` (the premise fails); drop the
+/// counter increment in `Platform` (the counter assertion fails).
+#[test]
+fn a_forecast_outside_its_longer_neighbours_interval_is_flagged_in_the_review_and_on_the_counter() {
+    use qip_observability::metrics::labels;
+    use qip_world_model::lattice::{InconsistencyKind, constrain};
+
+    let mut platform = platform();
+    platform.observe(calm_history());
+    platform.run_cycle(start());
+    let review: LatticeReview = last(&platform, "lattice:");
+
+    let flagged: Vec<_> = review
+        .inconsistencies
+        .iter()
+        .filter(|i| i.kind == InconsistencyKind::MedianOutside)
+        .collect();
+    assert!(
+        !flagged.is_empty(),
+        "premise: calm history leaves a short-horizon median outside the longer interval"
+    );
+    for finding in &flagged {
+        assert_eq!(
+            (finding.shorter.as_str(), finding.longer.as_str()),
+            ("hours_days", "weeks_months"),
+            "{finding:?}"
+        );
+    }
+    let targets: BTreeSet<&str> = flagged.iter().map(|f| f.target.as_str()).collect();
+    assert_eq!(targets, BTreeSet::from(["obj-AAA/close", "obj-BBB/close"]));
+
+    // Flagged, not repaired: the journaled forecasts reproduce the flags.
+    let mut recomputed = Vec::new();
+    for target in &targets {
+        let chain: Vec<_> = review
+            .issued
+            .iter()
+            .filter(|f| f.target == *target)
+            .map(|f| f.fields())
+            .collect();
+        recomputed.extend(constrain(&chain));
+    }
+    assert_eq!(recomputed, review.inconsistencies);
+
+    let count = platform.telemetry().metrics.snapshot().counter(
+        qip_kernel::lattice_stage::LATTICE_INCONSISTENCIES_TOTAL,
+        &labels([("kind", "median_outside")]),
+    );
+    assert_eq!(count, flagged.len() as u64);
+}
