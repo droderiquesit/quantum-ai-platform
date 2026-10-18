@@ -2456,7 +2456,7 @@
       ".github/workflows/deploy.yml:510-540",
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:1071 is_digest_pinned"
     ],
-    "gap": "Publish packages/bundles or drop the repositories.",
+    "gap": "Nothing publishes to the rust_packages or deployment_bundles repositories (modules/registry/main.tf), but removing them is not this lane's to do: it deletes Artifact Registry resources on the next apply, needs the explicit approval naming the resource that the infrastructure rules require, and contradicts pipeline_waivers.rs, which asserts both repositories are declared. The choice is the owner's: publish to them (a deploy.yml step, a protected path) or remove them together with that waiver test.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2467,7 +2467,7 @@
     "verification": "cargo test -p qip-acceptance --test gitops",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the module and the waiver suite; status unchanged. Proposed test for either branch: infrastructure.rs::every_registry_repository_has_a_workflow_that_publishes_to_it."
   },
   {
     "id": "R12-CICD-9108",
@@ -3506,7 +3506,7 @@
       "infrastructure/terraform/modules/network/main.tf:271",
       "backend/crates/tests/qip-acceptance/tests/security_controls.rs:248"
     ],
-    "gap": "Connectivity tests.",
+    "gap": "Not built. A google_network_management_connectivity_test needs a concrete source and destination (instance, IP, forwarding rule); the execution-node-to-API path has an internal Cloud Run service as its destination, which Connectivity Tests do not take as an endpoint, and execution nodes are not deployed in any environment (execution_nodes_enabled is false). A test declared against endpoints that do not exist would plan to nothing or fail on apply.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -3517,7 +3517,7 @@
     "verification": "terraform plan",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Gap corrected 2026-10-18 after reading the network and execution-node modules; status unchanged. Buildable once a node exists: declare the test beside the node, keyed on the node count."
   },
   {
     "id": "R12-OBS-9156",
