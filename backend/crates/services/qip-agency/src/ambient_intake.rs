@@ -371,6 +371,15 @@ impl AmbientIntake {
                 "pricing".to_string(),
             ]),
             stop_conditions: Some(vec!["the outbox cannot be written".to_string()]),
+            // The door's only effect is a draft in the internal outbox, which
+            // sends nothing, so a stop leaves nothing half-applied outside it.
+            // What a stop unwinds is the retry queue: every held draft is
+            // dropped on the record (`AmbientIntake::revoke`).
+            rollback_conditions: Some(vec![
+                "on a stop, drop every draft held for a retry on the record; written drafts stay \
+                 in the internal outbox, which sends nothing"
+                    .to_string(),
+            ]),
         }
         .build()?;
         Ok(Self {
@@ -396,9 +405,33 @@ impl AmbientIntake {
         self.retry.len()
     }
 
-    /// Revoke the drafting tool: the next draft is refused and audited.
-    pub fn revoke(&mut self) -> Result<(), Error> {
-        self.guard.revoke(DRAFT_TOOL)
+    /// Revoke the drafting tool: the next draft is refused and audited, and
+    /// every draft held for a retry is dropped on the record now, returned
+    /// as [`Intake::Abandoned`].
+    ///
+    /// A held draft has already cleared the guard once. Left in the queue,
+    /// it waits for a retry that the revocation refuses anyway. Worse, a
+    /// later [`Self::reauthorise`] would send it, on an authority given
+    /// before the stop. A stop that leaves pending work queued behind it
+    /// stops only new work.
+    pub fn revoke(&mut self) -> Result<Vec<Intake>, Error> {
+        self.guard.revoke(DRAFT_TOOL)?;
+        Ok(self
+            .retry
+            .drain(..)
+            .map(|pending| Intake::Abandoned {
+                reason: "the drafting tool was revoked while this draft was held for a retry"
+                    .to_string(),
+                attempts: pending.attempts,
+            })
+            .collect())
+    }
+
+    /// Restore the drafting tool on `operator`'s authority. Drafts dropped at
+    /// the revocation stay dropped: an opportunity worth drafting again is
+    /// offered again.
+    pub fn reauthorise(&mut self, operator: &str) -> Result<(), Error> {
+        self.guard.reauthorise(DRAFT_TOOL, operator)
     }
 
     /// Promote an advisory on `approver`'s authority and submit it. The

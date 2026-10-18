@@ -121,9 +121,9 @@ use qip_core::lineage::{Lineage, TraceId};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Context, Currency, Decimal, Hasher256, Money, PortfolioId};
 use qip_cost_router::{
-    ComputeLedger, Conditions, CostEngine, DataCostModel, DataReads, DecisionContext, Determinism,
-    DeterministicRouting, Horizon, IntelligenceTier, MarketRegime, Region as CostRegion, Router,
-    Routing, TierCharge, VolatilityRegime,
+    Attribution as CostAttribution, ComputeLedger, Conditions, CostEngine, DataCostModel,
+    DataReads, DecisionContext, Determinism, DeterministicRouting, Horizon, IntelligenceTier,
+    MarketRegime, Region as CostRegion, Router, Routing, TierCharge, VolatilityRegime,
 };
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::probe::SourceProbe;
@@ -876,6 +876,14 @@ pub struct Platform {
     /// Records absorbed under a lineage beyond that bound this cycle: logged
     /// under their own correlation id, but not listed in the journal entry.
     sensed_unlisted: u64,
+    /// Records received since assembly whose lineage reached the event log,
+    /// and records received with none — handed to [`Self::observe`] bare, or
+    /// whose log append failed. The two halves of
+    /// `qip_data_lineage_records_total`, kept here as well so the
+    /// completeness gauge is the ratio of what was counted rather than a
+    /// second estimate of it.
+    lineage_linked: u64,
+    lineage_unlinked: u64,
     /// The desk's fills as the P1 records `qip-ledgerd` books, chained and
     /// de-duplicated; see [`crate::desk_ledger`]. A fill enters the book
     /// only through this, so the book and the ledger cannot disagree about
@@ -930,6 +938,20 @@ pub struct Platform {
     /// desk that grew with uptime would be the failure [`SERIES_HISTORY`]
     /// documents, reached by a second road.
     market: Upstream<MarketView>,
+    /// The research organisation's episodic and semantic memory, the slot the
+    /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
+    ///
+    /// The desk was handed `ResearchMemory::new()` inside an `Arc` and nothing
+    /// could write it, so the reviewer's two memory checks — an analyst whose
+    /// hit rate is poor over ten resolutions, and a lesson that applies to
+    /// the situation — read an empty memory on every cycle in every binary.
+    /// LEARN now writes it where a thesis resolves; see
+    /// [`Self::write_research_memory`].
+    research_memory: Upstream<ResearchMemory>,
+    /// Per claim class, the recent resolutions a lesson about that class is
+    /// built from, and whether one has been promoted. Bounded by the anomaly
+    /// kinds the detectors raise and by [`LESSON_WINDOW`] per class.
+    research_lessons: BTreeMap<String, LessonTally>,
     /// Where liquidity lives per instrument across venues, fed from books and
     /// quotes as they arrive, each at its own observed instant.
     liquidity: LiquidityTopology,
@@ -4914,6 +4936,7 @@ impl Platform {
         // capability and label `Desk::new` itself chose — not a second
         // spelling of either.
         let world = Upstream::new(WorldModel::new());
+        let research_memory = Upstream::new(ResearchMemory::new());
         let market = Upstream::new(MarketView {
             snapshot: MarketSnapshot::new(now),
             universe,
@@ -4954,6 +4977,7 @@ impl Platform {
         );
         desk.world = world.gate(desk.world.required(), desk.world.label());
         desk.market = market.gate(desk.market.required(), desk.market.label());
+        desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
         let organisation = Organisation::standard(
@@ -5249,6 +5273,8 @@ impl Platform {
             capture_problems: Vec::new(),
             sensed_pending: Vec::new(),
             sensed_unlisted: 0,
+            lineage_linked: 0,
+            lineage_unlinked: 0,
             desk_ledger: DeskLedgerFeed::on_chain(&config.desk_chain)?,
             desk_operations: Vec::new(),
             capital_grant_fundings: BTreeMap::new(),
@@ -5324,6 +5350,8 @@ impl Platform {
             observation_history: BTreeMap::new(),
             world,
             market,
+            research_memory,
+            research_lessons: BTreeMap::new(),
             liquidity: LiquidityTopology::default(),
             market_events: Vec::new(),
             capital: TrackedCapital::new(initial_equity, now),
@@ -5770,6 +5798,15 @@ impl Platform {
              outcomes are outstanding and returns to zero when they are booked",
         );
         metrics.describe(
+            names::DATA_LINEAGE_RECORDS,
+            "records the platform received, by whether their lineage reached the event log \
+             (linked) or they arrived with none or could not be logged (unlinked)",
+        );
+        metrics.describe(
+            names::DATA_LINEAGE_COMPLETENESS,
+            "the fraction of records received since assembly whose lineage reached the event log",
+        );
+        metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
             "internal crosses settled to both contributors' books at the mid",
         );
@@ -6030,6 +6067,14 @@ impl Platform {
     /// the backtest.
     pub fn remembered_episodes(&self, now: Timestamp) -> impl Iterator<Item = &Episode> {
         self.episodes.episodes(now)
+    }
+
+    /// The research organisation's memory as the desk's reviewer reads it:
+    /// one analyst episode per directional stance on every resolved thesis,
+    /// and the lessons LEARN promoted (R12-WORLD-3032). A read guard on the
+    /// slot the desk's gate shares, not a copy.
+    pub fn research_memory(&self) -> Reading<'_, ResearchMemory> {
+        self.research_memory.read()
     }
 
     /// Produce the cycle's episodic digest — payload slot 4 — and journal it.
@@ -10135,11 +10180,16 @@ impl Platform {
     /// Returns the number of records taken in, as `observe` does.
     pub fn observe_with_lineage(&mut self, inputs: Vec<SensedInput>, now: Timestamp) -> usize {
         let mut records = Vec::with_capacity(inputs.len());
+        let mut linked = 0u64;
         for input in inputs {
-            self.log_sensed(&input, now);
+            if self.log_sensed(&input, now) {
+                linked = linked.saturating_add(1);
+            }
             records.push(input.record);
         }
-        self.observe(records)
+        let unlinked = (records.len() as u64).saturating_sub(linked);
+        self.count_lineage(linked, unlinked);
+        self.absorb_records(records)
     }
 
     /// [`Self::observe`] for a caller with no bus: each record starts its own
@@ -10170,8 +10220,10 @@ impl Platform {
     }
 
     /// Append one received record to the event log and queue its reference
-    /// for the next cycle's journal entry.
-    fn log_sensed(&mut self, input: &SensedInput, now: Timestamp) {
+    /// for the next cycle's journal entry. Returns whether the record is in
+    /// the log, which is what lineage completeness counts: a record past the
+    /// journal entry's bound is still findable by its correlation id.
+    fn log_sensed(&mut self, input: &SensedInput, now: Timestamp) -> bool {
         let event_id = self.context.ids().generate::<EventKind>(now);
         let logged = input
             .record
@@ -10184,17 +10236,57 @@ impl Platform {
                 input.lineage.correlation_id.as_str(),
                 error.message()
             ));
-            return;
+            return false;
         }
         if self.sensed_pending.len() >= MAX_SENSED_REFS_PER_CYCLE {
             self.sensed_unlisted = self.sensed_unlisted.saturating_add(1);
-            return;
+            return true;
         }
         self.sensed_pending.push(SensedRef {
             correlation_id: input.lineage.correlation_id.as_str().to_string(),
             event_id: event_id.as_str().to_string(),
             topic: input.record.topic().name().to_string(),
         });
+        true
+    }
+
+    /// Count received records by whether their lineage reached the event log
+    /// (R12-OBS-7129), at the seam where that becomes known.
+    ///
+    /// `qip_data_lineage_records_total{outcome}` is what the
+    /// `data-provenance-lineage-completeness` critical path is evaluated on,
+    /// and `qip_data_lineage_completeness` is the same two counts as a ratio
+    /// for a chart. Until this, the gauge was described and given an
+    /// objective and nothing in any binary wrote it, so the objective read
+    /// unmeasured forever — and a deep brain absorbing connector records
+    /// with no lineage at all looked no different from one that logged each.
+    fn count_lineage(&mut self, linked: u64, unlinked: u64) {
+        let metrics = &self.telemetry.metrics;
+        if linked > 0 {
+            metrics.increment(
+                names::DATA_LINEAGE_RECORDS,
+                labels([("outcome", "linked")]),
+                linked,
+            );
+        }
+        if unlinked > 0 {
+            metrics.increment(
+                names::DATA_LINEAGE_RECORDS,
+                labels([("outcome", "unlinked")]),
+                unlinked,
+            );
+        }
+        self.lineage_linked = self.lineage_linked.saturating_add(linked);
+        self.lineage_unlinked = self.lineage_unlinked.saturating_add(unlinked);
+        let total = self.lineage_linked.saturating_add(self.lineage_unlinked);
+        if total > 0 {
+            // A statistic, not money: a ratio of two record counts.
+            metrics.gauge(
+                names::DATA_LINEAGE_COMPLETENESS,
+                labels([]),
+                self.lineage_linked as f64 / total as f64,
+            );
+        }
     }
 
     /// Feed observations in. The SENSE stage's input.
@@ -10236,7 +10328,18 @@ impl Platform {
     /// Returns the number of records taken in. A malformed depth observation
     /// (negative depth, crossed book) is refused by the topology; the refusal
     /// is surfaced as a LEARN-stage problem rather than swallowed.
+    ///
+    /// A record handed here carries no lineage, so it is counted
+    /// `unlinked` under `qip_data_lineage_records_total`; a caller with one
+    /// uses [`Self::observe_with_lineage`].
     pub fn observe(&mut self, records: Vec<SensedRecord>) -> usize {
+        self.count_lineage(0, records.len() as u64);
+        self.absorb_records(records)
+    }
+
+    /// The body of [`Self::observe`], shared with the lineage path so a
+    /// record is counted once, by whichever door it came in.
+    fn absorb_records(&mut self, records: Vec<SensedRecord>) -> usize {
         let mut absorbed = 0;
         // Bars are batched: history typically arrives newest-first, and one
         // merge per series is linear where per-bar sorted inserts are
@@ -10744,6 +10847,9 @@ impl Platform {
             halted: self.autonomy.kill_switch().is_globally_tripped(),
         };
 
+        if let Some(slowest) = report.stages.iter().map(|o| o.elapsed).max() {
+            self.federation.observe_cycle(slowest);
+        }
         for outcome in &report.stages {
             let stage = labels([("stage", outcome.stage.as_str())]);
             let mut ran = stage.clone();
@@ -10990,9 +11096,12 @@ impl Platform {
             }
         }
 
+        // Attributed to the platform's region and to no strategy or source: a
+        // cycle's compute serves every strategy it looked at, and billing it
+        // to one would be a number nobody computed (R12-FINOPS-10136).
         let mut ledger =
             match ComputeLedger::new(format!("cycle {}", self.cycle), Budget::research_default()) {
-                Ok(ledger) => ledger,
+                Ok(ledger) => ledger.with_attribution(CostAttribution::region(HOME_REGION)),
                 Err(error) => return vec![format!("the compute ledger refused to open: {error}")],
             };
         let mut problems = Vec::new();
@@ -12047,6 +12156,13 @@ impl Platform {
                 live_authority: level.is_live(),
                 expired_manifests: self.expired_manifests(now).len(),
                 thin_subjects,
+                slowest_stage: self.federation.slowest_stage(),
+                degraded_capabilities: self.central_degradation(now).ok().map(|d| {
+                    qip_contracts::degradation::Capability::all()
+                        .into_iter()
+                        .filter(|c| d.freshness(*c) != qip_contracts::degradation::Freshness::Fresh)
+                        .count()
+                }),
             },
             chain: self.confirmed_chain().ok().map(|view| ChainView {
                 confirmed_trades: view.state().trades(),
@@ -13340,6 +13456,16 @@ impl Platform {
                     outcome = outcome
                         .with_problem(format!("rejected on review: {}", reasoned.review.rationale));
                     DecisionTaken::RejectedOnReview
+                } else if let Err(refusal) = justify_thesis(&reasoned.hypothesis.evidence) {
+                    // Approved on review and still not queued: a thesis whose
+                    // only ground is the return it expects never reaches
+                    // DECIDE, so no intent is formed on profit alone
+                    // (R12-GOV-6127). Recorded under its own words, because
+                    // "could not be sized" and "had no reason but profit" send
+                    // an operator to different places.
+                    outcome = outcome
+                        .with_problem(format!("approved but not justified: {}", refusal.message()));
+                    DecisionTaken::NotSizeable
                 } else {
                     match self.thesis_from(&opportunity, &reasoned) {
                         Ok(thesis) => {
@@ -13597,6 +13723,17 @@ impl Platform {
             formed_at: hypothesis.formed_at,
             horizon: hypothesis.horizon,
             moves,
+            settlement: self
+                .asset_classes
+                .get(subject.as_str())
+                .and_then(|class| self.asset_class_registry.get(*class))
+                .and_then(|record| match record.settlement() {
+                    crate::asset_class_registry::ClassSettlement::Exchange(convention) => Some((
+                        convention.as_str().to_string(),
+                        Duration::from_days(i64::from(convention.days())),
+                    )),
+                    crate::asset_class_registry::ClassSettlement::PeriodicStatement => None,
+                }),
         };
         let derivation = {
             let world = self.world.read();
@@ -13936,7 +14073,8 @@ impl Platform {
         outcomes: &[ThesisOutcome],
         claims: &[ThesisClaim],
         now: Timestamp,
-    ) -> Result<usize> {
+    ) -> Result<(usize, Vec<String>)> {
+        let mut lessons = Vec::new();
         let expected: BTreeMap<&str, f64> = claims
             .iter()
             .map(|claim| (claim.hypothesis_id.as_str(), claim.expected_move_bps))
@@ -13959,10 +14097,138 @@ impl Platform {
                 expected_move_bps: expected.get(outcome.hypothesis_id.as_str()).copied(),
             });
             episode.known_at = now;
+            if let Some(lesson) = self.write_research_memory(&episode, now) {
+                lessons.push(lesson);
+            }
             self.episodes.remember(episode)?;
             remembered += 1;
         }
-        Ok(remembered)
+        Ok((remembered, lessons))
+    }
+
+    /// Write one resolved episode into the research organisation's memory,
+    /// and promote or retire the lesson about its claim class (R12-WORLD-3032).
+    ///
+    /// Each analyst that took a side is charged one episode, right when the
+    /// series moved the way it leaned. The episode's `occurred_at` is `now`,
+    /// the instant the outcome became knowable, and not the instant of the
+    /// work: `ResearchMemory::hit_rate` filters on that field alone, so a
+    /// stamp at the work's instant would let a brief as of any later moment
+    /// read an outcome that was not yet known then.
+    ///
+    /// The lesson is a caution, because the reviewer reads every applicable
+    /// lesson as an objection: "claims of this class moved against their
+    /// direction", supported by the resolutions that went wrong and
+    /// contradicted by those that went right, applying wherever the
+    /// opportunity's context names the class — the detectors' own kind
+    /// labels, which is what that context lists. Promoted through
+    /// `ResearchMemory::promote` under the default policy, so one bad call
+    /// is not a lesson; superseded once the window no longer clears the
+    /// policy, so a class that has started working stops being objected to.
+    /// At most one lesson per class is ever promoted, which bounds the
+    /// lesson list by the detector kinds. Returns a line naming a lesson
+    /// promoted or retired, for the stage detail.
+    fn write_research_memory(&mut self, episode: &Episode, now: Timestamp) -> Option<String> {
+        use qip_agents::memory::{
+            Episode as ResearchEpisode, EpisodeOutcome as ResearchOutcome, Lesson, PromotionPolicy,
+        };
+        use qip_core::ids::{AgentRunId, LessonId};
+        let outcome = episode.outcome.as_ref()?;
+        let moved = outcome.realised_move_bps;
+        if !moved.is_finite() || moved == 0.0 {
+            return None;
+        }
+        self.research_memory.update(|memory| {
+            for stance in &episode.stances {
+                let leaned = match stance.direction {
+                    StanceDirection::Positive => 1.0,
+                    StanceDirection::Negative => -1.0,
+                    StanceDirection::Ambiguous | StanceDirection::Neutral => continue,
+                };
+                let correct = leaned * moved > 0.0;
+                memory.record_episode(ResearchEpisode {
+                    run_id: AgentRunId::from_string(format!(
+                        "{}:{}",
+                        episode.episode_id, stance.agent_id
+                    )),
+                    agent_id: stance.agent_id.clone(),
+                    occurred_at: now,
+                    question: format!(
+                        "which way {} would move on a {} claim",
+                        episode.instrument, episode.claim.claim
+                    ),
+                    conclusion: format!("{:?}", stance.direction).to_ascii_lowercase(),
+                    evidence: vec![episode.episode_id.clone()],
+                    conviction: stance.conviction,
+                    outcome: Some(ResearchOutcome {
+                        resolved_at: outcome.resolved_at,
+                        correct,
+                        realised_bps: Some(moved),
+                        explanation: format!(
+                            "the series moved {moved:.1} bps over the claim's horizon"
+                        ),
+                    }),
+                });
+            }
+        });
+
+        if episode.claim.direction == 0.0 {
+            return None;
+        }
+        let class = episode.claim.class.clone();
+        let held = episode.claim.direction * moved > 0.0;
+        let run = AgentRunId::from_string(episode.episode_id.clone());
+        let tally = self.research_lessons.entry(class.clone()).or_default();
+        let window = if held {
+            &mut tally.held
+        } else {
+            &mut tally.failed
+        };
+        window.push_back(run);
+        if window.len() > LESSON_WINDOW {
+            window.pop_front();
+        }
+        let lesson_id = LessonId::from_string(format!("lesson-claims-{class}"));
+        let candidate = Lesson {
+            lesson_id: lesson_id.clone(),
+            learned_at: now,
+            learned_by: "learn-stage".to_string(),
+            applies_when: class.clone(),
+            statement: format!(
+                "{class} claims have moved against their direction in {} of the last {} \
+                 resolutions",
+                tally.failed.len(),
+                tally.failed.len() + tally.held.len()
+            ),
+            supporting_episodes: tally.failed.iter().cloned().collect(),
+            contradicting_episodes: tally.held.iter().cloned().collect(),
+            superseded_at: None,
+        };
+        let policy = PromotionPolicy::default();
+        let clears = candidate.supporting_episodes.len() >= policy.minimum_support
+            && candidate.smoothed_support() >= policy.minimum_smoothed_support;
+        match tally.lesson {
+            LessonState::Unpromoted if clears => {
+                let statement = candidate.statement.clone();
+                let promoted = self
+                    .research_memory
+                    .update(|memory| memory.promote(candidate, policy));
+                promoted.ok().map(|_| {
+                    tally.lesson = LessonState::Live;
+                    format!("lesson {} promoted: {statement}", lesson_id.as_str())
+                })
+            }
+            LessonState::Live if !clears => {
+                self.research_memory
+                    .update(|memory| memory.supersede(&lesson_id, now));
+                tally.lesson = LessonState::Retired;
+                Some(format!(
+                    "lesson {} retired: {class} claims no longer clear the promotion policy",
+                    lesson_id.as_str()
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Turn an approved hypothesis into the thesis construction can size.
@@ -17236,9 +17502,12 @@ impl Platform {
         }
         // Each resolved thesis's episode enters memory here, knowable from
         // now, so the next REASON can recall it as precedent.
-        let remembered = self.remember_resolved(&outcomes, &claims, now)?;
+        let (remembered, lessons) = self.remember_resolved(&outcomes, &claims, now)?;
         if remembered > 0 {
             summary.push_str(&format!("; {remembered} episode(s) remembered"));
+        }
+        for lesson in lessons {
+            summary.push_str(&format!("; {lesson}"));
         }
         if scored_by_regime > 0 {
             summary.push_str(&format!(
@@ -22112,6 +22381,28 @@ pub(crate) const EPISODE_ID_PREFIX: &str = "ep-";
 
 /// The episode id a hypothesis's episode is kept under, on both sides of
 /// the resolve seam.
+/// Resolutions per claim class a lesson about that class is built from.
+const LESSON_WINDOW: usize = 64;
+
+/// The recent resolutions of one claim class, split by whether the claim
+/// held, and where its lesson stands.
+#[derive(Debug, Default)]
+struct LessonTally {
+    held: std::collections::VecDeque<qip_core::ids::AgentRunId>,
+    failed: std::collections::VecDeque<qip_core::ids::AgentRunId>,
+    lesson: LessonState,
+}
+
+/// A class's lesson: never promoted, live, or superseded for good. Retired
+/// is terminal so the memory's lesson list is bounded by the claim classes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LessonState {
+    #[default]
+    Unpromoted,
+    Live,
+    Retired,
+}
+
 fn episode_id_for(hypothesis_id: &str) -> String {
     format!("{EPISODE_ID_PREFIX}{hypothesis_id}")
 }
@@ -22207,6 +22498,30 @@ fn listed_test_universe(symbols: &[&str]) -> Universe {
     universe
 }
 
+/// The grounds a queued thesis stands on, checked by
+/// [`qip_contracts::action::check_justification`] before DECIDE may size it.
+///
+/// Every thesis carries an expected return, so `ExpectedProfit` is always a
+/// ground; the independent grounds are the hypothesis's *supporting*
+/// evidence, each named by the record it can be re-read from. Contradicting
+/// and contextual items are not reasons to act. Until R12-GOV-6127 the check
+/// ran only in the agency's `ActionGuard::preflight`, so the kernel's own
+/// order path could form an intent on a hypothesis review approved with no
+/// supporting evidence at all — the red team raises a missing primary source
+/// as serious, not fatal, and a tolerant policy lets one through.
+fn justify_thesis(evidence: &qip_reasoning_engine::evidence::EvidenceSet) -> Result<()> {
+    use qip_contracts::action::{Ground, check_justification};
+    use qip_reasoning_engine::evidence::Stance;
+    let mut grounds = vec![Ground::ExpectedProfit];
+    grounds.extend(
+        evidence
+            .with_stance(Stance::Supports)
+            .into_iter()
+            .map(|item| Ground::Evidence(item.record_id.clone())),
+    );
+    check_justification(&grounds)
+}
+
 #[cfg(test)]
 mod decide_tests {
     //! The decide stage stops being a stub: unit tests, because the seam
@@ -22218,6 +22533,49 @@ mod decide_tests {
     use qip_observability::Telemetry;
     use qip_portfolio_engine::construction::ApprovedThesis;
     use qip_risk::limits::LimitSet;
+
+    /// R12-GOV-6127: REASON queues no thesis whose only ground is profit.
+    /// The red team raises a missing primary source as serious rather than
+    /// fatal, so a tolerant policy can approve a hypothesis that no
+    /// supporting item stands behind; `justify_thesis` is what stops that
+    /// approval becoming an order intent.
+    #[test]
+    fn a_thesis_with_no_supporting_evidence_is_refused_and_one_with_support_is_admitted() {
+        use qip_core::ids::EvidenceId;
+        use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
+        let at = Timestamp::from_secs(1_760_000_000);
+        let item = |id: &str, stance: Stance| {
+            Evidence::new(
+                EvidenceId::from_string(id),
+                EvidenceKind::Filing,
+                stance,
+                "the filing says so",
+                format!("filing/{id}"),
+                "issuer",
+                at,
+                at,
+            )
+        };
+
+        let mut against = EvidenceSet::new();
+        against.push(item("E-against", Stance::Contradicts));
+        against.push(item("E-context", Stance::Contextual));
+        // The premise: the set is not empty, so a refusal below is about the
+        // stance of what it holds and not about holding nothing.
+        assert_eq!(against.len(), 2);
+        for (case, evidence) in [("empty", EvidenceSet::new()), ("no support", against)] {
+            let refusal = justify_thesis(&evidence)
+                .expect_err(&format!("{case}: a profit-only thesis was admitted"));
+            assert!(
+                matches!(refusal, Error::Denied(_)),
+                "{case}: refused as {refusal:?}, not as a denial"
+            );
+        }
+
+        let mut supported = EvidenceSet::new();
+        supported.push(item("E-for", Stance::Supports));
+        assert!(justify_thesis(&supported).is_ok());
+    }
 
     fn platform() -> Platform {
         let config = PlatformConfig::default();
@@ -28704,6 +29062,84 @@ mod episodic_slot_tests {
             model_version: None,
             model_derived: false,
         }
+    }
+
+    /// R12-WORLD-3032: the desk's research memory was an empty copy nothing
+    /// could write, so the reviewer's hit-rate and lesson objections never
+    /// fired in any binary. LEARN now charges each analyst's stance to it and
+    /// promotes — and later retires — a caution about a claim class that
+    /// keeps moving against its direction.
+    #[test]
+    fn resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads() {
+        use qip_ai::memory::{AnalystStance, StanceDirection};
+        let mut platform = platform();
+        // The premise: the reviewer's gate reads the slot LEARN writes, not
+        // a copy, so everything asserted below is what the desk sees.
+        assert!(platform.research_memory.feeds(&platform.desk.memory));
+        let context =
+            "First alert on obj-AAA in the past week; 1 detector signal(s): mean_reversion";
+        let resolve = |platform: &mut Platform, n: u64, moved: f64| {
+            let at = start().saturating_add(Duration::from_hours(n as i64));
+            let mut episode = resolved(&format!("ep-{n}"), at);
+            episode.stances = vec![AnalystStance {
+                agent_id: "analyst-a".to_string(),
+                direction: StanceDirection::Positive,
+                conviction: 0.7,
+            }];
+            if let Some(outcome) = episode.outcome.as_mut() {
+                outcome.realised_move_bps = moved;
+            }
+            (platform.write_research_memory(&episode, at), at)
+        };
+
+        // Three claims that went the wrong way: charged, and not yet a lesson.
+        for n in 1..=3 {
+            assert_eq!(resolve(&mut platform, n, -12.0).0, None);
+        }
+        let (promoted, promoted_at) = resolve(&mut platform, 4, -12.0);
+        let line = promoted.expect("four failures under the default policy promote a lesson");
+        assert!(
+            line.starts_with("lesson lesson-claims-mean_reversion promoted: "),
+            "{line}"
+        );
+        {
+            let memory = platform.research_memory.read();
+            assert_eq!(memory.episode_count(), 4);
+            assert_eq!(memory.hit_rate("analyst-a", promoted_at), Some(0.0));
+            let lessons = memory.applicable_lessons(context, promoted_at);
+            assert_eq!(
+                lessons.len(),
+                1,
+                "the lesson applies where the context names its class"
+            );
+            assert_eq!(lessons[0].supporting_episodes.len(), 4);
+        }
+
+        // Eight that held: the caution no longer clears the policy and is
+        // superseded, readable for the past and gone for the present.
+        let mut retired = None;
+        let mut retired_at = promoted_at;
+        for n in 5..=12 {
+            let (line, at) = resolve(&mut platform, n, 12.0);
+            retired_at = at;
+            if line.is_some() {
+                retired = line;
+                break;
+            }
+        }
+        let line = retired.expect("a class that started holding has its caution retired");
+        assert!(
+            line.starts_with("lesson lesson-claims-mean_reversion retired: "),
+            "{line}"
+        );
+        let memory = platform.research_memory.read();
+        assert!(memory.applicable_lessons(context, retired_at).is_empty());
+        assert_eq!(memory.applicable_lessons(context, promoted_at).len(), 1);
+        assert!(
+            memory
+                .hit_rate("analyst-a", retired_at)
+                .is_some_and(|rate| rate > 0.0)
+        );
     }
 
     #[test]

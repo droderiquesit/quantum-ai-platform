@@ -559,3 +559,64 @@ fn ambient_types_cannot_reach_an_adapter_except_through_promote_and_the_guard() 
         "one adapter call site"
     );
 }
+
+/// R12-RES-7109: revoking the drafting tool stops the drafts already held for
+/// a retry, as well as the next new one. A held draft has cleared the guard
+/// once. Left queued, it would go out on the first retry after the tool is
+/// reauthorised, on an authority given before the stop. Only a named operator
+/// restores the tool, and the dropped drafts stay dropped.
+///
+/// Mutation: in `AmbientIntake::revoke`, map over `retry.iter().cloned()`
+/// instead of draining it. The held draft survives the revocation and the
+/// `pending() == 0` assertion fails.
+#[test]
+fn revoking_the_drafting_tool_drops_every_held_draft_and_only_a_named_operator_restores_it() {
+    let mut door =
+        AmbientIntake::open(config(), EventLog::in_memory().with_capacity(1).unwrap()).unwrap();
+    assert!(matches!(
+        door.admit(advisory("sig-20", "EURUSD"), APPROVER, at(120), 1)
+            .unwrap(),
+        Intake::Drafted { .. }
+    ));
+    let held = door
+        .admit(advisory("sig-21", "GBPUSD"), APPROVER, at(121), 1)
+        .unwrap();
+    assert!(matches!(held, Intake::Deferred { .. }), "premise: {held:?}");
+    assert_eq!(door.pending(), 1, "premise: one draft is held for a retry");
+
+    let dropped = door.revoke().unwrap();
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(
+        matches!(&dropped[0], Intake::Abandoned { reason, attempts: 1 } if reason.contains("revoked")),
+        "{dropped:?}"
+    );
+    assert_eq!(door.pending(), 0, "nothing is left queued behind the stop");
+    assert!(door.retry(at(130), 2).unwrap().is_empty());
+
+    assert!(
+        door.reauthorise("  ").is_err(),
+        "a blank operator restores nothing"
+    );
+    let refused = door
+        .admit(advisory("sig-22", "USDJPY"), APPROVER, at(131), 2)
+        .unwrap();
+    assert!(
+        matches!(refused, Intake::Withheld { ref reason } if reason.contains("revoked")),
+        "still revoked after a refused reauthorisation: {refused:?}"
+    );
+
+    door.reauthorise("ops-lead").unwrap();
+    assert!(
+        door.retry(at(140), 3).unwrap().is_empty(),
+        "the dropped draft is not resurrected by the reauthorisation"
+    );
+    let after = door
+        .admit(advisory("sig-23", "AUDUSD"), APPROVER, at(141), 3)
+        .unwrap();
+    // The outbox is full, so the write is deferred; what matters is that the
+    // guard cleared it, which a revoked tool never does.
+    assert!(
+        matches!(after, Intake::Deferred { .. }),
+        "a reauthorised tool clears the guard again: {after:?}"
+    );
+}

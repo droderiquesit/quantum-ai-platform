@@ -489,14 +489,18 @@ pub struct PlatformConfig {
 
 /// The owner recorded against anything this deployment registers.
 ///
-/// This is the process's own name, and `Platform::assess_sources` refuses to
-/// catalogue under it: a deployment that has not configured an accountable
-/// person or desk registers its sources and catalogues none of them, each
-/// recorded as a catalogue problem naming the fix (R12-DATA-2020). The
-/// default is kept so a configuration file that omits `owner` still parses;
-/// it is not kept so that it is ever written to the mesh.
+/// The research desk: the role `infrastructure/foundation/terraform.tfvars`
+/// already declares as the `owner` label on every project, and the desk
+/// CLAUDE.md names as the platform's users. It must be a name
+/// `Platform::assess_sources` accepts as a `NamedOperator`. Until 2026-10-18
+/// this was `qip-platform`, the process's own name, and once the seam began
+/// refusing process names (R12-DATA-2020, `46ef4c11`) every default
+/// composition refused its own registrations — the end-to-end walk failed on
+/// it and blocked the dev deploy. A default the platform refuses is a trap
+/// rather than a guard: the refusal stays, for a deployment that configures a
+/// placeholder, and the default names somebody who can be asked.
 fn default_owner() -> String {
-    "qip-platform".to_string()
+    "research-desk".to_string()
 }
 
 /// The user agent the finder presents. Names the platform and the crate
@@ -775,6 +779,63 @@ impl PlatformConfig {
     pub fn permits_live_trading(&self) -> bool {
         self.autonomy_ceiling.is_live()
     }
+}
+
+/// The equity factor's spelling in the scenario library, which is what a
+/// declared loading is multiplied against (`crate::hedge`).
+const EQUITY_FACTOR: &str = "equity";
+
+/// A paper short's borrow, per day: about 0.37% a year, a general-collateral
+/// fee. Declared, because the catalogue states no borrow rate, and never zero,
+/// because a free short would let the search prefer it for nothing.
+const PAPER_BORROW_BPS_PER_DAY: f64 = 0.1;
+
+/// The daily residual between a single listed name and the equity factor it
+/// is declared to load on. Declared rather than measured: the catalogue
+/// carries no history, and zero would claim a single stock tracks the whole
+/// market exactly.
+const PAPER_SINGLE_NAME_BASIS_VOLATILITY: f64 = 0.015;
+
+/// The hedge candidates a composition root declares from the catalogue it
+/// loaded (blueprint §14.1, R12-RISK-4106).
+///
+/// Until this existed every binary ran the Hedge Brain over an empty
+/// candidate list: the search ran each DECIDE, found every failing world
+/// unprotectable, and said so, which reads as a working control and could
+/// never plan a hedge. The catalogue already states what a hedge candidate
+/// needs from the record — venue, spread, daily volume, and (read later by
+/// `crate::hedge`) multiplier, lot and price — so the declaration adds only
+/// the judgement: each listed common stock is a linear, exchange-cleared
+/// `CorrelatedAsset` loading one-for-one on the library's equity factor.
+///
+/// Only common stock is declared. A record of any other type has no stated
+/// equity loading, and declaring one for it would be a guessed beta — the
+/// failure `crate::hedge_review` refuses for policies — so it is left out
+/// rather than given a number nobody measured. The committed catalogue
+/// (`data/datasets/universe.json`) holds only common stock, so the classes
+/// §14.1 also names (options, futures, FX, rates, commodities, volatility,
+/// event contracts, cash) get no candidate here until it lists one.
+pub fn paper_hedge_candidates(
+    universe: &qip_financial::universe::Universe,
+) -> Vec<crate::hedge::HedgeCandidateDeclaration> {
+    universe
+        .iter()
+        .filter(|record| {
+            record.instrument_type == qip_financial::asset_class::InstrumentType::CommonStock
+        })
+        .map(|record| crate::hedge::HedgeCandidateDeclaration {
+            instrument: record.object_id.clone(),
+            venue: record.venue.clone(),
+            class: qip_risk::hedge_search::InstrumentClass::CorrelatedAsset,
+            greeks: qip_risk::hedge_search::Greeks::linear(),
+            carry_bps_per_day: PAPER_BORROW_BPS_PER_DAY,
+            spread_bps: record.liquidity.typical_spread_bps,
+            average_daily_volume: record.liquidity.average_daily_volume,
+            counterparty_loss_rate: 0.0,
+            basis_volatility: PAPER_SINGLE_NAME_BASIS_VOLATILITY,
+            factor_loadings: std::collections::BTreeMap::from([(EQUITY_FACTOR.to_string(), 1.0)]),
+        })
+        .collect()
 }
 
 #[cfg(test)]

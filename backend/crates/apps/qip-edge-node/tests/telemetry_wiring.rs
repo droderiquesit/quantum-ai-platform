@@ -124,3 +124,79 @@ fn main_builds_no_registry_of_its_own() {
         "main.rs does not take its cell and registry from the one assembly"
     );
 }
+
+/// Two linked peers measure each other's clock, and the nearest one's round
+/// trip reaches the registry the scrape serves. Before this the link counted
+/// `clocks_measured` and nothing recorded how far away the peer was, so a
+/// cell could be joined to a peer a continent off and chart as healthy.
+///
+/// Mutation: drop the `clock_round_trip_ns` store in
+/// `qip-peer-link/src/host.rs::record` and the gauge is never written, so the
+/// wait times out with the series absent.
+#[test]
+fn a_peer_clock_exchange_records_the_measured_round_trip_in_the_scrape_registry() {
+    use qip_edge_node::telemetry::PeerSeries;
+    use qip_peer_link::{DEFAULT_CLOCK_BOUND, PeerSettings};
+    use qip_transport::tls::LinkSecurity;
+    use std::collections::BTreeMap;
+    use std::net::TcpListener;
+    use std::time::{Duration as Wait, Instant};
+
+    let addr = || {
+        TcpListener::bind("127.0.0.1:0")
+            .expect("a loopback port")
+            .local_addr()
+            .expect("its address")
+    };
+    let (a_at, b_at) = (addr(), addr());
+    let spawn = |node: &str, at, peer: &str, peer_at| {
+        qip_peer_link::spawn(
+            &PeerSettings {
+                node: node.into(),
+                listen: at,
+                peers: BTreeMap::from([(peer.to_string(), peer_at)]),
+                security: LinkSecurity::plaintext_for_tests(),
+                clock_bound: DEFAULT_CLOCK_BOUND,
+            },
+            Arc::new(SystemClock),
+        )
+        .expect("a peer node spawns on a free loopback port")
+        .0
+    };
+    let first = spawn("london-1", a_at, "newyork-1", b_at);
+    let _second = spawn("newyork-1", b_at, "london-1", a_at);
+
+    let node = assembled();
+    let series = PeerSeries::new(Arc::clone(node.scrape_registry()), CELL, REGION);
+    let gauge_labels = labels([("cell", CELL), ("region", REGION)]);
+    let read = || {
+        node.scrape_registry()
+            .snapshot()
+            .gauge(names::EDGE_PEER_ROUND_TRIP_MS, &gauge_labels)
+    };
+    series.observe(&qip_peer_link::boundary::PeerStatus::default());
+    assert!(
+        read().is_none(),
+        "premise: a link that has measured no clock records nothing, not a zero"
+    );
+
+    let deadline = Instant::now() + Wait::from_secs(20);
+    loop {
+        let status = first.status();
+        series.observe(&status);
+        if status.clocks_measured >= 1 {
+            let recorded = read().expect("a measured clock was recorded");
+            assert!(
+                status.clock_round_trip_ns > 0 && recorded > 0.0,
+                "{status:?} recorded {recorded}"
+            );
+            assert!(
+                recorded < 20_000.0,
+                "a loopback round trip of {recorded} ms is not a measurement"
+            );
+            return;
+        }
+        assert!(Instant::now() < deadline, "no clock measured: {status:?}");
+        std::thread::sleep(Wait::from_millis(5));
+    }
+}

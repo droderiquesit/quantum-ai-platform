@@ -313,6 +313,47 @@ fn sent(gateway: &AnsweringGateway) -> Vec<Decimal> {
     gateway.placed.iter().map(|placed| placed.3).collect()
 }
 
+/// The orders the gateway accepted that were cycle legs, and those that were
+/// the offsets `Cell::unwind_cycle` sent for what a broken cycle filled —
+/// told apart by the chain's `Hedged` entries, so a test about legs is not
+/// counting the unwind, and the unwind is asserted rather than ignored.
+#[allow(clippy::type_complexity)]
+fn legs_and_offsets(
+    cell: &Cell,
+    gateway: &AnsweringGateway,
+) -> (
+    Vec<(ObjectId, BookSide, Decimal)>,
+    Vec<(ObjectId, BookSide, Decimal)>,
+) {
+    let hedged: Vec<String> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            qip_edge::journal::Decision::Hedged { order_id, .. } => Some(order_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let (offsets, legs): (Vec<_>, Vec<_>) = gateway
+        .placed
+        .iter()
+        .partition(|placed| hedged.contains(&placed.0));
+    let shape = |placed: Vec<&(String, ObjectId, BookSide, Decimal, Decimal)>| {
+        placed
+            .into_iter()
+            .map(|(_, object, side, quantity, _)| (object.clone(), *side, *quantity))
+            .collect()
+    };
+    (shape(legs), shape(offsets))
+}
+
+fn opposite(side: BookSide) -> BookSide {
+    match side {
+        BookSide::Ask => BookSide::Bid,
+        BookSide::Bid => BookSide::Ask,
+    }
+}
+
 #[test]
 fn a_cycle_whose_venues_fill_every_leg_whole_is_sent_exactly_as_it_was_admitted() -> Result<()> {
     // The half that distinguishes a mechanism from a new limit. A control
@@ -476,10 +517,22 @@ fn a_cycle_whose_first_leg_fills_under_the_minimum_viable_fraction_sends_no_furt
         outcome.is_err(),
         "a cycle that could not be completed reported a pass that finished"
     );
+    // One cycle leg, and since `Cell::unwind_cycle` one offset closing the
+    // quarter it filled — the same book, the other side — and nothing else.
+    let (legs, offsets) = legs_and_offsets(&cell, &gateway);
     assert_eq!(
-        sent(&gateway).len(),
+        legs.len(),
         1,
         "a later leg went out behind a first leg that filled a quarter"
+    );
+    assert_eq!(
+        offsets,
+        vec![(
+            legs[0].0.clone(),
+            opposite(legs[0].1),
+            legs[0].2 / dec!("4")
+        )],
+        "the quarter the first leg filled was not offset, or something else was sent"
     );
     assert!(
         cell.is_halted(),
@@ -500,7 +553,7 @@ fn a_cycle_whose_first_leg_fills_under_the_minimum_viable_fraction_sends_no_furt
     // read as two.
     assert_eq!(
         legs_counted(&metrics, "unviable") as usize,
-        sent(&gateway).len(),
+        legs.len(),
         "the leg the cell declined to send was counted on the series for legs it sent"
     );
     Ok(())
@@ -569,10 +622,20 @@ fn a_desk_that_will_only_carry_a_whole_cycle_stops_on_any_short_leg_at_all() -> 
         outcome.is_err(),
         "a desk that carries only whole cycles completed one at three quarters"
     );
+    let (legs, offsets) = legs_and_offsets(&cell, &gateway);
     assert_eq!(
-        sent(&gateway).len(),
+        legs.len(),
         1,
         "a later leg went out at a desk that carries only whole cycles"
+    );
+    assert_eq!(
+        offsets,
+        vec![(
+            legs[0].0.clone(),
+            opposite(legs[0].1),
+            legs[0].2 * dec!("3") / dec!("4")
+        )],
+        "the three quarters the first leg filled were not offset, or something else was sent"
     );
     Ok(())
 }

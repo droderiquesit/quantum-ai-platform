@@ -11,6 +11,7 @@
 //! somebody already approved, for as long as the envelope has left to run.
 
 use crate::arbitrage::{ArbitrageDesk, EdgeRefresh};
+use crate::conduct::{ConductPolicy, ConductWatch};
 use crate::decomposition::{Decomposition, DecompositionPolicy, LegSize};
 use crate::dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, ReleaseSchedule};
 use crate::dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
@@ -206,6 +207,63 @@ fn path_assigned(cycle_id: &str, assignment: &PathAssignment) -> Decision {
 /// fund, which are the same fact about the same bucket seen from the two
 /// sides that matter.
 pub const GATE_QUOTE_BUDGET: &str = "quote_budget";
+
+/// The gate an order is refused under when it would continue the cell's own
+/// place-and-cancel pattern on one side of one book ([`crate::conduct`]).
+/// Refused through [`Cell::refuse`] in `place_net`, before the order exists,
+/// so the label needs no second enumeration.
+pub const GATE_CONDUCT_SPOOFING: &str = "conduct_spoofing";
+
+/// The gate an intent is refused under when two venues the cell reaches
+/// serve mids for the same instrument further apart than
+/// [`CellConfig::cross_source_tolerance`].
+///
+/// A poisoned or manipulated feed is a book that looks healthy on its own:
+/// sequenced, fresh, two-sided. Every per-book check admits it. What gives
+/// it away is a second source for the same instrument, and with two
+/// sources the cell cannot tell which is lying — so it trades on neither
+/// until they agree, which is the fail-closed reading. With one source there
+/// is nothing to compare and nothing is refused; that is a limit of what
+/// the cell can know, stated here so nobody reads it as a pass. Directional
+/// intents only: an arbitrage cycle is priced from the disagreement and is
+/// bounded by its own scanner and net-edge rules. Refused through
+/// [`Cell::refuse`], so the label needs no second enumeration.
+pub const GATE_CROSS_SOURCE: &str = "cross_source";
+
+/// What a cell does, beyond withdrawing what rests there, with a position
+/// it holds at a venue whose feed has gone silent.
+///
+/// A silent feed leaves a position the cell can no longer watch: its book
+/// serves the prices from before the silence, and nothing the market does
+/// there reaches the cell. Withdrawing resting orders stops the exposure
+/// growing; it does nothing about what already filled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FeedLossPlaybook {
+    /// Withdraw resting orders and hold the position until the feed returns.
+    /// For an operator who would rather carry a blind position than trade
+    /// against it elsewhere.
+    Withdraw,
+    /// Withdraw resting orders and offset the position, once per silence,
+    /// at a venue still heard that lists the same instrument — chosen by
+    /// the cell's own venue choice, sent through [`Cell::send`], and
+    /// journaled as [`Decision::Hedged`]. With no such venue the cell says
+    /// so under [`GATE_FEED_LOSS_PLAYBOOK`]. The default, because a
+    /// position nobody can watch is the exposure a playbook exists for.
+    #[default]
+    Hedge,
+}
+
+/// The gate a feed-loss hedge is refused under when the cell holds a
+/// position at a silent venue and no venue still heard can take the
+/// offset. Refused through [`Cell::refuse`], so the label needs no second
+/// enumeration.
+pub const GATE_FEED_LOSS_PLAYBOOK: &str = "feed_loss_playbook";
+
+/// Five per cent. Venues quoting one instrument normally sit within a few
+/// basis points; a gap twenty times the widest arbitrage the scanner acts
+/// on is a broken or manipulated book, not an opportunity.
+pub const DEFAULT_CROSS_SOURCE_TOLERANCE: Decimal =
+    Decimal::from_raw(qip_core::decimal::SCALE / 20);
 
 /// The gate a cell refuses a cycle under when its legs' venues fill too far
 /// apart in time (§32.1). Refused through [`Cell::refuse`] like every other
@@ -492,6 +550,22 @@ pub struct CellConfig {
     /// every later leg at its planned size, which is the position this
     /// control exists to stop.
     pub decomposition: DecompositionPolicy,
+    /// The bound on the cell's own cancel-before-fill pattern
+    /// ([`crate::conduct`]). Always in force, for the reason above: a cell
+    /// that decides alone has no surveillance desk behind it, and a conduct
+    /// control that defaulted to absent would be the spoofing pattern
+    /// waiting for a strategy that happens to produce it.
+    pub conduct: ConductPolicy,
+    /// How far, as a fraction of the other source's mid, the chosen venue's
+    /// mid for an instrument may sit from the mid another venue this cell
+    /// reaches serves for the same instrument before the intent is refused
+    /// under [`GATE_CROSS_SOURCE`]. Always in force; validated at
+    /// [`Cell::new`], where a bound outside `(0, 1)` stops assembly.
+    pub cross_source_tolerance: Decimal,
+    /// What the cell does with a position held at a venue whose feed has
+    /// gone silent ([`FeedLossPlaybook`]). Resting orders there are
+    /// withdrawn under either arm.
+    pub feed_loss_playbook: FeedLossPlaybook,
     /// Whether this cell reads the journal-pressure wire (ADR 0100 §6).
     ///
     /// Off by default, and that is the decision rather than an omission. A
@@ -576,6 +650,9 @@ impl CellConfig {
             venue_quote_limits: BTreeMap::new(),
             dispersion: DispersionPolicy::default(),
             decomposition: DecompositionPolicy::default(),
+            conduct: ConductPolicy::default(),
+            cross_source_tolerance: DEFAULT_CROSS_SOURCE_TOLERANCE,
+            feed_loss_playbook: FeedLossPlaybook::Hedge,
             journal_wire: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
@@ -707,6 +784,16 @@ impl CellConfig {
     /// check that cannot fire — the very thing the rest of this list exists
     /// to remove.
     pub fn validate(&self) -> Result<()> {
+        // Refused, not clamped: a bound of zero refuses any two venues that
+        // differ by a tick, and one of a whole mid or more admits any book.
+        if !self.cross_source_tolerance.is_positive() || self.cross_source_tolerance >= Decimal::ONE
+        {
+            return Err(Error::invalid(format!(
+                "a cross-source tolerance of {} can never judge two sources; state a fraction \
+                 above zero and below one",
+                self.cross_source_tolerance
+            )));
+        }
         if self.cell_id.trim().is_empty() {
             return Err(Error::invalid(
                 "a cell was assembled with no cell id; orders are numbered and region holds are \
@@ -1460,6 +1547,11 @@ pub struct Cell {
     /// [`Cell::admit_cycle`], which refuses a cycle whose legs would arrive
     /// too far apart to be one position.
     fill_times: FillTimes,
+    /// What the cell placed and withdrew unfilled, per side of each book,
+    /// over the conduct window. Read before an order is built in
+    /// `place_net`; written where the venue accepts an order (`send`) and
+    /// where the cell withdraws one at its time to live (`withdraw_all`).
+    conduct: ConductWatch,
     /// What this cell has been told about the other regions (§36.3).
     ///
     /// [`RegionOutlook::AllLit`] is the state every cell has run in and is
@@ -1501,6 +1593,10 @@ pub struct Cell {
     /// last heard — so the incident is recorded once, not once per pass, and
     /// the reconciliation entry can name where the blind interval began.
     feed_silent: BTreeMap<VenueId, Timestamp>,
+    /// The silent venues the feed-loss playbook has already acted on, so a
+    /// silence is hedged once and a venue heard again can be hedged on its
+    /// next silence.
+    feed_loss_handled: BTreeSet<VenueId>,
     /// What each venue has done with the orders sent to it, when the
     /// composition root armed the quarantine. `None` records nothing.
     venue_health: Option<HealthTracker>,
@@ -1621,11 +1717,13 @@ impl Cell {
             region_allocation: None,
             budget,
             fill_times,
+            conduct: ConductWatch::new(config.conduct.clone()),
             suspended: BTreeMap::new(),
             outlook: RegionOutlook::AllLit,
             resume: None,
             feed_heard: BTreeMap::new(),
             feed_silent: BTreeMap::new(),
+            feed_loss_handled: BTreeSet::new(),
             venue_health,
             quarantined: BTreeMap::new(),
             unwithdrawable: BTreeSet::new(),
@@ -3739,8 +3837,11 @@ impl Cell {
                 ));
             }
         }
-        // The cell measures no acknowledgement latency, so the verdict is the
-        // reject-rate one alone; a zero typical latency charges nothing.
+        // The verdict is the reject-rate one alone; a zero typical latency
+        // charges nothing. The cell does publish each venue's first answer
+        // (`EDGE_VENUE_ACK_LATENCY_MILLIS`, recorded in `confirm`), but only
+        // for orders the venue answered, so a venue that answers nothing
+        // would read as fast here; feeding it in is a separate decision.
         let assessment = self
             .venue_health
             .as_ref()?
@@ -3815,6 +3916,130 @@ impl Cell {
                 now,
             );
             self.quarantined.insert(venue, until);
+        }
+    }
+
+    /// Act on each venue newly found silent, once, per
+    /// [`CellConfig::feed_loss_playbook`].
+    ///
+    /// Run after the halt check: a halted cell sends nothing, and the offset
+    /// is an order. The resting orders at the silent venue are withdrawn by
+    /// [`Cell::withdraw_expired`] whatever the playbook says.
+    fn apply_feed_loss_playbook(
+        &mut self,
+        gateway: &mut dyn Placer,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        let silent: BTreeSet<VenueId> = self.feed_silent.keys().cloned().collect();
+        self.feed_loss_handled
+            .retain(|venue| silent.contains(venue));
+        let fresh: Vec<VenueId> = silent
+            .into_iter()
+            .filter(|venue| !self.feed_loss_handled.contains(venue))
+            .collect();
+        for venue in fresh {
+            self.feed_loss_handled.insert(venue.clone());
+            if self.config.feed_loss_playbook == FeedLossPlaybook::Withdraw {
+                continue;
+            }
+            let prefix = format!("{}/", venue.as_str());
+            let held: Vec<(ObjectId, Decimal)> = self
+                .positions
+                .iter()
+                .filter(|(_, quantity)| !quantity.is_zero())
+                .filter_map(|(key, quantity)| {
+                    key.strip_prefix(&prefix)
+                        .map(|object| (ObjectId::from_string(object), *quantity))
+                })
+                .collect();
+            for (object_id, quantity) in held {
+                self.hedge_blind_position(&venue, &object_id, quantity, gateway, now, report);
+            }
+        }
+    }
+
+    /// Offset `held` of `object_id`, held at the silent `blind` venue, at a
+    /// venue still heard, or refuse and say why.
+    fn hedge_blind_position(
+        &mut self,
+        blind: &VenueId,
+        object_id: &ObjectId,
+        held: Decimal,
+        gateway: &mut dyn Placer,
+        now: Timestamp,
+        report: &mut WorkReport,
+    ) {
+        // Long is offset by selling into the bid, short by buying the ask.
+        let side = if held.is_positive() {
+            BookSide::Bid
+        } else {
+            BookSide::Ask
+        };
+        let quantity = held.abs();
+        let target = self
+            .venue_for(object_id, now)
+            .filter(|venue| venue != blind && self.venue_withheld(venue, now).is_none());
+        let touch = target.as_ref().and_then(|venue| {
+            self.liquidity
+                .get(venue, object_id)
+                .and_then(|state| match side {
+                    BookSide::Ask => state.best_ask(),
+                    BookSide::Bid => state.best_bid(),
+                })
+                .map(|level| level.price)
+        });
+        let (Some(target), Some(price)) = (target, touch) else {
+            self.refuse(
+                report,
+                GATE_FEED_LOSS_PLAYBOOK,
+                &format!(
+                    "the feed for {} is silent and the cell holds {held} {} there; no venue \
+                     still heard quotes the instrument, so the position stands unhedged until \
+                     the feed returns",
+                    blind.as_str(),
+                    object_id.as_str()
+                ),
+                now,
+            );
+            return;
+        };
+        match self.send(
+            object_id,
+            &target,
+            side,
+            quantity,
+            price,
+            now,
+            now,
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            gateway,
+        ) {
+            Ok((order_id, simulated)) => {
+                self.journal.record(
+                    Decision::Hedged {
+                        order_id,
+                        venue: target.as_str().to_string(),
+                        object: object_id.as_str().to_string(),
+                        quantity: quantity.to_string(),
+                        simulated,
+                    },
+                    now,
+                );
+            }
+            Err(error) => self.refuse(
+                report,
+                GATE_FEED_LOSS_PLAYBOOK,
+                &format!(
+                    "the feed for {} is silent and the offset of {held} {} at {} was not \
+                     sent: {}",
+                    blind.as_str(),
+                    object_id.as_str(),
+                    target.as_str(),
+                    error.message()
+                ),
+                now,
+            ),
         }
     }
 
@@ -4340,6 +4565,7 @@ impl Cell {
             self.refuse(&mut report, gate, "the cell is halted", now);
             return Ok(report);
         }
+        self.apply_feed_loss_playbook(gateway, now, &mut report);
 
         // The class of the gateway this pass was handed, before a signal is
         // raised or a net is formed. `Cell::send` refuses each order at the
@@ -4856,6 +5082,10 @@ impl Cell {
             self.refuse(report, "pricing", "the book serves no usable price", now);
             return None;
         };
+        if let Some(reason) = self.cross_source_disagreement(&venue, object_id, price, now) {
+            self.refuse(report, GATE_CROSS_SOURCE, &reason, now);
+            return None;
+        }
         // The price the intent is *reasoned* at is the mid; the price it is
         // *sent* at is decided by the strategy's policy when the net is
         // placed, and a strategy that stated none is refused here, before
@@ -4877,6 +5107,51 @@ impl Cell {
         }
 
         Some((venue, price))
+    }
+
+    /// Why `price`, the mid `venue` serves for `object_id`, cannot be
+    /// trusted against another venue's mid for the same instrument, or
+    /// `None` when every other usable source agrees within the tolerance
+    /// (see [`GATE_CROSS_SOURCE`]). A source is usable when its book is
+    /// fresh, priced, accepting orders and not withheld — the same tests
+    /// [`Self::venue_for`] applies — because a stale book disagreeing is
+    /// staleness, which has its own gate.
+    fn cross_source_disagreement(
+        &self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        price: Decimal,
+        now: Timestamp,
+    ) -> Option<String> {
+        let tolerance = self.config.cross_source_tolerance;
+        for other in &self.config.venues {
+            if other == venue || self.venue_withheld(other, now).is_some() {
+                continue;
+            }
+            let Some(state) = self.liquidity.get(other, object_id) else {
+                continue;
+            };
+            if state.is_stale() || !state.status().accepts_orders() {
+                continue;
+            }
+            let Some(reference) = state.mid() else {
+                continue;
+            };
+            // A non-positive reference mid is a book that cannot be divided
+            // by; it disagrees with any positive price by definition.
+            let gap = (price - reference).abs().checked_div(reference);
+            if gap.is_none_or(|gap| gap > tolerance) {
+                return Some(format!(
+                    "{} serves a mid of {price} for {} and {} serves {reference}, further apart \
+                     than the {tolerance} this cell admits; one of the two sources is wrong and \
+                     the cell cannot tell which, so it trades on neither until they agree",
+                    venue.as_str(),
+                    object_id.as_str(),
+                    other.as_str(),
+                ));
+            }
+        }
+        None
     }
 
     /// The price an order for `strategy` taking `side` of `object_id` at
@@ -5245,6 +5520,17 @@ impl Cell {
             self.release_region_holds(&net_intent.contributors);
             return Ok(None);
         }
+        // The cell's own conduct, before pricing builds anything: a place-and-
+        // cancel pattern is refused on the record of what this side of this
+        // book already did, whatever this one order looks like on its own.
+        if let Some(reason) = self
+            .conduct
+            .refusal(&venue, &net_intent.object_id, side, now)
+        {
+            self.refuse(report, GATE_CONDUCT_SPOOFING, &reason, now);
+            self.release_region_holds(&net_intent.contributors);
+            return Ok(None);
+        }
         if !self.has_open_capacity(1) {
             self.refuse_for_capacity(report, now);
             self.release_region_holds(&net_intent.contributors);
@@ -5497,6 +5783,9 @@ impl Cell {
             if placed.is_err() || matches!(placed, Ok(false)) {
                 health.record_reject(venue, now);
             }
+        }
+        if matches!(placed, Ok(true)) {
+            self.conduct.placed(venue, object_id, side, now);
         }
         match placed? {
             true => Ok((order_id, simulated)),
@@ -6093,12 +6382,16 @@ impl Cell {
     ) -> Vec<String> {
         let mut withdrawn = Vec::new();
         let mut venue_left_open = Vec::new();
+        // The withdrawals the cell chose — a time to live it set, elapsed —
+        // judged for the conduct record once the last reports are in.
+        let mut chosen = Vec::new();
         for order_id in due {
             let Some(working) = self.working.get(&order_id) else {
                 continue;
             };
             let venue = working.order.venue.clone();
             let object_id = working.order.object_id.clone();
+            let side = working.order.side;
             // An order past its own time to live is journaled as expired
             // whatever else is going on, because that is what happened to it;
             // everything else on the list during a halt was pulled by the
@@ -6167,6 +6460,7 @@ impl Cell {
                             now,
                         );
                     } else if expired {
+                        chosen.push((order_id.clone(), venue.clone(), object_id.clone(), side));
                         self.journal.record(
                             Decision::OrderExpired {
                                 order_id: order_id.clone(),
@@ -6205,6 +6499,19 @@ impl Cell {
         }
         if !withdrawn.is_empty() {
             self.confirm_execution_reports(gateway, now);
+        }
+        // After the reports, so a fill that landed between the last report
+        // and the cancel makes the order one that traded, not one withdrawn
+        // before anything did.
+        for (order_id, venue, object_id, side) in chosen {
+            let unfilled = self
+                .working
+                .get(&order_id)
+                .is_some_and(|working| working.order.filled.is_zero());
+            if unfilled {
+                self.conduct
+                    .cancelled_unfilled(&venue, &object_id, side, now);
+            }
         }
         // Only after the last reports are in: an order the venue says it
         // withdrew whole, on which no report ever named a fill, did not run,
@@ -6429,6 +6736,10 @@ impl Cell {
         // time below: see `OpenOrder::release_at` for the tail the equaliser
         // would otherwise chase.
         let release_at = working.order.release_at;
+        // The first report on an order is the venue's acknowledgement as far
+        // as the cell can see one (`EDGE_VENUE_ACK_LATENCY_MILLIS`); every
+        // later report on the same order is an execution, not an answer.
+        let first_answer = working.order.filled.is_zero();
         let was_complete = working.order.filled >= working.order.quantity;
         let order_price = working.order.price;
         working.order.filled += execution.quantity;
@@ -6555,6 +6866,12 @@ impl Cell {
             );
         }
         self.metrics.fill_confirmed(&fill.venue);
+        if first_answer {
+            let taken = fill.at.since(release_at);
+            if taken >= Duration::ZERO {
+                self.metrics.venue_ack_latency(&fill.venue, taken);
+            }
+        }
         // §29.2's denominator. A trade is what the venue says filled and
         // nothing else — an order the cell sent is a message, and counting
         // it as its own trade would make every message-to-trade ratio read
@@ -8088,7 +8405,12 @@ impl Cell {
     /// the drop-copy is reconciled" until 2026-09-19; both had been false
     /// since the withdrawal path and the execution-report channel landed.)
     ///
-    /// What the cell can do is refuse to carry on. A leg the venue refuses
+    /// That paragraph is now half history: since 2026-10-18 `break_cycle`
+    /// calls [`Self::unwind_cycle`], which reads the fills the channel has
+    /// delivered and sends, through [`Cell::send`], one offsetting order per
+    /// book the cycle's filled legs left open, journaled as `Hedged`. What
+    /// the seam still cannot do is take back a leg in flight; what it can do
+    /// is refuse to carry on. A leg the venue refuses
     /// after an earlier leg went out leaves the cell holding a position it
     /// did not decide to take, which is the state the multi-leg module calls
     /// the one that "looks, to every downstream report, exactly like a
@@ -8268,7 +8590,15 @@ impl Cell {
                 "cycle {} has no leg {position} to rest",
                 cycle.cycle_id
             ));
-            self.break_cycle(&cycle.cycle_id, 0, cycle.legs.len(), &error, now, report);
+            self.break_cycle(
+                gateway,
+                &cycle.cycle_id,
+                0,
+                cycle.legs.len(),
+                &error,
+                now,
+                report,
+            );
             return Err(error);
         };
         // The leg rests until the cycle's own legs expire, and not one instant
@@ -8386,7 +8716,7 @@ impl Cell {
                 "cycle {cycle_id} left leg {position} resting as order {order_id} and the cell \
                  holds no open order under that id, so what that venue completed cannot be read"
             ));
-            self.break_cycle(cycle_id, 1, total, &error, now, report);
+            self.break_cycle(gateway, cycle_id, 1, total, &error, now, report);
             return Err(error);
         };
         let filled = working.order.filled;
@@ -8427,7 +8757,7 @@ impl Cell {
         let completion = match decomposition.observe(sent, filled) {
             Ok(completion) => completion,
             Err(error) => {
-                self.break_cycle(cycle_id, 1, total, &error, now, report);
+                self.break_cycle(gateway, cycle_id, 1, total, &error, now, report);
                 return Err(error);
             }
         };
@@ -8439,7 +8769,7 @@ impl Cell {
                  order(s), the most it will track",
                 self.working.len()
             ));
-            self.break_cycle(cycle_id, 1, total, &error, now, report);
+            self.break_cycle(gateway, cycle_id, 1, total, &error, now, report);
             return Err(error);
         }
         let mut orders = vec![order_id];
@@ -8472,7 +8802,7 @@ impl Cell {
                     cycle.legs[other].valid_until.as_nanos(),
                     now.as_nanos()
                 ));
-                self.break_cycle(cycle_id, orders.len(), total, &error, now, report);
+                self.break_cycle(gateway, cycle_id, orders.len(), total, &error, now, report);
                 return Err(error);
             }
             let (id, quantity) = self.send_cycle_leg(
@@ -8574,6 +8904,7 @@ impl Cell {
                 cycle.cycle_id
             ));
             self.break_cycle(
+                gateway,
                 &cycle.cycle_id,
                 position,
                 cycle.legs.len(),
@@ -8633,6 +8964,7 @@ impl Cell {
                 // `break_cycle` refuses through. Counting it in both
                 // would make a single stopped cycle read as two.
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position,
                     cycle.legs.len(),
@@ -8660,6 +8992,7 @@ impl Cell {
             Ok(sent) => sent,
             Err(error) => {
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position,
                     cycle.legs.len(),
@@ -8694,6 +9027,7 @@ impl Cell {
                 cycle.cycle_id
             ));
             self.break_cycle(
+                gateway,
                 &cycle.cycle_id,
                 position.saturating_add(1),
                 cycle.legs.len(),
@@ -8813,6 +9147,7 @@ impl Cell {
                     cycle.cycle_id
                 ));
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position.saturating_add(1),
                     cycle.legs.len(),
@@ -8827,6 +9162,7 @@ impl Cell {
             Ok(completion) => completion,
             Err(error) => {
                 self.break_cycle(
+                    gateway,
                     &cycle.cycle_id,
                     position.saturating_add(1),
                     cycle.legs.len(),
@@ -8844,6 +9180,7 @@ impl Cell {
     /// A cycle stopped between legs. Record it and stop the cell.
     fn break_cycle(
         &mut self,
+        gateway: &mut dyn Placer,
         cycle_id: &str,
         sent: usize,
         total: usize,
@@ -8879,6 +9216,9 @@ impl Cell {
         // is applied only between passes, so a cell held by the journal wire
         // never reaches this line. A predicate distinction no input can
         // exercise would be a guard no test can prove.
+        if sent > 0 {
+            self.unwind_cycle(cycle_id, gateway, now);
+        }
         if sent > 0 && !self.is_halted() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
@@ -8893,6 +9233,101 @@ impl Cell {
                 now,
             );
             self.record_halt();
+        }
+    }
+
+    /// Close what a broken cycle's filled legs left open, before the cell
+    /// halts (§30's atomic-or-cancelled, as far as a cell can honour it).
+    ///
+    /// The fills the order-entry channel has not yet delivered are read
+    /// first, so a leg that traded before the next one was refused is known
+    /// to have traded. Then [`qip_arbitrage::legs::unwind_plan`] nets what
+    /// the cycle's legs filled per venue and instrument and names the
+    /// opposite order for each book left open; each goes through
+    /// [`Cell::send`] like any other order — the live-venue refusal, the mode
+    /// gate, the fence and the risk gate all apply, and nothing here can
+    /// send to a venue they refuse — priced at the touch it takes, and is
+    /// journaled as [`Decision::Hedged`]. A leg still resting is withdrawn by
+    /// the mass cancel the halt brings, not offset here: offsetting a size
+    /// that has not traded would open the position this exists to close.
+    ///
+    /// An offset the cell cannot price or the venue refuses is journaled as
+    /// a break naming the book, and the halt that follows is unchanged: the
+    /// operator still looks, now at a cell that tried to return to flat
+    /// rather than one that left the position standing.
+    fn unwind_cycle(&mut self, cycle_id: &str, gateway: &mut dyn Placer, now: Timestamp) {
+        self.confirm_execution_reports(gateway, now);
+        let filled: Vec<(VenueId, ObjectId, BookSide, Decimal)> = self
+            .working
+            .values()
+            .filter(|working| working.net.cycle_id.as_deref() == Some(cycle_id))
+            .filter(|working| working.order.filled.is_positive())
+            .map(|working| {
+                (
+                    working.order.venue.clone(),
+                    working.order.object_id.clone(),
+                    working.order.side,
+                    working.order.filled,
+                )
+            })
+            .collect();
+        for offset in qip_arbitrage::legs::unwind_plan(filled) {
+            let price = self
+                .liquidity
+                .get(&offset.venue, &offset.object_id)
+                .and_then(|state| match offset.side {
+                    BookSide::Ask => state.best_ask(),
+                    BookSide::Bid => state.best_bid(),
+                })
+                .map(|level| level.price);
+            let Some(price) = price else {
+                self.break_on(
+                    format!(
+                        "cycle {cycle_id} left {} {} open at {} and the book serves no touch to \
+                         offset it at; the position stands until an operator closes it",
+                        offset.quantity,
+                        offset.object_id.as_str(),
+                        offset.venue.as_str()
+                    ),
+                    now,
+                );
+                continue;
+            };
+            match self.send(
+                &offset.object_id,
+                &offset.venue,
+                offset.side,
+                offset.quantity,
+                price,
+                now,
+                now,
+                qip_execution_engine::modes::ExecutionMode::OrderTaking,
+                gateway,
+            ) {
+                Ok((order_id, simulated)) => {
+                    self.journal.record(
+                        Decision::Hedged {
+                            order_id,
+                            venue: offset.venue.as_str().to_string(),
+                            object: offset.object_id.as_str().to_string(),
+                            quantity: offset.quantity.to_string(),
+                            simulated,
+                        },
+                        now,
+                    );
+                }
+                Err(error) => self.break_on(
+                    format!(
+                        "cycle {cycle_id} left {} {} open at {} and the offsetting order was \
+                         not sent: {}; the position stands until an operator closes it",
+                        offset.quantity,
+                        offset.object_id.as_str(),
+                        offset.venue.as_str(),
+                        error.message()
+                    ),
+                    now,
+                ),
+            }
         }
     }
 

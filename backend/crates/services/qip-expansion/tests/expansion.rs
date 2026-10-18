@@ -114,6 +114,7 @@ fn observation(trigger: GapTrigger, wanting: Vec<Wanting>) -> Observation {
         evidence: vec!["ev-1".to_string()],
         severity: 0.7,
         economic_value: dec(500),
+        risk_value: dec(200),
     }
 }
 
@@ -630,4 +631,207 @@ fn a_task_outside_licence_security_policy_or_jurisdiction_is_refused_before_anyt
         })
         .unwrap();
     assert!(round.started.is_empty() && round.deferred.is_empty());
+}
+
+// --- R12-EXPAND-6037: solvers and venue adapters the platform lacks --------
+
+fn desk_holding(tools: &[(&str, ToolKind)]) -> qip_expansion::desk::ExpansionDesk {
+    let mut registry = ToolRegistry::new();
+    for (name, kind) in tools {
+        registry.register(name, *kind).unwrap();
+    }
+    qip_expansion::desk::ExpansionDesk::new(
+        qip_expansion::desk::DeskConfig {
+            quiet_sweeps: 2,
+            max_started_sweeps: 5,
+            jurisdiction: "US".into(),
+            owner: "test".into(),
+        },
+        registry,
+    )
+    .unwrap()
+}
+
+fn gap_wanting(
+    wanting: Wanting,
+    observation: &str,
+    evidence: &str,
+) -> qip_expansion::gap::RaisedGap {
+    raise(Observation {
+        trigger: GapTrigger::UnsupportedRequest,
+        wanting: vec![wanting],
+        observation: observation.into(),
+        affected_domains: vec!["execution".into()],
+        evidence: vec![evidence.into()],
+        severity: 0.6,
+        economic_value: dec(5),
+        risk_value: Decimal::ZERO,
+    })
+    .unwrap()
+}
+
+/// Offer `raised` to a desk holding `held`, and return the one proposal and
+/// the one pack the admission produced, asserting the item is blocked on
+/// exactly `missing`.
+fn proposed_by(
+    held: &[(&str, ToolKind)],
+    raised: qip_expansion::gap::RaisedGap,
+    missing: &str,
+) -> (
+    qip_agents::tools::ToolSpec,
+    qip_agents::tools::CapabilityPack,
+    String,
+) {
+    let mut desk = desk_holding(held);
+    assert!(
+        desk.queue().proposals().is_empty(),
+        "premise: nothing proposed yet"
+    );
+    let question = qip_expansion::desk::question_for(&raised);
+    let admission = desk.offer(
+        raised,
+        &BTreeSet::new(),
+        &BTreeSet::from(["US".to_string()]),
+    );
+    assert_eq!(
+        admission,
+        qip_expansion::desk::Admission::Blocked {
+            tools: vec![missing.to_string()]
+        }
+    );
+    let [proposal] = desk.queue().proposals() else {
+        panic!(
+            "expected one proposal, found {:?}",
+            desk.queue().proposals()
+        );
+    };
+    let [pack] = desk.queue().packs() else {
+        panic!("expected one pack, found {:?}", desk.queue().packs());
+    };
+    (proposal.clone(), pack.clone(), question)
+}
+
+/// The failure prevented: a quantum-research gap could only ever propose a
+/// `QuantumBackend`, so a platform with a quantum path and no classical
+/// solver to compute ADR 0006's baseline beside it never noticed it lacked
+/// one. Mutation: drop `classical-solver` from `FormulateSolver`'s tools and
+/// the item is queued, not blocked, and no proposal exists.
+#[test]
+fn a_quantum_gap_on_a_platform_with_no_classical_solver_proposes_one_solver_with_its_lineage() {
+    let raised = gap_wanting(
+        Wanting::Compute,
+        "a 40-asset allocation the classical relaxation bounds but does not close",
+        "solver-gap:portfolio-40",
+    );
+    assert_eq!(raised.signal.gap_class, GapClass::ComputeQuantumResearch);
+    let (proposal, pack, question) = proposed_by(
+        &[("quantum-backend", ToolKind::QuantumBackend)],
+        raised,
+        "classical-solver",
+    );
+    assert_eq!(proposal.name(), "classical-solver");
+    assert_eq!(proposal.kind(), ToolKind::Solver);
+    assert_eq!(proposal.scope(), &BTreeSet::from([ToolPermission::Read]));
+    assert_eq!(pack.lineage(), question);
+    assert_eq!(pack.tools(), [proposal]);
+}
+
+/// The failure prevented: an execution gap could propose a replay simulator
+/// and never the venue adapter the replay reads the venue through, so the
+/// build it asked for could finish and still replay nothing. Mutation: drop
+/// `venue-adapter` from `ReplayTicks`' tools and the item is queued with no
+/// proposal.
+#[test]
+fn an_execution_gap_on_a_platform_with_no_venue_adapter_proposes_one_adapter_with_its_lineage() {
+    let raised = gap_wanting(
+        Wanting::Execution,
+        "fills at the venue fell short of the plan by more than the threshold",
+        "residual:venue-a:40bps",
+    );
+    assert_eq!(raised.signal.gap_class, GapClass::Execution);
+    let (proposal, pack, question) = proposed_by(
+        &[("tick-replay", ToolKind::Simulator)],
+        raised,
+        "venue-adapter",
+    );
+    assert_eq!(proposal.name(), "venue-adapter");
+    assert_eq!(proposal.kind(), ToolKind::VenueAdapter);
+    assert_eq!(pack.lineage(), question);
+    assert_eq!(pack.tools(), [proposal]);
+}
+
+/// A pack with no lineage is a build nobody can trace to a gap, and an empty
+/// one records a need that does not exist; both are refused. Mutation:
+/// delete either guard in `CapabilityPack::new` and its assertion fails.
+#[test]
+fn a_capability_pack_without_a_gap_or_without_a_tool_is_refused() {
+    let tools = ToolRegistry::new();
+    let spec = tools.propose("classical-solver", ToolKind::Solver).unwrap();
+    assert!(qip_agents::tools::CapabilityPack::new("q", vec![spec.clone()]).is_ok());
+    assert!(qip_agents::tools::CapabilityPack::new("  ", vec![spec]).is_err());
+    assert!(qip_agents::tools::CapabilityPack::new("q", Vec::new()).is_err());
+}
+
+// --- R12-EXPAND-6048: economic value measured from the gap's own evidence ---
+
+/// The failure prevented: every detector stated `economic_value` zero, so a
+/// gate whose vetoes forwent real earnings ranked level with one whose vetoes
+/// forwent nothing. Mutation: in `repeated_vetoes_priced`, skip the
+/// assignment of `observation.economic_value` and the two gaps tie.
+#[test]
+fn a_gap_with_measured_regret_outranks_an_equal_gap_with_none() {
+    use qip_expansion::curriculum::TaskKind;
+    use qip_expansion::desk::{Measured, criteria_for};
+    use qip_expansion::detectors::{Decline, repeated_vetoes_priced};
+
+    let decline = |gate: &str, earned: i64| {
+        (
+            Decline {
+                gate: gate.to_string(),
+                regret: true,
+            },
+            dec(earned),
+        )
+    };
+    // Two gates, each regretting both of its two declines: equal severity.
+    // Only the money the vetoes forwent differs.
+    let declines = [
+        decline("gate-costly", 500),
+        decline("gate-costly", 300),
+        decline("gate-free", 0),
+        decline("gate-free", 0),
+    ];
+    let raised = repeated_vetoes_priced(&declines, 2).unwrap();
+    let [costly, free] = raised.as_slice() else {
+        panic!("expected one gap per gate, found {raised:?}");
+    };
+    assert!(costly.observation.contains("`gate-costly`"), "{costly:?}");
+    assert!(free.observation.contains("`gate-free`"), "{free:?}");
+    assert!(
+        (costly.severity - free.severity).abs() < f64::EPSILON,
+        "premise: equal severity"
+    );
+    assert_eq!(
+        free.economic_value,
+        Decimal::ZERO,
+        "premise: nothing forwent"
+    );
+    assert_eq!(costly.economic_value, dec(800));
+
+    let measured = Measured {
+        repeats: 0,
+        class_open: 0,
+    };
+    let priority = |o: &qip_expansion::gap::Observation| {
+        criteria_for(&raise(o.clone()).unwrap(), TaskKind::Experiment, measured)
+            .score()
+            .unwrap()
+            .priority()
+    };
+    assert!(
+        priority(costly) > priority(free),
+        "{} vs {}",
+        priority(costly),
+        priority(free)
+    );
 }

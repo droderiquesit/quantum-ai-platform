@@ -228,7 +228,13 @@ fn run() -> Result<()> {
     let catalogue = load_universe(&config.storage, started)?;
     // The coverage detector's view of the universe, taken before the
     // universe moves into the platform, which does not hand it back.
-    let research_coverage = qip_deepbrain::research::coverage_map(&catalogue.universe);
+    // Per asset class, venue and geography (R12-EXPAND-6065).
+    let research_coverage = qip_expansion::detectors::coverage_universe(&catalogue.universe);
+    // The Hedge Brain searches the catalogue this node sizes against; an
+    // empty list planned no hedge in any binary (R12-RISK-4106).
+    let platform_config = platform_config.with_hedge_candidates(
+        qip_kernel::config::paper_hedge_candidates(&catalogue.universe),
+    );
     // The language model the organisation narrates through (ADR 0037): the
     // hosted adapter first when the configuration names one *and* the
     // preconditions in `language.rs` are met — a provider pinned, its terms
@@ -258,6 +264,15 @@ fn run() -> Result<()> {
     // The survival policy, before anything is served (R12-CAPITAL-4089): the
     // hedge capacity and emergency reserve every construction withholds, and
     // the survival ceiling the Risk Gate reads re-derived under them at once.
+    // The Brain Registry (R12-EXPAND-6058), over the organisation this
+    // platform just convened rather than a list kept here: an agent on the
+    // roster without a valid entry stops the process before anything runs.
+    let brains = qip_deepbrain::brains::standard(platform.organisation().roster())?;
+    println!(
+        "  brain registry:   {} brain(s), {} competency domain(s) on record",
+        brains.len(),
+        brains.scopes().len()
+    );
     let survival_banner = apply_survival_policy(&mut platform)?;
     println!("  survival:         {survival_banner}");
     // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
@@ -856,6 +871,11 @@ fn run() -> Result<()> {
                     .storage
                     .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
             );
+    if let (Some(tally), qip_deepbrain::language::HostedDecision::Installed(hosted)) =
+        (&language_model.replies, &language_model.hosted)
+    {
+        research = research.with_reply_tally(hosted.model.clone(), tally.clone());
+    }
     println!(
         "  compiler:         promoted research is distilled into bounded reflex packages; no \
          package signer is installed, so packages are held unsigned and none is published"

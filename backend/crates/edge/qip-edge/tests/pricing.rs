@@ -20,7 +20,9 @@ use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
-use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, PricingPolicy, WorkReport};
+use qip_edge::cell::{
+    Cell, CellConfig, ExecutionReport, GATE_CONDUCT_SPOOFING, Placer, PricingPolicy, WorkReport,
+};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
 use qip_edge::telemetry::EDGE_ORDERS_EXPIRED;
@@ -650,5 +652,75 @@ fn a_time_to_live_that_could_not_elapse_is_refused_at_deployment() -> Result<()>
     );
     assert!(outcome.is_err(), "a zero time to live was deployed");
     assert!(cell.deployed_strategies().is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_cell_that_withdraws_every_resting_order_before_any_fill_is_refused_a_further_one_until_the_window_clears()
+-> Result<()> {
+    // The failure this prevents: spoofing is a pattern, not an order. Each
+    // resting bid here is within every per-order limit the cell has — risk,
+    // pricing, self-trade, budget — and each is withdrawn unfilled at its
+    // time to live, so until the conduct gate existed the cell placed and
+    // pulled the same order for as long as the strategy fired.
+    let (mut cell, metrics) = wired_cell(book("500", "400")?)?;
+    deploy(&mut cell, "layer", SignalKind::Enter, "100", Some(rest(1)?))?;
+    let mut gateway = VenueGateway::with(CancelPath::Works);
+
+    // Premise: four passes two seconds apart each withdraw the last order
+    // unfilled and place another, so the pattern is built from orders the
+    // cell actually sent and actually pulled, and nothing refused them.
+    for now in [50, 52, 54, 56] {
+        let report = cell.work(t(now), &mut gateway)?;
+        assert!(
+            report.refusals.is_empty(),
+            "the premise failed at t({now}): {:?}",
+            report.refusals
+        );
+        assert_eq!(report.orders.len(), 1, "the premise failed at t({now})");
+    }
+    assert_eq!(gateway.placed.len(), 4);
+    assert_eq!(gateway.cancelled.len(), 3);
+
+    // The fifth pass pulls the fourth order: four withdrawn unfilled of four
+    // placed, past three in four. The next order of that shape is refused
+    // under the conduct gate, journaled, counted, and never reaches the venue.
+    let report = cell.work(t(58), &mut gateway)?;
+    assert_eq!(
+        gateway.cancelled.len(),
+        4,
+        "the fourth order was not pulled"
+    );
+    assert!(report.orders.is_empty(), "{:?}", report.orders);
+    let reason = refusal(&report, GATE_CONDUCT_SPOOFING)
+        .ok_or_else(|| Error::not_found(format!("no conduct refusal: {:?}", report.refusals)))?;
+    assert!(
+        reason.contains("withdrew 4 of its last 4 buy order(s) for obj-ACME at XLON unfilled"),
+        "{reason}"
+    );
+    assert_eq!(gateway.placed.len(), 4, "an order reached the venue anyway");
+    assert!(
+        cell.journal().entries().iter().any(|entry| matches!(
+            &entry.decision,
+            Decision::Refused { gate, .. } if gate == GATE_CONDUCT_SPOOFING
+        )),
+        "the refusal did not reach the journal"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", GATE_CONDUCT_SPOOFING)),
+        1
+    );
+
+    // The gate admits again once the window no longer holds the pattern:
+    // a minute after the first withdrawal the same strategy's order goes out.
+    let report = cell.work(t(120), &mut gateway)?;
+    assert!(
+        refusal(&report, GATE_CONDUCT_SPOOFING).is_none(),
+        "the gate refused after the window had cleared: {:?}",
+        report.refusals
+    );
+    assert_eq!(report.orders.len(), 1, "{:?}", report.refusals);
     Ok(())
 }

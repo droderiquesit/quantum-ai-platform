@@ -23,7 +23,8 @@ use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
-    Cell, CellConfig, GATE_SILENT_FEED, GATE_VENUE_QUARANTINE, Placer, PricingPolicy, WorkReport,
+    Cell, CellConfig, ExecutionReport, FeedLossPlaybook, GATE_CROSS_SOURCE, GATE_SILENT_FEED,
+    GATE_VENUE_QUARANTINE, Placer, PricingPolicy, WorkReport,
 };
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::journal::Decision;
@@ -214,9 +215,14 @@ impl Placer for Gateway {
 /// A cell on both venues with an empty book for each listing and one
 /// always-firing strategy per instrument, fed by [`LineDecoder`].
 fn fed_cell(listings: &[(&str, &str)]) -> Result<Cell> {
-    let config = CellConfig::new(CELL, REGION)
+    fed_cell_under(listings, FeedLossPlaybook::default())
+}
+
+fn fed_cell_under(listings: &[(&str, &str)], playbook: FeedLossPlaybook) -> Result<Cell> {
+    let mut config = CellConfig::new(CELL, REGION)
         .with_venue(venue(XLON))
         .with_venue(venue(XPAR));
+    config.feed_loss_playbook = playbook;
     // The premise every staleness assertion below rests on.
     assert_eq!(config.max_staleness, Duration::from_secs(5));
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
@@ -1152,5 +1158,336 @@ fn a_cell_that_cannot_withdraw_from_a_failed_venue_says_so_in_the_chain_once_rat
     );
     assert!(venue_withdrawals(&cell).is_empty());
     assert!(!cell.is_halted());
+    Ok(())
+}
+
+/// The venues each `VenueChosen` entry for `instrument` compared, and the
+/// one it chose, in journal order.
+fn venue_choices(cell: &Cell, instrument: &str) -> Vec<(String, Vec<String>)> {
+    journaled(cell, |decision, _| match decision {
+        Decision::VenueChosen {
+            object,
+            venue,
+            candidates,
+        } if object == instrument => Some((
+            venue.clone(),
+            candidates.iter().map(|(name, _)| name.clone()).collect(),
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+fn an_order_that_would_have_gone_to_a_silent_venue_is_placed_at_the_healthy_venue_listing_the_same_instrument()
+-> Result<()> {
+    // The failure this prevents: a cell that refuses at the venue it cannot
+    // see, but does not go elsewhere, stops trading an instrument that a
+    // second venue it reaches is still quoting. Refusing protects the
+    // order; only rerouting keeps the flow. The quarantine test above shows
+    // a rerouted order once; this one proves it is the *same* intent moved,
+    // by naming the venue the choice would otherwise have made.
+    let mut cell = fed_cell(&[(XLON, "obj-ACME")])?;
+    cell.track(VenueState::aggregated(
+        object("obj-ACME"),
+        venue(XPAR),
+        VenueStatus::Open,
+    ));
+    let mut gateway = Gateway::default();
+    // XLON quotes the tighter spread, so it is the venue the cell prefers.
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99.5\t500\n2\tobj-ACME\tA\t100.5\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-ACME\tB\t99\t500\n2\tobj-ACME\tA\t101\t400",
+        t(10),
+    )?;
+
+    // Premise: with both feeds heard the order goes to XLON, chosen over
+    // XPAR from a candidate set holding both.
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XLON, "obj-ACME")],
+        "the premise failed: {:?}",
+        report.refusals
+    );
+    let choices = venue_choices(&cell, "obj-ACME");
+    assert_eq!(
+        choices.last(),
+        Some(&(XLON.to_string(), vec![XLON.to_string(), XPAR.to_string()])),
+        "the premise failed: XLON was not chosen over XPAR"
+    );
+    let at_xlon = gateway.attempts_at(XLON);
+
+    // XLON goes silent past the five-second limit while XPAR is still
+    // heard. The same strategy's order now goes to XPAR, nothing is
+    // refused, and XLON is absent from the set the choice was made from.
+    cell.feed_heartbeat(&venue(XPAR), t(16));
+    let report = cell.work(t(16), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XPAR, "obj-ACME")],
+        "the order was not rerouted to the venue still heard: {:?}",
+        report.refusals
+    );
+    assert!(
+        report.refusals.is_empty(),
+        "a rerouted order was also refused: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        venue_choices(&cell, "obj-ACME").last(),
+        Some(&(XPAR.to_string(), vec![XPAR.to_string()])),
+        "the silent venue was still a candidate"
+    );
+    assert_eq!(
+        gateway.attempts_at(XLON),
+        at_xlon,
+        "an order reached the venue the cell cannot see"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_venues_serving_one_instrument_at_mids_further_apart_than_the_tolerance_are_traded_on_by_neither()
+-> Result<()> {
+    // The failure this prevents: a poisoned or manipulated feed is a book
+    // that looks healthy on its own — sequenced, fresh, two-sided — so every
+    // per-book check admits it and the cell trades on a price nobody else is
+    // quoting. Only a second source for the same instrument gives it away.
+    let mut cell = fed_cell(&[(XLON, "obj-ACME")])?;
+    cell.track(VenueState::aggregated(
+        object("obj-ACME"),
+        venue(XPAR),
+        VenueStatus::Open,
+    ));
+    let mut gateway = Gateway::default();
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99.5\t500\n2\tobj-ACME\tA\t100.5\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-ACME\tB\t103\t500\n2\tobj-ACME\tA\t105\t400",
+        t(10),
+    )?;
+
+    // Premise: four per cent apart is inside the default five, and the
+    // order goes out; the gate is a tolerance, not a demand for equality.
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        sent_to(&report),
+        vec![(XLON, "obj-ACME")],
+        "the premise failed: {:?}",
+        report.refusals
+    );
+
+    // XPAR's book jumps to a mid of 120, twenty per cent from XLON's. The
+    // cell refuses under the gate that names both sources, and nothing goes
+    // to either venue.
+    feed(
+        &mut cell,
+        XPAR,
+        "3\tobj-ACME\tB\t103\t0\n4\tobj-ACME\tA\t105\t0\n5\tobj-ACME\tB\t119\t500\n6\tobj-ACME\tA\t121\t400",
+        t(11),
+    )?;
+    cell.feed_heartbeat(&venue(XLON), t(11));
+    let placed = gateway.attempts_at(XLON) + gateway.attempts_at(XPAR);
+    let report = cell.work(t(11), &mut gateway)?;
+    assert!(report.orders.is_empty(), "{:?}", report.orders);
+    let refusals = refused_under(&report, GATE_CROSS_SOURCE);
+    assert_eq!(refusals.len(), 1, "{:?}", report.refusals);
+    assert!(
+        refusals[0].starts_with("XLON serves a mid of 100 for obj-ACME and XPAR serves 120,"),
+        "{}",
+        refusals[0]
+    );
+    assert_eq!(
+        gateway.attempts_at(XLON) + gateway.attempts_at(XPAR),
+        placed,
+        "an order reached a venue while its sources disagreed"
+    );
+    assert!(
+        journaled(&cell, |decision, _| match decision {
+            Decision::Refused { gate, .. } if gate == GATE_CROSS_SOURCE => Some(()),
+            _ => None,
+        })
+        .len()
+            == 1,
+        "the refusal did not reach the journal once"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cross_source_tolerance_that_could_never_judge_two_sources_stops_assembly() {
+    for tolerance in [dec!("0"), dec!("1"), dec!("-0.01")] {
+        let mut config = CellConfig::new(CELL, REGION).with_venue(venue(XLON));
+        config.cross_source_tolerance = tolerance;
+        let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+        assert!(
+            Cell::new(config, features).is_err(),
+            "a tolerance of {tolerance} was admitted"
+        );
+    }
+}
+
+/// A gateway that fills in full, at once, every order it accepts at the
+/// venues named in `filling`, and accepts the rest without a report.
+#[derive(Debug, Default)]
+struct FillingAt {
+    filling: Vec<VenueId>,
+    placed: Vec<(String, VenueId, BookSide, Decimal)>,
+    pending: Vec<ExecutionReport>,
+}
+
+impl Placer for FillingAt {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.placed
+            .push((order_id.to_string(), venue.clone(), side, quantity));
+        if self.filling.contains(venue) {
+            self.pending.push(ExecutionReport {
+                order_id: order_id.to_string(),
+                venue: venue.clone(),
+                quantity,
+                price,
+                at,
+            });
+        }
+        Ok(())
+    }
+
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// A cell holding a position in obj-ACME at XLON, quoted at both venues,
+/// whose XLON feed then goes silent, under `playbook`.
+fn blind_position(playbook: FeedLossPlaybook) -> Result<(Cell, FillingAt, Decimal)> {
+    let mut cell = fed_cell_under(&[(XLON, "obj-ACME")], playbook)?;
+    cell.track(VenueState::aggregated(
+        object("obj-ACME"),
+        venue(XPAR),
+        VenueStatus::Open,
+    ));
+    let mut gateway = FillingAt {
+        filling: vec![venue(XLON)],
+        ..FillingAt::default()
+    };
+    feed(
+        &mut cell,
+        XLON,
+        "1\tobj-ACME\tB\t99.5\t500\n2\tobj-ACME\tA\t100.5\t400",
+        t(10),
+    )?;
+    feed(
+        &mut cell,
+        XPAR,
+        "1\tobj-ACME\tB\t99\t500\n2\tobj-ACME\tA\t101\t400",
+        t(10),
+    )?;
+    cell.work(t(10), &mut gateway)?;
+    cell.work(t(11), &mut gateway)?;
+    let held = cell.position(&venue(XLON), &object("obj-ACME"));
+    assert!(
+        held.is_positive(),
+        "the premise failed: no long position at XLON"
+    );
+    cell.feed_heartbeat(&venue(XPAR), t(16));
+    Ok((cell, gateway, held))
+}
+
+fn hedges(cell: &Cell) -> Vec<(String, String, String)> {
+    journaled(cell, |decision, _| match decision {
+        Decision::Hedged {
+            venue,
+            object,
+            quantity,
+            ..
+        } => Some((venue.clone(), object.clone(), quantity.clone())),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_position_at_a_venue_whose_feed_goes_silent_is_offset_once_at_a_venue_still_heard_and_journaled()
+-> Result<()> {
+    // The failure this prevents: withdrawing resting orders from a silent
+    // venue stops the exposure growing and does nothing about what already
+    // filled there — a position the cell can no longer watch, priced from
+    // before the silence.
+    let (mut cell, mut gateway, held) = blind_position(FeedLossPlaybook::Hedge)?;
+    assert!(
+        hedges(&cell).is_empty(),
+        "the premise failed: a hedge before the silence"
+    );
+    let placed_at_xlon = gateway
+        .placed
+        .iter()
+        .filter(|(_, at, ..)| at.as_str() == XLON)
+        .count();
+
+    cell.work(t(16), &mut gateway)?;
+    assert_eq!(
+        hedges(&cell),
+        vec![(XPAR.to_string(), "obj-ACME".to_string(), held.to_string())],
+        "the blind position was not offset at the venue still heard"
+    );
+    assert!(
+        gateway
+            .placed
+            .iter()
+            .any(|(_, at, side, quantity)| at.as_str() == XPAR
+                && *side == BookSide::Bid
+                && *quantity == held),
+        "no sale of {held} reached XPAR: {:?}",
+        gateway.placed
+    );
+    assert_eq!(
+        gateway
+            .placed
+            .iter()
+            .filter(|(_, at, ..)| at.as_str() == XLON)
+            .count(),
+        placed_at_xlon,
+        "an order reached the silent venue"
+    );
+
+    // Once per silence, not once per pass.
+    cell.feed_heartbeat(&venue(XPAR), t(17));
+    cell.work(t(17), &mut gateway)?;
+    assert_eq!(hedges(&cell).len(), 1, "the same silence was hedged twice");
+    Ok(())
+}
+
+#[test]
+fn a_cell_whose_playbook_says_withdraw_holds_the_blind_position_and_sends_no_offset() -> Result<()>
+{
+    // The other arm: the playbook is read, not hard-coded.
+    let (mut cell, mut gateway, _) = blind_position(FeedLossPlaybook::Withdraw)?;
+    cell.work(t(16), &mut gateway)?;
+    assert!(hedges(&cell).is_empty(), "{:?}", hedges(&cell));
     Ok(())
 }

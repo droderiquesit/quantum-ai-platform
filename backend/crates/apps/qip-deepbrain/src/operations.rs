@@ -107,6 +107,8 @@ pub struct IterationFacts<'a> {
     pub anomalies: Option<usize>,
     /// Models past their drift threshold, by reference.
     pub drifted: &'a [String],
+    /// Whether the learning round promoted a model package this iteration.
+    pub package_promoted: bool,
 }
 
 /// An incident: a level shift, its timeline and what remediation did.
@@ -193,6 +195,8 @@ pub struct Operations {
     /// one incident however many iterations still see it in the window.
     last_shift_end: Option<Timestamp>,
     fills_read: usize,
+    /// When the last model package was promoted (R12-OBS-9151).
+    package_promoted_at: Option<Timestamp>,
 }
 
 impl Operations {
@@ -212,6 +216,7 @@ impl Operations {
             incidents: 0,
             last_shift_end: None,
             fills_read: 0,
+            package_promoted_at: None,
         })
     }
 
@@ -358,6 +363,19 @@ impl Operations {
             labels([]),
             self.graph.node_count() as f64,
         );
+        // Model freshness, recorded every iteration so it grows between
+        // promotions: a gauge written only at a promotion would read zero
+        // for ever after it, the stalest model looking the freshest.
+        if facts.package_promoted {
+            self.package_promoted_at = Some(at);
+        }
+        if let Some(promoted) = self.package_promoted_at {
+            metrics.gauge(
+                names::MODEL_PACKAGE_AGE,
+                labels([]),
+                at.since(promoted).as_secs_f64(),
+            );
+        }
 
         if self.iterations.len() == SERIES_RETAINED {
             self.iterations.pop_front();
@@ -382,7 +400,11 @@ impl Operations {
             round.quantum = Some(outcome);
         }
 
-        let statuses = critical_paths::evaluate(&metrics.snapshot());
+        // The node's paths are evaluated by the node, against the registry
+        // that records their series; here they would read unmeasured forever.
+        let statuses = critical_paths::evaluate_where(&metrics.snapshot(), |path| {
+            path.slo.service != critical_paths::EDGE_NODE_SERVICE
+        });
         critical_paths::record(&metrics, &statuses);
         round.objectives_missed = statuses
             .iter()

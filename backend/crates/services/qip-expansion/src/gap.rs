@@ -108,6 +108,9 @@ pub struct Observation {
     /// Severity in `[0, 1]`, as the detector measured it.
     pub severity: f64,
     pub economic_value: Decimal,
+    /// What leaving the gap open exposes the book to
+    /// ([`GapSignal::risk_value`]).
+    pub risk_value: Decimal,
 }
 
 /// A classified signal and the trigger that raised it.
@@ -126,6 +129,7 @@ pub fn raise(observation: Observation) -> Result<RaisedGap> {
         evidence: observation.evidence,
         severity: observation.severity,
         economic_value: observation.economic_value,
+        risk_value: observation.risk_value,
     };
     signal.validate()?;
     Ok(RaisedGap {

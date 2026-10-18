@@ -954,18 +954,20 @@ impl DataFinder {
         .with_lineage(lineage.clone());
 
         if let Some(registration) = decision.registration() {
-            self.registry.insert(
-                id,
-                RegisteredSource::new(
-                    source,
-                    registration.routing().clone(),
-                    registration.policy().clone(),
-                    lineage,
-                    registration.entitlements().to_vec(),
-                    now,
-                    category,
-                ),
+            let fresh = RegisteredSource::new(
+                source,
+                registration.routing().clone(),
+                registration.policy().clone(),
+                lineage,
+                registration.entitlements().to_vec(),
+                now,
+                category,
             );
+            let entry = match self.registry.get(&id) {
+                Some(held) => fresh.succeeding(held)?,
+                None => fresh,
+            };
+            self.registry.insert(id, entry);
         }
 
         Ok(decision)

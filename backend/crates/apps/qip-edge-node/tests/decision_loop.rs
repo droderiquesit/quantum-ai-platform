@@ -1337,3 +1337,71 @@ fn a_silent_centre_a_silent_peer_and_a_stalled_journal_store_together_hold_no_tu
     store.release();
     Ok(())
 }
+
+/// The turn feeds the peer link's measured round trip to the scrape
+/// registry: two linked nodes, the first held by a decision loop that was
+/// given a `PeerSeries`, and the gauge appears from turns alone. Without the
+/// per-turn read a node could measure its peer and chart nothing, which is
+/// the state R12-MESH-1190 closes.
+///
+/// Mutation: drop the `series.observe` call from `DecisionLoop::turn` and the
+/// wait times out with the gauge absent.
+#[test]
+fn the_decision_loop_publishes_the_peer_round_trip_it_reads_from_the_port() -> Result<()> {
+    use qip_observability::metrics::{Metrics, labels, names};
+    use qip_peer_link::{DEFAULT_CLOCK_BOUND, PeerSettings};
+    use qip_transport::tls::LinkSecurity;
+    use std::collections::BTreeMap;
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|probe| probe.local_addr())
+            .expect("a loopback port")
+    };
+    let (a_at, b_at) = (free(), free());
+    let spawn = |node: &str, at, peer: &str, peer_at| {
+        qip_peer_link::spawn(
+            &PeerSettings {
+                node: node.to_string(),
+                listen: at,
+                peers: BTreeMap::from([(peer.to_string(), peer_at)]),
+                security: LinkSecurity::plaintext_for_tests(),
+                clock_bound: DEFAULT_CLOCK_BOUND,
+            },
+            Arc::new(SystemClock),
+        )
+        .map(|(port, _)| port)
+    };
+    let port = spawn(CELL, a_at, "tokyo-1", b_at)?;
+    let _peer = spawn("tokyo-1", b_at, CELL, a_at)?;
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let series = qip_edge_node::telemetry::PeerSeries::new(Arc::clone(&metrics), CELL, REGION);
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let rig = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let mut decisions = rig.decisions.with_peers(port).with_peer_series(series);
+    let key = labels([("cell", CELL), ("region", REGION)]);
+    assert!(
+        metrics
+            .snapshot()
+            .gauge(names::EDGE_PEER_ROUND_TRIP_MS, &key)
+            .is_none(),
+        "premise: nothing is recorded before a turn has read a measured clock"
+    );
+    let waited = std::time::Instant::now();
+    let mut second: i64 = 10;
+    loop {
+        decisions.turn(t(second))?;
+        second += 1;
+        if let Some(ms) = metrics
+            .snapshot()
+            .gauge(names::EDGE_PEER_ROUND_TRIP_MS, &key)
+        {
+            assert!(ms > 0.0, "a measured round trip of {ms} ms");
+            return Ok(());
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "no peer round trip reached the registry"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
