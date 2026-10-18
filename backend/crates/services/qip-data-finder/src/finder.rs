@@ -261,6 +261,10 @@ pub struct DataFinder {
     /// reliability is scored from, through [`SourceHealth::over`], rather
     /// than one HEAD probe (R12-DATA-2024).
     observations: BTreeMap<String, std::collections::VecDeque<HealthObservation>>,
+    /// The measured lead of each source over the same fact elsewhere
+    /// (R12-DATA-2023), as the platform's lead ledger last ranked them. What
+    /// the timeliness term scores a source on, beside the age of its sample.
+    leads: BTreeMap<String, crate::freshness::SourceLeadSummary>,
 }
 
 impl DataFinder {
@@ -296,7 +300,45 @@ impl DataFinder {
             config,
             registry: BTreeMap::new(),
             observations: BTreeMap::new(),
+            leads: BTreeMap::new(),
         }
+    }
+
+    /// Replace the measured leads the timeliness term scores against.
+    ///
+    /// The platform's lead ledger ranks sources by how far their facts
+    /// preceded the same fact from another source; a source scored on the
+    /// age of one probe sample alone could be the slowest of five and still
+    /// score as fresh as the fastest. A replacement and not a merge: the
+    /// ranking is the ledger's whole current reading, and keeping a source
+    /// the ledger has since dropped would score it on a lead nobody holds.
+    pub fn observe_leads(&mut self, ranking: &[crate::freshness::SourceLeadSummary]) {
+        self.leads = ranking
+            .iter()
+            .map(|row| (row.source.clone(), row.clone()))
+            .collect();
+    }
+
+    /// Timeliness from a measured lead: `0` for a source that trailed every
+    /// time it was compared, rising with the share of comparisons it led and
+    /// with how far it led, and `1` for one that always led by at least one
+    /// of its own update intervals. An irregular publisher has no interval to
+    /// measure a lead against, so a minute stands in.
+    fn lead_timeliness(
+        lead: &crate::freshness::SourceLeadSummary,
+        interval: Option<Duration>,
+    ) -> Option<f64> {
+        let compared = lead.led.saturating_add(lead.trailed);
+        if compared == 0 {
+            return None;
+        }
+        let scale = interval
+            .filter(|interval| interval.as_nanos() > 0)
+            .unwrap_or_else(|| Duration::from_secs(60))
+            .as_secs_f64();
+        let led_share = lead.led as f64 / compared as f64;
+        let reach = (lead.mean_lead.as_secs_f64() / scale).clamp(0.0, 1.0);
+        Some(led_share * reach)
     }
 
     /// Health observations kept per source for reliability scoring.
@@ -1246,6 +1288,19 @@ impl DataFinder {
                 }
             }
             None => 0.0,
+        };
+        // Timeliness is how far the source's facts lead the same fact
+        // elsewhere, not only how old its newest sample is. A source with a
+        // measured lead is scored on both equally; one never compared keeps
+        // the age alone, because no evidence is not evidence of lagging.
+        let freshness = match self.leads.get(source.id()).and_then(|lead| {
+            Self::lead_timeliness(
+                lead,
+                source.coverage().update_frequency().typical_interval(),
+            )
+        }) {
+            Some(lead) => 0.5 * freshness + 0.5 * lead,
+            None => freshness,
         };
 
         // Against every *other* registered source. A source re-assessed

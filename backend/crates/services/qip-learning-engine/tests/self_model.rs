@@ -16,8 +16,8 @@ use qip_core::testing::approx_eq;
 use qip_core::time::{Duration, Timestamp};
 use qip_learning_engine::evaluation::{Evaluation, Verdict};
 use qip_learning_engine::self_model::{
-    CAPABILITY_WINDOW, CapabilityEstimate, ComponentKey, ComponentKind, MAX_COMPONENTS,
-    MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
+    CAPABILITY_WINDOW, CapabilityEstimate, ComponentKey, ComponentKind, DRIFT_TOLERANCE,
+    MAX_COMPONENTS, MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
 };
 
 fn start() -> Timestamp {
@@ -476,4 +476,60 @@ fn a_component_that_improved_or_wobbled_inside_the_tolerance_is_not_called_drift
         short.drift()
     );
     Ok(())
+}
+
+/// Forty outcomes at 0.7 confidence in which the older twenty miss
+/// `older_misses` times and the newer twenty `newer_misses` times. A miss
+/// scores 0.49 and a hit 0.09, so each extra miss in the newer half worsens
+/// the mean Brier by exactly 0.02.
+fn two_halves(older_misses: usize, newer_misses: usize) -> CapabilityEstimate {
+    let mut record = CapabilityEstimate::new();
+    for n in 0..20 {
+        record.record(graded(n, 0.7, n >= older_misses));
+    }
+    for n in 20..40 {
+        record.record(graded(n, 0.7, n - 20 >= newer_misses));
+    }
+    record
+}
+
+/// The tolerance has two sides and the tests held neither: the steady window
+/// alternated hit and miss, so both halves scored identically and any
+/// tolerance from zero to a half passed. One unlucky outcome (0.02 worse)
+/// and two (0.04) are inside the tolerance and must not discount a
+/// component; three (0.06) are outside it and must.
+///
+/// Mutation: compare against `0.0` instead of `DRIFT_TOLERANCE` in
+/// `CapabilityEstimate::drift` — the one-extra-miss window is called
+/// drifting and the first assertion fails. Against `0.45` — the 0.06 window
+/// is not called drifting and the last `expect` fails. Against `0.03` and
+/// `0.07` the two-extra-miss and three-extra-miss windows fail likewise.
+#[test]
+fn a_window_worse_by_less_than_the_tolerance_is_not_drifting_and_one_worse_by_more_is() {
+    const {
+        assert!(CAPABILITY_WINDOW >= 40, "premise: the window holds forty");
+        assert!(
+            0.04 < DRIFT_TOLERANCE && DRIFT_TOLERANCE < 0.06,
+            "premise: the cases below straddle the tolerance"
+        );
+    }
+    for newer_misses in [3, 4] {
+        let record = two_halves(2, newer_misses);
+        assert!(record.is_estimable(), "premise: the record is long enough");
+        assert!(
+            record.drift().is_none(),
+            "{} extra misses are inside the tolerance: {:?}",
+            newer_misses - 2,
+            record.drift()
+        );
+    }
+    let record = two_halves(2, 5);
+    let drift = record
+        .drift()
+        .expect("three extra misses are past the tolerance");
+    assert!(
+        approx_eq(drift.worsening(), 0.06, 1e-9),
+        "premise: the window is worse by 0.06, got {}",
+        drift.worsening()
+    );
 }

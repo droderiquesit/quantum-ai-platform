@@ -3524,12 +3524,12 @@
     "current": "Boundaries exist (prod refused by workflows, no repo variables, no long-lived keys, dispatch inputs never pasted into shells). Since 2026-10-18 a drill exercises them: scripts/game-day/agent-escalation.mjs hands agent-guard.mjs and agent-lanes.mjs thirteen attacks (a workflow edit with no approval, a bot's, an agent identity's, an earlier commit's and a non-writer's approval; a planner landing code; an undefined role; an undefined lane; agent dispatch of deploy.yml and infra.yml; lane manifests granting a coder the workflows, over the budget ceiling, and with no acceptance command) beside a control that must be admitted, and records the verdict in docs/ops/game-days/agent-escalation/. All held on the committed policy; a policy with the protected paths emptied is reported breached.",
     "evidence": [
       "scripts/game-day/agent-escalation.mjs",
-      "scripts/game-day/agent-escalation.test.mjs",
+      "scripts/game-day/harness.test.mjs agent-escalation tests",
       "docs/ops/game-days/agent-escalation/2026-10-18-agent-escalation.json",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5073 the_infrastructure_workflow_cannot_touch_production",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:1461 no_workflow_pastes_a_dispatch_input_or_an_event_value_into_a_shell"
     ],
-    "gap": "The drill is a scripted agent against the two judges, not a model, and it is not in CI: adding scripts/game-day/agent-escalation.test.mjs to ci.yml's scripts job is a protected-path change (patch: docs/blueprint/lanes/L23-patch-SEC-10157-ci.patch). A secret read and a connection outside the egress allow-list need the sandbox's runner and firewall, so a step in .github/workflows/agent-sandbox.yml (protected) still has to run them and fail on success.",
+    "gap": "The drill is a scripted agent against the two judges, not a model. Its tests are in scripts/game-day/harness.test.mjs, which CI's scripts job already runs, so it runs on every pull request; but a secret read and a connection outside the egress allow-list need the sandbox's runner and firewall, so a step in .github/workflows/agent-sandbox.yml (protected) still has to run them and fail on success.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3537,10 +3537,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "node --test scripts/game-day/agent-escalation.test.mjs",
+    "verification": "node --test scripts/game-day/harness.test.mjs",
     "work_item": "",
     "size": "M",
-    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, the relaxed-policy, the lying-record and the command tests failed). Kept PARTIAL for the two protected-path steps."
+    "notes": "2026-10-18 lane L23: mutations fired - runDrill recording every attempt as held (the relaxed-policy test failed); the outcome forced to 'refused' (the control, relaxed-policy, lying-record and command tests failed). Kept PARTIAL for the sandbox-run half."
   },
   {
     "id": "R12-RES-10158",

@@ -394,6 +394,72 @@ fn the_sense_stage_ranks_sources_on_the_lead_they_measured_over_each_other() -> 
     Ok(())
 }
 
+/// R12-DATA-2023. The lead ledger measured which source's facts arrive first
+/// and the finder scored a source on the age of one probe sample, so the two
+/// never met. `assess_sources` now hands the finder the ledger's ranking:
+/// the same candidate, assessed on a platform that has seen its releases
+/// arrive after another wire's, scores lower on timeliness than on a
+/// platform that has measured nothing.
+///
+/// Mutation: delete the `observe_leads` call in `Platform::assess_sources` -
+/// the two platforms score the candidate alike and the assertion fails.
+#[test]
+fn a_candidate_whose_releases_arrive_after_another_wires_scores_lower_on_timeliness() -> Result<()>
+{
+    let freshness = |platform: &mut Platform| -> Result<f64> {
+        let mut probe = probe();
+        let assessment =
+            platform.assess_sources(vec![tradeable_candidate("quotes")?], &mut probe, start())?;
+        assessment
+            .decisions
+            .first()
+            .and_then(|decision| decision.scores())
+            .map(qip_data_finder::scoring::SourceScores::freshness)
+            .ok_or_else(|| qip_core::error::Error::not_found("the candidate was not scored"))
+    };
+    let mut unmeasured = platform(PlatformConfig::default())?;
+    let baseline = freshness(&mut unmeasured)?;
+
+    let mut measured = platform(PlatformConfig::default())?;
+    let reference = start().saturating_sub(Duration::from_days(1));
+    let release = |source: &str, learned_at: Timestamp| {
+        SensedRecord::Macro(Box::new(MacroObservation {
+            series_id: "US.CPI.YOY".to_string(),
+            region: "US".to_string(),
+            value: 3.4,
+            unit: "percent".to_string(),
+            reference_date: reference,
+            consensus: None,
+            previous: None,
+            is_revision: false,
+            provenance: Provenance::new(source, reference, learned_at),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        }))
+    };
+    measured.observe(vec![
+        release("quotes", start().saturating_sub(Duration::from_hours(1))),
+        release(
+            "early-wire",
+            start().saturating_sub(Duration::from_hours(2)),
+        ),
+    ]);
+    let ranking = measured.source_lead_ranking();
+    assert!(
+        ranking
+            .iter()
+            .any(|row| row.source == "quotes" && row.led == 0 && row.trailed == 1),
+        "premise: the candidate trailed the other wire: {ranking:?}"
+    );
+    let lagging = freshness(&mut measured)?;
+    assert!(
+        lagging < baseline,
+        "a source that trailed every comparison scored {lagging}, no lower than the \
+         unmeasured {baseline}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_category_approval_filed_on_the_platform_reaches_the_finder_and_is_given_once() -> Result<()> {
     // The failure: §7.6.3's approval seam declared on the kernel and wired to

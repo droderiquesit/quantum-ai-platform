@@ -638,6 +638,72 @@ fn commerce_research_scouts_buys_receives_lists_and_sells_on_paper_through_the_c
     assert!(runs.iter().all(|run| !run.decision_grade));
     Ok(())
 }
+/// R12-COMMERCE-5090: the tracked condition, location and inventory state of
+/// a unit are the ledger's, after the unit has moved. They were the literals
+/// "new", the warehouse and "held", written once at receipt, so a unit sold
+/// and settled (or returned open-box) was still described as new and held.
+///
+/// Mutation: delete the `refresh_attributes` call after `take_return_owed` -
+/// a sold unit still reads "held" and the agreement assertion fails.
+#[test]
+fn a_units_tracked_state_follows_the_ledger_after_it_is_sold() -> Result<()> {
+    use qip_financial::commerce::UnitState;
+    use qip_financial::commerce_resale::Attr;
+
+    let mut platform = platform()?;
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(commerce_plan()?),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
+    let mut at = start();
+    for _ in 0..6 {
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let research = platform.commerce_research().expect("installed");
+    let units = research.ledger().units();
+    let sold: Vec<&String> = units
+        .iter()
+        .filter(|(_, record)| matches!(record.state, UnitState::Sold { .. }))
+        .map(|(unit, _)| unit)
+        .collect();
+    assert!(!sold.is_empty(), "premise: a unit was sold in six cycles");
+    for (unit, record) in units {
+        let attributes = research.attributes(unit).expect("a record for every unit");
+        let state = match &record.state {
+            UnitState::Held => "held",
+            UnitState::Reserved { .. } => "reserved",
+            UnitState::Sold { .. } => "sold",
+        };
+        assert_eq!(
+            attributes.get("inventory_state"),
+            Some(&Attr::Value(state.to_string())),
+            "{unit} is {state} in the ledger"
+        );
+        assert_eq!(
+            attributes.get("location"),
+            Some(&Attr::Value(record.location.clone())),
+            "{unit}'s location"
+        );
+        assert_eq!(
+            attributes.get("condition"),
+            Some(&Attr::Value(
+                match record.condition {
+                    qip_financial::commerce::Condition::New => "new",
+                    qip_financial::commerce::Condition::OpenBox => "open_box",
+                    qip_financial::commerce::Condition::Used => "used",
+                    qip_financial::commerce::Condition::Damaged => "damaged",
+                }
+                .to_string()
+            )),
+            "{unit}'s condition"
+        );
+    }
+    Ok(())
+}
 /// R12-EVENT-5087: an event market is created only where the access book
 /// records a creation permission from its jurisdiction, before the factory
 /// touches the venue; with the permission recorded the same plan installs.

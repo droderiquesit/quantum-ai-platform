@@ -65,6 +65,7 @@ pub mod quoting;
 mod realised_loss;
 /// Which other regions have gone dark, and what a cell does about it (§36.3).
 pub mod region;
+pub mod replay;
 pub mod reservation;
 /// What a cell must be shown before it resumes after a crash (§36.3).
 pub mod resume;
