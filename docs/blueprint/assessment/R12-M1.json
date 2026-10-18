@@ -97,25 +97,26 @@
   },
   {
     "id": "R12-AMBIENT-1005",
-    "status": "PARTIAL",
-    "current": "node::run_with runs ResearchLoop every cycle without a request: it forecasts (NowEstimator), finds weak signals and contradictions, wakes specialists, and journals AmbientSignal/AttentionEvent records; a disabled loop journals nothing.",
+    "status": "COMPLETE",
+    "current": "node::run_with runs ResearchLoop every cycle without a request: it forecasts (NowEstimator), finds weak signals and contradictions, wakes specialists, and since 2026-10-18 generates scenarios — every risk or assumption signal routed whose subject the platform holds a tape for yields a qip-simulation-engine Scenario (hypothetical, validated) stating that subject's latest measured move as a one-day shock — journaled as an AmbientRecord::Scenario caused by its signal's record beside the AmbientSignal/AttentionEvent records.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:66 AmbientSignal",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:366 AttentionRouter",
-      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs:1 log round-trip tests (topics borrowed, not registered)"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1360 conditional_scenarios called from every sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1736-1800 conditional_scenarios",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:62-69,221-232 the Scenario record, caused by its signal's record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:237 a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist (mutation: drop the conditional_scenarios call; no scenario record and the test fails)"
     ],
-    "gap": "The ambient mesh generates no scenarios.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test ambient_attention plus a qip-deepbrain node test",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "2026-10-18 lane L03: closed. A signal on nothing priced (a coverage gap on an asset class, a belief class) gets no scenario rather than an invented shock."
   },
   {
     "id": "R12-AGENCY-1006",
@@ -3024,12 +3025,13 @@
   {
     "id": "R12-REASON-1132",
     "status": "PARTIAL",
-    "current": "CausalGraph::intervene runs per hypothesis subject in symbolic_stage and is journaled; kernel causal_review uses world-model causal edges.",
+    "current": "CausalGraph::intervene runs per hypothesis subject in symbolic_stage::derive and is journaled; symbolic_stage::verify (called by replay) re-runs intervene on the recorded subject at the record's instant — point in time, so later edges are not walked — and refuses a record whose affected set, path count or kept paths' edge identities differ, or whose cited evidence is not a prefix of what the edge holds.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:202",
-      "backend/crates/runtime/qip-kernel/src/causal_review.rs"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:674 derive",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:895 verify re-runs CausalGraph::intervene",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:720 a_journaled_intervention_the_causal_graph_does_not_reach_at_its_instant_is_refused_on_replay"
     ],
-    "gap": "Advisory only; not coupled to neural models; intervene result not asserted by a reproducibility test.",
+    "gap": "Not coupled to a neural model: no neural model exists anywhere in the tree (grep -rli neural over qip-kernel and qip-reasoning-engine finds nothing). Recorded-and-reproducible is closed; the symbolic replay has no binary caller.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3037,39 +3039,44 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept for the neural coupling the requirement names. Mutation fired: verify's intervention comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing)."
   },
   {
     "id": "R12-REASON-1133",
     "status": "PARTIAL",
-    "current": "REASON runs symbolic_stage::derive for each hypothesis; the temporal timeline orders anomaly before hypothesis and is journaled as a SymbolicDerivation.",
+    "current": "REASON runs symbolic_stage::derive for each hypothesis; the timeline orders anomaly before hypothesis and is journaled with the instants it was built from (TemporalInputs); symbolic_stage::verify rebuilds the timeline by the same construction at the record's instant and refuses a mismatch.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/temporal.rs:29"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:153 TemporalInputs",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:494 timeline_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:654 a_journaled_timeline_that_does_not_rebuild_from_its_recorded_instants_is_refused_on_replay"
     ],
-    "gap": "No neural model is coupled; replay re-verifies only the rule-pack verdict, not the temporal result.",
+    "gap": "Not coupled to a neural model: none exists in the tree. Recorded-and-reproducible is closed; a record written before TemporalInputs existed decodes with inputs None and its timeline is not rebuilt.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept for the neural coupling. Mutation fired: verify's timeline comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-17 by an independent grader."
   },
   {
     "id": "R12-REASON-1134",
     "status": "PARTIAL",
-    "current": "Bayesian network posterior computed per hypothesis in symbolic_stage::derive and journaled.",
+    "current": "Bayesian network posterior computed per hypothesis in symbolic_stage::derive and journaled with its network; symbolic_stage::verify recomputes it over the recorded network_nodes with the panel evidence the recorded contested fact implies and refuses a mismatch.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/bayes.rs:20"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:615 posterior_of",
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:680 a_journaled_posterior_that_the_recorded_network_does_not_yield_is_refused_on_replay"
     ],
-    "gap": "Advisory after REASON decides; not coupled to neural model outputs; no probabilistic-logic beyond network posterior.",
+    "gap": "Not coupled to neural model outputs: none exists in the tree; no probabilistic logic beyond the network posterior. Recorded-and-reproducible is closed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3077,10 +3084,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's posterior comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-18 by an independent grader."
   },
   {
     "id": "R12-REASON-1135",
@@ -3107,22 +3114,23 @@
   {
     "id": "R12-REASON-1136",
     "status": "PARTIAL",
-    "current": "REASON solves an acting constraint problem per hypothesis (Satisfied or Unsatisfiable naming the blocking rule), consistent with rule-pack eligibility, and journals it.",
+    "current": "REASON solves an acting constraint problem per hypothesis (Satisfied or Unsatisfiable naming the blocking constraint), consistent with rule-pack eligibility, and journals it; symbolic_stage::verify re-solves it from the recorded verdict's eligible/halted and the recorded kill_switch and refuses a differing answer.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/constraint.rs:38"
+      "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs:823 verify",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:702 a_journaled_acting_answer_the_recorded_verdict_does_not_solve_to_is_refused_on_replay"
     ],
-    "gap": "No neural model is coupled; replay does not re-solve the constraint; no SAT/SMT/MILP.",
+    "gap": "Not coupled to a neural model: none exists in the tree; no SAT/SMT/MILP. Recorded-and-reproducible is closed.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation",
     "work_item": "",
     "size": "M",
-    "notes": " Text corrected 2026-10-17 by an independent grader (the previous text said the code was unwired or untested; it is wired, and the gap is narrower). Status unchanged."
+    "notes": "Re-graded 2026-10-18 by lane L05: reproducibility closed, PARTIAL kept. Mutation fired: verify's acting comparison disabled -> the test fails 'a corrupted derivation was accepted'. Earlier: text corrected 2026-10-17 by an independent grader."
   },
   {
     "id": "R12-REASON-1137",
@@ -3262,23 +3270,29 @@
   },
   {
     "id": "R12-AMBIENT-1143",
-    "status": "PARTIAL",
-    "current": "Research sweep raises Assumption-class signals (LowConfidence, ModelDrift, UnsupportedRequest gaps) each sweep and journals them.",
-    "evidence": [],
-    "gap": "No maintained assumption-health state; signals on gaps only.",
+    "status": "COMPLETE",
+    "current": "ResearchLoop keeps an assumption-health table keyed by the research question each Assumption-class challenge (low_confidence, model_drift, unsupported_request) raised, bounded at RETAINED with the longest-held entry evicted first. Every sweep advances each entry's sweeps-since-challenge, folds this sweep's challenges in, gauges qip_ambient_assumptions{state=challenged|holding}, and puts the whole table on the round, which the ambient journal writes as an AssumptionHealth record — so a sweep that raised no gap still records what is holding.",
+    "evidence": [
+      "backend/crates/apps/qip-deepbrain/src/research.rs:592-620 AssumptionState",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1252-1259 challenges collected each sweep",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:1676-1733 hold_assumptions",
+      "backend/crates/apps/qip-deepbrain/src/ambient_journal.rs:70-76,234-245 the AssumptionHealth record",
+      "backend/crates/apps/qip-deepbrain/tests/ambient_journal.rs:346 a_sweep_with_no_new_gap_still_journals_the_held_assumption_health (mutation: skip the AssumptionHealth append; the quiet sweep journals no health and the test fails)"
+    ],
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": true,
     "depends_on": [
       "R12-AMBIENT-1005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test ambient",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-deepbrain --test ambient_journal a_sweep_with_no_new_gap_still_journals_the_held_assumption_health",
     "work_item": "",
     "size": "L",
-    "notes": " Text corrected 2026-10-18 by an independent grader reading code and tests (ran nothing): the previous text was older than the code."
+    "notes": "2026-10-18 lane L03: closed."
   },
   {
     "id": "R12-AMBIENT-1144",

@@ -228,7 +228,8 @@ fn run() -> Result<()> {
     let catalogue = load_universe(&config.storage, started)?;
     // The coverage detector's view of the universe, taken before the
     // universe moves into the platform, which does not hand it back.
-    let research_coverage = qip_deepbrain::research::coverage_map(&catalogue.universe);
+    // Per asset class, venue and geography (R12-EXPAND-6065).
+    let research_coverage = qip_expansion::detectors::coverage_universe(&catalogue.universe);
     // The language model the organisation narrates through (ADR 0037): the
     // hosted adapter first when the configuration names one *and* the
     // preconditions in `language.rs` are met — a provider pinned, its terms

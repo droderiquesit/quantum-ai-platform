@@ -157,7 +157,7 @@ fn the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disa
         .iter()
         .filter_map(|r| match r {
             AmbientRecord::Signal { cycle, signal } => Some((*cycle, signal.class())),
-            AmbientRecord::Attention { .. } => None,
+            _ => None,
         })
         .collect();
     let cycles: BTreeSet<u64> = signals.iter().map(|(c, _)| *c).collect();
@@ -170,14 +170,14 @@ fn the_run_loop_journals_each_sweeps_signals_and_attention_unprompted_and_a_disa
         .iter()
         .filter_map(|r| match r {
             AmbientRecord::Signal { signal, .. } => Some(signal.id().to_string()),
-            AmbientRecord::Attention { .. } => None,
+            _ => None,
         })
         .collect();
     let answered: Vec<&str> = journaled
         .iter()
         .filter_map(|r| match r {
             AmbientRecord::Attention { event, .. } => Some(event.signal_id.as_str()),
-            AmbientRecord::Signal { .. } => None,
+            _ => None,
         })
         .collect();
     assert!(!answered.is_empty(), "the router answered: {journaled:?}");
@@ -211,7 +211,12 @@ fn each_attention_record_is_caused_by_the_signal_record_it_answers() {
     let written = ambient
         .record(1, &round, start())
         .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(written, 2, "one signal and its activation");
+    // One signal, its activation, and the assumption-health record the
+    // coverage gap's challenge put on the table (R12-AMBIENT-1143).
+    assert_eq!(
+        written, 3,
+        "one signal, its activation and the assumption health"
+    );
     let events: Vec<_> = ambient.log().events().collect();
     assert!(events.iter().all(|e| e.lineage.producer == AMBIENT_ORIGIN));
     let signal = &events[0];
@@ -299,6 +304,92 @@ fn a_now_surprise_is_journaled_with_its_score_and_each_wake_names_its_specialist
         set(&["adversarial", "forecast", "risk", "sensing"]),
         "{journaled:?}"
     );
+    // The risk specialist's signal is a risk signal on `obj-N`, which the
+    // platform holds a tape for, so the sweep generated a conditional
+    // scenario from it, unprompted, and the journal holds it caused by
+    // that signal (R12-AMBIENT-1005/3064): the 30% move that raised it,
+    // stated as a one-day shock. Mutation: drop the
+    // `self.conditional_scenarios(..)` call in `sweep_over` — no scenario
+    // record is journaled and the assertion fails.
+    let scenarios: Vec<(&String, &qip_simulation_engine::scenario::Scenario)> = journaled
+        .iter()
+        .filter_map(|r| match r {
+            AmbientRecord::Scenario {
+                signal_id,
+                scenario,
+                ..
+            } => Some((signal_id, scenario)),
+            _ => None,
+        })
+        .collect();
+    let risk = scenarios
+        .iter()
+        .find(|(id, _)| id.ends_with("/risk"))
+        .unwrap_or_else(|| panic!("the risk surprise yields a scenario: {journaled:?}"));
+    let shock = risk
+        .1
+        .shocks
+        .iter()
+        .find(|s| s.factor == "price:obj-N")
+        .unwrap_or_else(|| panic!("the scenario shocks the surprised subject: {risk:?}"));
+    assert!((shock.magnitude - 0.3).abs() < 0.01, "{shock:?}");
+    assert!(!risk.1.historical);
+}
+
+/// Assumption health is maintained state (R12-AMBIENT-1143): a coverage gap
+/// challenges the assumption that some brain can answer the class, and a
+/// later sweep that raises no gap — the class now has a tape — still
+/// journals the assumption, holding for one sweep, rather than nothing.
+/// Mutation: skip the `AssumptionHealth` append in `AmbientJournal::record`
+/// — the second sweep journals no health record and the test fails.
+#[test]
+fn a_sweep_with_no_new_gap_still_journals_the_held_assumption_health() {
+    let mut platform = platform();
+    let coverage = BTreeMap::from([("Equity".to_string(), set(&["obj-A"]))]);
+    let mut loop_ =
+        ResearchLoop::new(ResearchConfig::default(), coverage).unwrap_or_else(|e| panic!("{e}"));
+    let first = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        first.raised, 1,
+        "premise: the coverage gap is raised: {first:?}"
+    );
+    assert_eq!(first.assumptions.len(), 1, "{first:?}");
+    assert_eq!(first.assumptions[0].state(), "challenged");
+
+    let calm: Vec<SensedRecord> = (0..5_i64)
+        .map(|i| {
+            bar(
+                "obj-A",
+                start().saturating_add(Duration::from_mins(i)),
+                100.0,
+            )
+        })
+        .collect();
+    platform.observe(calm);
+    let later = start().saturating_add(Duration::from_hours(1));
+    let second = loop_
+        .sweep(&platform, later, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(second.raised, 0, "premise: no new gap: {second:?}");
+
+    let mut ambient = journal();
+    ambient
+        .record(2, &second, later)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let held: Vec<_> = read(ambient.log())
+        .into_iter()
+        .filter_map(|r| match r {
+            AmbientRecord::AssumptionHealth { assumptions, .. } => Some(assumptions),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(held.len(), 1, "one health record for the quiet sweep");
+    assert_eq!(held[0].len(), 1);
+    assert_eq!(held[0][0].state(), "holding");
+    assert_eq!(held[0][0].sweeps_since, 1);
+    assert_eq!(held[0][0].challenges, 1);
 }
 
 /// R12-AMBIENT-1141/3065: an anomaly scan over price jumps is journaled as
@@ -340,14 +431,14 @@ fn an_anomaly_scan_is_journaled_as_signals_each_with_the_routers_decision() {
         .iter()
         .filter_map(|r| match r {
             AmbientRecord::Signal { signal, .. } => Some(signal.id().to_string()),
-            AmbientRecord::Attention { .. } => None,
+            _ => None,
         })
         .collect();
     let decided: BTreeSet<String> = journaled
         .iter()
         .filter_map(|r| match r {
             AmbientRecord::Attention { event, .. } => Some(event.signal_id.clone()),
-            AmbientRecord::Signal { .. } => None,
+            _ => None,
         })
         .collect();
     assert!(!signalled.is_empty(), "{journaled:?}");
@@ -483,8 +574,11 @@ fn the_journal_destination_refuses_a_blank_value_and_follows_the_event_logs_dura
         .unwrap_or_else(|e| panic!("{e}"));
     let cycles: Vec<u64> = read(second.log())
         .iter()
-        .map(|r| match r {
-            AmbientRecord::Signal { cycle, .. } | AmbientRecord::Attention { cycle, .. } => *cycle,
+        .filter_map(|r| match r {
+            AmbientRecord::Signal { cycle, .. } | AmbientRecord::Attention { cycle, .. } => {
+                Some(*cycle)
+            }
+            _ => None,
         })
         .collect();
     assert_eq!(cycles, [1, 1, 2, 2]);

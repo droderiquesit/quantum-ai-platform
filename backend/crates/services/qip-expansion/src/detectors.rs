@@ -474,11 +474,97 @@ pub fn contradictions(readings: &[Reading]) -> Vec<Observation> {
         .collect()
 }
 
-/// Asset classes whose instruments have weak history coverage (EXPAND-065,
-/// and §22's "unsupported asset classes"). `universe` maps an asset class to
-/// its instruments; `covered` is the instruments with history. A class whose
-/// covered share is below `floor` raises one observation; a class with none
-/// covered says so in its text. Severity is the uncovered share.
+/// A dimension of the universe the coverage detector measures (EXPAND-065).
+///
+/// Asset classes alone hid a venue the platform has no history at, and a
+/// geography it has never priced, behind a class that looked covered on
+/// average. Languages and causal drivers are absent on purpose: nothing
+/// measures either yet, and a dimension with no measured source would raise
+/// a gap on a number nobody computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CoverageDimension {
+    AssetClass,
+    Venue,
+    Geography,
+}
+
+impl CoverageDimension {
+    pub const ALL: [Self; 3] = [Self::AssetClass, Self::Venue, Self::Geography];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AssetClass => "asset_class",
+            Self::Venue => "venue",
+            Self::Geography => "geography",
+        }
+    }
+
+    const fn noun(self) -> &'static str {
+        match self {
+            Self::AssetClass => "asset class",
+            Self::Venue => "venue",
+            Self::Geography => "geography",
+        }
+    }
+
+    /// The key [`coverage`] reads a value of this dimension under.
+    pub fn key(self, value: &str) -> String {
+        format!("{}:{value}", self.as_str())
+    }
+
+    /// Split a coverage key into its dimension and value. A key with no
+    /// colon is an asset class, the shape this detector's map had before it
+    /// had dimensions; a key naming a dimension this enum does not hold is
+    /// refused rather than read as an asset class called `language:en`.
+    fn parse(key: &str) -> Result<(Self, &str)> {
+        let Some((dimension, value)) = key.split_once(':') else {
+            return Ok((Self::AssetClass, key));
+        };
+        Self::ALL
+            .into_iter()
+            .find(|d| d.as_str() == dimension)
+            .map(|d| (d, value))
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "coverage key `{key}` names no dimension the detector measures; use one of asset_class, venue, geography"
+                ))
+            })
+    }
+}
+
+/// Every instrument of `universe` under each [`CoverageDimension`] it has a
+/// value in: its asset class, its primary venue and its geography. The map
+/// [`coverage`] reads. A blank venue or geography is left out rather than
+/// raised as a value called nothing.
+pub fn coverage_universe(
+    universe: &qip_financial::universe::Universe,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for object in universe.iter() {
+        let id = object.object_id.to_string();
+        let class = format!("{:?}", object.asset_class);
+        for (dimension, value) in [
+            (CoverageDimension::AssetClass, class.as_str()),
+            (CoverageDimension::Venue, object.venue.trim()),
+            (CoverageDimension::Geography, object.geography.trim()),
+        ] {
+            if !value.is_empty() {
+                map.entry(dimension.key(value))
+                    .or_default()
+                    .insert(id.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Dimension values whose instruments have weak history coverage
+/// (EXPAND-065, and §22's "unsupported asset classes"). `universe` maps a
+/// coverage key — a [`CoverageDimension::key`], or a bare asset class — to
+/// its instruments; `covered` is the instruments with history. A value whose
+/// covered share is below `floor` raises one observation naming its
+/// dimension; one with none covered says so in its text. Severity is the
+/// uncovered share.
 pub fn coverage(
     universe: &BTreeMap<String, BTreeSet<String>>,
     covered: &BTreeSet<String>,
@@ -486,21 +572,23 @@ pub fn coverage(
 ) -> Result<Vec<Observation>> {
     let floor = fraction("the coverage floor", floor)?;
     let mut out = Vec::new();
-    for (class, instruments) in universe {
+    for (key, instruments) in universe {
+        let (dimension, value) = CoverageDimension::parse(key)?;
         if instruments.is_empty() {
             continue;
         }
+        let noun = dimension.noun();
         let have = instruments.iter().filter(|i| covered.contains(*i)).count();
         let share = have as f64 / instruments.len() as f64;
         if share < floor {
             let text = if have == 0 {
                 format!(
-                    "asset class `{class}` is unsupported: none of its {} instrument(s) has history",
+                    "{noun} `{value}` is unsupported: none of its {} instrument(s) has history",
                     instruments.len()
                 )
             } else {
                 format!(
-                    "asset class `{class}` has history for {have} of {} instrument(s), below the {floor:.2} floor",
+                    "{noun} `{value}` has history for {have} of {} instrument(s), below the {floor:.2} floor",
                     instruments.len()
                 )
             };
@@ -510,7 +598,7 @@ pub fn coverage(
                 Wanting::Source,
                 text,
                 "coverage",
-                vec![format!("universe:asset_class:{class}")],
+                vec![format!("universe:{}:{value}", dimension.as_str())],
                 1.0 - share,
             ));
         }

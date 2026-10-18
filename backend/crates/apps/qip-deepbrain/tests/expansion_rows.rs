@@ -1001,3 +1001,67 @@ fn a_model_whose_replies_are_refused_past_the_rate_raises_one_error_rate_gap() {
     // The window was taken: the same failures are not reported twice.
     assert!(error_signals(&mut research).is_empty());
 }
+
+/// R12-EXPAND-6010, on the binary's own sweep. A venue whose fills miss the
+/// twin past the threshold raises one unexplained-P&L gap however many of
+/// its fills did so, and a venue whose fills sit inside the threshold raises
+/// none. The count is of queued items the residual detector derived, read
+/// from each item's lineage, so a gap from any other detector over the same
+/// fills (the tick campaigns, for one) is not mistaken for this one.
+/// Mutation: flip `mean > threshold_bps` to `mean < threshold_bps` in
+/// `qip_expansion::detectors::unexplained_residuals` — no residual gap is
+/// queued for the missing venue and the count assertion fails at zero.
+#[test]
+fn one_fill_residual_past_its_threshold_raises_exactly_one_unexplained_pnl_gap() {
+    let fill = |venue: &str, mins: i64, bps: f64| FillObservation {
+        venue: venue.to_string(),
+        object_id: "BTC-USD".to_string(),
+        filled_at: t0().saturating_sub(Duration::from_mins(mins)),
+        trade_error_bps: Some(bps),
+    };
+    let observed = [
+        fill(VENUE, 20, 40.0),
+        fill(VENUE, 10, 44.0),
+        fill("XQUIET", 20, 3.0),
+        fill("XQUIET", 10, -4.0),
+    ];
+    assert!(
+        observed.iter().filter(|f| f.venue == VENUE).all(|f| f
+            .trade_error_bps
+            .is_some_and(|b| b.abs() > qip_deepbrain::research::RESIDUAL_BPS)),
+        "premise: both fills at the venue miss past the threshold"
+    );
+    let platform = platform_over(Universe::new());
+    let (licensed, eligible) = deployed_bounds();
+    let mut research = deployed(BTreeMap::new());
+    research
+        .sweep_over(&platform, &observed, &[], t0(), &licensed, &eligible)
+        .unwrap();
+
+    let residual_items: Vec<String> = research
+        .desk()
+        .queue()
+        .ranked()
+        .into_iter()
+        .map(|e| e.item().research_question.clone())
+        .filter(|q| {
+            research
+                .desk()
+                .lineage(q)
+                .is_some_and(|l| l.derivation.rule == "detector:unexplained_residual")
+        })
+        .collect();
+    assert_eq!(
+        residual_items.len(),
+        1,
+        "two fills at one venue raised other than one gap: {residual_items:?}"
+    );
+    assert!(
+        residual_items[0].contains(&format!("`{VENUE}`")),
+        "the one gap does not name the missing venue: {residual_items:?}"
+    );
+    assert!(
+        !residual_items[0].contains("`XQUIET`"),
+        "the quiet venue raised the gap: {residual_items:?}"
+    );
+}
