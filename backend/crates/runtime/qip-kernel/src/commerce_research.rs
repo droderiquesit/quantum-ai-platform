@@ -47,7 +47,8 @@ use qip_financial::commerce::{
     LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver, UnitState, scout,
 };
 use qip_financial::commerce_resale::{
-    Attr, CycleEvent, ResaleDesk, UnitAttributes, VenueKind, VenueQuote, route_resale,
+    Attr, CycleEvent, ResaleDesk, UNIT_ATTRIBUTES, UnitAttributes, VenueKind, VenueQuote,
+    route_resale,
 };
 use qip_financial::physical::{LogisticsTerms, Spoilage};
 use serde::{Deserialize, Serialize};
@@ -790,6 +791,7 @@ impl CommerceResearch {
                     .sell(&sale, &unit, "paper-buyer", listed.price, None)?;
                 self.plane.settle(&sale)?;
                 let returned = self.take_return_owed(&sale)?;
+                self.refresh_attributes(&unit)?;
                 let settlement = self
                     .plane
                     .settlement(&sale)
@@ -871,11 +873,27 @@ impl CommerceResearch {
     ) -> Result<UnitAttributes> {
         let terms = &self.plan.terms;
         let value = |text: String| Attr::Value(text);
+        // Condition, location and inventory state are the ledger's, read
+        // from the unit's own record rather than stated here: they used to
+        // be the literals "new", the warehouse and "held", and stayed so
+        // after the unit was sold or returned (R12-COMMERCE-5090).
+        let record = self.plane.ledger().units().get(unit).ok_or_else(|| {
+            Error::invalid(format!(
+                "unit {unit} is not in the ledger, so its condition, location and state cannot \
+                 be read; receive it before tracking it"
+            ))
+        })?;
         let attrs: BTreeMap<String, Attr> = [
             ("sku_identity", value(candidate.product.clone())),
-            ("condition", value("new".to_string())),
-            ("location", value(logistics.warehouse.clone())),
-            ("inventory_state", value("held".to_string())),
+            (
+                "condition",
+                value(condition_name(record.condition).to_string()),
+            ),
+            ("location", value(record.location.clone())),
+            (
+                "inventory_state",
+                value(state_name(&record.state).to_string()),
+            ),
             (
                 "shipping",
                 value(format!(
@@ -934,6 +952,40 @@ impl CommerceResearch {
         UnitAttributes::new(unit, attrs)
     }
 
+    /// Bring a unit's tracked condition, location and inventory state back
+    /// to what the ledger now says, leaving the attributes the ledger does
+    /// not hold as they were. Called after every step that can change the
+    /// ledger's record of the unit - a sale, a return - so the attribute
+    /// record cannot describe a unit that is no longer what it says.
+    fn refresh_attributes(&mut self, unit: &str) -> Result<()> {
+        let Some(record) = self.plane.ledger().units().get(unit) else {
+            return Ok(());
+        };
+        let Some(current) = self.attributes.get(unit) else {
+            return Ok(());
+        };
+        let mut attrs: BTreeMap<String, Attr> = UNIT_ATTRIBUTES
+            .iter()
+            .filter_map(|name| {
+                current
+                    .get(name)
+                    .map(|attr| ((*name).to_string(), attr.clone()))
+            })
+            .collect();
+        attrs.insert(
+            "condition".to_string(),
+            Attr::Value(condition_name(record.condition).to_string()),
+        );
+        attrs.insert("location".to_string(), Attr::Value(record.location.clone()));
+        attrs.insert(
+            "inventory_state".to_string(),
+            Attr::Value(state_name(&record.state).to_string()),
+        );
+        let refreshed = UnitAttributes::new(unit, attrs)?;
+        self.attributes.insert(unit.to_string(), refreshed);
+        Ok(())
+    }
+
     /// What each resale venue offers for a unit whose market price is
     /// `reference`: the marketplace at the market less its fees, an auction
     /// slightly under it but faster, a direct buyer under that and faster
@@ -971,6 +1023,25 @@ impl CommerceResearch {
 
 /// The whole units a purchase quantity receives, refused when fractional or
 /// past the bound rather than rounded.
+/// The ledger's condition, as the tracked attribute spells it.
+const fn condition_name(condition: Condition) -> &'static str {
+    match condition {
+        Condition::New => "new",
+        Condition::OpenBox => "open_box",
+        Condition::Used => "used",
+        Condition::Damaged => "damaged",
+    }
+}
+
+/// The ledger's unit state, as the tracked attribute spells it.
+const fn state_name(state: &UnitState) -> &'static str {
+    match state {
+        UnitState::Held => "held",
+        UnitState::Reserved { .. } => "reserved",
+        UnitState::Sold { .. } => "sold",
+    }
+}
+
 fn whole_units(quantity: Decimal) -> Result<u32> {
     let whole = quantity.round_dp(0);
     if whole != quantity || !whole.is_positive() {

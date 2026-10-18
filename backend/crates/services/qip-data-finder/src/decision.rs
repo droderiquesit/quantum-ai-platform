@@ -616,6 +616,41 @@ impl RegisteredSource {
         &self.lineage
     }
 
+    /// This registration as the validated [`qip_contracts::SourceSpec`] the
+    /// expansion engine's scouts produce (R12-EXPAND-6026): lineage from the
+    /// finder's own record, licence, cost and freshness from the entry. Built
+    /// from [`Self::entry`], so the spec cannot say one thing about a source
+    /// while the registry says another, and refused by the contract's own
+    /// validation if any field is blank.
+    pub fn source_spec(&self) -> Result<qip_contracts::SourceSpec> {
+        let entry = self.entry();
+        let (licence, permitted_usages) = match entry.licence {
+            LicensingPosture::Declared { license } => (
+                license.identifier().to_string(),
+                license
+                    .permits()
+                    .iter()
+                    .map(|usage| format!("{usage:?}").to_lowercase())
+                    .collect(),
+            ),
+            LicensingPosture::Ambiguous { .. } => ("ambiguous".to_string(), Vec::new()),
+            LicensingPosture::Undetermined => ("undetermined".to_string(), Vec::new()),
+        };
+        let spec = qip_contracts::SourceSpec {
+            source_id: entry.provenance.source_id().to_string(),
+            discovered_from: entry.provenance.discovered_from().to_string(),
+            discovered_at: entry.provenance.discovered_at(),
+            replaces: entry.provenance.replaces().map(str::to_string),
+            licence,
+            permitted_usages,
+            monthly_fee: entry.cost.monthly_fee(),
+            currency: entry.cost.currency().to_string(),
+            freshness: entry.freshness.as_str().to_string(),
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+
     /// Provenance, cost, licence, freshness and utility, together.
     pub fn entry(&self) -> SourceRegistryEntry<'_> {
         let candidate = self.source.candidate();
