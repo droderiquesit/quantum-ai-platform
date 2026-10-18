@@ -13,9 +13,9 @@
 //! frame deliberately copies identity, topic, timestamps and lineage out of the
 //! envelope so all three keep working on streamed events unchanged.
 //!
-//! A managed Pub/Sub transport is [`crate::pubsub`], and it is a port. This is
-//! not a fallback for it: a deployment configured for Pub/Sub is refused rather
-//! than quietly served from a local file, for the reason `qip-storage` gives.
+//! There is no managed-broker transport for this to stand in for: the registry
+//! cannot name one, and an unknown transport name is refused rather than
+//! quietly served from a local file, for the reason `qip-storage` gives.
 
 use qip_contracts::time::Watermark;
 use qip_core::Timestamp;

@@ -9,8 +9,9 @@ the platform's root cannot propose to change the fleet and the reverse.
 | Resource | Why |
 |---|---|
 | `google_service_account.worker` (`fleet-worker`) | The one identity the Job runs as. No key resource exists; the credential is the metadata server's short-lived token. |
-| `google_project_iam_member.worker` | `roles/aiplatform.user` on the project. Nothing else at project level. `worker_may_call_models = false` removes it: the harder stop. |
-| `google_storage_bucket.fleet` + `_iam_member.worker` | `<project>-fleet`, uniform access, public access prevented, object access for the worker on this bucket only. Packets, outputs and ledger objects age out; `HALT` does not. |
+| `google_project_iam_member.worker` | `roles/aiplatform.user` and read-only `roles/monitoring.viewer` on the project. Nothing else at project level. `worker_may_call_models = false` removes the first: the harder stop. |
+| `google_storage_bucket.fleet` + `_iam_member.worker_reads`, `_worker_writes` | `<project>-fleet`, uniform access, public access prevented. The worker reads `packets/` and `HALT` and writes `output/` and `ledger/`, each by an IAM condition on the object prefix (ADR 0102 amendment, item 3); it cannot delete `HALT` or rewrite a packet. The list right on `ledger/` rests on the `objectListPrefix` attribute, which a plan does not evaluate; check it on the first real apply. Packets, outputs and ledger objects age out; `HALT` does not. |
+| `google_compute_network.fleet`, subnet, two egress firewall rules, private `googleapis.com` zone | The Job's `vpc_access` sends all egress through this VPC; the allow rule admits TCP 443 to `199.36.153.8/30` (`private.googleapis.com`) and the deny rule refuses everything else (item 2). `compute` and `dns` join the APIs a human enables. |
 | `google_cloud_run_v2_job.fleet` | One Job, one image (by digest), `max_retries = 0`, `parallelism` default 8, refused above 40. |
 | `google_project_service.api` | Only when `enable_apis = true`. Off by default. |
 

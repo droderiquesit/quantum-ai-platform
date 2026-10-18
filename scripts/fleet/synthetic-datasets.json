@@ -1,0 +1,7 @@
+{
+  "unit": "Repo-relative dataset path to its class. Only 'synthetic' and 'licensed-research' are admitted to a packet (ADR 0102 amendment of 2026-10-11, item 4); anything else, and anything unlisted, is refused by the worker before a model call.",
+  "datasets": {
+    "data/datasets/universe.json": "synthetic",
+    "data/datasets/loop-demonstration-tape.json": "synthetic"
+  }
+}

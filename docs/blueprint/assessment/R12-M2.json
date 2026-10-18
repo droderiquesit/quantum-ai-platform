@@ -439,13 +439,15 @@
   {
     "id": "R12-DATA-2020",
     "status": "COMPLETE",
-    "current": "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources validates config.owner as qip_data_finder::operator::NamedOperator once per pass and builds every mesh entry through RegistrationDecision::catalogue_entry_attributed; the shipped default owner qip-platform is refused at that seam and each registration is recorded as a catalogue problem naming the fix",
+    "current": "backend/crates/runtime/qip-kernel/src/platform.rs assess_sources validates config.owner as qip_data_finder::operator::NamedOperator once per pass and builds every mesh entry through RegistrationDecision::catalogue_entry_attributed; the shipped default owner is research-desk, the role infrastructure/foundation/terraform.tfvars declares as every project's owner label, so a default composition catalogues under a named desk, and a configured process name or placeholder (qip-platform included) is refused with one catalogue problem per registration naming the fix",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18850 NamedOperator::new(&self.config.owner) and catalogue_entry_attributed in assess_sources",
-      "backend/crates/runtime/qip-kernel/src/config.rs:490 default_owner doc states the default is refused at the catalogue seam",
+      "backend/crates/runtime/qip-kernel/src/platform.rs NamedOperator::new(&self.config.owner) and catalogue_entry_attributed in assess_sources (grep -n NamedOperator::new)",
+      "backend/crates/runtime/qip-kernel/src/config.rs:503 default_owner returns research-desk",
       "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
-      "backend/crates/services/qip-data-finder/tests/lifecycle.rs:289 a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused",
-      "backend/crates/apps/qip-deepbrain/src/discovery.rs:347 production caller of assess_sources"
+      "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs the_shipped_default_owner_is_one_the_catalogue_accepts",
+      "backend/crates/tests/qip-acceptance/tests/e2e.rs the_platform_walks_from_a_discovered_source_to_a_learned_lesson asserts no catalogue problem on the default composition",
+      "backend/crates/services/qip-data-finder/tests/lifecycle.rs a_catalogue_entry_is_attributed_to_a_named_operator_and_a_process_name_is_refused",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs production caller of assess_sources"
     ],
     "gap": "",
     "implemented": true,
@@ -457,10 +459,10 @@
       "R12-DATA-2017"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test source_lifecycle a_catalogue_entry_names_the_configured_operator_and_the_process_name_is_refused",
+    "verification": "cd backend && cargo +1.94.1 test -p qip-kernel --test source_lifecycle && cargo +1.94.1 test -p qip-acceptance --test e2e --no-fail-fast",
     "work_item": "",
     "size": "S",
-    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so). Closed 2026-10-18 (lane L01): assess_sources now goes through catalogue_entry_attributed; mutation reverting the seam to catalogue_entry(&self.config.owner) made the test fail at its catalogued.is_empty() assertion, restored byte-for-byte and it passes. Deployments still ship the default owner; they now catalogue nothing and say why, rather than cataloguing under a process name."
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Named-operator type exists; production path unchanged (commit says so). Closed 2026-10-18 (lane L01): assess_sources now goes through catalogue_entry_attributed; mutation reverting the seam to catalogue_entry(&self.config.owner) made the test fail at its catalogued.is_empty() assertion, restored byte-for-byte and it passes. Deployments still ship the default owner; they now catalogue nothing and say why, rather than cataloguing under a process name. Corrected 2026-10-18 (lane L01, 2bbb89e2): the closing commit 46ef4c11 left the default at qip-platform, so every default composition refused its own registrations and qip-acceptance e2e failed, blocking the dev deploy; the default is now research-desk and the_shipped_default_owner_is_one_the_catalogue_accepts pins it (mutation: default back to qip-platform failed it and e2e with the original message; restored, both pass)."
   },
   {
     "id": "R12-DATA-2021",
@@ -1734,13 +1736,16 @@
   },
   {
     "id": "R12-TICK-2075",
-    "status": "PARTIAL",
-    "current": "The edge cell's quote budget and message-to-trade window refuse sends beyond budget (GATE_QUOTE_BUDGET) in the live cell; qip-simulation-engine has no rate-limit condition.",
+    "status": "COMPLETE",
+    "current": "The tick replay enforces a venue message budget: ExecutionModel.message_budget (conditions::MessageBudget, at most per_window order messages in any trailing window) makes ReplaySession::throttled refuse an order arriving into a full window as Rejected \"throttled: ...\" with nothing filled, and a later arrival is admitted once the window moves. MarketCondition::MessageBudget states the same limit as a scheduled condition, composing overlapping budgets to the tighter rate. The deep brain's tick desk replays its decisions under a 50-per-second budget in every configuration (TickDeskConfig::off is the base from_lookup builds on), so whenever QIP_DEEPBRAIN_TICK_EVERY turns the desk on, replayed flow is throttled. The edge cell's live-path quote budget is unchanged.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/quoting.rs quote budget",
-      "backend/crates/edge/qip-edge/tests/quoting.rs"
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs:989 ReplaySession::throttled",
+      "backend/crates/services/qip-simulation-engine/src/conditions.rs MessageBudget (validate, admits, trailing_floor, tighter) and MarketCondition::MessageBudget",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:125 message_budget: Some(MessageBudget { per_window: 50, window: 1s })",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs orders_beyond_the_venue_message_budget_are_refused_in_replay",
+      "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs overlapping_message_budgets_compose_to_the_tighter_rate"
     ],
-    "gap": "Add rate limits to the replay simulator.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -1748,10 +1753,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test quoting",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay --test market_conditions && cargo test -p qip-deepbrain",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Mutations: ReplaySession::throttled returning None fills the third order (\"the third order inside the window was not refused: Some(Filled)\"); MessageBudget::trailing_floor returning i64::MIN refuses the fourth order after the window; MessageBudget::tighter always keeping self leaves the 10/s budget in the regime. The budget is omitted from the serialised ExecutionModel when None, so input digests of earlier runs are unchanged. The 50/s figure is the desk's stated configuration, not a measured venue limit."
   },
   {
     "id": "R12-TICK-2076",
@@ -2030,14 +2035,16 @@
   },
   {
     "id": "R12-TICK-2088",
-    "status": "PARTIAL",
-    "current": "Edge tape seeding caps aggressor fills by resting depth; the twin marks an alternative beyond calibrated participation unfillable; simulator venue is never more generous than reality. Queue priority and rate limits are absent from the replay simulator.",
+    "status": "COMPLETE",
+    "current": "Both halves hold in the replay simulator. Queue: a resting limit order joins behind the size already at its price and fills only after it trades through (tick_replay.rs work_resting; test a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price), and qip-simulation-engine venue.rs keeps a price-time queue. Rate limits: ExecutionModel.message_budget makes ReplaySession refuse an order arriving into a full trailing window as throttled, never filling it, and the deep brain's tick desk replays under a 50-per-second budget. The edge tape and twin caps on fills remain as before.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/tests/tape.rs:207 no_fill_is_ever_larger_than_the_depth_the_tape_seeded",
-      "backend/crates/services/qip-twin/tests/twin.rs:389 an_alternative_beyond_the_calibrated_participation_is_unfillable_not_profitable",
-      "backend/crates/services/qip-simulation-engine/src/venue.rs:1-10"
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price",
+      "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs orders_beyond_the_venue_message_budget_are_refused_in_replay",
+      "backend/crates/services/qip-simulation-engine/src/tick_replay.rs:989 ReplaySession::throttled",
+      "backend/crates/apps/qip-deepbrain/src/tick_desk.rs:125 message budget on the desk's execution model",
+      "backend/crates/apps/qip-edge-node/tests/tape.rs:207 no_fill_is_ever_larger_than_the_depth_the_tape_seeded"
     ],
-    "gap": "Queue/priority and rate limits in replay.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -2047,10 +2054,10 @@
       "R12-TICK-2075"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test tape",
+    "verification": "cargo test -p qip-simulation-engine --test tick_replay && cargo test -p qip-edge-node --test tape",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L21 2026-10-18. Register text was stale on queue priority, which the replay already modelled. Rate-limit mutation: ReplaySession::throttled returning None fills the third order inside the window."
   },
   {
     "id": "R12-TICK-2089",
